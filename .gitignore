@@ -1,0 +1,13 @@
+# Rust
+/daemon/target/
+/app/src-tauri/target/
+
+# Node / frontend
+/app/node_modules/
+/app/build/
+/app/.svelte-kit/
+/app/src-tauri/gen/
+
+# Editors / OS
+.DS_Store
+*.swp

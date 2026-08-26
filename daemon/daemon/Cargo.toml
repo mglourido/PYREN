@@ -1,0 +1,9 @@
+[package]
+name = "omen-hub-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+omen-hub-core = { path = "../crates/core" }
+omen-hub-fan = { path = "../crates/fan" }
