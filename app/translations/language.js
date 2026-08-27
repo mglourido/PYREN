@@ -12,7 +12,7 @@ let translation;
 let translation_fallback;
 let translation_fallback_app;
 
-async function get_translated_text(text = undefined) {
+export async function get_translated_text(text = undefined) {
   if (!main_laguage) await get_languages();
 
   if (!translation) {
@@ -60,7 +60,7 @@ async function get_languages() {
 const get_translations_Path = (language) =>
   new URL(`${language}.json`, import.meta.url);
 
-function clear_caches_translations_languages() {
+export function clear_caches_translations_languages() {
   translation = null;
   translation_fallback = null;
   translation_fallback_app = null;
