@@ -29,6 +29,11 @@ docs/       design plan + IPC protocol + development + frontend guide
   hwmon temperatures and fans, disks, network throughput, GPU (nvidia-smi
   and DRM sysfs) and the busiest processes. Generic Linux, so it works and
   is testable on any machine.
+- `power` module: Eco/Balanced/Performance/Unlimited switching through the
+  ACPI platform profile, power-profiles-daemon or the CPU energy-performance
+  hint, plus a background supervisor that switches modes on its own (Eco on
+  battery, Performance under sustained load) with hysteresis and a manual
+  override.
 - `fan` module: read-only status (`getStatus`) implemented and verified
   end-to-end; writing to hardware (`setMode`/`setCurve`/fan cleaner) not
   ported yet.

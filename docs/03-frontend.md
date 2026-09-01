@@ -40,10 +40,11 @@ Three stores, deliberately separate:
   started once in the root layout so history graphs stay continuous across
   navigation. Ref-counted `start()`/`stop()`.
 - **`hardware`** — what the *user asked for* (power mode, fan mode, curve,
-  power limits, lighting, GPU mode). Writes go to the daemon when it's
-  reachable and are always kept locally, so the UI stays consistent while
-  the daemon-side write paths (`fan.setMode`, `fan.setCurve`) are still
-  unimplemented.
+  power limits, lighting, GPU mode). Power-mode writes go to the daemon and
+  report back what was actually applied (`hardware.lastApply`); fan,
+  lighting and GPU writes stay local-only until those daemon paths land.
+  `syncFromDaemon()` seeds the store from the machine's real state on
+  startup, so the UI opens showing the mode the machine is actually in.
 - **`settings`** — app preferences (language, units, poll interval,
   dismissed notices).
 

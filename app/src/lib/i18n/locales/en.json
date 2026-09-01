@@ -122,7 +122,14 @@
     "smartBoost": "Smart performance boost",
     "maxBatteryDrain": "Maximum battery drain",
     "chassisTempLimit": "Chassis temperature limit",
-    "activated": "Activated"
+    "activated": "Activated",
+    "appliedVia": "Applied via {mechanism}",
+    "applyFailed": "Could not apply: {error}",
+    "noPowerControl": "This machine exposes no power-mode control, so the modes below are display only.",
+    "autoPaused": "Automatic switching paused for {seconds} s after your manual change.",
+    "lastAutoSwitch": "Last automatic switch: {detail}",
+    "onBattery": "On battery",
+    "onMains": "On AC power"
   },
   "advanced": {
     "gpuOverclocking": "GPU overclocking",

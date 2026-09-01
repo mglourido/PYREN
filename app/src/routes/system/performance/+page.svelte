@@ -42,6 +42,11 @@
     if (!powerTabAvailable && subTab === "power") subTab = "temp";
   });
 
+  /** Machines with no platform profile / ppd / EPP can't switch modes. */
+  const powerControlAvailable = $derived(
+    hardware.power === null || hardware.power.backend.available.length > 0,
+  );
+
   const fanModeOptions = $derived(
     unlimited
       ? (["max", "auto", "manual"] as FanMode[])
@@ -79,12 +84,47 @@
           icon={item.icon}
           label={t(`performance.modes.${item.id}`)}
           selected={mode === item.id}
+          disabled={!powerControlAvailable}
           onselect={() => hardware.setPowerMode(item.id)}
         />
       {/each}
     </div>
 
     <p class="mode-desc">{t(`performance.modeDesc.${mode}`)}</p>
+
+    <!-- Say what actually happened, rather than assuming the write landed. -->
+    {#if !powerControlAvailable}
+      <p class="feedback warn">{t("performance.noPowerControl")}</p>
+    {:else if hardware.lastError}
+      <p class="feedback err">
+        {t("performance.applyFailed", { error: hardware.lastError })}
+      </p>
+    {:else if hardware.lastApply?.applied.length}
+      <p class="feedback ok">
+        {t("performance.appliedVia", { mechanism: hardware.lastApply.applied.join(", ") })}
+      </p>
+    {/if}
+
+    {#if hardware.power?.supply.hasBattery}
+      <p class="feedback">
+        {hardware.power.supply.onBattery ? t("performance.onBattery") : t("performance.onMains")}
+        {#if hardware.power.supply.batteryPercent !== null}
+          — {hardware.power.supply.batteryPercent}%
+        {/if}
+      </p>
+    {/if}
+
+    {#if hardware.power?.autoOverrideSecondsLeft}
+      <p class="feedback">
+        {t("performance.autoPaused", { seconds: hardware.power.autoOverrideSecondsLeft })}
+      </p>
+    {/if}
+
+    {#if hardware.power?.lastAutoSwitch}
+      <p class="feedback">
+        {t("performance.lastAutoSwitch", { detail: hardware.power.lastAutoSwitch })}
+      </p>
+    {/if}
 
     <label class="apply-os">
       <input
@@ -337,6 +377,25 @@
     color: var(--text-mute);
     font-size: 13px;
     margin: 14px 0 0;
+  }
+
+  .feedback {
+    text-align: center;
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--text-mute);
+  }
+
+  .feedback.ok {
+    color: var(--ok);
+  }
+
+  .feedback.warn {
+    color: var(--warn);
+  }
+
+  .feedback.err {
+    color: var(--danger);
   }
 
   .apply-os {

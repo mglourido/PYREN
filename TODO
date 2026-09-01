@@ -34,3 +34,18 @@ documentar app + como ayudar + como reportar problemas + como añadir traduccion
   [parcial] docs/03-frontend.md + seccion Ayuda en la app. Falta CONTRIBUTING.md.
 
 ---
+
+---
+
+[hecho, del Features.md de Obsidian] sistema en segundo plano que decide
+cambiar de modo (eco/equilibrado/rendimiento) solo:
+
+  Daemon: crate omen-hub-power. Hilo supervisor con histeresis (banda muerta
+  entre loadLow y loadHigh, N muestras consecutivas antes de cambiar) y
+  override manual: si el usuario elige modo a mano, el supervisor se aparta
+  durante manualOverrideSecs. Aplica via platform_profile (HP) o
+  power-profiles-daemon + EPP. Los dos toggles de la portada lo configuran.
+
+  Pendiente: que la configuracion sobreviva a un reinicio del daemon
+  (persistencia en /etc/omen-hub/power.json) y sumar temperatura a la
+  decision, no solo carga de CPU.

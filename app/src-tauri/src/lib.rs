@@ -59,6 +59,21 @@ fn system_get_metrics() -> Result<Value, String> {
     call_daemon("system", "getMetrics", Value::Null)
 }
 
+#[tauri::command]
+fn power_get_state() -> Result<Value, String> {
+    call_daemon("power", "getState", Value::Null)
+}
+
+#[tauri::command]
+fn power_set_mode(mode: String) -> Result<Value, String> {
+    call_daemon("power", "setMode", json!({ "mode": mode }))
+}
+
+#[tauri::command]
+fn power_set_auto_config(config: Value) -> Result<Value, String> {
+    call_daemon("power", "setAutoConfig", config)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -67,7 +82,10 @@ pub fn run() {
             fan_get_status,
             core_capabilities,
             system_get_info,
-            system_get_metrics
+            system_get_metrics,
+            power_get_state,
+            power_set_mode,
+            power_set_auto_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

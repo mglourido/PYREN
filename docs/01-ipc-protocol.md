@@ -143,6 +143,78 @@ Notes on the shape:
 - Virtual network interfaces (`lo`, `veth*`, `docker*`, `br-*`, `virbr*`,
   `vnet*`, `tap*`) are excluded so container traffic isn't counted twice.
 
+## `power` module
+
+The Eco / Balanced / Performance / Unlimited switch, plus the background
+supervisor that can drive it automatically.
+
+| method | params | result | status |
+|---|---|---|---|
+| `power.getState` | none | current mode, backend state, battery, supervisor config | ✅ implemented |
+| `power.setMode` | `{ "mode": "eco" \| "balanced" \| "performance" \| "unlimited" }` | `{ "applied": [...], "failed": [...] }` | ✅ implemented |
+| `power.setAutoConfig` | full auto config object | the stored config | ✅ implemented |
+
+### Mechanisms
+
+`setMode` tries, in order of how directly it maps to what the OMEN Gaming
+Hub does:
+
+1. **`/sys/firmware/acpi/platform_profile`** — the firmware-level switch
+   behind Fn+P on HP laptops. Mode names are matched against
+   `platform_profile_choices`, since firmware exposes only a subset of the
+   ACPI vocabulary (`low-power`/`quiet`/`cool` all count as Eco).
+2. **power-profiles-daemon** (`powerprofilesctl`), used when the firmware
+   exposes no profile of its own.
+3. **`energy_performance_preference`** (intel_pstate/amd_pstate EPP),
+   applied on every CPU alongside either of the above.
+
+Each is best-effort, so the result **lists what actually changed** rather
+than reporting a success it can't verify:
+
+```json
+{ "applied": ["power-profiles-daemon=performance"],
+  "failed": ["energy_performance_preference: Permission denied (os error 13)"] }
+```
+
+If nothing at all could be applied the call returns an error instead.
+Writing EPP and `platform_profile` needs root; power-profiles-daemon
+accepts an unprivileged caller through polkit, which is why a daemon run
+with `cargo run` can still change that one.
+
+`Unlimited` maps onto the same firmware profile as `Performance` — what
+makes it different is the manual fan and power limits applied on top, not a
+different platform profile.
+
+### Automatic switching
+
+`power.getState`'s `auto` object configures a supervisor thread that runs
+whether or not the app is open:
+
+| field | meaning |
+|---|---|
+| `enabled` | master switch |
+| `ecoOnBattery` | drop to Eco whenever running on battery (beats the load rule) |
+| `performanceOnLoad` | step up to Performance under sustained load |
+| `loadHigh` / `loadLow` | 1-minute load average **per core** above/below which load counts as high/low. The gap between them is a dead band where the supervisor has no opinion — this is what stops the mode flapping around a threshold. |
+| `samplesToSwitch` | consecutive agreeing samples required before switching |
+| `intervalSecs` | how often it samples |
+| `manualOverrideSecs` | how long a manual `setMode` suspends the supervisor — whoever is at the keyboard wins |
+
+The load average is used rather than instantaneous CPU usage precisely
+because it is already smoothed: a mode switch spins fans up or down and is
+very visible, so only *sustained* load should trigger one.
+
+`getState` also reports `autoOverrideSecondsLeft` and `lastAutoSwitch` so
+the UI can explain why the supervisor is or isn't acting.
+
+### Battery detection
+
+`supply.onBattery` is `null` on machines with no battery, which is **not**
+the same as "on battery" and must not be treated as such. Peripherals
+(wireless mice, keyboards, headsets) also register under
+`/sys/class/power_supply`; they are excluded via `scope=Device`, without
+which a discharging mouse makes a desktop look like an unplugged laptop.
+
 ## `fan` module
 
 | method | params | result | status |

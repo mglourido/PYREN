@@ -35,11 +35,21 @@ version = "0.1.0"
 dependencies = [
  "omen-hub-core",
  "omen-hub-fan",
+ "omen-hub-power",
  "omen-hub-system",
 ]
 
 [[package]]
 name = "omen-hub-fan"
+version = "0.1.0"
+dependencies = [
+ "omen-hub-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "omen-hub-power"
 version = "0.1.0"
 dependencies = [
  "omen-hub-core",

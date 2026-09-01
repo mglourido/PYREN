@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use omen_hub_core::{serve_unix_socket, Registry};
 use omen_hub_fan::FanModule;
+use omen_hub_power::PowerModule;
 use omen_hub_system::{Compatibility, SystemModule};
 
 /// Production (systemd, running as root) should set `OMEN_HUB_SOCKET` to
@@ -42,6 +43,7 @@ fn main() {
 
     let mut registry = Registry::new();
     registry.register(Box::new(system));
+    registry.register(Box::new(PowerModule::new()));
     registry.register(Box::new(FanModule::new()));
     let registry = Arc::new(registry);
 

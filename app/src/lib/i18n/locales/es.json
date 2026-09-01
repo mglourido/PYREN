@@ -122,7 +122,14 @@
     "smartBoost": "Aumento de rendimiento inteligente",
     "maxBatteryDrain": "Drenaje máximo de batería",
     "chassisTempLimit": "Temperatura límite del chasis",
-    "activated": "Activado"
+    "activated": "Activado",
+    "appliedVia": "Aplicado mediante {mechanism}",
+    "applyFailed": "No se pudo aplicar: {error}",
+    "noPowerControl": "Este equipo no expone ningún control de modo de energía, así que los modos de abajo son solo informativos.",
+    "autoPaused": "Cambio automático en pausa {seconds} s tras tu cambio manual.",
+    "lastAutoSwitch": "Último cambio automático: {detail}",
+    "onBattery": "Con batería",
+    "onMains": "Con adaptador de CA"
   },
   "advanced": {
     "gpuOverclocking": "GPU Overclocking",

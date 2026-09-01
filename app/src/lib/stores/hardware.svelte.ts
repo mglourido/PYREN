@@ -9,7 +9,7 @@
  * docs/01-ipc-protocol.md).
  */
 
-import { daemon } from "$lib/api/daemon";
+import { daemon, type AutoConfig, type ApplyReport, type PowerState } from "$lib/api/daemon";
 
 const STORAGE_KEY = "omen-hub.hardware.v1";
 
@@ -94,6 +94,10 @@ class HardwareStore {
   state = $state<HardwareState>(defaults());
   /** Last write error, shown inline instead of swallowed. */
   lastError = $state<string | null>(null);
+  /** What the daemon actually changed on the last power-mode write. */
+  lastApply = $state<ApplyReport | null>(null);
+  /** Live power state from the daemon; null while it is unreachable. */
+  power = $state<PowerState | null>(null);
 
   load() {
     try {
@@ -114,13 +118,72 @@ class HardwareStore {
     this.save();
   }
 
+  /**
+   * Reads the machine's actual power state, so the UI opens showing the
+   * mode the machine is really in rather than the last one this app chose.
+   */
+  async syncFromDaemon() {
+    try {
+      const power = await daemon.powerState();
+      this.power = power;
+      this.state = {
+        ...this.state,
+        powerMode: power.mode,
+        autoEco: power.auto.enabled && power.auto.ecoOnBattery,
+        autoPerformance: power.auto.enabled && power.auto.performanceOnLoad,
+      };
+      this.lastError = null;
+    } catch {
+      // Daemon down: keep whatever was persisted locally. The layout
+      // already tells the user the daemon is unreachable.
+      this.power = null;
+    }
+  }
+
   async setPowerMode(mode: PowerMode) {
     this.set("powerMode", mode);
     // Unlimited is the only mode that hands fan control to the user; every
     // other mode is the firmware's own curve, mirroring the reference app.
     if (mode !== "unlimited" && this.state.fanMode === "manual") this.set("fanMode", "auto");
     try {
-      await daemon.setPowerMode(mode);
+      this.lastApply = await daemon.setPowerMode(mode);
+      this.lastError = null;
+      // A manual change suspends the daemon's supervisor, so re-read to
+      // pick up the override countdown it now reports.
+      void this.syncFromDaemon();
+    } catch (e) {
+      this.lastError = String(e);
+      this.lastApply = null;
+    }
+  }
+
+  /**
+   * Pushes the two home-screen auto-switch toggles to the daemon's
+   * supervisor. The supervisor runs whenever either rule is on.
+   */
+  async setAutoSwitch(eco: boolean, performance: boolean) {
+    this.set("autoEco", eco);
+    this.set("autoPerformance", performance);
+
+    const base: AutoConfig = this.power?.auto ?? {
+      enabled: false,
+      ecoOnBattery: true,
+      performanceOnLoad: true,
+      loadHigh: 0.7,
+      loadLow: 0.3,
+      samplesToSwitch: 3,
+      intervalSecs: 10,
+      manualOverrideSecs: 600,
+    };
+
+    try {
+      const auto = await daemon.setAutoConfig({
+        ...base,
+        enabled: eco || performance,
+        ecoOnBattery: eco,
+        performanceOnLoad: performance,
+      });
+      if (this.power) this.power = { ...this.power, auto };
       this.lastError = null;
     } catch (e) {
       this.lastError = String(e);

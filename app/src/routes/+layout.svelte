@@ -26,6 +26,7 @@
   $effect(() => {
     telemetry.start();
     void telemetry.loadSystemInfo();
+    void hardware.syncFromDaemon();
     return () => telemetry.stop();
   });
 

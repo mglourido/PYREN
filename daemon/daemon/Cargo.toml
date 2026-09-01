@@ -8,3 +8,4 @@ license.workspace = true
 omen-hub-core = { path = "../crates/core" }
 omen-hub-fan = { path = "../crates/fan" }
 omen-hub-system = { path = "../crates/system" }
+omen-hub-power = { path = "../crates/power" }

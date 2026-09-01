@@ -35,7 +35,7 @@
         <div class="switch-row">
           <Toggle
             checked={hardware.state.autoEco}
-            onchange={(v) => hardware.set("autoEco", v)}
+            onchange={(v) => hardware.setAutoSwitch(v, hardware.state.autoPerformance)}
             ariaLabel={t("home.autoEco")}
           />
           <span>{t("home.autoEco")}</span>
@@ -43,7 +43,7 @@
         <div class="switch-row">
           <Toggle
             checked={hardware.state.autoPerformance}
-            onchange={(v) => hardware.set("autoPerformance", v)}
+            onchange={(v) => hardware.setAutoSwitch(hardware.state.autoEco, v)}
             ariaLabel={t("home.autoPerformance")}
           />
           <span>{t("home.autoPerformance")}</span>

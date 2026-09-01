@@ -95,6 +95,45 @@ export type SystemMetrics = {
   processes: ProcessUsage[];
 };
 
+export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
+
+/** Config for the daemon's background Eco/Performance supervisor. */
+export type AutoConfig = {
+  enabled: boolean;
+  ecoOnBattery: boolean;
+  performanceOnLoad: boolean;
+  loadHigh: number;
+  loadLow: number;
+  samplesToSwitch: number;
+  intervalSecs: number;
+  manualOverrideSecs: number;
+};
+
+export type PowerState = {
+  mode: PowerMode;
+  backend: {
+    platformProfile: string | null;
+    platformProfileChoices: string[];
+    powerProfilesDaemon: string | null;
+    energyPreference: string | null;
+    governor: string | null;
+    /** Mechanisms this machine offers, best first. Empty means no control. */
+    available: string[];
+  };
+  supply: {
+    onBattery: boolean | null;
+    batteryPercent: number | null;
+    batteryStatus: string | null;
+    hasBattery: boolean;
+  };
+  auto: AutoConfig;
+  autoOverrideSecondsLeft: number | null;
+  lastAutoSwitch: string | null;
+};
+
+/** What `power.setMode` actually managed to change. */
+export type ApplyReport = { applied: string[]; failed: string[] };
+
 export class DaemonUnavailable extends Error {}
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -114,5 +153,7 @@ export const daemon = {
   /** Not implemented daemon-side yet; the UI already calls it. */
   setFanMode: (mode: "auto" | "manual" | "max", pwm?: number) =>
     call<null>("fan_set_mode", { mode, pwm }),
-  setPowerMode: (mode: string) => call<null>("power_set_mode", { mode }),
+  powerState: () => call<PowerState>("power_get_state"),
+  setPowerMode: (mode: PowerMode) => call<ApplyReport>("power_set_mode", { mode }),
+  setAutoConfig: (config: AutoConfig) => call<AutoConfig>("power_set_auto_config", { config }),
 };
