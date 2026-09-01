@@ -53,3 +53,22 @@ cambiar de modo (eco/equilibrado/rendimiento) solo:
 
   Pendiente: sumar temperatura a la decision del supervisor, no solo carga
   de CPU.
+
+---
+
+[parcial] instalador del driver y del servicio: crate omen-hub-installer,
+metodos installer.inspect / plan / apply. Deteccion y planificacion
+probadas en este PC; la EJECUCION esta escrita pero nunca se ha ejecutado
+(hace falta el portatil HP). apply es simulacro salvo confirm:true.
+
+  Ojo a dos cosas que encontre: la doc del proyecto Python no coincide con
+  su propio driver (OMEN_CPU/GPU_MAX_RPM en vez de OMEN_MAX_RPM, y
+  hp_wmi_feature_boards en vez de victus_s_thermal_profile_boards), y en
+  kernels >= 6.20 el control de ventiladores ya viene de serie, asi que el
+  parche probablemente no hace falta.
+
+---
+
+[pendiente] modulo RGB. Revisado sin ejecutar: docs/04-rgb-porting-review.md.
+Antes de portar hay que confirmar en el portatil si el teclado es per-key
+(USB 0d62:54bf) o de 4 zonas (acpi_call), porque no comparten nada.

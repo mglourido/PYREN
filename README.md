@@ -38,6 +38,9 @@ docs/       design plan + IPC protocol + development + frontend guide
   hint, plus a background supervisor that switches modes on its own (Eco on
   battery, Performance under sustained load) with hysteresis and a manual
   override.
+- `installer` module: ports the driver/service installer as inspect → plan
+  → apply. Detection and planning are verified; the execution path is
+  written but has never been run, because that needs an HP laptop.
 - `fan` module: read-only status (`getStatus`) implemented and verified
   end-to-end; writing to hardware (`setMode`/`setCurve`/fan cleaner) not
   ported yet.

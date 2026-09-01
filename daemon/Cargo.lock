@@ -44,6 +44,7 @@ version = "0.1.0"
 dependencies = [
  "omen-hub-core",
  "omen-hub-fan",
+ "omen-hub-installer",
  "omen-hub-power",
  "omen-hub-system",
 ]
@@ -55,6 +56,16 @@ dependencies = [
  "omen-hub-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "omen-hub-installer"
+version = "0.1.0"
+dependencies = [
+ "omen-hub-core",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

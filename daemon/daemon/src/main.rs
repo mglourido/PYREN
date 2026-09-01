@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use omen_hub_core::{serve_unix_socket, Registry};
 use omen_hub_fan::FanModule;
+use omen_hub_installer::InstallerModule;
 use omen_hub_power::PowerModule;
 use omen_hub_system::{Compatibility, SystemModule};
 
@@ -45,6 +46,7 @@ fn main() {
     registry.register(Box::new(system));
     registry.register(Box::new(PowerModule::new()));
     registry.register(Box::new(FanModule::new()));
+    registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);
 
     for cap in registry.capabilities() {

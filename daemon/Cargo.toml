@@ -4,6 +4,7 @@ members = [
     "daemon",
     "crates/config",
     "crates/core",
+    "crates/installer",
     "crates/fan",
     "crates/system",
     "crates/power",

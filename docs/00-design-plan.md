@@ -64,6 +64,7 @@ omen-hub-linux/
 │       ├── core/            Module trait, Registry, wire types, socket server
 │       ├── system/          machine identity + generic Linux monitoring
 │       ├── power/           power modes + background auto-switch supervisor
+│       ├── installer/       driver + service installer (inspect/plan/apply)
 │       └── fan/              fan module (ported from omen-fan-control)
 ├── app/                     Tauri app (SvelteKit frontend + src-tauri shell)
 │   └── src/routes/           UI, organized by module once more than one exists
@@ -111,8 +112,12 @@ doesn't exist, because nothing has needed one yet.
    the daemon and currently get "not implemented" back, which is the next
    thing to close.
 4. Fan-cleaner protocol (`docs/04-fan-control-logic.md` §"Fan cleaner protocol" in the source repo) — the ACPI-call sequence, once basic curve control is solid.
-5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary generalizes to a differently-shaped hardware surface.
-6. Privileged installer flow (kernel driver + daemon systemd unit) as a GUI wizard, reusing the DKMS/hooks logic documented in the source repo.
+5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary generalizes to a differently-shaped hardware surface — reviewed but not started, see `docs/04-rgb-porting-review.md`; the per-key and 4-zone paths share nothing, so which one to port has to be settled on the hardware first.
+6. ~~Privileged installer flow (kernel driver + daemon systemd unit)~~ —
+   ported as the `installer` module (inspect/plan/apply, see
+   `docs/01-ipc-protocol.md`). Its *execution* path is written but has
+   never been run, since that needs an HP laptop; the GUI wizard on top of
+   it is still to do.
 
 ## Open decisions (intentionally not settled by this scaffold)
 

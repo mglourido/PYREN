@@ -235,6 +235,69 @@ the same as "on battery" and must not be treated as such. Peripherals
 `/sys/class/power_supply`; they are excluded via `scope=Device`, without
 which a discharging mouse makes a desktop look like an unplugged laptop.
 
+## `installer` module
+
+Ports the source project's `install_driver.sh` and the install paths in
+`omen_logic.py`. Split into **inspect → plan → apply** rather than one
+imperative script: installing means unloading a kernel module, replacing a
+file under `/lib/modules` and regenerating the initramfs, so the user
+should see exactly what will run before authorising it — and a rendered
+plan is also something that pastes into a bug report.
+
+| method | params | result | status |
+|---|---|---|---|
+| `installer.inspect` | none | what this machine has, and whether the patch is needed | ✅ implemented |
+| `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings | ✅ implemented |
+| `installer.apply` | as above plus `confirm`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report }` | ⚠️ implemented, **execution untested** |
+
+`action` is one of `installDriver`, `restoreDriver`, `installService`,
+`removeService`.
+
+### Safety rules
+
+- **`apply` is a dry run unless `confirm: true`.** A mis-sent message can
+  never replace a kernel module; the report comes back with every step
+  marked `planned`.
+- **A plan with blockers is refused**, and the blockers say why, with the
+  command that fixes each one where there is one (missing kernel headers
+  are the common case, and on Debian they are split across three packages).
+- **Installing is refused when fan control already works** (`pwm1` is
+  present), unless `force` is set. Manual fan control went upstream in
+  Linux 6.20, so on a modern kernel replacing the stock driver is usually a
+  downgrade — `inspect` reports `patchNeeded: false` there.
+- **The stock module is always backed up before being removed**, and only
+  when no `.bak` exists yet, so re-running an install never overwrites the
+  pristine backup with an already-patched module.
+
+### Notes on the port
+
+Two places where the source project's **documentation disagrees with its
+own shipped driver**; the code is what gets compiled, so the port follows
+that and keeps the documented names only as fallbacks:
+
+- The docs describe one `#define OMEN_MAX_RPM`; `hp-wmi.c` has
+  `OMEN_CPU_MAX_RPM` and `OMEN_GPU_MAX_RPM`. Patching by the documented
+  name silently does nothing and leaves an uncalibrated fan ceiling.
+- The docs describe a `victus_s_thermal_profile_boards` array; no such
+  symbol exists. The real table is `hp_wmi_feature_boards`, a
+  `dmi_system_id` whose entries also select a board-params variant
+  (`victus_s`, `omen_v1`, `omen_v1_legacy`, `omen_v1_no_ec`) — which is why
+  `experimentalBoard` also requires `boardTable`. Guessing it would give a
+  driver that loads and then reads the wrong EC offsets.
+
+One deliberate deviation from the shell script: it picks
+`update-initramfs` first unconditionally, but Arch systems often have a
+compatibility shim by that name installed next to the real `mkinitcpio`.
+The port picks the generator matching the distribution family first.
+
+### Driver sources are not bundled
+
+`hp-wmi.c` is a modified copy of a GPL-2 kernel driver maintained in the
+`omen-fan-control` project; carrying a fork of it here would mean tracking
+their changes by hand. `inspect` looks for it in `$OMEN_HUB_DRIVER_DIR`,
+then `/usr/share/omen-hub/driver`, then a sibling checkout, and reports a
+`no-driver-source` blocker when it finds none.
+
 ## `fan` module
 
 | method | params | result | status |
