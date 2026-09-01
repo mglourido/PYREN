@@ -1,15 +1,14 @@
 /**
- * User settings.
+ * User settings, stored in `~/.config/omen-hub/app.json`.
  *
- * Persisted in localStorage for now: it survives restarts, needs no
- * privileges, and keeps the frontend independent of the daemon. Moving
- * these to `~/.config/omen-hub/app.json` through a Tauri command later is
- * a change to `load`/`save` only - nothing else reads storage directly.
+ * Loading is two-stage on purpose (see `DiskBacked`): a synchronous cache
+ * read for the first paint, so the app doesn't render in English before
+ * switching to the user's language, then the file as the authority.
  */
 
 import { DEFAULT_LOCALE, detectLocale, i18n } from "$lib/i18n/index.svelte";
-
-const STORAGE_KEY = "omen-hub.settings.v1";
+import { DiskBacked } from "./persistence";
+import type { ConfigOutcome } from "$lib/api/config";
 
 export type TempUnit = "c" | "f";
 
@@ -43,41 +42,51 @@ function defaults(): Settings {
 class SettingsStore {
   current = $state<Settings>(defaults());
   loaded = $state(false);
+  /** Where the settings file lives, and how the last read of it went.
+   *  Surfaced in Settings so a reset-to-defaults is never a mystery. */
+  outcome = $state<ConfigOutcome | null>(null);
+  /** Absolute path of the settings file, once a load has reported it. */
+  configPath = $state<string | null>(null);
 
-  load() {
+  private disk = new DiskBacked<Settings>("app", defaults);
+
+  /** Synchronous, for the first render. Safe to call more than once. */
+  loadCache() {
     if (this.loaded) return;
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      // Merge over defaults so a settings file written by an older version
-      // (missing keys added since) still loads instead of blanking the app.
-      if (raw) this.current = { ...defaults(), ...JSON.parse(raw) };
-    } catch {
-      /* corrupt or unavailable storage: keep defaults */
-    }
+    this.current = this.disk.readCache();
+    this.applyLocales();
     this.loaded = true;
-    i18n.setLocales(this.current.mainLanguage, this.current.fallbackLanguage);
+  }
+
+  /** Reads the file and takes it as authoritative. */
+  async hydrate() {
+    this.loadCache();
+    const { values, outcome, path } = await this.disk.hydrate();
+    this.current = values;
+    this.outcome = outcome;
+    this.configPath = path;
+    this.applyLocales();
   }
 
   set<K extends keyof Settings>(key: K, value: Settings[K]) {
     this.current = { ...this.current, [key]: value };
-    if (key === "mainLanguage" || key === "fallbackLanguage") {
-      i18n.setLocales(this.current.mainLanguage, this.current.fallbackLanguage);
-    }
-    this.save();
+    if (key === "mainLanguage" || key === "fallbackLanguage") this.applyLocales();
+    this.disk.save(this.current);
   }
 
   reset() {
     this.current = defaults();
-    i18n.setLocales(this.current.mainLanguage, this.current.fallbackLanguage);
-    this.save();
+    this.applyLocales();
+    this.disk.save(this.current);
   }
 
-  private save() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.current));
-    } catch {
-      /* private mode / storage disabled: settings just don't persist */
-    }
+  /** Writes immediately, e.g. before the window closes. */
+  flush() {
+    return this.disk.flush();
+  }
+
+  private applyLocales() {
+    i18n.setLocales(this.current.mainLanguage, this.current.fallbackLanguage);
   }
 }
 

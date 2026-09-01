@@ -48,9 +48,22 @@ Three stores, deliberately separate:
 - **`settings`** — app preferences (language, units, poll interval,
   dismissed notices).
 
-`settings` and `hardware` persist to `localStorage`. Moving them to
-`~/.config/omen-hub/*.json` via a Tauri command later is a change to
-`load`/`save` in those two files and nothing else.
+`settings` and `hardware` persist to `~/.config/omen-hub/app.json` and
+`ui.json`, written by the Tauri shell through the same `omen-hub-config`
+crate the daemon uses - so app settings get the same atomic writes,
+corruption recovery and version stamping.
+
+Loading is two-stage (`lib/stores/persistence.ts`). Disk is the source of
+truth, but reading it is asynchronous and the first paint needs a language
+*now*; hydrating a moment later would flash English before switching. So
+each store also mirrors its values into `localStorage` and reads that
+synchronously for the first render, then reconciles with the file.
+localStorage is a **cache, never the record**: it is only written alongside
+a disk write, and the file wins on any disagreement.
+
+Writes are debounced (300 ms) so dragging a slider doesn't produce a write
+per frame, and flushed on `beforeunload` so nothing queued is lost when the
+window closes.
 
 ## Demo mode
 

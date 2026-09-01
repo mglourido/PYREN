@@ -127,8 +127,22 @@ export type PowerState = {
     hasBattery: boolean;
   };
   auto: AutoConfig;
+  /** Re-apply the saved mode when the daemon starts. */
+  restoreModeOnStart: boolean;
   autoOverrideSecondsLeft: number | null;
   lastAutoSwitch: string | null;
+  /** Where the daemon keeps this module's settings. */
+  configPath: string;
+  /** Set when the daemon could not write its config file. */
+  configSaveError: string | null;
+};
+
+/** Reply from the calls that change stored power settings. */
+export type PowerConfigReply = {
+  auto: AutoConfig;
+  restoreModeOnStart: boolean;
+  saved: boolean;
+  saveError: string | null;
 };
 
 /** What `power.setMode` actually managed to change. */
@@ -155,5 +169,8 @@ export const daemon = {
     call<null>("fan_set_mode", { mode, pwm }),
   powerState: () => call<PowerState>("power_get_state"),
   setPowerMode: (mode: PowerMode) => call<ApplyReport>("power_set_mode", { mode }),
-  setAutoConfig: (config: AutoConfig) => call<AutoConfig>("power_set_auto_config", { config }),
+  setAutoConfig: (config: AutoConfig) =>
+    call<PowerConfigReply>("power_set_auto_config", { config }),
+  setRestoreOnStart: (enabled: boolean) =>
+    call<PowerConfigReply>("power_set_restore_on_start", { enabled }),
 };

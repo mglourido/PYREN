@@ -1,8 +1,8 @@
 [package]
 name = "app"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "OMEN Hub - gaming hub for Linux"
+authors = ["omen-hub contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -22,4 +22,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Shared with the daemon on purpose: both processes persist small JSON
+# config files and both need the same atomic-write, corruption-recovery and
+# versioning behaviour. The two remain separate Cargo workspaces and ship as
+# separate binaries; this is one small library crate in common, not a merge.
+omen-hub-config = { path = "../../daemon/crates/config" }
 

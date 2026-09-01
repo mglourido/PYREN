@@ -24,6 +24,10 @@ docs/       design plan + IPC protocol + development + frontend guide
 ## Status
 
 - Daemon skeleton + Unix socket IPC: working.
+- Config persistence: `omen-hub-config`, one JSON file per namespace with
+  atomic writes, corrupt files preserved rather than overwritten, and
+  version stamping. Shared by the daemon (`/etc/omen-hub/`) and the app
+  (`~/.config/omen-hub/`).
 - `system` module: machine identification (DMI/CPU/GPU + an OMEN
   compatibility verdict) and full live monitoring — CPU per core, memory,
   hwmon temperatures and fans, disks, network throughput, GPU (nvidia-smi

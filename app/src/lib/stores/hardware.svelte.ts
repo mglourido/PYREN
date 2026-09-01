@@ -9,9 +9,14 @@
  * docs/01-ipc-protocol.md).
  */
 
-import { daemon, type AutoConfig, type ApplyReport, type PowerState } from "$lib/api/daemon";
-
-const STORAGE_KEY = "omen-hub.hardware.v1";
+import {
+  daemon,
+  type ApplyReport,
+  type AutoConfig,
+  type PowerConfigReply,
+  type PowerState,
+} from "$lib/api/daemon";
+import { DiskBacked } from "./persistence";
 
 export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
 export type FanMode = "auto" | "max" | "manual";
@@ -99,13 +104,17 @@ class HardwareStore {
   /** Live power state from the daemon; null while it is unreachable. */
   power = $state<PowerState | null>(null);
 
-  load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) this.state = { ...defaults(), ...JSON.parse(raw) };
-    } catch {
-      /* keep defaults */
-    }
+  private disk = new DiskBacked<HardwareState>("ui", defaults);
+
+  /** Synchronous, for the first render. */
+  loadCache() {
+    this.state = this.disk.readCache();
+  }
+
+  /** Reads `~/.config/omen-hub/ui.json` and takes it as authoritative. */
+  async hydrate() {
+    const { values } = await this.disk.hydrate();
+    this.state = values;
   }
 
   set<K extends keyof HardwareState>(key: K, value: HardwareState[K]) {
@@ -177,17 +186,39 @@ class HardwareStore {
     };
 
     try {
-      const auto = await daemon.setAutoConfig({
+      const reply = await daemon.setAutoConfig({
         ...base,
         enabled: eco || performance,
         ecoOnBattery: eco,
         performanceOnLoad: performance,
       });
-      if (this.power) this.power = { ...this.power, auto };
-      this.lastError = null;
+      this.applyConfigReply(reply);
     } catch (e) {
       this.lastError = String(e);
     }
+  }
+
+  /** Asks the daemon to re-apply the current mode after a reboot. */
+  async setRestoreOnStart(enabled: boolean) {
+    try {
+      this.applyConfigReply(await daemon.setRestoreOnStart(enabled));
+    } catch (e) {
+      this.lastError = String(e);
+    }
+  }
+
+  private applyConfigReply(reply: PowerConfigReply) {
+    if (this.power) {
+      this.power = {
+        ...this.power,
+        auto: reply.auto,
+        restoreModeOnStart: reply.restoreModeOnStart,
+        configSaveError: reply.saveError,
+      };
+    }
+    // A setting that was applied but not written is worth saying out loud:
+    // it silently reverts on the next daemon restart.
+    this.lastError = reply.saved ? null : reply.saveError;
   }
 
   async setFanMode(mode: FanMode) {
@@ -200,12 +231,13 @@ class HardwareStore {
     }
   }
 
+  /** Writes immediately, e.g. before the window closes. */
+  flush() {
+    return this.disk.flush();
+  }
+
   private save() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
-    } catch {
-      /* storage disabled: settings just don't persist */
-    }
+    this.disk.save(this.state);
   }
 }
 

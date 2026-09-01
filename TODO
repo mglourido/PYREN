@@ -46,6 +46,10 @@ cambiar de modo (eco/equilibrado/rendimiento) solo:
   durante manualOverrideSecs. Aplica via platform_profile (HP) o
   power-profiles-daemon + EPP. Los dos toggles de la portada lo configuran.
 
-  Pendiente: que la configuracion sobreviva a un reinicio del daemon
-  (persistencia en /etc/omen-hub/power.json) y sumar temperatura a la
-  decision, no solo carga de CPU.
+  [hecho] La configuracion sobrevive al reinicio: crate omen-hub-config,
+  /etc/omen-hub/power.json (o ~/.config/omen-hub/ si /etc no es escribible).
+  Escritura atomica, fichero corrupto se conserva como .bad, y version.
+  Tambien hay "restaurar modo al arrancar", desactivado por defecto.
+
+  Pendiente: sumar temperatura a la decision del supervisor, no solo carga
+  de CPU.

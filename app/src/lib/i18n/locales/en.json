@@ -235,7 +235,15 @@
     "seconds": "{n} s",
     "advanced": "Advanced",
     "demoMode": "Demo data when the daemon is unreachable",
-    "resetSettings": "Reset all settings"
+    "resetSettings": "Reset all settings",
+    "storage": "Storage",
+    "configFile": "Settings file",
+    "daemonConfigFile": "Daemon settings file",
+    "configRecovered": "Your settings file could not be read and defaults were loaded. The previous file was kept at {backup}.",
+    "configTooNew": "Your settings file was written by a newer version (v{found}) and was left untouched; defaults are in use for this session.",
+    "configSaveFailed": "Settings could not be written to disk, so changes will be lost on restart: {error}",
+    "restoreOnStart": "Restore the power mode when the daemon starts",
+    "restoreOnStartHint": "Off by default: changing the machine's power behaviour at boot should be something you asked for."
   },
   "help": {
     "title": "Help & about",

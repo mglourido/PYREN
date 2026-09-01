@@ -20,15 +20,24 @@
   let daemonNoticeDismissed = $state(false);
   let unsupportedNoticeDismissed = $state(false);
 
-  settings.load();
-  hardware.load();
+  // Cache first so the very first frame already has the user's language,
+  // then the files on disk, which are authoritative.
+  settings.loadCache();
+  hardware.loadCache();
 
   $effect(() => {
+    void settings.hydrate();
+    void hardware.hydrate().then(() => hardware.syncFromDaemon());
     telemetry.start();
     void telemetry.loadSystemInfo();
-    void hardware.syncFromDaemon();
     return () => telemetry.stop();
   });
+
+  /** Debounced writes could otherwise be lost when the window closes. */
+  function flushSettings() {
+    void settings.flush();
+    void hardware.flush();
+  }
 
   // TODO item: on launch, warn when the kernel driver is missing and offer
   // a shortcut to the drivers page, with a "don't show again" the user's
@@ -50,6 +59,8 @@
       !unsupportedNoticeDismissed,
   );
 </script>
+
+<svelte:window onbeforeunload={flushSettings} onpagehide={flushSettings} />
 
 <div class="shell">
   <TitleBar />

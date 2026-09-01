@@ -11,6 +11,14 @@
     settings.set("pollIntervalMs", seconds * 1000);
     telemetry.restart();
   }
+
+  const outcome = $derived(settings.outcome);
+
+  // The app's own file path isn't reported until a load has happened, so
+  // fall back to the conventional location rather than showing nothing.
+  const configPath = $derived(
+    settings.configPath ?? "~/.config/omen-hub/app.json",
+  );
 </script>
 
 <div class="settings">
@@ -43,6 +51,49 @@
       </select>
     </div>
     <p class="hint">{@html t("help.translationsBody")}</p>
+  </Panel>
+
+  <!-- Where settings live, and anything that went wrong reading them.
+       A silent reset to defaults is exactly the kind of thing users are
+       left guessing about, so it is stated here. -->
+  <Panel title={t("settings.storage")}>
+    {#if outcome?.status === "recovered"}
+      <p class="notice err">
+        {t("settings.configRecovered", { backup: outcome.backup ?? "?" })}
+      </p>
+    {:else if outcome?.status === "tooNew"}
+      <p class="notice warn">{t("settings.configTooNew", { found: outcome.found })}</p>
+    {/if}
+
+    <div class="row">
+      <span>{t("settings.configFile")}</span>
+      <code>{configPath}</code>
+    </div>
+
+    {#if hardware.power}
+      <div class="row">
+        <span>{t("settings.daemonConfigFile")}</span>
+        <code>{hardware.power.configPath}</code>
+      </div>
+
+      {#if hardware.power.configSaveError}
+        <p class="notice err">
+          {t("settings.configSaveFailed", { error: hardware.power.configSaveError })}
+        </p>
+      {/if}
+
+      <div class="row">
+        <span>
+          {t("settings.restoreOnStart")}
+          <small class="hint-inline">{t("settings.restoreOnStartHint")}</small>
+        </span>
+        <Toggle
+          checked={hardware.power.restoreModeOnStart}
+          onchange={(v) => hardware.setRestoreOnStart(v)}
+          ariaLabel={t("settings.restoreOnStart")}
+        />
+      </div>
+    {/if}
   </Panel>
 
   <Panel title={t("settings.units")}>
@@ -178,6 +229,37 @@
     color: var(--text-mute);
     font-size: 12px;
     line-height: 1.5;
+  }
+
+  .hint-inline {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-mute);
+    font-size: 12px;
+    max-width: 460px;
+  }
+
+  .notice {
+    margin: 0 0 12px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .notice.err {
+    color: var(--danger);
+  }
+
+  .notice.warn {
+    color: var(--warn);
+  }
+
+  code {
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--bg-inset);
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    user-select: text;
   }
 
   .danger {

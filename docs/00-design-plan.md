@@ -77,15 +77,28 @@ separate matches how they're actually deployed.
 
 ## Config
 
-Each daemon module should own its own config file/namespace under
-`/etc/omen-hub/<module>.json` once persistence is needed (not yet wired up
-for the `fan` module — current state is read-only, in-memory path
-discovery only). A `core.json` would hold cross-cutting settings (enabled
-modules, log level). The persistent/volatile config split from the
-original Python project (see
+Implemented in `daemon/crates/config` (`omen-hub-config`). Each module owns
+one namespace, written as a single JSON file:
+
+```
+/etc/omen-hub/power.json       system config, written by the root daemon
+~/.config/omen-hub/app.json    the desktop app's own preferences
+~/.config/omen-hub/ui.json     UI state (fan curve, lighting, GPU mode)
+```
+
+The daemon falls back to the per-user directory when `/etc/omen-hub` isn't
+writable, which is what makes `cargo run` usable unprivileged. Writability
+is tested by actually creating the directory rather than by checking for
+root, since being root and the path being writable are different questions
+(read-only `/etc`, containers, immutable distros).
+
+The `fan` module has no config yet; when its write paths land, the
+persistent/volatile split from the original Python project (see
 `../omen-fan-control-main/docs/04-fan-control-logic.md`) is worth keeping
-specifically for the `fan` module once writes/curve/shutdown-hook land —
-other modules likely won't need it.
+for it specifically — other modules haven't needed it.
+
+A `core.json` for cross-cutting settings (enabled modules, log level) still
+doesn't exist, because nothing has needed one yet.
 
 ## Roadmap
 
@@ -108,6 +121,24 @@ other modules likely won't need it.
   later, that's a bigger change (crates.io-style versioning, workspace
   `path` deps become git/registry deps) — don't assume it until it's
   actually needed.
-- **Config persistence mechanism**: hand-rolled JSON like the Python
-  original, vs. a Rust config crate — not decided; the `fan` module has no
-  writable config yet so this hasn't been forced.
+- ~~**Config persistence mechanism**~~ — **decided**: hand-rolled JSON, like
+  the Python original, in `omen-hub-config`. The requirements are narrow (a
+  few small files, no layering, no environment interpolation) and what
+  actually matters is failure behaviour, which a config framework would not
+  have given us for free:
+
+  - **Atomic writes.** Config is written by a daemon that can be killed at
+    any moment. Writing in place risks a truncated file that fails to parse
+    on next boot which — for a daemon that controls fans — means silently
+    reverting to defaults. Saves go to a temp file, are flushed, then
+    renamed over the target.
+  - **A corrupt file is never overwritten silently.** It is moved to
+    `<name>.json.bad` and the user is told where it went, in both the
+    daemon log and the app's Settings page.
+  - **Versioned files.** A file written by a *newer* build is refused
+    rather than parsed optimistically and written back in the older shape —
+    downgrading must not destroy settings.
+
+  The desktop app shares this one crate by path dependency rather than
+  duplicating it. The two remain separate Cargo workspaces shipping as
+  separate binaries; this is one small library in common, not a merge.

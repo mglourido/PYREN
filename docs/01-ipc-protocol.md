@@ -152,7 +152,8 @@ supervisor that can drive it automatically.
 |---|---|---|---|
 | `power.getState` | none | current mode, backend state, battery, supervisor config | ✅ implemented |
 | `power.setMode` | `{ "mode": "eco" \| "balanced" \| "performance" \| "unlimited" }` | `{ "applied": [...], "failed": [...] }` | ✅ implemented |
-| `power.setAutoConfig` | full auto config object | the stored config | ✅ implemented |
+| `power.setAutoConfig` | full auto config object | stored config + whether it reached disk | ✅ implemented |
+| `power.setRestoreOnStart` | `{ "enabled": bool }` | as above | ✅ implemented |
 
 ### Mechanisms
 
@@ -206,6 +207,25 @@ very visible, so only *sustained* load should trigger one.
 
 `getState` also reports `autoOverrideSecondsLeft` and `lastAutoSwitch` so
 the UI can explain why the supervisor is or isn't acting.
+
+### Persistence
+
+Settings are stored in `power.json` (see "Config" in `00-design-plan.md`),
+so the supervisor keeps running with the user's rules after a reboot -
+which is the point of it being a daemon rather than part of the app.
+`getState` reports `configPath`, and `configSaveError` when the last write
+failed.
+
+The calls that change settings return `{ saved, saveError }` alongside the
+config. A setting that was applied but not written is not an error - it is
+in effect right now, it just won't survive a restart - so the call
+succeeds and the UI says so rather than failing.
+
+`restoreModeOnStart` re-applies the saved mode when the daemon starts. It
+is **off by default**: changing a machine's power behaviour at boot should
+be something the user asked for. Enabling it records the current mode
+immediately, so a reboot restores what the user could see when they ticked
+the box.
 
 ### Battery detection
 

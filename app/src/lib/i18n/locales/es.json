@@ -235,7 +235,15 @@
     "seconds": "{n} s",
     "advanced": "Avanzado",
     "demoMode": "Datos de demostración cuando el daemon no responde",
-    "resetSettings": "Restablecer todos los ajustes"
+    "resetSettings": "Restablecer todos los ajustes",
+    "storage": "Almacenamiento",
+    "configFile": "Archivo de ajustes",
+    "daemonConfigFile": "Archivo de ajustes del daemon",
+    "configRecovered": "No se pudo leer tu archivo de ajustes y se cargaron los valores por defecto. El archivo anterior se conservó en {backup}.",
+    "configTooNew": "Tu archivo de ajustes lo escribió una versión más nueva (v{found}) y se dejó intacto; en esta sesión se usan los valores por defecto.",
+    "configSaveFailed": "Los ajustes no se pudieron escribir en disco, así que los cambios se perderán al reiniciar: {error}",
+    "restoreOnStart": "Restaurar el modo de energía al arrancar el daemon",
+    "restoreOnStartHint": "Desactivado por defecto: cambiar el comportamiento energético del equipo al arrancar debería ser algo que hayas pedido."
   },
   "help": {
     "title": "Ayuda e información",

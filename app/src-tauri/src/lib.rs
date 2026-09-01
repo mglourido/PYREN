@@ -7,7 +7,15 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
-use serde_json::{json, Value};
+use omen_hub_config::{ConfigStore, LoadOutcome};
+use serde_json::{json, Map, Value};
+
+/// Config namespaces the frontend is allowed to read and write.
+///
+/// An allowlist rather than a free-form name: the namespace becomes a
+/// filename, and nothing in the webview should be able to choose arbitrary
+/// paths. (`ConfigStore` sanitises names too - this is the first line.)
+const APP_CONFIG_NAMESPACES: &[&str] = &["app", "ui"];
 
 /// Must match the daemon's own default in `daemon/daemon/src/main.rs` -
 /// keep both in sync until this moves into a shared config/env convention.
@@ -74,6 +82,63 @@ fn power_set_auto_config(config: Value) -> Result<Value, String> {
     call_daemon("power", "setAutoConfig", config)
 }
 
+#[tauri::command]
+fn power_set_restore_on_start(enabled: bool) -> Result<Value, String> {
+    call_daemon("power", "setRestoreOnStart", json!({ "enabled": enabled }))
+}
+
+/// Per-user settings, stored under `~/.config/omen-hub/`.
+///
+/// The frontend owns the shape of these documents, so they are persisted as
+/// opaque JSON objects rather than mirrored into Rust structs that would
+/// need updating every time a preference is added.
+fn app_config_store(namespace: &str) -> Result<ConfigStore, String> {
+    if !APP_CONFIG_NAMESPACES.contains(&namespace) {
+        return Err(format!("unknown config namespace '{namespace}'"));
+    }
+    Ok(ConfigStore::user())
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct JsonDocument {
+    #[serde(flatten)]
+    fields: Map<String, Value>,
+}
+
+#[tauri::command]
+fn app_config_load(namespace: String) -> Result<Value, String> {
+    let store = app_config_store(&namespace)?;
+    let loaded = store.load::<JsonDocument>(&namespace);
+
+    // Report *why* there is no data, so the UI can tell "first run" apart
+    // from "your settings file was corrupt and has been set aside".
+    let status = match &loaded.outcome {
+        LoadOutcome::Loaded => json!({ "status": "loaded" }),
+        LoadOutcome::Missing => json!({ "status": "missing" }),
+        LoadOutcome::Recovered { backup, reason } => json!({
+            "status": "recovered",
+            "reason": reason,
+            "backup": backup.as_ref().map(|b| b.display().to_string()),
+        }),
+        LoadOutcome::TooNew { found } => json!({ "status": "tooNew", "found": found }),
+    };
+
+    Ok(json!({
+        "values": loaded.value.fields,
+        "path": store.path_for(&namespace).display().to_string(),
+        "outcome": status,
+    }))
+}
+
+#[tauri::command]
+fn app_config_save(namespace: String, values: Map<String, Value>) -> Result<String, String> {
+    let store = app_config_store(&namespace)?;
+    store
+        .save(&namespace, &JsonDocument { fields: values })
+        .map(|()| store.path_for(&namespace).display().to_string())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -85,7 +150,10 @@ pub fn run() {
             system_get_metrics,
             power_get_state,
             power_set_mode,
-            power_set_auto_config
+            power_set_auto_config,
+            power_set_restore_on_start,
+            app_config_load,
+            app_config_save
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
