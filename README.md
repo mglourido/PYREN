@@ -24,6 +24,11 @@ docs/       design plan + IPC protocol + development + frontend guide
 ## Status
 
 - Daemon skeleton + Unix socket IPC: working.
+- `system` module: machine identification (DMI/CPU/GPU + an OMEN
+  compatibility verdict) and full live monitoring — CPU per core, memory,
+  hwmon temperatures and fans, disks, network throughput, GPU (nvidia-smi
+  and DRM sysfs) and the busiest processes. Generic Linux, so it works and
+  is testable on any machine.
 - `fan` module: read-only status (`getStatus`) implemented and verified
   end-to-end; writing to hardware (`setMode`/`setCurve`/fan cleaner) not
   ported yet.

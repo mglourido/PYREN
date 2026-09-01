@@ -1,5 +1,8 @@
 {
-  "app": { "name": "OMEN Hub", "tagline": "Gaming hub for Linux" },
+  "app": {
+    "name": "OMEN Hub",
+    "tagline": "Gaming hub for Linux"
+  },
   "nav": {
     "home": "Home",
     "performance": "Performance",
@@ -256,6 +259,11 @@
     "gpu": "GPU",
     "compatible": "Compatible",
     "incompatible": "Not compatible",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "formFactor": "Form factor",
+    "laptop": "Laptop",
+    "desktop": "Desktop",
+    "untested": "Untested board",
+    "biosDate": "BIOS date"
   }
 }

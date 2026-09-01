@@ -58,6 +58,91 @@ handling against today's messages.
 |---|---|---|
 | `core.capabilities` | none | `[{ "id": string, "supported": bool }, ...]` — every registered module and whether its hardware was detected. Use this to decide which UI sections to show. |
 
+Note that `system` always reports `supported: true` (any Linux machine can
+report its own vitals). Whether *OMEN hardware control* is possible is a
+different question, answered by `system.getInfo`'s `compatibility` field.
+
+## `system` module
+
+Generic Linux monitoring and machine identification. Unlike `fan`, this
+module is **not HP-specific** — it reads `/proc`, `/sys` and `statvfs`, so
+it reports real data on any machine. That is deliberate: it lets the vitals
+UI be developed and tested away from an OMEN laptop, and it answers the
+"is this hardware compatible?" question the rest of the app depends on.
+
+| method | params | result | status |
+|---|---|---|---|
+| `system.getInfo` | none | machine identity (see below) | ✅ implemented, cached at daemon startup |
+| `system.getMetrics` | none | live readings (see below) | ✅ implemented, no privileges needed |
+
+### `system.getInfo`
+
+```json
+{
+  "vendor": "ASUS", "model": "PRIME B660M-K D4",
+  "boardName": "PRIME B660M-K D4", "boardVendor": "ASUSTeK COMPUTER INC.",
+  "biosVersion": "3010", "biosDate": "12/11/2023",
+  "kernel": "7.2.2-1-cachyos",
+  "cpu": "12th Gen Intel(R) Core(TM) i5-12400F", "cpuCores": 12,
+  "gpus": ["NVIDIA Corporation GA106 [GeForce RTX 3060]"],
+  "formFactor": "desktop",
+  "compatibility": "unsupported",
+  "supported": false,
+  "reason": "ASUS is not an HP machine; monitoring works, OMEN hardware control does not"
+}
+```
+
+Fields are read from `/sys/class/dmi/id`, `/proc/cpuinfo` and `lspci`.
+Firmware placeholder strings (`"To be filled by O.E.M."`, `"System Product
+Name"`) are reported as `null` rather than shown to the user verbatim.
+
+`compatibility` is one of:
+
+| value | meaning |
+|---|---|
+| `supported` | HP board present in the known-good list (`daemon/crates/system/src/boards.rs`) |
+| `untested` | HP OMEN/Victus machine whose board isn't listed — fan control may still work, so the UI **warns rather than blocks** |
+| `unsupported` | not an HP gaming machine; monitoring works, hardware control won't |
+
+The board list is advisory only, exactly as in the Python original — it
+never gates functionality, only the warning the UI shows.
+
+### `system.getMetrics`
+
+```json
+{
+  "cpu": { "usagePercent": 47.8, "perCorePercent": [...], "clocksMhz": [...], "tempC": 56.0 },
+  "memory": { "totalGb": 15.4, "usedGb": 6.9, "availableGb": 8.5, "percent": 45.0,
+              "swapTotalGb": 33.4, "swapUsedGb": 3.5 },
+  "temperatures": [{ "chip": "coretemp", "label": "Package id 0", "celsius": 56.0 }],
+  "fans": [{ "chip": "nct6798", "label": "fan1", "rpm": 1012 }],
+  "disks": [{ "mount": "/", "device": "/dev/nvme0n1p3", "fstype": "btrfs",
+              "totalBytes": 999129350144, "freeBytes": 484879581184 }],
+  "network": { "upMbps": 0.01, "downMbps": 0.0, "interfaces": [...] },
+  "gpus": [{ "name": "NVIDIA GeForce RTX 3060", "driver": "nvidia", "usagePercent": 99.0,
+             "tempC": 74.0, "memUsedMb": 7161.0, "memTotalMb": 12288.0,
+             "powerW": 169.5, "clockMhz": 1837.0 }],
+  "processes": [{ "pid": 32556, "name": "re4.exe", "cpuPercent": 41.8, "memMb": 2847.0 }]
+}
+```
+
+Notes on the shape:
+
+- **Rates are deltas** (CPU %, network throughput, per-process CPU), so the
+  daemon keeps the previous sample. The sampler is primed at construction,
+  so the *first* call already returns real numbers rather than zeroes.
+- `cpu.tempC` prefers a package sensor from a CPU driver (`coretemp`,
+  `k10temp`, `zenpower`), then the hottest core, then `acpitz`.
+- `disks` deduplicates by device, so btrfs subvolumes and bind mounts show
+  once (at the shallowest mount point) instead of eight times.
+- `processes` is the busiest 12; `cpuPercent` is a share of the **whole
+  machine** (0–100), not of one core.
+- `gpus` uses `nvidia-smi` for NVIDIA cards and DRM sysfs
+  (`gpu_busy_percent`, `mem_info_vram_*`) for others. Fields a driver
+  doesn't expose are `null` — i915/xe report name only.
+- Virtual network interfaces (`lo`, `veth*`, `docker*`, `br-*`, `virbr*`,
+  `vnet*`, `tap*`) are excluded so container traffic isn't counted twice.
+
 ## `fan` module
 
 | method | params | result | status |

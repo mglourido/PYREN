@@ -3,7 +3,11 @@
  * (see docs/01-ipc-protocol.md). Everything the UI needs from the outside
  * world goes through here, so the rest of the frontend never imports
  * `@tauri-apps/api` directly and stays runnable in a plain browser tab
- * (`bun run dev`) for UI work.
+ * (`vite dev`) for UI work.
+ *
+ * The types below mirror the daemon's serde output field for field; keep
+ * them in sync with `daemon/crates/system/src/{identity,metrics}.rs` and
+ * `daemon/crates/fan/src/lib.rs`.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -20,16 +24,75 @@ export type FanStatus = {
 
 export type ModuleCapability = { id: string; supported: boolean };
 
-/** Hardware identity used for the compatibility check on startup. */
+/** How far the OMEN-specific features can be trusted on this machine. */
+export type Compatibility = "supported" | "untested" | "unsupported";
+
 export type SystemInfo = {
   vendor: string | null;
   model: string | null;
   boardName: string | null;
+  boardVendor: string | null;
   biosVersion: string | null;
+  biosDate: string | null;
   kernel: string | null;
   cpu: string | null;
+  cpuCores: number;
   gpus: string[];
+  formFactor: "laptop" | "desktop" | "unknown";
+  compatibility: Compatibility;
   supported: boolean;
+  reason: string;
+};
+
+export type TempReading = { chip: string; label: string; celsius: number };
+export type FanReading = { chip: string; label: string; rpm: number };
+
+export type DiskUsage = {
+  mount: string;
+  device: string;
+  fstype: string;
+  totalBytes: number;
+  freeBytes: number;
+};
+
+export type GpuMetrics = {
+  name: string;
+  driver: string;
+  usagePercent: number | null;
+  tempC: number | null;
+  memUsedMb: number | null;
+  memTotalMb: number | null;
+  powerW: number | null;
+  clockMhz: number | null;
+};
+
+export type ProcessUsage = { pid: number; name: string; cpuPercent: number; memMb: number };
+
+export type SystemMetrics = {
+  cpu: {
+    usagePercent: number;
+    perCorePercent: number[];
+    clocksMhz: number[];
+    tempC: number | null;
+  };
+  memory: {
+    totalGb: number;
+    usedGb: number;
+    availableGb: number;
+    percent: number;
+    swapTotalGb: number;
+    swapUsedGb: number;
+  };
+  temperatures: TempReading[];
+  fans: FanReading[];
+  disks: DiskUsage[];
+  network: {
+    upMbps: number;
+    downMbps: number;
+    interfaces: { name: string; upMbps: number; downMbps: number }[];
+  };
+  gpus: GpuMetrics[];
+  processes: ProcessUsage[];
 };
 
 export class DaemonUnavailable extends Error {}
@@ -45,7 +108,8 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 
 export const daemon = {
   capabilities: () => call<ModuleCapability[]>("core_capabilities"),
-  systemInfo: () => call<SystemInfo>("core_system_info"),
+  systemInfo: () => call<SystemInfo>("system_get_info"),
+  systemMetrics: () => call<SystemMetrics>("system_get_metrics"),
   fanStatus: () => call<FanStatus>("fan_get_status"),
   /** Not implemented daemon-side yet; the UI already calls it. */
   setFanMode: (mode: "auto" | "manual" | "max", pwm?: number) =>

@@ -1,5 +1,8 @@
 {
-  "app": { "name": "OMEN Hub", "tagline": "Centro gaming para Linux" },
+  "app": {
+    "name": "OMEN Hub",
+    "tagline": "Centro gaming para Linux"
+  },
   "nav": {
     "home": "Inicio",
     "performance": "Rendimiento",
@@ -256,6 +259,11 @@
     "gpu": "GPU",
     "compatible": "Compatible",
     "incompatible": "No compatible",
-    "unknown": "Desconocido"
+    "unknown": "Desconocido",
+    "formFactor": "Formato",
+    "laptop": "Portátil",
+    "desktop": "Sobremesa",
+    "untested": "Placa no probada",
+    "biosDate": "Fecha de BIOS"
   }
 }

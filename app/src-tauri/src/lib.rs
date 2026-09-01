@@ -49,11 +49,26 @@ fn core_capabilities() -> Result<Value, String> {
     call_daemon("core", "capabilities", Value::Null)
 }
 
+#[tauri::command]
+fn system_get_info() -> Result<Value, String> {
+    call_daemon("system", "getInfo", Value::Null)
+}
+
+#[tauri::command]
+fn system_get_metrics() -> Result<Value, String> {
+    call_daemon("system", "getMetrics", Value::Null)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![fan_get_status, core_capabilities])
+        .invoke_handler(tauri::generate_handler![
+            fan_get_status,
+            core_capabilities,
+            system_get_info,
+            system_get_metrics
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

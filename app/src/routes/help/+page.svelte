@@ -60,20 +60,32 @@
       <dt>{t("system.model")}</dt>
       <dd>{info?.model ?? unknown}</dd>
       <dt>{t("system.board")}</dt>
-      <dd>{info?.boardName ?? unknown}</dd>
+      <dd>{info?.boardName ?? unknown}{info?.boardVendor ? ` (${info.boardVendor})` : ""}</dd>
+      <dt>{t("system.formFactor")}</dt>
+      <dd>{info ? t(`system.${info.formFactor}`) : unknown}</dd>
       <dt>{t("system.biosVersion")}</dt>
-      <dd>{info?.biosVersion ?? unknown}</dd>
+      <dd>{info?.biosVersion ?? unknown}{info?.biosDate ? ` — ${info.biosDate}` : ""}</dd>
       <dt>{t("system.kernel")}</dt>
       <dd>{info?.kernel ?? unknown}</dd>
       <dt>{t("system.cpu")}</dt>
-      <dd>{info?.cpu ?? unknown}</dd>
+      <dd>{info?.cpu ?? unknown}{info?.cpuCores ? ` (${info.cpuCores} threads)` : ""}</dd>
       <dt>{t("system.gpu")}</dt>
       <dd>{info?.gpus?.join(", ") || unknown}</dd>
     </dl>
 
-    <p class="compat" class:ok={info?.supported} class:err={info && !info.supported}>
-      <Icon name={info?.supported ? "check" : "warning"} size={15} />
-      {info?.supported ? t("system.compatible") : t("system.incompatible")}
+    <p
+      class="compat"
+      class:ok={info?.compatibility === "supported"}
+      class:warn={info?.compatibility === "untested"}
+      class:err={info?.compatibility === "unsupported"}
+    >
+      <Icon name={info?.compatibility === "supported" ? "check" : "warning"} size={15} />
+      <span>
+        {#if info?.compatibility === "supported"}{t("system.compatible")}
+        {:else if info?.compatibility === "untested"}{t("system.untested")}
+        {:else}{t("system.incompatible")}{/if}
+      </span>
+      {#if info?.reason}<span class="reason">— {info.reason}</span>{/if}
     </p>
   </Panel>
 
@@ -186,6 +198,15 @@
     align-items: center;
     gap: 8px;
     margin-top: 16px;
+  }
+
+  .warn {
+    color: var(--warn);
+  }
+
+  .reason {
+    color: var(--text-mute);
+    font-size: 13px;
   }
 
   .links {

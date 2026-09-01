@@ -30,7 +30,7 @@ rebuild.
 ┌─────────────────────────┐
 │   omen-hub-daemon (root)  │  systemd service
 │   ┌────────┐ ┌─────────┐ │
-│   │  fan   │ │   rgb   │ │  ...one crate per hardware surface
+│   │ system │ │   fan   │ │  ...one crate per hardware surface
 │   └────────┘ └─────────┘ │
 └────────────▲─────────────┘
              │ Unix domain socket, JSON-RPC-ish
@@ -62,6 +62,7 @@ omen-hub-linux/
 │   ├── daemon/              bin crate: loads modules, runs the IPC server
 │   └── crates/
 │       ├── core/            Module trait, Registry, wire types, socket server
+│       ├── system/          machine identity + generic Linux monitoring
 │       └── fan/              fan module (ported from omen-fan-control)
 ├── app/                     Tauri app (SvelteKit frontend + src-tauri shell)
 │   └── src/routes/           UI, organized by module once more than one exists

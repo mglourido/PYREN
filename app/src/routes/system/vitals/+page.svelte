@@ -24,17 +24,19 @@
   const gpuSeries = $derived<Series[]>([
     { label: t("vitals.usage"), color: "#ffb020", values: telemetry.gpuUsageHistory },
   ]);
+  /** Per-core rows in the advanced view, excluding the package sensor. */
+  const cpuCoreTemps = $derived(
+    telemetry.temperatures.filter(
+      (r) => r.label.toLowerCase().startsWith("core") && !r.label.toLowerCase().includes("package"),
+    ),
+  );
+
   const ramSeries = $derived<Series[]>([
     { label: t("vitals.usage"), color: "#2f8fff", values: telemetry.ramHistory },
   ]);
 
-  /** Placeholder disks until the daemon reports real mounts. */
-  const disks = [
-    { mount: "/", freeGb: 324.8, totalGb: 392.6 },
-    { mount: "/home", freeGb: 133.9, totalGb: 239.0 },
-  ];
-
   const gb = (n: number) => `${n.toFixed(1)} GB`;
+  const bytesToGb = (n: number) => n / 1e9;
 </script>
 
 <div class="vitals">
@@ -113,17 +115,24 @@
       <section class="card">
         <h2>{t("vitals.storage")}</h2>
         <ul class="disks">
-          {#each disks as disk (disk.mount)}
+          {#each telemetry.disks as disk (disk.mount)}
             <li>
-              <span class="mount">{disk.mount}</span>
+              <span class="mount" title="{disk.device} ({disk.fstype})">{disk.mount}</span>
               <span class="bar">
                 <span
                   class="fill"
-                  style="width:{((disk.totalGb - disk.freeGb) / disk.totalGb) * 100}%"
+                  style="width:{((disk.totalBytes - disk.freeBytes) / disk.totalBytes) * 100}%"
                 ></span>
               </span>
-              <small>{t("vitals.freeOf", { free: gb(disk.freeGb), total: gb(disk.totalGb) })}</small>
+              <small>
+                {t("vitals.freeOf", {
+                  free: gb(bytesToGb(disk.freeBytes)),
+                  total: gb(bytesToGb(disk.totalBytes)),
+                })}
+              </small>
             </li>
+          {:else}
+            <li class="none"><small>{t("common.unavailable")}</small></li>
           {/each}
         </ul>
       </section>
@@ -165,11 +174,21 @@
             </tr>
           </thead>
           <tbody>
-            <tr class="empty">
-              <td colspan="5">
-                {telemetry.demo ? t("notices.daemonDownBody") : t("common.loading")}
-              </td>
-            </tr>
+            {#each telemetry.processes as process (process.pid)}
+              <tr>
+                <td class="proc-name" title="PID {process.pid}">{process.name}</td>
+                <td>{process.cpuPercent.toFixed(1)} %</td>
+                <td>--</td>
+                <td>{process.memMb.toFixed(0)} MB</td>
+                <td><span class="mute">{process.pid}</span></td>
+              </tr>
+            {:else}
+              <tr class="empty">
+                <td colspan="5">
+                  {telemetry.demo ? t("notices.daemonDownBody") : t("common.loading")}
+                </td>
+              </tr>
+            {/each}
           </tbody>
         </table>
       </section>
@@ -181,10 +200,12 @@
         <p class="model">{telemetry.systemInfo?.cpu ?? "Intel Core Ultra 7 255H"}</p>
         <div class="cols">
           <dl>
-            <dt class="col-head">{t("vitals.usage")}</dt>
-            <dd class="row"><span>{t("vitals.package")}</span><b>{telemetry.cpuUsage.toFixed(1)} %</b></dd>
-            <dt class="col-head">{t("vitals.power")}</dt>
-            <dd class="row"><span>{t("vitals.package")}</span><b>-- W</b></dd>
+            <dt class="col-head">{t("vitals.clock")}</dt>
+            {#each telemetry.coreClocksMhz as mhz, i (i)}
+              <dd class="row">
+                <span>{t("vitals.core")} {i + 1}</span><b>{mhz.toFixed(0)} MHz</b>
+              </dd>
+            {/each}
           </dl>
           <dl>
             <dt class="col-head">{t("vitals.temperature")}</dt>
@@ -192,6 +213,19 @@
               <span>{t("vitals.package")}</span>
               <b style="color:{tempColor(telemetry.cpuTempC)}">{formatTemp(telemetry.cpuTempC)}</b>
             </dd>
+            {#each cpuCoreTemps as reading (reading.label)}
+              <dd class="row">
+                <span>{reading.label}</span>
+                <b style="color:{tempColor(reading.celsius)}">{formatTemp(reading.celsius)}</b>
+              </dd>
+            {/each}
+          </dl>
+          <dl>
+            <dt class="col-head">{t("vitals.usage")}</dt>
+            <dd class="row"><span>{t("vitals.package")}</span><b>{telemetry.cpuUsage.toFixed(1)} %</b></dd>
+            {#each telemetry.perCoreUsage as usage, i (i)}
+              <dd class="row"><span>{t("vitals.core")} {i + 1}</span><b>{usage.toFixed(1)} %</b></dd>
+            {/each}
           </dl>
           <div class="chart">
             <Sparkline series={cpuSeries} max={100} />
@@ -200,30 +234,53 @@
         </div>
       </section>
 
-      <section class="block">
-        <h2 class="block-title"><Icon name="chevronDown" size={16} /> GPU</h2>
-        <p class="model">{telemetry.systemInfo?.gpus?.[0] ?? "NVIDIA GeForce RTX 5060 Laptop GPU"}</p>
-        <div class="cols">
-          <dl>
-            <dt class="col-head">{t("vitals.usage")}</dt>
-            <dd class="row">
-              <span>{t("vitals.core")}</span>
-              <b>{telemetry.gpuUsage === null ? "--" : `${telemetry.gpuUsage.toFixed(1)} %`}</b>
-            </dd>
-          </dl>
-          <dl>
-            <dt class="col-head">{t("vitals.temperature")}</dt>
-            <dd class="row">
-              <span>{t("vitals.core")}</span>
-              <b style="color:{tempColor(telemetry.gpuTempC)}">{formatTemp(telemetry.gpuTempC)}</b>
-            </dd>
-          </dl>
-          <div class="chart">
-            <Sparkline series={gpuSeries} max={100} />
-            <Legend series={gpuSeries} />
+      {#each telemetry.gpus as gpu (gpu.name)}
+        <section class="block">
+          <h2 class="block-title"><Icon name="chevronDown" size={16} /> GPU</h2>
+          <p class="model">{gpu.name}</p>
+          <div class="cols">
+            <dl>
+              <dt class="col-head">{t("vitals.clock")}</dt>
+              <dd class="row">
+                <span>{t("vitals.core")}</span>
+                <b>{gpu.clockMhz === null ? "N/A" : `${gpu.clockMhz.toFixed(0)} MHz`}</b>
+              </dd>
+              <dt class="col-head">{t("vitals.memory")}</dt>
+              <dd class="row">
+                <span>{t("vitals.inUse")}</span>
+                <b>{gpu.memUsedMb === null ? "N/A" : `${(gpu.memUsedMb / 1024).toFixed(1)} GB`}</b>
+              </dd>
+              <dd class="row">
+                <span>{t("vitals.total")}</span>
+                <b>{gpu.memTotalMb === null ? "N/A" : `${(gpu.memTotalMb / 1024).toFixed(1)} GB`}</b>
+              </dd>
+            </dl>
+            <dl>
+              <dt class="col-head">{t("vitals.temperature")}</dt>
+              <dd class="row">
+                <span>{t("vitals.core")}</span>
+                <b style="color:{tempColor(gpu.tempC)}">{formatTemp(gpu.tempC)}</b>
+              </dd>
+              <dt class="col-head">{t("vitals.power")}</dt>
+              <dd class="row">
+                <span>{t("vitals.package")}</span>
+                <b>{gpu.powerW === null ? "N/A" : `${gpu.powerW.toFixed(1)} W`}</b>
+              </dd>
+            </dl>
+            <dl>
+              <dt class="col-head">{t("vitals.usage")}</dt>
+              <dd class="row">
+                <span>{t("vitals.core")}</span>
+                <b>{gpu.usagePercent === null ? "N/A" : `${gpu.usagePercent.toFixed(1)} %`}</b>
+              </dd>
+            </dl>
+            <div class="chart">
+              <Sparkline series={gpuSeries} max={100} />
+              <Legend series={gpuSeries} />
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      {/each}
 
       <section class="block">
         <h2 class="block-title"><Icon name="chevronDown" size={16} /> RAM</h2>
@@ -239,6 +296,15 @@
             <dd class="row">
               <span>{t("vitals.usage")}</span><b>{telemetry.ramPercent.toFixed(1)} %</b>
             </dd>
+            {#if telemetry.swapTotalGb > 0}
+              <dt class="col-head">Swap</dt>
+              <dd class="row">
+                <span>{t("vitals.inUse")}</span><b>{gb(telemetry.swapUsedGb)}</b>
+              </dd>
+              <dd class="row">
+                <span>{t("vitals.total")}</span><b>{gb(telemetry.swapTotalGb)}</b>
+              </dd>
+            {/if}
           </dl>
           <dl></dl>
           <div class="chart">
@@ -500,7 +566,7 @@
 
   .cols {
     display: grid;
-    grid-template-columns: repeat(3, minmax(180px, 1fr));
+    grid-template-columns: repeat(4, minmax(150px, 1fr));
     gap: 26px;
     padding-left: 26px;
   }
@@ -536,6 +602,14 @@
   }
 
   .chart {
-    grid-column: 3;
+    grid-column: 4;
+  }
+
+  .proc-name {
+    color: var(--text);
+  }
+
+  .none {
+    color: var(--text-mute);
   }
 </style>

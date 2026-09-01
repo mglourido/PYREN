@@ -1,9 +1,10 @@
 necesito un lector de placa base, marca del portatil y modelo en el startup para mostrarlo por consola en depuracion + mostrarlo por frontend + para mirar si es compatible o no
 
-  [frontend hecho] Ayuda > "Sistema detectado" muestra fabricante, modelo,
-  placa, BIOS, kernel, CPU/GPU y si es compatible. Consume el comando
-  `core_system_info` (ver app/src/lib/api/daemon.ts, tipo SystemInfo);
-  falta implementarlo en el daemon leyendo /sys/class/dmi/id/.
+  [hecho] Daemon: crate omen-hub-system, metodo `system.getInfo` (lee
+  /sys/class/dmi/id, /proc/cpuinfo y lspci) + log por consola al arrancar.
+  Frontend: Ayuda > "Sistema detectado", y el aviso de equipo no compatible.
+  El veredicto tiene tres estados (supported/untested/unsupported): una
+  placa HP desconocida avisa pero no bloquea.
 
 ---
 

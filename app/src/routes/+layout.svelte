@@ -18,6 +18,7 @@
   let { children }: { children: Snippet } = $props();
 
   let daemonNoticeDismissed = $state(false);
+  let unsupportedNoticeDismissed = $state(false);
 
   settings.load();
   hardware.load();
@@ -31,8 +32,21 @@
   // TODO item: on launch, warn when the kernel driver is missing and offer
   // a shortcut to the drivers page, with a "don't show again" the user's
   // choice is remembered for.
+  //
+  // Only worth saying on hardware the driver could actually serve - on a
+  // non-HP machine it isn't a missing driver, it's the wrong laptop, which
+  // the unsupported notice below covers instead.
   const showDriverNotice = $derived(
-    !telemetry.demo && !telemetry.driverInstalled && !settings.current.hideDriverNotice,
+    !telemetry.demo &&
+      !telemetry.driverInstalled &&
+      telemetry.systemInfo?.supported === true &&
+      !settings.current.hideDriverNotice,
+  );
+
+  const showUnsupportedNotice = $derived(
+    !telemetry.demo &&
+      telemetry.systemInfo?.compatibility === "unsupported" &&
+      !unsupportedNoticeDismissed,
   );
 </script>
 
@@ -67,6 +81,17 @@
               {t("notices.dontShowAgain")}
             </label>
           {/snippet}
+        </Banner>
+      {/if}
+
+      {#if showUnsupportedNotice}
+        <Banner
+          kind="warning"
+          title={t("notices.unsupportedTitle")}
+          dismissible
+          ondismiss={() => (unsupportedNoticeDismissed = true)}
+        >
+          {telemetry.systemInfo?.reason ?? t("notices.unsupportedBody")}
         </Banner>
       {/if}
 

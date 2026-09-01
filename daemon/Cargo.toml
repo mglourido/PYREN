@@ -4,6 +4,7 @@ members = [
     "daemon",
     "crates/core",
     "crates/fan",
+    "crates/system",
 ]
 
 [workspace.package]
