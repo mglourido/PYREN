@@ -1,0 +1,140 @@
+/* Design tokens read off the OMEN Gaming Hub reference screenshots: dark
+   chrome, magenta -> orange accent gradient, phosphor-green readouts.
+   Every colour used in a component should come from here, so a light
+   theme / accessibility pass stays possible later. */
+
+:root {
+  --omen-black: #000000;
+  --bg-window: #0b0b0d;
+  --bg-chrome: #131316;
+  --bg-panel: #1b1b1e;
+  --bg-card: #232326;
+  --bg-card-hover: #2b2b2f;
+  --bg-inset: #101012;
+
+  --line: #303035;
+  --line-soft: #232327;
+
+  --text: #ffffff;
+  --text-dim: #b6b6bd;
+  --text-mute: #7c7c86;
+  --text-disabled: #5a5a62;
+
+  /* OMEN signature gradient: magenta -> red -> orange */
+  --accent-1: #e5178c;
+  --accent-2: #f2374b;
+  --accent-3: #ff8a00;
+  --gradient: linear-gradient(90deg, var(--accent-1) 0%, var(--accent-2) 50%, var(--accent-3) 100%);
+  --gradient-v: linear-gradient(180deg, var(--accent-1) 0%, var(--accent-2) 50%, var(--accent-3) 100%);
+  --gradient-ring: linear-gradient(135deg, #7b2ff7 0%, #e5178c 55%, #ff8a00 100%);
+
+  --ok: #21e065;
+  --warn: #ffb020;
+  --danger: #ff4747;
+  --info: #2f8fff;
+
+  --radius-sm: 3px;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+
+  --sidebar-w: 260px;
+  --titlebar-h: 46px;
+  --tabbar-h: 58px;
+
+  --font: "HP Simplified", "Segoe UI", Inter, system-ui, -apple-system, sans-serif;
+  /* Digital readouts (RPM, temperatures) in the real app use a segmented
+     display face; these fallbacks keep the same wide, technical feel. */
+  --font-digital: "OCR A Extended", "DSEG7", "Share Tech Mono", "JetBrains Mono",
+    ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--omen-black);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+a {
+  color: var(--text);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Slim scrollbars everywhere; the stock GTK/WebKit ones are far too heavy
+   for this chrome. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3a41;
+  border-radius: var(--radius-pill);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4d4d56;
+  background-clip: content-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-1);
+  outline-offset: 2px;
+}
+
+/* --- shared helpers ------------------------------------------------- */
+
+.gradient-text {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.digital {
+  font-family: var(--font-digital);
+  letter-spacing: 0.06em;
+  font-weight: 400;
+}
+
+.section-title {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--text-mute);
+}

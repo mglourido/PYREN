@@ -37,6 +37,18 @@ bun install      # first time only
 bun run tauri dev
 ```
 
+Without Bun installed, the same works through Node (the lockfile is Bun's,
+but the dependency tree is plain npm):
+
+```sh
+node node_modules/vite/bin/vite.js dev      # frontend only, in a browser
+node node_modules/@tauri-apps/cli/tauri.js dev
+```
+
+Running only the Vite dev server is the fastest loop for UI work: the app
+detects it isn't inside Tauri, falls back to simulated readings and renders
+every page normally (see "Demo mode" in `docs/03-frontend.md`).
+
 This starts the Vite dev server and the Tauri/Rust shell together, then
 opens the app window. First build compiles ~490 crates (WebKitGTK/GTK
 bindings etc.) and takes a minute or two; rebuilds after that are fast
@@ -60,6 +72,14 @@ GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 bun run tauri dev
 
 This is a known WebKitGTK/compositor interaction, not specific to this
 project's code — if it stops being needed on your setup, drop it.
+
+## Checking the frontend
+
+```sh
+cd app
+node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json
+node node_modules/vite/bin/vite.js build
+```
 
 ## Sanity-checking without the GUI
 

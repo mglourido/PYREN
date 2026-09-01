@@ -1,0 +1,168 @@
+/**
+ * Desired hardware state (what the user picked in the UI).
+ *
+ * Kept separate from `telemetry` on purpose: telemetry is what the machine
+ * reports, this is what the user asked for. Writes are forwarded to the
+ * daemon when it's reachable and always kept locally, so the UI stays
+ * consistent while the daemon-side write paths are still being ported
+ * (`fan.setMode` / `fan.setCurve` are not implemented yet - see
+ * docs/01-ipc-protocol.md).
+ */
+
+import { daemon } from "$lib/api/daemon";
+
+const STORAGE_KEY = "omen-hub.hardware.v1";
+
+export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
+export type FanMode = "auto" | "max" | "manual";
+export type GpuMode = "integrated" | "hybrid" | "discrete";
+export type LightingMode = "static" | "breathing" | "wave" | "off";
+export type NetworkMode = "off" | "auto" | "custom";
+
+/** One point of the temperature -> fan speed curve. */
+export type CurvePoint = { tempC: number; percent: number };
+
+export type HardwareState = {
+  powerMode: PowerMode;
+  applyToOsPowerProfile: boolean;
+  autoEco: boolean;
+  autoPerformance: boolean;
+  fanMode: FanMode;
+  fanPercent: number;
+  fanCurve: CurvePoint[];
+  smartBoostEnabled: boolean;
+  smartBoostW: number;
+  maxBatteryDrain: number;
+  chassisTempLimit: number;
+  pl1: number;
+  pl2: number;
+  pl4: number;
+  gpuCoreOffset: number;
+  gpuMemOffset: number;
+  gpuMode: GpuMode;
+  lightingMode: LightingMode;
+  brightness: number;
+  zoneColors: string[];
+  networkMode: NetworkMode;
+};
+
+/** Ranges are the ones the reference app exposes on an OMEN 16. */
+export const LIMITS = {
+  smartBoostW: { min: 0, max: 30 },
+  maxBatteryDrain: { min: 10, max: 40 },
+  chassisTempLimit: { min: 45, max: 55 },
+  pl1: { min: 25, max: 77 },
+  pl2: { min: 25, max: 77 },
+  pl4: { min: 135, max: 168 },
+  gpuCoreOffset: { min: -200, max: 300 },
+  gpuMemOffset: { min: -500, max: 1500 },
+};
+
+function defaults(): HardwareState {
+  return {
+    powerMode: "balanced",
+    applyToOsPowerProfile: true,
+    autoEco: true,
+    autoPerformance: true,
+    fanMode: "auto",
+    fanPercent: 50,
+    fanCurve: [
+      { tempC: 40, percent: 0 },
+      { tempC: 55, percent: 25 },
+      { tempC: 70, percent: 55 },
+      { tempC: 80, percent: 80 },
+      { tempC: 90, percent: 100 },
+    ],
+    smartBoostEnabled: true,
+    smartBoostW: 30,
+    maxBatteryDrain: 40,
+    chassisTempLimit: 55,
+    pl1: 77,
+    pl2: 77,
+    pl4: 168,
+    gpuCoreOffset: 0,
+    gpuMemOffset: 0,
+    gpuMode: "hybrid",
+    lightingMode: "static",
+    brightness: 100,
+    zoneColors: ["#e5178c", "#f2374b", "#ff8a00", "#7b2ff7"],
+    networkMode: "off",
+  };
+}
+
+class HardwareStore {
+  state = $state<HardwareState>(defaults());
+  /** Last write error, shown inline instead of swallowed. */
+  lastError = $state<string | null>(null);
+
+  load() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) this.state = { ...defaults(), ...JSON.parse(raw) };
+    } catch {
+      /* keep defaults */
+    }
+  }
+
+  set<K extends keyof HardwareState>(key: K, value: HardwareState[K]) {
+    this.state = { ...this.state, [key]: value };
+    this.save();
+  }
+
+  reset() {
+    this.state = defaults();
+    this.save();
+  }
+
+  async setPowerMode(mode: PowerMode) {
+    this.set("powerMode", mode);
+    // Unlimited is the only mode that hands fan control to the user; every
+    // other mode is the firmware's own curve, mirroring the reference app.
+    if (mode !== "unlimited" && this.state.fanMode === "manual") this.set("fanMode", "auto");
+    try {
+      await daemon.setPowerMode(mode);
+      this.lastError = null;
+    } catch (e) {
+      this.lastError = String(e);
+    }
+  }
+
+  async setFanMode(mode: FanMode) {
+    this.set("fanMode", mode);
+    try {
+      await daemon.setFanMode(mode, Math.round((this.state.fanPercent / 100) * 255));
+      this.lastError = null;
+    } catch (e) {
+      this.lastError = String(e);
+    }
+  }
+
+  private save() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+    } catch {
+      /* storage disabled: settings just don't persist */
+    }
+  }
+}
+
+export const hardware = new HardwareStore();
+
+/** Fan percentage the current curve asks for at `tempC` (linear between points). */
+export function curveValueAt(curve: CurvePoint[], tempC: number): number {
+  if (curve.length === 0) return 0;
+  const sorted = [...curve].sort((a, b) => a.tempC - b.tempC);
+  if (tempC <= sorted[0].tempC) return sorted[0].percent;
+  const last = sorted[sorted.length - 1];
+  if (tempC >= last.tempC) return last.percent;
+
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (tempC >= a.tempC && tempC <= b.tempC) {
+      const ratio = (tempC - a.tempC) / (b.tempC - a.tempC);
+      return a.percent + ratio * (b.percent - a.percent);
+    }
+  }
+  return last.percent;
+}

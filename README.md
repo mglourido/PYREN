@@ -10,14 +10,15 @@ See [`docs/00-design-plan.md`](docs/00-design-plan.md) for the
 architecture, [`docs/01-ipc-protocol.md`](docs/01-ipc-protocol.md) for the
 wire format between the app and the daemon, and
 [`docs/02-development.md`](docs/02-development.md) for how to build and
-run everything.
+run everything, and [`docs/03-frontend.md`](docs/03-frontend.md) for the
+frontend's structure and conventions.
 
 ## Layout
 
 ```
 daemon/     Rust workspace: omen-hub-daemon (bin) + omen-hub-core + omen-hub-fan
 app/        Tauri app: SvelteKit frontend + src-tauri shell
-docs/       design plan + IPC protocol spec
+docs/       design plan + IPC protocol + development + frontend guide
 ```
 
 ## Status
@@ -26,9 +27,14 @@ docs/       design plan + IPC protocol spec
 - `fan` module: read-only status (`getStatus`) implemented and verified
   end-to-end; writing to hardware (`setMode`/`setCurve`/fan cleaner) not
   ported yet.
-- App: SvelteKit page renders live fan status polled from the daemon every
-  2s. No OMEN-Hub-style visual design yet — current UI is a plain status
-  card.
+- App: full OMEN-Hub-style frontend — home dashboard, system vitals
+  (basic + advanced views), performance control (power modes, fan
+  toggle/curve, power limits), GPU overclocking, lighting, graphics
+  switcher, network booster, key mapping, plus settings, drivers and help
+  pages. Bilingual (en/es) with a drop-in translation system. Falls back to
+  simulated data when the daemon isn't reachable, so the UI is usable
+  without root. Hardware *writes* are wired in the UI but no-ops until the
+  daemon implements them.
 
 ## Running in development
 

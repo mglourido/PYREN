@@ -89,7 +89,12 @@ other modules likely won't need it.
 
 1. ~~Daemon skeleton + IPC socket + Tauri shell round-trip~~ — done: `fan.getStatus` and `core.capabilities` work end-to-end.
 2. Port the rest of the `fan` module: config persistence, `setMode`/curve write path, calibration, hysteresis loop (as a background task inside the daemon, replacing the Python `serve` loop).
-3. Fan UI in the app matching OMEN Hub's Performance/Fans tab.
+3. ~~Fan UI in the app matching OMEN Hub's Performance/Fans tab~~ — done,
+   along with the rest of the OMEN Hub surface (vitals, advanced tuning,
+   lighting, graphics switcher, network booster, key mapping, settings,
+   drivers, help). See `docs/03-frontend.md`. The UI's *write* paths call
+   the daemon and currently get "not implemented" back, which is the next
+   thing to close.
 4. Fan-cleaner protocol (`docs/04-fan-control-logic.md` §"Fan cleaner protocol" in the source repo) — the ACPI-call sequence, once basic curve control is solid.
 5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary generalizes to a differently-shaped hardware surface.
 6. Privileged installer flow (kernel driver + daemon systemd unit) as a GUI wizard, reusing the DKMS/hooks logic documented in the source repo.

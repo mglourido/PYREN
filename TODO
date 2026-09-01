@@ -1,0 +1,35 @@
+necesito un lector de placa base, marca del portatil y modelo en el startup para mostrarlo por consola en depuracion + mostrarlo por frontend + para mirar si es compatible o no
+
+  [frontend hecho] Ayuda > "Sistema detectado" muestra fabricante, modelo,
+  placa, BIOS, kernel, CPU/GPU y si es compatible. Consume el comando
+  `core_system_info` (ver app/src/lib/api/daemon.ts, tipo SystemInfo);
+  falta implementarlo en el daemon leyendo /sys/class/dmi/id/.
+
+---
+
+cuando la app se lanza en el menu de inicio se deberia mirar si el controlador esta instalado, si no lo esta mostrar un aviso con el boton de isntalar que lleva el usuario a la seccion de controladores/drivers; ponerme un "no mostrar de nuevo" a ese aviso (guardar en cache el valor del check)
+
+  [hecho] Aviso en app/src/routes/+layout.svelte, pagina /drivers, y el
+  check se guarda en settings.hideDriverNotice (se puede reactivar desde
+  Ajustes > Avanzado).
+
+---
+
+meter una seccion de ayuda que ponga informacion legal+el repo donde poner issues y demas + describir un poco la app
+
+  [hecho] /help.
+
+---
+
+implementar un controlador de versiones para que la app pueda saber en que version esta, mostrasela al usuario y conseguir de github la ultima version lanzada y este comprobar si hay actualizaciones de versiones mas modernas
+
+  [hecho] app/src/lib/version.ts (la version sale de package.json via Vite
+  define) + boton en /help. Ajustar REPO_URL al repo real.
+
+---
+
+documentar app + como ayudar + como reportar problemas + como añadir traducciones
+
+  [parcial] docs/03-frontend.md + seccion Ayuda en la app. Falta CONTRIBUTING.md.
+
+---
