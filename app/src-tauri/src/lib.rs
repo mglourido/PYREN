@@ -87,6 +87,11 @@ fn fan_set_restore_on_start(enabled: bool) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn power_set_apply_to_os_profile(enabled: bool) -> Result<Value, String> {
+    call_daemon("power", "setApplyToOsProfile", json!({ "enabled": enabled }))
+}
+
+#[tauri::command]
 fn power_set_tuning(tuning: Value) -> Result<Value, String> {
     call_daemon("power", "setTuning", tuning)
 }
@@ -201,6 +206,7 @@ pub fn run() {
             power_set_auto_config,
             power_set_restore_on_start,
             power_set_tuning,
+            power_set_apply_to_os_profile,
             app_config_load,
             app_config_save
         ])

@@ -137,7 +137,7 @@
         <select
           value={hardware.state.applyToOsPowerProfile ? "auto" : "manual"}
           onchange={(e) =>
-            hardware.set("applyToOsPowerProfile", e.currentTarget.value === "auto")}
+            hardware.setApplyToOsProfile(e.currentTarget.value === "auto")}
         >
           <option value="auto">{t("performance.autoModeSettings")}</option>
           <option value="manual">{t("common.manual")}</option>
@@ -197,7 +197,7 @@
       <input
         type="checkbox"
         checked={hardware.state.applyToOsPowerProfile}
-        onchange={(e) => hardware.set("applyToOsPowerProfile", e.currentTarget.checked)}
+        onchange={(e) => hardware.setApplyToOsProfile(e.currentTarget.checked)}
       />
       {t("performance.applyToOsPowerProfile")}
       <InfoTip>

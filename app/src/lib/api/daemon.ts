@@ -196,6 +196,9 @@ export type PowerState = {
   auto: AutoConfig;
   /** Re-apply the saved mode when the daemon starts. */
   restoreModeOnStart: boolean;
+  /** Whether a mode change also changes the OS power profile
+   *  (power-profiles-daemon), or only the laptop's own firmware profile. */
+  applyToOsProfile: boolean;
   autoOverrideSecondsLeft: number | null;
   lastAutoSwitch: string | null;
   /** Where the daemon keeps this module's settings. */
@@ -272,6 +275,9 @@ export const daemon = {
   /** Tunes one mode's profile. Watts on the wire; the daemon stores them as
    *  a percentage of this machine's own limits. Defaults to the mode in
    *  force, and re-applies immediately when that is the one changed. */
+  /** Whether a mode change also moves the OS power profile. */
+  setApplyToOsProfile: (enabled: boolean) =>
+    call<PowerState>("power_set_apply_to_os_profile", { enabled }),
   setPowerTuning: (tuning: {
     mode?: PowerMode;
     pl1W?: number;

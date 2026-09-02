@@ -155,6 +155,7 @@ class HardwareStore {
       this.state = {
         ...this.state,
         powerMode: power.mode,
+        applyToOsPowerProfile: power.applyToOsProfile,
         autoEco: power.auto.enabled && power.auto.ecoOnBattery,
         autoPerformance: power.auto.enabled && power.auto.performanceOnLoad,
       };
@@ -263,6 +264,22 @@ class HardwareStore {
   setFanCurve(curve: CurvePoint[]) {
     this.set("fanCurve", curve);
     this.pushFanSoon(() => daemon.setFanCurve(curve));
+  }
+
+  /**
+   * Whether picking a mode should also move the OS power profile, or only
+   * the laptop's own. They are separate things - the firmware profile is
+   * what moves the fan curve, the OS one is what the desktop's battery
+   * menu shows - and wanting one without the other is reasonable.
+   */
+  async setApplyToOsProfile(enabled: boolean) {
+    this.set("applyToOsPowerProfile", enabled);
+    try {
+      this.power = await daemon.setApplyToOsProfile(enabled);
+      this.lastError = null;
+    } catch (e) {
+      this.lastError = String(e);
+    }
   }
 
   /**
