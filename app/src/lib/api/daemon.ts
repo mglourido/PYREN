@@ -83,6 +83,9 @@ export type SystemInfo = {
   controls: Controls;
   supported: boolean;
   reason: string;
+  /** What the *daemon* was started with, as opposed to what the machine
+   *  can do. Some readings are gated on privilege, not on hardware. */
+  privileges: { root: boolean; perfEvents: boolean };
 };
 
 export type TempReading = { chip: string; label: string; celsius: number };
@@ -105,9 +108,19 @@ export type GpuMetrics = {
   memTotalMb: number | null;
   powerW: number | null;
   clockMhz: number | null;
+  /** The chip inside the CPU package, as opposed to a card of its own. */
+  integrated: boolean | null;
 };
 
-export type ProcessUsage = { pid: number; name: string; cpuPercent: number; memMb: number };
+export type ProcessUsage = {
+  pid: number;
+  name: string;
+  cpuPercent: number;
+  memMb: number;
+  /** `null` where the driver publishes no per-process accounting, which is
+   *  not the same as an idle process - the table shows the two apart. */
+  gpuPercent: number | null;
+};
 
 export type SystemMetrics = {
   cpu: {
@@ -242,8 +255,72 @@ export type FanDiagnosis = {
 
 export class DaemonUnavailable extends Error {}
 
+/**
+ * The daemon method behind each Tauri command, so `vite dev` in a browser
+ * can reach the daemon through the dev-server bridge instead of falling
+ * back to synthetic numbers (see `dev-daemon-bridge.js`).
+ *
+ * `params` is the argument object as passed here; two commands hand one of
+ * their arguments straight through as the daemon's params, which is what
+ * the Rust side does too - keep this table in step with
+ * `app/src-tauri/src/lib.rs`.
+ */
+const DAEMON_ROUTES: Record<
+  string,
+  { module: string; method: string; params?: (args: Record<string, unknown>) => unknown }
+> = {
+  core_capabilities: { module: "core", method: "capabilities" },
+  system_get_info: { module: "system", method: "getInfo" },
+  system_get_metrics: { module: "system", method: "getMetrics" },
+  fan_get_status: { module: "fan", method: "getStatus" },
+  fan_diagnose: { module: "fan", method: "diagnose" },
+  fan_set_mode: { module: "fan", method: "setMode" },
+  fan_set_curve: { module: "fan", method: "setCurve" },
+  fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
+  power_get_state: { module: "power", method: "getState" },
+  power_set_mode: { module: "power", method: "setMode" },
+  power_set_auto_config: { module: "power", method: "setAutoConfig", params: (a) => a.config },
+  power_set_restore_on_start: { module: "power", method: "setRestoreOnStart" },
+  power_set_tuning: { module: "power", method: "setTuning", params: (a) => a.tuning },
+  power_set_apply_to_os_profile: { module: "power", method: "setApplyToOsProfile" },
+};
+
+/** Reaches the daemon through the Vite dev server. Development only. */
+async function callViaDevBridge<T>(
+  command: string,
+  args: Record<string, unknown> | undefined,
+): Promise<T> {
+  const route = DAEMON_ROUTES[command];
+  if (!route) throw new DaemonUnavailable(`no daemon route for '${command}'`);
+
+  // Tauri turns a missing optional argument into an explicit null; match
+  // that so the daemon sees the same params either way.
+  const named = Object.fromEntries(
+    Object.entries(args ?? {}).map(([k, v]) => [k, v === undefined ? null : v]),
+  );
+  const params = route.params ? route.params(named) : (args ? named : null);
+
+  let response: Response;
+  try {
+    response = await fetch("/__daemon", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: 1, module: route.module, method: route.method, params }),
+    });
+  } catch (e) {
+    throw new DaemonUnavailable(String(e));
+  }
+
+  const reply = (await response.json().catch(() => null)) as
+    | { result?: T; error?: string }
+    | null;
+  if (!reply) throw new DaemonUnavailable("malformed reply from the dev bridge");
+  if (reply.error !== undefined) throw new DaemonUnavailable(reply.error);
+  return reply.result as T;
+}
+
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!inTauri) throw new DaemonUnavailable("not running inside Tauri");
+  if (!inTauri) return callViaDevBridge<T>(command, args);
   try {
     return await invoke<T>(command, args);
   } catch (e) {

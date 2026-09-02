@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 // @ts-expect-error node:fs is available here; this config runs in Node, not the browser
 import { readFileSync } from "node:fs";
+import { daemonBridge } from "./dev-daemon-bridge.js";
 
 // Single source of truth for the version shown in Help and used by the
 // update check - it always matches what was packaged.
@@ -12,7 +13,7 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [sveltekit()],
+  plugins: [sveltekit(), daemonBridge()],
 
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
