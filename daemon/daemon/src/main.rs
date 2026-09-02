@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use pyren_core::{serve_unix_socket, Audience, Module, Registry};
 use pyren_fan::FanModule;
-use pyren_installer::InstallerModule;
+use pyren_installer::{
+    execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
+};
 use pyren_power::PowerModule;
 use pyren_system::{Compatibility, Controls, SystemModule};
 
@@ -27,7 +29,72 @@ fn is_root() -> bool {
     }).unwrap_or(false)
 }
 
+/// Installing the systemd unit is the one privileged action that cannot go
+/// through the daemon, because it is what *makes* the daemon privileged in
+/// the first place - a chicken and egg the IPC path cannot break. So the
+/// binary can also be asked to do it directly, which is what the app runs
+/// under `pkexec`.
+///
+/// This is not a second installer: it drives the same
+/// `installer::{plan, execute}` the IPC method does. The only difference is
+/// who is calling.
+fn run_service_action(action: Action) -> ! {
+    if !is_root() {
+        eprintln!("pyren-daemon: this needs root (try: sudo pyren-daemon --install-service)");
+        std::process::exit(1);
+    }
+
+    let env = Environment::detect();
+    let plan = plan(&env, action, PlanOptions::default());
+    if !plan.is_runnable() {
+        for blocker in &plan.blockers {
+            eprintln!("pyren-daemon: cannot continue: {}", blocker.message);
+        }
+        std::process::exit(1);
+    }
+
+    let context = ExecuteContext {
+        max_rpm: Default::default(),
+        experimental_board: None,
+        daemon_binary: std::env::current_exe().ok(),
+    };
+    let report = execute(&plan, &env, &context, false);
+
+    for result in &report.results {
+        println!("  [{:?}] {} - {}", result.status, result.description, result.detail);
+    }
+    std::process::exit(if report.succeeded { 0 } else { 1 });
+}
+
+fn usage() -> ! {
+    println!(
+        "pyren-daemon - the privileged host process\n\n\
+         With no arguments it serves the hardware modules over a Unix socket.\n\n\
+         OPTIONS\n\
+        \x20 --install-service   write and enable the systemd unit, then exit (needs root)\n\
+        \x20 --remove-service    disable and delete it, then exit (needs root)\n\
+        \x20 --help              this text\n\n\
+         ENVIRONMENT\n\
+        \x20 PYREN_SOCKET        where to listen (default /tmp/pyren-daemon.sock)\n\
+        \x20 PYREN_SOCKET_GROUP  group allowed to connect (default 'pyren')\n"
+    );
+    std::process::exit(0);
+}
+
 fn main() {
+    // Arguments are handled before anything is probed: a machine that
+    // cannot be detected properly should still be able to install a unit.
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("--install-service") => run_service_action(Action::InstallService),
+        Some("--remove-service") => run_service_action(Action::RemoveService),
+        Some("--help" | "-h") => usage(),
+        Some(other) => {
+            eprintln!("pyren-daemon: unknown argument '{other}' (try --help)");
+            std::process::exit(1);
+        }
+    }
+
     // The hardware modules come first, because what this machine can be
     // told to do is something only they can answer - `system` used to
     // answer it from a copied list of DMI board ids, which said "supported"
@@ -58,6 +125,20 @@ fn main() {
     }
     if identity.compatibility != Compatibility::Controllable {
         println!("  note:   {}", identity.reason);
+    }
+    // Unprivileged, the Intel PMU stays shut and the iGPU reports no usage.
+    // That looks exactly like a broken card unless someone says otherwise,
+    // and this is the first place anyone looks.
+    let privileges = system.privileges();
+    if !privileges.perf_events {
+        println!(
+            "  note:   integrated-GPU utilisation is unavailable{}",
+            if privileges.root {
+                " (no Intel GPU, or its perf PMU is absent)"
+            } else {
+                "; it needs CAP_PERFMON, which the systemd unit gets by running as root"
+            }
+        );
     }
 
     let mut registry = Registry::new();

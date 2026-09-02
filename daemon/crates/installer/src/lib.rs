@@ -25,9 +25,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 pub use detect::Environment;
-pub use execute::{ExecuteContext, ExecutionReport};
+pub use execute::{execute, ExecuteContext, ExecutionReport};
 pub use patch::{BoardParams, BoardTable, MaxRpm};
-pub use plan::{Action, Plan, PlanOptions, Strategy};
+pub use plan::{plan, Action, Plan, PlanOptions, Strategy};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
