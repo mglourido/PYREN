@@ -8,6 +8,7 @@
    * to prove it - and, when it doesn't work, to say precisely which part is
    * missing rather than offering to replace a kernel module.
    */
+  import DriverWizard from "$lib/components/DriverWizard.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import InfoTip from "$lib/components/InfoTip.svelte";
   import Panel from "$lib/components/Panel.svelte";
@@ -298,6 +299,10 @@
       </ul>
     </Panel>
   {/if}
+
+  <!-- Last on the page on purpose: everything above answers "do I need
+       this?", and on most machines the answer is no. -->
+  <DriverWizard />
 </div>
 
 <style>

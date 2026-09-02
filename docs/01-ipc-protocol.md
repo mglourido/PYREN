@@ -470,6 +470,12 @@ plan is also something that pastes into a bug report.
 | `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings | ✅ implemented |
 | `installer.apply` | as above plus `confirm`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report }` | ⚠️ implemented, **execution untested** |
 
+All three are driven from the app by `DriverWizard.svelte` at the bottom
+of `/drivers`, which renders the plan's steps and their commands and keeps
+"apply" disabled until a dry run of those exact options has come back —
+see `docs/03-frontend.md`. `pyren-ctl` has no installer subcommand; the
+wizard and `--install-service` are the two ways in.
+
 #### Installing the service cannot go through IPC
 
 Writing the systemd unit is what *makes* the daemon run as root, so asking

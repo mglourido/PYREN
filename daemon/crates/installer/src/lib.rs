@@ -13,7 +13,7 @@
 //! |---|---|---|
 //! | `installer.inspect` | none | what this machine has, and whether the patch is needed |
 //! | `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings |
-//! | `installer.apply` | as above plus `confirm`, `maxRpm`, `board` | what was done (dry run unless `confirm`) |
+//! | `installer.apply` | as above plus `confirm`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | what was done (dry run unless `confirm`) |
 
 pub mod detect;
 pub mod execute;

@@ -253,6 +253,121 @@ export type FanDiagnosis = {
   wroteToHardware: boolean;
 };
 
+/* --- installer ---------------------------------------------------------
+ *
+ * Mirrors `daemon/crates/installer/src/{detect,plan,execute,patch}.rs`.
+ * The wire shapes are documented in `docs/01-ipc-protocol.md`.
+ */
+
+export type InstallerAction =
+  | "installDriver"
+  | "restoreDriver"
+  | "installService"
+  | "removeService";
+
+/** How a permanent install survives a kernel upgrade. */
+export type InstallStrategy = "dkms" | "hooks";
+
+export type HookFlavour = "pacman" | "kernelPostinst" | "kernelInstall" | "none";
+
+export type InstallerEnvironment = {
+  kernel: {
+    release: string;
+    major: number;
+    minor: number;
+    /** The running kernel already has manual fan control of its own. */
+    hasUpstreamFanControl: boolean;
+  };
+  distroId: string;
+  hookFlavour: HookFlavour;
+  headers: {
+    buildDir: string | null;
+    hasAutoconf: boolean;
+    hasKbuildScripts: boolean;
+    usable: boolean;
+    fixHint: string | null;
+  };
+  hasDkms: boolean;
+  dkmsInstalled: boolean;
+  dkmsStatus: string | null;
+  hasMake: boolean;
+  hasCompiler: boolean;
+  initramfsTool: string | null;
+  /** `pwm1` exists right now, whatever driver is providing it. */
+  fanControlAvailable: boolean;
+  hpWmiLoaded: boolean;
+  acpiCallAvailable: boolean;
+  driverSource: string | null;
+  serviceInstalled: boolean;
+};
+
+export type InstallerInspection = {
+  environment: InstallerEnvironment;
+  patchNeeded: boolean;
+};
+
+/** An empty `command` is a step the daemon carries out itself. */
+export type InstallStep = {
+  id: string;
+  description: string;
+  command: string[];
+  optional: boolean;
+};
+
+export type InstallBlocker = { id: string; message: string; fix: string | null };
+
+export type InstallPlan = {
+  action: InstallerAction;
+  strategy: InstallStrategy | null;
+  steps: InstallStep[];
+  blockers: InstallBlocker[];
+  warnings: string[];
+  needsRoot: boolean;
+};
+
+export type StepStatus = "ok" | "warned" | "failed" | "skipped" | "planned";
+
+export type StepResult = {
+  id: string;
+  description: string;
+  status: StepStatus;
+  detail: string;
+};
+
+export type ExecutionReport = {
+  dryRun: boolean;
+  succeeded: boolean;
+  results: StepResult[];
+};
+
+/** Which board-params variant an untested board should be driven with. */
+export type BoardParams = "victusS" | "omenV1" | "omenV1Legacy" | "omenV1NoEc";
+
+/**
+ * Which of the driver's tables an untested board id goes into. Serde
+ * writes this adjacently tagged, so the unit tables carry no `params`.
+ */
+export type BoardTable =
+  | { table: "omenThermalProfile" }
+  | { table: "omenForceV0" }
+  | { table: "omenTimed" }
+  | { table: "victusThermalProfile" }
+  | { table: "features"; params: BoardParams };
+
+export type InstallerRequest = {
+  action: InstallerAction;
+  preferHooks?: boolean;
+  force?: boolean;
+  /** Anything but `true` leaves `apply` a dry run. */
+  confirm?: boolean;
+  cpuMaxRpm?: number | null;
+  gpuMaxRpm?: number | null;
+  experimentalBoard?: string | null;
+  boardTable?: BoardTable | null;
+};
+
+export type ApplyResult = { plan: InstallPlan; report: ExecutionReport };
+
 export class DaemonUnavailable extends Error {}
 
 /**
@@ -283,6 +398,9 @@ const DAEMON_ROUTES: Record<
   power_set_restore_on_start: { module: "power", method: "setRestoreOnStart" },
   power_set_tuning: { module: "power", method: "setTuning", params: (a) => a.tuning },
   power_set_apply_to_os_profile: { module: "power", method: "setApplyToOsProfile" },
+  installer_inspect: { module: "installer", method: "inspect" },
+  installer_plan: { module: "installer", method: "plan", params: (a) => a.request },
+  installer_apply: { module: "installer", method: "apply", params: (a) => a.request },
 };
 
 /** Reaches the daemon through the Vite dev server. Development only. */
@@ -364,6 +482,12 @@ export const daemon = {
   /** Whether a mode change also moves the OS power profile. */
   setApplyToOsProfile: (enabled: boolean) =>
     call<PowerState>("power_set_apply_to_os_profile", { enabled }),
+  /** What this machine has, and whether the patched driver is needed. */
+  installerInspect: () => call<InstallerInspection>("installer_inspect"),
+  /** Pure: works out the steps without touching anything. */
+  installerPlan: (request: InstallerRequest) => call<InstallPlan>("installer_plan", { request }),
+  /** A dry run unless the request carries `confirm: true`. */
+  installerApply: (request: InstallerRequest) => call<ApplyResult>("installer_apply", { request }),
   setPowerTuning: (tuning: {
     mode?: PowerMode;
     pl1W?: number;

@@ -149,12 +149,46 @@ automatically — there is no language table to update.
   themselves unavailable.
 - Icons are inline SVG paths in `Icon.svelte` — no icon package.
 
+## The driver wizard
+
+`lib/components/DriverWizard.svelte`, at the bottom of `/drivers`, is the
+front end of the installer module's **inspect → plan → apply** split
+(`docs/01-ipc-protocol.md`). It is a wizard rather than a button because
+what it runs unloads a kernel module, replaces a file under `/lib/modules`
+and regenerates the initramfs — the steps are shown, with the exact command
+each one would run, before any of them do.
+
+Four rules, all of them about not letting the UI outrun what the user has
+actually read:
+
+- **Closed by default, and the verdict comes first.** On a modern kernel
+  manual fan control is upstream, so `inspect`'s `patchNeeded: false` is the
+  common answer and the panel leads with it. An install button above that
+  sentence would be an invitation to downgrade a working driver.
+- **Apply is unreachable until a dry run of the *same* options has been
+  read.** The options are serialised into a key; typing in any field throws
+  the plan, the report and that key away. So what is on screen is always
+  the plan that would run, never a plan for options that have since
+  changed.
+- **A plan with blockers is not offered.** The daemon refuses one anyway
+  (`notCapable`), so the button stays disabled and the blockers are listed
+  with the command that fixes each — missing kernel headers being the
+  common case.
+- **The RPM ceiling is offered, not invented.** `fan.calibrate` is the only
+  thing that knows this chassis's full speed; where it has run, the panel
+  offers the measured number for the driver's `OMEN_CPU_MAX_RPM` patch and
+  otherwise leaves the field blank, which means "keep the driver's own
+  fallback".
+
+The board-id fields are the untested-hardware path: adding a board to one
+of the driver's tables also picks which EC offset it reads, so the table
+and its params variant are chosen explicitly and never guessed.
+
+Installing the *service* is not here — it is a `pkexec` action in the
+Permissions panel above, because a unit that makes the daemon root cannot
+be installed by asking the unprivileged daemon to do it.
+
 ## Not built yet (frontend side)
 
-- The **driver** installer wizard on `/drivers`. The page runs the hardware
-  check and the permissions panel (which does install the *service*); what
-  it cannot yet do is walk someone through `installer.plan` /
-  `installer.apply` for the kernel module, which replaces a file under
-  `/lib/modules` and deserves a reviewable plan rather than a button.
 - Lighting, GPU switching, network booster and key mapping drive local
   state only — there is no daemon module behind any of them yet.

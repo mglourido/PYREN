@@ -175,6 +175,28 @@ fn power_set_tuning(tuning: Value) -> Result<Value, String> {
     call_daemon("power", "setTuning", tuning)
 }
 
+/// The driver installer, in the three parts the module is split into.
+///
+/// `request` is passed through as the daemon's params rather than being
+/// re-typed here: the shape is documented in `docs/01-ipc-protocol.md` and
+/// mirroring it in the shell would mean editing three places to add one
+/// field. What keeps `apply` safe is not this layer but the daemon's own
+/// rule that it is a dry run unless `confirm` is true.
+#[tauri::command]
+fn installer_inspect() -> Result<Value, String> {
+    call_daemon("installer", "inspect", Value::Null)
+}
+
+#[tauri::command]
+fn installer_plan(request: Value) -> Result<Value, String> {
+    call_daemon("installer", "plan", request)
+}
+
+#[tauri::command]
+fn installer_apply(request: Value) -> Result<Value, String> {
+    call_daemon("installer", "apply", request)
+}
+
 #[tauri::command]
 fn core_capabilities() -> Result<Value, String> {
     call_daemon("core", "capabilities", Value::Null)
@@ -345,6 +367,9 @@ pub fn run() {
             power_set_restore_on_start,
             power_set_tuning,
             power_set_apply_to_os_profile,
+            installer_inspect,
+            installer_plan,
+            installer_apply,
             admin_status,
             admin_grant,
             app_config_load,

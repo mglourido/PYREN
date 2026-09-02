@@ -25,7 +25,11 @@ is a one-variable test:
 
 1. `installer.plan` / `installer.apply` with `experimentalBoard: "8D2F"`
    and a `boardTable` choice — the variants differ in which EC offset
-   holds the thermal profile, so the wrong one loads and misreads.
+   holds the thermal profile, so the wrong one loads and misreads. The
+   driver wizard at the bottom of `/drivers` now drives both, including
+   those two fields, and refuses to apply until the dry run of that exact
+   plan has come back — which is the safer way to do this experiment than
+   hand-written IPC.
 2. `sh tools/pyren-check.sh` and look for `pwm1`.
 3. `fan.setMode` with `{"mode":"manual","pwm":128}` and listen.
 
@@ -240,6 +244,25 @@ Eco and Balanced on its own — is the `power` supervisor.
 Newest first. Kept because the *reasons* are the useful part - several of
 these replaced an earlier version of themselves, and knowing why saves
 someone re-proposing it.
+
+- **The driver installer wizard**, the last unbuilt piece of the frontend
+  (`docs/03-frontend.md` §"Not built yet", roadmap item 6): `/drivers` now
+  ends in a collapsed panel that runs `installer.inspect`, renders the plan
+  step by step with the command each one would run, and only then offers to
+  run it. Three decisions worth keeping: **apply is disabled until a dry
+  run of the same options has come back**, with the options serialised into
+  a key so that typing in any field discards the plan and the report — a
+  plan shown next to options that no longer produced it is the failure mode
+  a wizard exists to prevent; the panel is **closed by default and leads
+  with `patchNeeded`**, because on a modern kernel the honest answer is "you
+  do not need this" and an install button above that sentence is an
+  invitation to downgrade a working driver; and the fan-ceiling field
+  **offers the calibrated number rather than a default**, blank meaning
+  "keep the driver's own fallback". The Tauri side passes the request
+  through as opaque JSON (`installer_inspect`/`plan`/`apply`), so adding a
+  field to the daemon's request does not mean editing three layers.
+  **Still never executed against hardware** — that is 1.1 above, and the
+  wizard is now the way to run it.
 
 - **Structured IPC errors** (was 1.2): a refusal is now
   `{ kind, message }` instead of a sentence, with eleven kinds and one rule

@@ -143,7 +143,10 @@ doesn't exist, because nothing has needed one yet.
    never been run; running it on the test laptop is now the top item in
    `dev/TODO.md`, because it is also the experiment that would decide
    whether this board can be given a real fan percentage. The GUI wizard on
-   top of it is still to do.
+   top of it is done — `DriverWizard.svelte` at the bottom of `/drivers`,
+   which shows the plan's steps and their commands and keeps "apply"
+   disabled until a dry run of those exact options has been read
+   (`docs/03-frontend.md`).
 7. ~~Power modes as real profiles~~ — done: the laptop's own firmware
    profile, the OS profile (delegated to power-profiles-daemon), and the
    package power envelope, applied as three separable parts. The envelope
