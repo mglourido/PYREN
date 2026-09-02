@@ -105,9 +105,17 @@ UI be developed and tested away from an OMEN laptop, and it answers the
   "compatibility": "controllable",
   "controls": { "fanMode": false, "fanSpeed": false, "powerMode": true },
   "supported": true,
-  "reason": "this machine accepts: power modes"
+  "reason": "this machine accepts: power modes",
+  "privileges": { "root": true, "perfEvents": true }
 }
 ```
+
+`privileges` describes the **daemon**, not the machine: what it was started
+with, fixed at startup. `perfEvents` is whether the i915 perf PMU opened,
+which is what decides whether integrated-GPU utilisation can be read at all
+(it needs `CAP_PERFMON`). Without this block an app cannot tell "this GPU
+reports nothing" from "we were not allowed to ask", and ends up telling the
+user their hardware is broken when the answer is "run me as root".
 
 Identity fields are read from `/sys/class/dmi/id`, `/proc/cpuinfo` and
 `lspci`. Firmware placeholder strings (`"To be filled by O.E.M."`,
@@ -160,8 +168,9 @@ machine can be asked.
   "network": { "upMbps": 0.01, "downMbps": 0.0, "interfaces": [...] },
   "gpus": [{ "name": "NVIDIA GeForce RTX 3060", "driver": "nvidia", "usagePercent": 99.0,
              "tempC": 74.0, "memUsedMb": 7161.0, "memTotalMb": 12288.0,
-             "powerW": 169.5, "clockMhz": 1837.0 }],
-  "processes": [{ "pid": 32556, "name": "re4.exe", "cpuPercent": 41.8, "memMb": 2847.0 }]
+             "powerW": 169.5, "clockMhz": 1837.0, "integrated": false }],
+  "processes": [{ "pid": 32556, "name": "re4.exe", "cpuPercent": 41.8,
+                  "memMb": 2847.0, "gpuPercent": 62.4 }]
 }
 ```
 
@@ -174,11 +183,29 @@ Notes on the shape:
   `k10temp`, `zenpower`), then the hottest core, then `acpitz`.
 - `disks` deduplicates by device, so btrfs subvolumes and bind mounts show
   once (at the shallowest mount point) instead of eight times.
-- `processes` is the busiest 12; `cpuPercent` is a share of the **whole
-  machine** (0–100), not of one core.
-- `gpus` uses `nvidia-smi` for NVIDIA cards and DRM sysfs
-  (`gpu_busy_percent`, `mem_info_vram_*`) for others. Fields a driver
-  doesn't expose are `null` — i915/xe report name only.
+- `processes` is the busiest 12 **by CPU**; `cpuPercent` is a share of the
+  **whole machine** (0–100), not of one core.
+- `processes[].gpuPercent` comes from the kernel's DRM fdinfo interface
+  (`/proc/<pid>/fdinfo/<fd>`, the `drm-engine-*` keys) — the same source
+  `nvtop` reads, covering i915, xe and amdgpu. Two subtleties it handles:
+  several file descriptors can name the **same** `drm-client-id`, each
+  reporting that client's whole counter (a compositor holding four of them
+  is not four times as busy), and an engine can have several instances
+  (`drm-engine-capacity-video: 2`), over which its nanoseconds are spread.
+  `null` means the driver publishes no per-client accounting — NVIDIA's
+  proprietary driver does not — which is not the same as an idle process,
+  so the UI draws the two differently.
+- `gpus` uses `nvidia-smi` for NVIDIA cards and DRM sysfs for others:
+  `gpu_busy_percent` and `mem_info_vram_*` (amdgpu), `gt_act_freq_mhz` or
+  `tile0/gt0/freq0/act_freq` for the Intel GT clock, and the i915 perf PMU
+  for Intel utilisation, which needs `CAP_PERFMON` (see `getInfo`'s
+  `privileges`). Names are resolved once through `lspci`. Fields a driver
+  doesn't expose are `null`.
+- `gpus[].integrated` distinguishes the chip in the CPU package from a card
+  of its own, decided by the PCI slot: integrated GPUs hang off the root bus
+  (`0000:00:…`), a discrete card sits behind a PCIe bridge. Hybrid laptops
+  have both and the UI labels them separately, because which one is busy is
+  usually the question being asked.
 - Virtual network interfaces (`lo`, `veth*`, `docker*`, `br-*`, `virbr*`,
   `vnet*`, `tap*`) are excluded so container traffic isn't counted twice.
 
@@ -406,6 +433,21 @@ plan is also something that pastes into a bug report.
 | `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings | ✅ implemented |
 | `installer.apply` | as above plus `confirm`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report }` | ⚠️ implemented, **execution untested** |
 
+#### Installing the service cannot go through IPC
+
+Writing the systemd unit is what *makes* the daemon run as root, so asking
+an unprivileged daemon to do it over the socket is a chicken and egg the
+IPC path cannot break. The binary therefore also takes the action directly:
+
+```sh
+sudo pyren-daemon --install-service    # and --remove-service
+```
+
+This is not a second implementation — it drives the same
+`installer::{plan, execute}` as `installer.apply` with
+`action: "installService"`. It is what the app's Permissions panel runs
+under `pkexec`.
+
 `action` is one of `installDriver`, `restoreDriver`, `installService`,
 `removeService`.
 
@@ -463,6 +505,7 @@ then `/usr/share/pyren/driver`, then a sibling checkout, and reports a
 | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the status object | ✅ implemented, needs root |
 | `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete" }` | the status object | ✅ implemented |
 | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
+| `fan.calibrate` | `{ "seconds"?: 10-120 }` | the calibration report below | ✅ implemented, needs root, **blocks and spins the fans** |
 
 Every write returns the same status object `getStatus` does, so a caller
 never has to follow a write with a read:
@@ -482,6 +525,9 @@ never has to follow a write with a read:
   "interpolation": "smooth",
   "restoreModeOnStart": false,
   "fanMaxRpm": null,
+  "fan1MaxRpm": null,
+  "fan2MaxRpm": null,
+  "calibrating": false,
   "error": null,
   "saved": true,
   "saveError": null
@@ -515,6 +561,72 @@ Two further things a client must not assume:
   the *hardware* was found in, not what the config file says — unless
   `restoreModeOnStart` is on. Until someone asks for a mode, the daemon
   watches and does not write.
+
+### `fan.calibrate`
+
+Measures what "full speed" actually is on this machine: put the fans at
+**max**, watch them, keep the peak, put back the mode that was there.
+
+`fanMaxRpm` is the one input the curve's hysteresis wants and otherwise
+never has — with it, "is the fan already going roughly this fast" is a
+question for the tachometer; without it the daemon compares the PWM values
+it last wrote, which assumes a linear PWM→RPM relationship that no fan has.
+
+**It needs only `switchMode`**, since `max` is a mode and not a speed. So
+it runs on a board like `8D2F`, which cannot be given a percentage at all —
+and there it is the only way to learn the number the driver's own
+`OMEN_CPU_MAX_RPM` fallback is standing in for.
+
+```json
+{
+  "verdict": "measured" | "noReading" | "didNotRespond" | "reverse",
+  "fanMaxRpm": 3915,
+  "fan1MaxRpm": 3915,
+  "fan2MaxRpm": 3745,
+  "baselineRpm": 2093,
+  "startedAtMax": false,
+  "seconds": 12,
+  "settled": true,
+  "restoredMode": "auto",
+  "restoreError": null,
+  "detail": "3915 rpm, up from 2093 at idle, settled after 12s",
+  "samples": [
+    { "atSecs": 1, "fan1Rpm": 2400, "fan2Rpm": 2230, "isReverse": false }
+  ],
+  "status": { "…": "the same status object every other fan write returns" }
+}
+```
+
+Four rules a client should know about:
+
+- **The call blocks** for up to `seconds` (default 30, clamped to 10-120).
+  There is nothing to return until a physical process finishes. The state
+  lock is not held while it runs, so `getStatus` still answers — and
+  reports `calibrating: true` — from another connection.
+- **It ends early when the reading settles.** On the test laptop the fans
+  reach ~3900 rpm in six seconds, so a fixed thirty is twenty-four seconds
+  of noise that measures nothing. `seconds` is the ceiling, not the target,
+  and `settled` says which happened.
+- **A run that measured nothing stores nothing**, and does not erase a
+  previous run that did. `didNotRespond` is the case this exists for: a
+  machine that accepts `max` and ignores it would otherwise record its
+  *idle* speed as its ceiling, which is worse than having no calibration —
+  the hysteresis would then believe every target above idle was already
+  reached. The one case where no rise is expected, the fans already being
+  at max, is recognised rather than guessed at (`startedAtMax`).
+- **The mode found at the start is always put back**, including when the
+  run fails partway or panics. If it cannot be put back — a machine
+  observed in `manual` that has no `pwm1` — the fans go to `auto` rather
+  than being left at full speed, and `restoreError` says so.
+
+`samples` is the trace, one reading a second, kept because it is the
+evidence for the verdict rather than decoration: a `didNotRespond` is much
+easier to argue with when the numbers behind it are in the reply.
+
+There is no dry run, unlike `diagnose`'s `allowWrites`: measuring full
+speed means reaching it. The method name is the consent.
+
+`pyren-ctl fan calibrate [--seconds N]` is the same thing from a shell.
 
 ### `fan.diagnose`
 

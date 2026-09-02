@@ -115,13 +115,17 @@ doesn't exist, because nothing has needed one yet.
 ## Roadmap
 
 1. ~~Daemon skeleton + IPC socket + Tauri shell round-trip~~ — done: `fan.getStatus` and `core.capabilities` work end-to-end.
-2. Port the rest of the `fan` module — mostly done: config persistence,
-   the `setMode`/`setCurve` write path, and the hysteresis loop (a
-   background thread inside the daemon, replacing the Python `serve` loop)
-   all exist. **Calibration does not**, so `fanMaxRpm` is unknown and the
-   hysteresis compares PWM rather than RPM. What a machine can actually do
-   is reported as `capabilities`, because `auto`/`max` and a *speed* have
-   different hardware requirements — see `01-ipc-protocol.md`.
+2. Port the rest of the `fan` module — done except the fan cleaner:
+   config persistence, the `setMode`/`setCurve` write path, the hysteresis
+   loop (a background thread inside the daemon, replacing the Python
+   `serve` loop), and calibration — `fan.calibrate` runs the fans at max,
+   watches them settle and puts back the mode it found, which is what gives
+   the hysteresis an RPM ceiling to compare against instead of PWM values.
+   A run that does not move the fans stores nothing, because a machine's
+   idle speed recorded as its ceiling is worse than no calibration at all.
+   What a machine can actually do is reported as `capabilities`, because
+   `auto`/`max` and a *speed* have different hardware requirements — see
+   `01-ipc-protocol.md`.
 3. ~~Fan UI in the app matching Pyren's Performance/Fans tab~~ — done,
    along with the rest of the Pyren surface (vitals, advanced tuning,
    lighting, graphics switcher, network booster, key mapping, settings,

@@ -50,6 +50,53 @@ start the test shell with `newgrp pyren`. `PYREN_SOCKET_GROUP`
 overrides the name. Trying to connect without it fails with a permission
 error the app spells out rather than swallowing.
 
+### Readings that need privilege
+
+Not everything the daemon reports is gated on hardware. Intel publishes
+integrated-GPU utilisation through the **i915 perf PMU** and nowhere else,
+and opening that needs `CAP_PERFMON` — which in practice means root.
+Unprivileged, the iGPU's `usagePercent` comes back `null` and the daemon
+says so at startup:
+
+```
+  note:   integrated-GPU utilisation is unavailable; it needs CAP_PERFMON,
+          which the systemd unit gets by running as root
+```
+
+`null` here means "we were not allowed to ask", not "the chip is idle" —
+the app draws the two differently on purpose. Everything else (CPU, memory,
+disks, temperatures, per-process GPU time, NVIDIA via `nvidia-smi`) works
+unprivileged.
+
+The installed systemd unit runs as root and so already carries the
+capability; it also declares `AmbientCapabilities=CAP_PERFMON`, which
+changes nothing today but records the requirement so that hardening the
+unit later cannot quietly take the reading away.
+
+To get it in development without installing anything:
+
+```sh
+sudo systemd-run --unit=pyren-dev \
+  --setenv=PYREN_SOCKET=/tmp/pyren-root.sock \
+  --setenv=PYREN_SOCKET_GROUP=wheel \
+  "$PWD/target/debug/pyren-daemon"
+# ... and when you are done:
+sudo systemctl stop pyren-dev
+```
+
+`systemd-run` is used rather than `sudo … &` because the latter does not
+reliably outlive the shell that started it. `PYREN_SOCKET_GROUP` points at
+a group you are already in, so a root daemon's `0660` socket stays
+reachable without creating `pyren` first.
+
+For a permanent answer instead of a dev one, install the unit — the daemon
+can do it to itself, which is also what the app's Permissions panel runs
+under `pkexec`:
+
+```sh
+sudo ./target/debug/pyren-daemon --install-service
+```
+
 ## 2. Run the app
 
 ```sh
@@ -66,9 +113,16 @@ node node_modules/vite/bin/vite.js dev      # frontend only, in a browser
 node node_modules/@tauri-apps/cli/tauri.js dev
 ```
 
-Running only the Vite dev server is the fastest loop for UI work: the app
-detects it isn't inside Tauri, falls back to simulated readings and renders
-every page normally (see "Demo mode" in `docs/03-frontend.md`).
+Running only the Vite dev server is the fastest loop for UI work, and it is
+**not** limited to fake data: the dev server carries a bridge
+(`app/dev-daemon-bridge.js`) that forwards requests from the browser down
+the daemon's Unix socket, so a browser tab sees exactly what the packaged
+app sees. Start the daemon first and it just works; `PYREN_SOCKET` is
+honoured there too.
+
+With no daemon running, the app falls back to simulated readings and still
+renders every page (see "Demo mode" in `docs/03-frontend.md`). The bridge
+is `apply: "serve"`, so it exists only in `vite dev` and never in a build.
 
 This starts the Vite dev server and the Tauri/Rust shell together, then
 opens the app window. First build compiles ~490 crates (WebKitGTK/GTK

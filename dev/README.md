@@ -90,13 +90,15 @@ login (or `newgrp pyren` for one shell).
   script), kept in step by a parity test.
 - **Fan control**: mode switching (max and auto measured on the laptop,
   ~2000 → ~3900 rpm and back), a curve followed on the daemon's own thread,
-  hysteresis, and settings that survive a restart — as far as the hardware
-  allows, which it reports rather than guesses.
+  hysteresis, calibration (`fan.calibrate` — max, watch, restore, which
+  needs only mode switching and so runs on this board), and settings that
+  survive a restart — as far as the hardware allows, which it reports
+  rather than guesses.
 - **Frontend**: the whole Pyren surface, bilingual, with settings on
   disk. Fan and power controls reach the daemon; the pages hide what this
   machine cannot do.
 - **`pyren-ctl`**: `status`, `power set|tune|auto|os-profile`,
-  `fan set|curve|diagnose`, `--json` on anything.
+  `fan set|curve|diagnose|calibrate`, `--json` on anything.
 - **A socket other local users cannot open**: `0660`, group `pyren`
   (verified against a root daemon - a process outside the group gets
   `EACCES`).
@@ -134,7 +136,7 @@ that move them are in the README's deployment section.
 ## Verifying a change
 
 ```sh
-cd daemon && cargo test && cargo clippy --all-targets   # 158 tests, 0 warnings
+cd daemon && cargo test && cargo clippy --all-targets   # 178 tests, 0 warnings
 cd app && bun run check && bun run build
 cd app/src-tauri && cargo check
 sh -n tools/pyren-check.sh

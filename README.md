@@ -93,7 +93,10 @@ tools/      pyren-check.sh, the dependency-free fan self-test
   the test laptop (board 8D2F) that means max and auto are available and a
   percentage is not — the module says so instead of failing silently. Max
   and auto are verified against the hardware (fans go to ~3900 rpm and come
-  back); the fan cleaner and calibration are not ported.
+  back). `fan.calibrate` measures what full speed actually is on a machine
+  - the number the curve's hysteresis wants and otherwise has to guess at -
+  and needs only mode switching, so it runs on boards that cannot be given
+  a percentage. The fan cleaner is not ported.
 - App: a full OMEN Gaming Hub-style frontend — home dashboard, system vitals
   (basic + advanced views), performance control (power modes, fan
   toggle/curve, power limits), GPU overclocking, lighting, graphics

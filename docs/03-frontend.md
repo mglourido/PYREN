@@ -83,11 +83,49 @@ different cost from writing a JSON file.
 
 ## Demo mode
 
-When the daemon can't be reached (browser dev, daemon not started), the
-telemetry store flags itself `demo`, synthesises a plausible signal, and the
-layout shows a dismissible notice. Pages then render their real layout with
-fake numbers instead of a wall of `--`, which is what makes UI work possible
-without root or the patched driver. It can be turned off in Settings.
+When the daemon can't be reached, the telemetry store flags itself `demo`,
+synthesises a plausible signal, and the layout shows a dismissible notice.
+Pages then render their real layout with fake numbers instead of a wall of
+`--`. It can be turned off in Settings.
+
+A demo has to fill **every** panel it stands in for. Simulating only the
+scalar gauges and leaving storage, processes and the GPU list empty is
+worse than not simulating at all: half the page reads as plausible data and
+the other half as an unfinished feature, with nothing to say which is
+which. The synthetic signal therefore includes disks, processes, per-core
+usage, clocks, temperatures and a *hybrid* GPU pair, because that is the
+shape a real machine produces.
+
+Browser development no longer implies demo mode: `vite dev` carries a
+bridge to the daemon's socket (`app/dev-daemon-bridge.js`), so a browser
+tab shows real readings whenever the daemon is running. Demo mode is now
+what you get when there genuinely is no daemon.
+
+## Admin mode
+
+`lib/api/admin.ts` and the Permissions panel on `/drivers` answer a
+question the rest of the app cannot: an unreachable daemon and unsupported
+hardware look identical from the UI — both are a wall of demo numbers.
+
+Every check runs in the Tauri shell, unprivileged, and needs no daemon,
+which matters because "the daemon is unreachable" is one of the states
+being diagnosed. Fixes run under `pkexec` from a **closed set** of actions
+(`Grant` in `src-tauri/src/admin.rs`); no command string ever travels from
+the webview.
+
+Installing the systemd unit is one of them, and it is how the app grants
+the daemon root: the unit runs it as root, which is what makes the
+privileged readings (integrated-GPU utilisation) available, and it persists
+across reboots. It cannot go through the daemon's IPC — the unit is what
+makes the daemon privileged in the first place — so the app runs the daemon
+binary itself with `--install-service`, driving the same installer code the
+IPC method does. This is deliberately not a toggle in Settings: it is a
+one-time system change that needs authentication, not a preference the app
+owns and can flip back. The panel keeps group *database* membership separate from what
+the login session actually carries — `usermod` takes effect immediately in
+one and not at all in the other until the user logs back in, and treating
+them as one thing is how you get a checklist that says "fixed" while
+nothing works.
 
 ## i18n
 
@@ -104,16 +142,19 @@ automatically — there is no language table to update.
 ## Conventions
 
 - No colour literals in components; add a token to `theme.css` instead.
-- Only `lib/api/daemon.ts` imports `@tauri-apps/api`, so the app also runs
-  in a plain browser (`vite dev`) for UI work.
+- `@tauri-apps/api` is imported only under `lib/api/` (`daemon.ts`,
+  `config.ts`, `admin.ts`), never from a component, so the app also runs in
+  a plain browser. Each of those has a defined behaviour outside Tauri:
+  `daemon.ts` goes through the dev-server bridge, the other two report
+  themselves unavailable.
 - Icons are inline SVG paths in `Icon.svelte` — no icon package.
 
 ## Not built yet (frontend side)
 
-- Per-process **GPU** usage: the column exists and shows `--`. CPU, memory
-  and the disk list are real.
-- The installer wizard on `/drivers`. The page runs the hardware check;
-  what it cannot yet do is walk someone through `installer.plan` /
-  `installer.apply`.
+- The **driver** installer wizard on `/drivers`. The page runs the hardware
+  check and the permissions panel (which does install the *service*); what
+  it cannot yet do is walk someone through `installer.plan` /
+  `installer.apply` for the kernel module, which replaces a file under
+  `/lib/modules` and deserves a reviewable plan rather than a button.
 - Lighting, GPU switching, network booster and key mapping drive local
   state only — there is no daemon module behind any of them yet.
