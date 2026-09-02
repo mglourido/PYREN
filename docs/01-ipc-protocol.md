@@ -194,22 +194,44 @@ supervisor that can drive it automatically.
 | `power.setAutoConfig` | full auto config object | stored config + whether it reached disk | ✅ implemented |
 | `power.setRestoreOnStart` | `{ "enabled": bool }` | as above | ✅ implemented |
 | `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState` | ✅ implemented |
+| `power.setApplyToOsProfile` | `{ "enabled": bool }` | as `getState` | ✅ implemented |
 
-### A mode is a profile
+### A mode is a profile, in three separable parts
 
-Each mode sets two kinds of thing:
+| part | mechanism | applied |
+|---|---|---|
+| the laptop's own profile | ACPI `platform_profile` | always |
+| the OS profile | power-profiles-daemon | only when `applyToOsProfile` |
+| the power envelope | powercap PL1/PL2 + turbo | only where someone set it |
+
+**These are three different owners, which is why they are three switches.**
+
+The *laptop's* profile is the firmware's, and it is the one this project
+cannot replicate: changing it changes the EC's own temperature-to-RPM
+curve, so Eco makes the fans start **later** rather than merely spin
+slower, and it moves internal power states — PCIe link power and friends —
+that no userspace knob reaches. When a machine has one, it is the most
+valuable third of a mode.
+
+The *OS* profile is what the desktop's battery menu shows, and it is
+optional on purpose: changing how the laptop behaves without changing what
+the desktop thinks is a reasonable thing to want. It is also **delegated,
+not reimplemented** — power-profiles-daemon already drives EPP and the
+governor for the running system, and writing those files ourselves on top
+of it would be two things fighting over them. The per-CPU
+energy-performance hint is only used as a fallback, on a machine with no
+power-profiles-daemon at all.
+
+The *envelope* is the half the fans feel where there is no firmware profile
+to lean on — watts the package may not draw are heat that does not have to
+be moved — and **it ships untouched on purpose**.
 
 | | Eco | Balanced | Performance | Unlimited |
 |---|---|---|---|---|
-| OS profile | `low-power` | `balanced` | `performance` | `performance` |
-| EPP | `power` | `balance_performance` | `performance` | `performance` |
+| firmware profile | `low-power` | `balanced` | `performance` | `performance` |
+| OS profile | `power-saver` | `balanced` | `performance` | `performance` |
 | PL1 / PL2 | *stock* | *stock* | *stock* | *stock* |
 | turbo | on | on | on | on |
-
-The first two rows are *scheduling* preferences, and they are what a mode
-does out of the box. The last two are the **power envelope** — the half the
-fans feel, since watts the package is not allowed to draw are heat that
-does not have to be moved — and **it ships untouched on purpose**.
 
 Every laptop has its own internal profiles, and their curves are not each
 other's. A percentage that is a sensible Eco on one chassis is a

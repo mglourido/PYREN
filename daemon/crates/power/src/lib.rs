@@ -12,22 +12,29 @@
 //! | `power.setMode` | `{ "mode": "eco"\|"balanced"\|"performance"\|"unlimited" }` | what was applied |
 //! | `power.setAutoConfig` | [`AutoConfig`] | the stored config, and whether it reached disk |
 //! | `power.setRestoreOnStart` | `{ "enabled": bool }` | as above |
+//! | `power.setApplyToOsProfile` | `{ "enabled": bool }` | as `getState` |
 //! | `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState`; defaults to the current mode |
 //!
-//! A **mode is a profile**, not a single switch. Each one sets:
+//! A **mode is a profile**, and it has three parts that are applied
+//! separately because they belong to different owners:
 //!
-//! | | Eco | Balanced | Performance | Unlimited |
-//! |---|---|---|---|---|
-//! | OS profile | low-power | balanced | performance | performance |
-//! | EPP | power | balance_performance | performance | performance |
-//! | PL1 / PL2 | 45 % / 55 % | 75 % / 90 % | 100 % | 100 % |
-//! | turbo | off | on | on | on |
+//! | part | mechanism | optional? |
+//! |---|---|---|
+//! | the laptop's own profile | ACPI `platform_profile` | no |
+//! | the OS profile | power-profiles-daemon | yes - `applyToOsProfile` |
+//! | the power envelope | powercap PL1/PL2 + turbo | only if someone set it |
 //!
-//! The percentages are of the machine's *own* stock limits, captured before
-//! this daemon ever writes one, so the same defaults suit a 15 W ultrabook
-//! and a 77 W gaming laptop. Nothing ever asks for more than stock -
-//! raising a limit past what the firmware shipped is overclocking, and is a
-//! separate feature with separate consent.
+//! The first is the one that matters most and the one this project cannot
+//! replicate: changing it changes the EC's own temperature-to-RPM curve,
+//! so Eco makes the fans start *later* rather than merely turn slower, and
+//! it moves internal power states (PCIe and friends) that no userspace
+//! knob reaches.
+//!
+//! The envelope ships untouched. See [`Tuning::default_for`] for why
+//! guessing at it would be worse than leaving it alone, and nothing ever
+//! asks for more than stock - raising a limit past what the firmware
+//! shipped is overclocking, and is a separate feature with separate
+//! consent.
 //!
 //! Settings live in `power.json` (see `omen-hub-config`), so the
 //! supervisor keeps running with the user's rules after a reboot - which
@@ -73,7 +80,7 @@ impl PowerMode {
 }
 
 /// What is persisted to `power.json`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PowerConfig {
     pub auto: AutoConfig,
@@ -83,6 +90,16 @@ pub struct PowerConfig {
     /// changing the machine's power behaviour at boot should be something
     /// the user opted into.
     pub restore_mode_on_start: bool,
+    /// Whether changing the performance mode should also change the OS
+    /// power profile (power-profiles-daemon), or only the laptop's own
+    /// firmware profile.
+    ///
+    /// The two are separate on purpose: the firmware profile is what moves
+    /// the EC's fan curve and its internal power states, while the OS
+    /// profile is what the desktop's battery menu shows. Wanting the first
+    /// without the second is a reasonable thing to want, and the app has
+    /// had a switch for it since before the daemon honoured it.
+    pub apply_to_os_profile: bool,
     /// The machine's own power limits, captured before this daemon ever
     /// wrote one.
     ///
@@ -95,6 +112,22 @@ pub struct PowerConfig {
     pub stock_limits: Option<Limits>,
     /// Each mode's share of that envelope.
     pub tuning: ModeTuning,
+}
+
+impl Default for PowerConfig {
+    fn default() -> Self {
+        Self {
+            auto: AutoConfig::default(),
+            mode: None,
+            restore_mode_on_start: false,
+            // On by default: someone who picks "Eco" in this app almost
+            // always means the whole machine, and the switch is there for
+            // the case where they do not.
+            apply_to_os_profile: true,
+            stock_limits: None,
+            tuning: ModeTuning::default(),
+        }
+    }
 }
 
 /// Shared between the IPC handlers and the supervisor thread.
@@ -238,6 +271,7 @@ impl PowerModule {
             "supply": supply,
             "auto": state.config.auto,
             "restoreModeOnStart": state.config.restore_mode_on_start,
+            "applyToOsProfile": state.config.apply_to_os_profile,
             "autoOverrideSecondsLeft": override_remaining,
             "lastAutoSwitch": state.last_auto_switch,
             "configPath": self.store.path_for("power"),
@@ -343,6 +377,23 @@ impl Module for PowerModule {
                 if applies_now {
                     self.set_mode(mode, true);
                 }
+                Ok(self.state_json())
+            }
+
+            "setApplyToOsProfile" => {
+                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
+                    ModuleError::Other("params.enabled must be a boolean".to_string())
+                })?;
+                let mode = {
+                    let mut state = lock(&self.state);
+                    state.config.apply_to_os_profile = enabled;
+                    persist(&self.store, &mut state);
+                    state.mode
+                };
+                // Re-apply so the answer takes effect now rather than at
+                // the next mode change - turning it on and seeing nothing
+                // happen would look broken.
+                self.set_mode(mode, true);
                 Ok(self.state_json())
             }
 
@@ -458,7 +509,7 @@ fn manual_override_active(state: &State) -> bool {
 /// get there; reaching across into the fan module to also command a fan
 /// mode would put two owners on one piece of hardware.
 fn apply_profile(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPaths) -> ApplyReport {
-    let mut report = backend::apply(mode);
+    let mut report = backend::apply(mode, config.apply_to_os_profile);
 
     let stock = config.stock_limits.unwrap_or_default();
     let tuning = config.tuning.get(mode);

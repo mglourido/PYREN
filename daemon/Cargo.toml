@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "daemon",
     "check",
+    "ctl",
     "crates/config",
     "crates/core",
     "crates/installer",

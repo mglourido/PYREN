@@ -19,7 +19,7 @@ frontend's structure and conventions.
 ## Layout
 
 ```
-daemon/     Rust workspace: omen-hub-daemon + omen-hub-check (CLI) + module crates
+daemon/     Rust workspace: omen-hub-daemon + omen-hub-ctl + omen-hub-check + module crates
 app/        Tauri app: SvelteKit frontend + src-tauri shell
 docs/       design plan + IPC protocol + development + frontend guide
 dev/        working notes: what is left to do, and what was learned
@@ -57,6 +57,14 @@ tools/      omen-check.sh, the dependency-free fan self-test
   systems, one per power source, where unplugging drops to Balanced and
   plugging in steps up to Performance, each then refining towards Eco or
   Performance as conditions hold. Unlimited is never chosen for you.
+  Changing the laptop's own firmware profile and changing the OS's
+  (power-profiles-daemon, which is delegated to rather than reimplemented)
+  are separate switches, because wanting one without the other is
+  reasonable.
+- `omen-hub-ctl`: a CLI over the same socket — `status`, `power set`,
+  `power tune --pl1 35W`, `fan curve 40:20,80:100`, and `--json` on any of
+  them. It exists mainly so a number someone measured on their own machine
+  can be recorded without a slider.
 - Fan-control self-test: `fan.diagnose`, the app's Hardware check page, a
   standalone `omen-hub-check` binary, and `tools/omen-check.sh` — a
   dependency-free shell version to copy onto a machine where building isn't

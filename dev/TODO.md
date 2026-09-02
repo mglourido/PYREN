@@ -100,16 +100,19 @@ real backend decision before any daemon work:
   would let the daemon be quiet under systemd and verbose when diagnosing.
 - **Temperature in the power supervisor.** It refines on load and battery
   charge only; a hot chassis is a good reason to back off.
-- **A CLI for the power envelope.** `power.setTuning` is the only way to
-  put a measured number in, and it is reachable from the app's sliders or
-  by hand over the socket. A small `omen-hub-ctl` would make "set Eco to
-  35 W on this machine and remember it" a one-liner, which is how these
-  values are actually going to be arrived at — by measuring, not guessing.
 - **Import the Windows OMEN profile.** The one honest source of per-machine
   envelope numbers that exists: `PowerControlConfig.json` on the Windows
   partition (gzip'd UTF-16 JSON) holds what HP itself considers this
   chassis's Eco and Performance. Worth more than any default this project
   could invent.
+- **What the firmware profile does that we cannot.** Changing
+  `platform_profile` moves the EC's temperature-to-RPM curve (Eco makes the
+  fans start *later*, not just spin slower) and internal power states such
+  as PCIe link power. On a machine with no firmware profile — board 8D2F —
+  none of that is reachable, and the envelope is all there is. Exposing
+  PCIe ASPM policy (`/sys/module/pcie_aspm/parameters/policy`) as an
+  explicit, off-by-default setting would recover a little of it; it is not
+  something to switch on behalf of anyone, and it is not a fan curve.
 - **Reaching Eco and Balanced tuning from the UI.** The power-limit sliders
   live in the power sub-tab, which the reference app only shows under
   Performance and Unlimited — so the Eco and Balanced profiles can only be
@@ -232,6 +235,18 @@ Eco and Balanced on its own — is the `power` supervisor.
 
 ## Done since these notes were written
 
+- **`omen-hub-ctl`**, a shell client over the same socket: `status`,
+  `power set/tune/auto/os-profile`, `fan set/curve/diagnose`, `--json` on
+  anything. Exists mainly so a measured number can be recorded without a
+  slider. The wire format now has one client implementation
+  (`omen_hub_core::client`) rather than one per caller; the Tauri app still
+  carries its own, being a separate workspace.
+- **The laptop's profile and the OS's are applied separately.** The app has
+  had an "apply to the OS power profile" switch since before the daemon
+  honoured it; it does now (`power.setApplyToOsProfile`). The OS half is
+  delegated to power-profiles-daemon rather than reimplemented, and the
+  per-CPU EPP hint is only a fallback for machines without it - writing it
+  alongside PPD was two things fighting over the same files.
 - **The auto-switch supervisor matches the reference app**: two systems,
   one per power source. Unplugging drops to Balanced at once and plugging
   in steps up to Performance at once; from there each refines within its

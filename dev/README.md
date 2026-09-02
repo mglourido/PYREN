@@ -22,6 +22,7 @@ the project's conversations are in Spanish.
 daemon/                 Rust workspace (root daemon + the CLI checker)
 ├── daemon/             omen-hub-daemon: loads modules, serves the socket
 ├── check/              omen-hub-check: standalone fan self-test CLI
+├── ctl/                omen-hub-ctl: shell client for a running daemon
 └── crates/
     ├── core/           Module trait, Registry, wire types, socket server
     ├── config/         on-disk settings (atomic writes, versioning)

@@ -30,6 +30,9 @@ jobs:
       # shell - which is the point of a POSIX sh script.
       - run: cargo test --workspace
         working-directory: daemon
+      # The CLI's help text is the only documentation most people will read.
+      - run: cargo run -q -p omen-hub-ctl -- --help
+        working-directory: daemon
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: daemon
 

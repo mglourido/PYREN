@@ -1,15 +1,27 @@
 //! Applying a power mode to the machine.
 //!
-//! Three mechanisms, tried in order of how directly they map to what the
-//! OMEN Gaming Hub does:
+//! **Two halves, applied separately**, because they are two different
+//! machines' worth of policy and a user may well want one without the
+//! other:
 //!
-//! 1. **ACPI platform profile** (`/sys/firmware/acpi/platform_profile`) -
-//!    the same firmware-level switch the Fn+P hotkey drives on HP laptops.
-//!    This is the real thing when it exists.
-//! 2. **power-profiles-daemon**, the desktop-standard service most distros
-//!    ship. Used when the firmware doesn't expose a profile of its own.
-//! 3. **Energy performance preference** (intel_pstate/amd_pstate EPP), a
-//!    per-CPU hint applied alongside either of the above.
+//! 1. **The laptop's own profile** -
+//!    `/sys/firmware/acpi/platform_profile`, the switch behind Fn+P. This
+//!    is the firmware's, and changing it changes things no userspace knob
+//!    reaches: the EC's temperature-to-RPM fan curve (which is why Eco
+//!    makes the fans start *later*, not just slower), PCIe and other
+//!    internal power states. Always applied.
+//! 2. **The OS profile** - `power-profiles-daemon`, the service most
+//!    distributions already ship. Applied only when
+//!    `applyToOsPowerProfile` is on, so the firmware profile can be
+//!    changed without touching what the desktop thinks.
+//!
+//! The OS half is deliberately **delegated rather than reimplemented**.
+//! power-profiles-daemon already knows how to drive EPP, the governor and
+//! the platform driver for the running system, and it is what the desktop
+//! environment's own battery menu talks to. Writing those knobs ourselves
+//! on top of it would mean two things fighting over the same files. The
+//! per-CPU energy-performance hint is therefore only used as a *fallback*,
+//! for a machine with no power-profiles-daemon at all.
 //!
 //! Every mechanism is best-effort and reports back what actually happened,
 //! so the UI can say "applied via platform_profile" rather than claiming
@@ -85,35 +97,82 @@ pub fn read_state() -> BackendState {
     }
 }
 
-pub fn apply(mode: PowerMode) -> ApplyReport {
-    let state = read_state();
-    let mut report = ApplyReport { applied: Vec::new(), failed: Vec::new() };
+/// One mechanism the machine offers, and what this mode would say to it.
+///
+/// Deciding is separated from doing so the decision can be unit-tested:
+/// calling `apply` in a test would write to real firmware on any machine
+/// that has some.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// The laptop's own profile.
+    PlatformProfile(String),
+    /// The OS profile, delegated to the service that owns it.
+    PowerProfilesDaemon(&'static str),
+    /// Only when there is no power-profiles-daemon to delegate to.
+    EnergyPreference(&'static str),
+}
+
+/// What applying `mode` to this machine would do.
+///
+/// The two halves are independent. The firmware profile is always part of
+/// the answer; the OS profile is only part of it when the user says so.
+pub(crate) fn plan(
+    state: &BackendState,
+    mode: PowerMode,
+    os_profile: bool,
+) -> (Vec<Step>, Vec<String>) {
+    let (mut steps, mut problems) = (Vec::new(), Vec::new());
 
     if !state.platform_profile_choices.is_empty() {
         match pick_platform_profile(mode, &state.platform_profile_choices) {
-            Some(profile) => match fs::write(PLATFORM_PROFILE, &profile) {
-                Ok(()) => report.applied.push(format!("platform_profile={profile}")),
-                Err(e) => report.failed.push(format!("platform_profile: {e}")),
-            },
-            None => report
-                .failed
-                .push("platform_profile: no choice matches this mode".to_string()),
-        }
-    } else if state.power_profiles_daemon.is_some() {
-        let profile = power_profiles_daemon_name(mode);
-        match set_power_profiles_daemon(profile) {
-            Ok(()) => report.applied.push(format!("power-profiles-daemon={profile}")),
-            Err(e) => report.failed.push(format!("power-profiles-daemon: {e}")),
+            Some(profile) => steps.push(Step::PlatformProfile(profile)),
+            None => problems.push("platform_profile: no choice matches this mode".to_string()),
         }
     }
 
-    if state.energy_preference.is_some() {
-        let preference = energy_preference_name(mode);
-        match write_all_cpus("energy_performance_preference", preference) {
-            Ok(count) => report
-                .applied
-                .push(format!("energy_performance_preference={preference} ({count} cpus)")),
-            Err(e) => report.failed.push(format!("energy_performance_preference: {e}")),
+    if os_profile {
+        // power-profiles-daemon first, because it already drives EPP and
+        // the governor for this system and is what the desktop's own
+        // battery menu talks to; doing it ourselves as well would be two
+        // things writing the same files.
+        if state.power_profiles_daemon.is_some() {
+            steps.push(Step::PowerProfilesDaemon(power_profiles_daemon_name(mode)));
+        } else if state.energy_preference.is_some() {
+            steps.push(Step::EnergyPreference(energy_preference_name(mode)));
+        }
+    }
+
+    (steps, problems)
+}
+
+/// Applies the laptop's own profile, and optionally the OS's.
+///
+/// `os_profile` is the user's answer to "should changing the machine's
+/// performance mode also change what my desktop thinks the power policy
+/// is?". Both answers are legitimate, which is why it is a question and
+/// not a fixed order of preference.
+pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
+    let (steps, problems) = plan(&read_state(), mode, os_profile);
+    let mut report = ApplyReport { applied: Vec::new(), failed: problems };
+
+    for step in steps {
+        match step {
+            Step::PlatformProfile(profile) => match fs::write(PLATFORM_PROFILE, &profile) {
+                Ok(()) => report.applied.push(format!("platform_profile={profile}")),
+                Err(e) => report.failed.push(format!("platform_profile: {e}")),
+            },
+            Step::PowerProfilesDaemon(profile) => match set_power_profiles_daemon(profile) {
+                Ok(()) => report.applied.push(format!("power-profiles-daemon={profile}")),
+                Err(e) => report.failed.push(format!("power-profiles-daemon: {e}")),
+            },
+            Step::EnergyPreference(preference) => {
+                match write_all_cpus("energy_performance_preference", preference) {
+                    Ok(count) => report
+                        .applied
+                        .push(format!("energy_performance_preference={preference} ({count} cpus)")),
+                    Err(e) => report.failed.push(format!("energy_performance_preference: {e}")),
+                }
+            }
         }
     }
 
@@ -249,5 +308,70 @@ mod tests {
     #[test]
     fn a_firmware_offering_nothing_usable_yields_none() {
         assert_eq!(pick_platform_profile(PowerMode::Unlimited, &choices(&["custom"])), None);
+    }
+
+    /// A laptop with both mechanisms, which is the case the split exists
+    /// for: the firmware profile and the desktop's are different things.
+    fn full_machine() -> BackendState {
+        BackendState {
+            platform_profile: Some("balanced".into()),
+            platform_profile_choices: choices(&["low-power", "balanced", "performance"]),
+            power_profiles_daemon: Some("balanced".into()),
+            energy_preference: Some("balance_performance".into()),
+            governor: Some("powersave".into()),
+            available: vec!["platform_profile", "power-profiles-daemon"],
+        }
+    }
+
+    #[test]
+    fn both_halves_are_applied_when_the_os_profile_is_wanted() {
+        let (steps, problems) = plan(&full_machine(), PowerMode::Eco, true);
+
+        assert_eq!(
+            steps,
+            vec![
+                Step::PlatformProfile("low-power".into()),
+                Step::PowerProfilesDaemon("power-saver"),
+            ]
+        );
+        assert!(problems.is_empty());
+    }
+
+    /// Saying no to the OS profile still changes the laptop's own, which is
+    /// the half that moves the fan curve.
+    #[test]
+    fn declining_the_os_profile_leaves_the_firmware_profile_alone() {
+        let (steps, _) = plan(&full_machine(), PowerMode::Eco, false);
+        assert_eq!(steps, vec![Step::PlatformProfile("low-power".into())]);
+    }
+
+    /// power-profiles-daemon already drives EPP; writing it ourselves on
+    /// top would be two things fighting over the same files.
+    #[test]
+    fn the_cpu_hint_is_only_used_where_there_is_no_daemon_to_delegate_to() {
+        let no_ppd = BackendState { power_profiles_daemon: None, ..full_machine() };
+        let (steps, _) = plan(&no_ppd, PowerMode::Eco, true);
+
+        assert_eq!(
+            steps,
+            vec![Step::PlatformProfile("low-power".into()), Step::EnergyPreference("power")]
+        );
+    }
+
+    /// Board 8D2F: no firmware profile at all, so the OS half is the whole
+    /// answer - and switching it off leaves nothing to do.
+    #[test]
+    fn a_machine_with_no_firmware_profile_has_only_the_os_half() {
+        let no_firmware = BackendState {
+            platform_profile: None,
+            platform_profile_choices: Vec::new(),
+            ..full_machine()
+        };
+
+        let (steps, _) = plan(&no_firmware, PowerMode::Eco, true);
+        assert_eq!(steps, vec![Step::PowerProfilesDaemon("power-saver")]);
+
+        let (steps, problems) = plan(&no_firmware, PowerMode::Eco, false);
+        assert!(steps.is_empty() && problems.is_empty(), "nothing to do is not a failure");
     }
 }

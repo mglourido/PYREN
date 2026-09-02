@@ -50,6 +50,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omen-hub-ctl"
+version = "0.1.0"
+dependencies = [
+ "omen-hub-core",
+ "serde_json",
+]
+
+[[package]]
 name = "omen-hub-daemon"
 version = "0.1.0"
 dependencies = [
