@@ -22,6 +22,10 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# For the group checks in `admin`: the group database and the groups this
+# session actually carries are different questions, and only the kernel can
+# answer the second.
+libc = "0.2"
 # Shared with the daemon on purpose: both processes persist small JSON
 # config files and both need the same atomic-write, corruption-recovery and
 # versioning behaviour. The two remain separate Cargo workspaces and ship as

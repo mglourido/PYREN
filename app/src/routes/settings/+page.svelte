@@ -53,6 +53,15 @@
     <p class="hint">{@html t("help.translationsBody")}</p>
   </Panel>
 
+  <!-- Permissions are not a preference - they are a one-time system change
+       that needs authentication - so the controls live on the hardware
+       check page. But this is where people come looking for them, and a
+       setting you cannot find may as well not exist. -->
+  <Panel title={t("admin.title")}>
+    <p class="hint">{t("settings.permissionsHint")}</p>
+    <a class="config-link" href="/drivers">{t("settings.permissionsLink")}</a>
+  </Panel>
+
   <!-- Where settings live, and anything that went wrong reading them.
        A silent reset to defaults is exactly the kind of thing users are
        left guessing about, so it is stated here. -->
@@ -178,6 +187,17 @@
 </div>
 
 <style>
+  .config-link {
+    display: inline-block;
+    padding: 7px 22px;
+    border: 1px solid var(--accent-2);
+    border-radius: 2px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    text-decoration: none;
+  }
+
   .settings {
     flex: 1;
     overflow-y: auto;

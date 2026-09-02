@@ -13,8 +13,10 @@
   import Panel from "$lib/components/Panel.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
   import { daemon, type FanDiagnosis, type CheckStatus } from "$lib/api/daemon";
+  import { admin, type AdminAction, type AdminStatus } from "$lib/api/admin";
   import { t } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
+  import { onMount } from "svelte";
 
   let diagnosis = $state<FanDiagnosis | null>(null);
   let running = $state(false);
@@ -34,6 +36,137 @@
     }
   }
 
+  // --- Admin mode --------------------------------------------------------
+  //
+  // Most "Pyren is broken" is missing privilege, and from the UI the two
+  // look identical: an unreachable daemon and unsupported hardware both
+  // show the same demo numbers. These rows say which it is.
+
+  let privileges = $state<AdminStatus | null>(null);
+  let granting = $state<AdminAction | null>(null);
+  let grantError = $state<string | null>(null);
+  let statusError = $state<string | null>(null);
+  let reloginNeeded = $state(false);
+
+  /** In a browser there is no shell to ask, so the panel isn't shown. */
+  const canInspect = admin.available();
+
+  async function refreshPrivileges() {
+    if (!canInspect) return;
+    try {
+      privileges = await admin.status();
+      statusError = null;
+    } catch (e) {
+      // Kept apart from grantError: failing to *read* the state and failing
+      // to *change* it are different problems with different remedies.
+      statusError = String(e);
+    }
+  }
+
+  async function applyGrant(action: AdminAction) {
+    granting = action;
+    grantError = null;
+    try {
+      const result = await admin.grant(action);
+      // A dismissed polkit dialog is a decision, not a failure.
+      if (result.applied && action === "joinGroup") reloginNeeded = true;
+      await refreshPrivileges();
+    } catch (e) {
+      grantError = String(e);
+    } finally {
+      granting = null;
+    }
+  }
+
+  onMount(refreshPrivileges);
+
+  /** The daemon's own view of what it was started with. */
+  const daemonPrivileges = $derived(telemetry.systemInfo?.privileges ?? null);
+
+  type Row = {
+    id: string;
+    ok: boolean;
+    title: string;
+    detail: string;
+    action?: AdminAction;
+  };
+
+  const rows = $derived.by<Row[]>(() => {
+    const p = privileges;
+    if (!p) return [];
+    return [
+      {
+        id: "service",
+        ok: p.serviceActive,
+        title: t("admin.service"),
+        detail: p.unitPath
+          ? p.serviceActive
+            ? t("admin.serviceRunning", { path: p.unitPath })
+            : t("admin.serviceStopped", { path: p.unitPath })
+          : p.daemonBinary
+            ? t("admin.serviceInstallable", { binary: p.daemonBinary })
+            : t("admin.serviceNoBinary"),
+        // Installing the unit is what makes the daemon run as root, which
+        // is why it is offered here and not only after the daemon is up.
+        action: p.unitPath
+          ? p.serviceActive
+            ? undefined
+            : "enableService"
+          : p.daemonBinary
+            ? "installService"
+            : undefined,
+      },
+      {
+        id: "group",
+        ok: p.sessionHasGroup,
+        title: t("admin.group", { group: p.groupName }),
+        detail: p.needsRelogin
+          ? t("admin.groupNeedsRelogin")
+          : p.sessionHasGroup
+            ? t("admin.groupOk")
+            : t("admin.groupMissing", { group: p.groupName }),
+        action: p.sessionHasGroup || p.needsRelogin ? undefined : "joinGroup",
+      },
+      {
+        id: "socket",
+        ok: p.socketReachable,
+        title: t("admin.socket"),
+        detail: p.socketReachable
+          ? t("admin.socketOk", { path: p.socketPath })
+          : p.socketDenied
+            ? t("admin.socketDenied", { path: p.socketPath })
+            : t("admin.socketUnreachable", { path: p.socketPath }),
+      },
+      {
+        id: "perf",
+        ok: daemonPrivileges?.perfEvents ?? false,
+        title: t("admin.perfEvents"),
+        detail: !daemonPrivileges
+          ? t("admin.perfUnknown")
+          : daemonPrivileges.perfEvents
+            ? t("admin.perfOk")
+            : daemonPrivileges.root
+              ? t("admin.perfNoIntel")
+              : t("admin.perfNotRoot"),
+      },
+      {
+        id: "root",
+        ok: daemonPrivileges?.root ?? false,
+        title: t("admin.rootTitle"),
+        // Three different reasons to be unprivileged, and telling someone
+        // to "install the service" while a privileged service is already
+        // running is worse than saying nothing.
+        detail: !daemonPrivileges
+          ? t("admin.rootUnknown")
+          : daemonPrivileges.root
+            ? t("admin.rootOk")
+            : p.serviceActive
+              ? t("admin.rootShadowed", { path: p.socketPath })
+              : t("admin.rootNo"),
+      },
+    ];
+  });
+
   const icons: Record<CheckStatus, string> = {
     pass: "check",
     fail: "close",
@@ -44,6 +177,52 @@
 
 <div class="drivers">
   <h1 class="page-title">{t("diagnostics.title")}</h1>
+
+  <!-- Privileges first: a fan check on a machine whose daemon cannot be
+       reached only ever reports the same thing twice. -->
+  {#if canInspect}
+    <Panel title={t("admin.title")}>
+      <p class="hint">{t("admin.intro")}</p>
+
+      {#if !privileges}
+        <!-- Without this the panel vanished whenever the status call
+             failed, taking the error message inside it along - the one
+             state where the user most needs to be told something. -->
+        <p class="notice">{statusError ?? t("common.loading")}</p>
+      {/if}
+
+      <ul class="checks">
+        {#each rows as row (row.id)}
+          <li class={row.ok ? "pass" : "warn"}>
+            <Icon name={row.ok ? "check" : "warning"} size={15} />
+            <div class="body">
+              <span class="check-title">{row.title}</span>
+              <span class="detail">{row.detail}</span>
+            </div>
+            {#if row.action}
+              <button
+                class="fix"
+                disabled={granting !== null || !privileges?.canElevate}
+                onclick={() => applyGrant(row.action!)}
+              >
+                {granting === row.action ? t("admin.applying") : t("admin.fix")}
+              </button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+
+      {#if reloginNeeded}
+        <p class="notice warn">{t("admin.groupNeedsRelogin")}</p>
+      {/if}
+      {#if privileges && !privileges.canElevate}
+        <p class="notice warn">{t("admin.noPolkit")}</p>
+      {/if}
+      {#if grantError}
+        <p class="notice err">{grantError}</p>
+      {/if}
+    </Panel>
+  {/if}
 
   <Panel>
     <div class="controls">
@@ -134,6 +313,23 @@
 
   .page-title {
     font-size: 24px;
+  }
+
+  .fix {
+    flex: 0 0 auto;
+    align-self: center;
+    padding: 6px 16px;
+    border: 1px solid var(--accent-2);
+    border-radius: 2px;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .fix:disabled {
+    opacity: 0.45;
   }
 
   .controls {

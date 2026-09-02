@@ -4,6 +4,8 @@
 //! Unix domain socket. See docs/01-ipc-protocol.md at the repo root for
 //! the wire format.
 
+mod admin;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
@@ -17,17 +19,70 @@ use serde_json::{json, Map, Value};
 /// paths. (`ConfigStore` sanitises names too - this is the first line.)
 const APP_CONFIG_NAMESPACES: &[&str] = &["app", "ui"];
 
-/// Must match the daemon's own default in `daemon/daemon/src/main.rs` -
-/// keep both in sync until this moves into a shared config/env convention.
-fn socket_path() -> String {
-    std::env::var("PYREN_SOCKET").unwrap_or_else(|_| "/tmp/pyren-daemon.sock".to_string())
+/// Where the daemon might be, most-likely first.
+///
+/// There are two, and assuming either one alone is a bug: the installed
+/// systemd unit listens on `/run/pyren/daemon.sock`, while an unprivileged
+/// `cargo run` falls back to `/tmp/pyren-daemon.sock`. A client that knew
+/// only the second would never find a properly installed daemon - which is
+/// every real installation.
+///
+/// Keep in step with `daemon/crates/core/src/client.rs`, which resolves the
+/// same two for `pyren-ctl`.
+const SOCKET_CANDIDATES: &[&str] = &["/run/pyren/daemon.sock", "/tmp/pyren-daemon.sock"];
+
+fn socket_candidates() -> Vec<String> {
+    match std::env::var("PYREN_SOCKET") {
+        // An explicit setting is a decision, not a hint: don't second-guess it.
+        Ok(path) => vec![path],
+        Err(_) => SOCKET_CANDIDATES.iter().map(|s| (*s).to_string()).collect(),
+    }
+}
+
+/// The socket to name in the UI: the one that answers, else the one that at
+/// least exists, else the first we would try.
+pub(crate) fn socket_path() -> String {
+    let candidates = socket_candidates();
+    candidates
+        .iter()
+        .find(|path| UnixStream::connect(path).is_ok())
+        .or_else(|| candidates.iter().find(|path| std::path::Path::new(path).exists()))
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
+}
+
+/// Opens the first socket that answers.
+fn connect_daemon() -> Result<UnixStream, String> {
+    let candidates = socket_candidates();
+    let mut failure: Option<(String, std::io::Error)> = None;
+
+    for path in &candidates {
+        match UnixStream::connect(path) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                // "You are not in the group" is a far more useful thing to
+                // report than "no such file" from the path we tried next,
+                // so it wins whatever order the failures arrive in.
+                let more_useful = e.kind() == std::io::ErrorKind::PermissionDenied
+                    || failure.as_ref().is_none_or(|(_, previous)| {
+                        previous.kind() != std::io::ErrorKind::PermissionDenied
+                    });
+                if more_useful {
+                    failure = Some((path.clone(), e));
+                }
+            }
+        }
+    }
+
+    let (path, error) = failure.expect("there is always at least one candidate");
+    Err(connect_error(&path, error))
 }
 
 /// Sends one JSON-RPC-ish request to pyren-daemon and returns its
 /// `result`, or an `Err` built from the connection failure or the
 /// daemon's own `error` field.
 fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, String> {
-    let stream = UnixStream::connect(socket_path()).map_err(connect_error)?;
+    let stream = connect_daemon()?;
 
     let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
     let request = json!({ "id": 1, "module": module, "method": method, "params": params });
@@ -51,8 +106,7 @@ fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, Strin
 /// here is not a broken install - it is a user who has not been added to
 /// the group yet, and saying so is the whole difference between a
 /// two-minute fix and a bug report.
-fn connect_error(e: std::io::Error) -> String {
-    let path = socket_path();
+fn connect_error(path: &str, e: std::io::Error) -> String {
     if e.kind() == std::io::ErrorKind::PermissionDenied {
         return format!(
             "not allowed to reach pyren-daemon at {path}. \
@@ -154,6 +208,20 @@ struct JsonDocument {
     fields: Map<String, Value>,
 }
 
+/// What the app is allowed to do, and what is missing. Runs entirely in
+/// this unprivileged process and needs no daemon - the daemon being
+/// unreachable is one of the things it diagnoses.
+#[tauri::command]
+fn admin_status() -> Result<Value, String> {
+    Ok(admin::status(&socket_path()))
+}
+
+/// Applies one of a closed set of fixes, authenticated through `pkexec`.
+#[tauri::command]
+fn admin_grant(action: String) -> Result<Value, String> {
+    admin::grant(&action)
+}
+
 #[tauri::command]
 fn app_config_load(namespace: String) -> Result<Value, String> {
     let store = app_config_store(&namespace)?;
@@ -241,6 +309,8 @@ pub fn run() {
             power_set_restore_on_start,
             power_set_tuning,
             power_set_apply_to_os_profile,
+            admin_status,
+            admin_grant,
             app_config_load,
             app_config_save
         ])
