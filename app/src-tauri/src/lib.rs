@@ -188,8 +188,42 @@ fn app_config_save(namespace: String, values: Map<String, Value>) -> Result<Stri
         .map_err(|e| e.to_string())
 }
 
+/// Works around a WebKitGTK bug that leaves the window showing a stale frame.
+///
+/// WebKitGTK's accelerated compositor hands finished frames to GTK as
+/// DMA-BUFs. On a hybrid machine whose EGL device is the NVIDIA
+/// proprietary driver, that hand-off silently stops presenting: the web
+/// process keeps running, the DOM keeps updating and nothing is logged,
+/// but the compositor keeps showing the last frame it managed to import.
+/// Resizing forces the buffers to be reallocated, which is why the window
+/// looks frozen until it is dragged and then jumps to the current state.
+///
+/// `WEBKIT_DISABLE_DMABUF_RENDERER=1` makes WebKit copy frames through
+/// shared memory instead. Rendering stays accelerated; only the zero-copy
+/// hand-off is given up, which costs a little on a page this static.
+///
+/// Applied only where the bug lives - Linux, with the NVIDIA module
+/// loaded - and never over a value the user set, so `…=0` in the
+/// environment is still a way to test whether a newer WebKitGTK has fixed
+/// it. Must run before the first window is built, since WebKit reads this
+/// once when the web process starts.
+fn workaround_webkit_dmabuf() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return;
+    }
+    if !std::path::Path::new("/sys/module/nvidia").exists() {
+        return;
+    }
+    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    workaround_webkit_dmabuf();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
