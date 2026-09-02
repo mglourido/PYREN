@@ -57,7 +57,9 @@
     "networkBooster": "Intensificador de red",
     "networkBoosterDesc": "Controla el tráfico de red doméstica para priorizar tu juego.",
     "autoEco": "Cambiar automáticamente al modo Eco",
+    "autoEcoHint": "Al desconectar la corriente pasa a Equilibrado; si la máquina sigue inactiva, o la batería baja, sigue hasta Eco.",
     "autoPerformance": "Cambiar automáticamente al modo de Rendimiento",
+    "autoPerformanceHint": "Al conectar la corriente sube a Rendimiento; si la máquina está inactiva vuelve a Equilibrado. Sin límites nunca se elige por ti.",
     "new": "NUEVA"
   },
   "vitals": {

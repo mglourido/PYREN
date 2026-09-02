@@ -98,8 +98,18 @@ real backend decision before any daemon work:
 
 - **Logging.** ~20 `println!`/`eprintln!` calls. A level-filtered logger
   would let the daemon be quiet under systemd and verbose when diagnosing.
-- **Temperature in the power supervisor.** It decides on load and battery
-  only; a hot chassis is a good reason to back off.
+- **Temperature in the power supervisor.** It refines on load and battery
+  charge only; a hot chassis is a good reason to back off.
+- **A CLI for the power envelope.** `power.setTuning` is the only way to
+  put a measured number in, and it is reachable from the app's sliders or
+  by hand over the socket. A small `omen-hub-ctl` would make "set Eco to
+  35 W on this machine and remember it" a one-liner, which is how these
+  values are actually going to be arrived at — by measuring, not guessing.
+- **Import the Windows OMEN profile.** The one honest source of per-machine
+  envelope numbers that exists: `PowerControlConfig.json` on the Windows
+  partition (gzip'd UTF-16 JSON) holds what HP itself considers this
+  chassis's Eco and Performance. Worth more than any default this project
+  could invent.
 - **Reaching Eco and Balanced tuning from the UI.** The power-limit sliders
   live in the power sub-tab, which the reference app only shows under
   Performance and Unlimited — so the Eco and Balanced profiles can only be
@@ -110,8 +120,6 @@ real backend decision before any daemon work:
   because it is asleep; `FanConfig` has no `referenceSensor` field yet.
 - **Fan cleaner** (reverse spin, `acpi_call`) — the protocol is documented
   in the source project, and it's the one genuinely novel feature.
-- **Import Windows OMEN config** (`PowerControlConfig.json`, gzip'd UTF-16
-  JSON on the Windows partition) to skip calibration for dual-booters.
 - **Per-process GPU usage** in the vitals table (the column exists and
   shows `--`).
 - **Packaging**: nothing exists. PKGBUILD first, given the audience.
@@ -167,6 +175,13 @@ Recorded so nobody "fixes" them by accident:
   to save an admin one `usermod -aG`. The protocol also cannot tell two
   group members apart, so no future method may depend on *which* one
   called.
+- **No mode ships power-limit numbers.** Every laptop has its own internal
+  profiles and their curves are not each other's, so a percentage that is a
+  sensible Eco on one chassis is a throttled mess on the next. Out of the
+  box a mode drives only the mechanisms the machine provides; the envelope
+  is left where the firmware set it until someone puts in a number they
+  measured. Inventing one and applying it everywhere would be worse than
+  doing nothing, because it would look deliberate.
 - **A power profile never exceeds the firmware's own limits.** Eco caps,
   Performance and Unlimited restore; neither raises. "Unlimited" means this
   daemon imposes no limit of its own, not that the machine is unlocked —
@@ -217,6 +232,12 @@ Eco and Balanced on its own — is the `power` supervisor.
 
 ## Done since these notes were written
 
+- **The auto-switch supervisor matches the reference app**: two systems,
+  one per power source. Unplugging drops to Balanced at once and plugging
+  in steps up to Performance at once; from there each refines within its
+  own range (Eco↔Balanced on battery, Balanced↔Performance on mains) as
+  load and battery charge hold. Unlimited is never chosen automatically. A
+  manual choice suspends refinement but not transitions.
 - **The power modes are profiles now**, not a single switch: each sets the
   OS preference *and* the package power envelope (PL1/PL2 as a percentage
   of the machine's stock limits, plus turbo), which is the half the fans

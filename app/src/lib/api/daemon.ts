@@ -141,10 +141,18 @@ export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
 /** Config for the daemon's background Eco/Performance supervisor. */
 export type AutoConfig = {
   enabled: boolean;
+  /** The "switch to Eco automatically" system: unplugging drops to
+   *  Balanced, and a machine that stays idle - or whose battery gets low -
+   *  goes on to Eco. */
   ecoOnBattery: boolean;
+  /** The "switch to Performance automatically" system: plugging in steps up
+   *  to Performance, and an idle machine on mains comes back to Balanced. */
   performanceOnLoad: boolean;
   loadHigh: number;
   loadLow: number;
+  /** Battery percentage at or below which Eco is preferred whatever the
+   *  load is doing. */
+  batteryLowPercent: number;
   samplesToSwitch: number;
   intervalSecs: number;
   manualOverrideSecs: number;

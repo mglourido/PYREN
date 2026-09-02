@@ -197,6 +197,7 @@ class HardwareStore {
       performanceOnLoad: true,
       loadHigh: 0.7,
       loadLow: 0.3,
+      batteryLowPercent: 25,
       samplesToSwitch: 3,
       intervalSecs: 10,
       manualOverrideSecs: 600,

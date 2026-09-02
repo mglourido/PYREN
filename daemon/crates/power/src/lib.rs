@@ -379,18 +379,30 @@ fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore, paths: limits:
 
             if !guard.config.auto.enabled {
                 (interval, None)
-            } else if manual_override_active(&guard) {
-                guard.switcher.reset();
-                (interval, None)
             } else {
-                let inputs = AutoInputs::sample(PowerSupplyState::read().on_battery);
+                let supply = PowerSupplyState::read();
+                let inputs = AutoInputs::sample(supply.on_battery, supply.battery_percent);
                 let current = guard.mode;
                 let config = guard.config.auto.clone();
-                (interval, guard.switcher.observe(inputs, &config, current))
+                let decision = guard.switcher.observe(inputs, &config, current);
+
+                // A manual choice suspends *refinement*, but not the answer
+                // to the power source changing: plugging the machine in is
+                // the user speaking too, and more recently.
+                match decision {
+                    Some(d) if d.from_transition => (interval, Some(d)),
+                    other if manual_override_active(&guard) => {
+                        guard.switcher.reset();
+                        let _ = other;
+                        (interval, None)
+                    }
+                    other => (interval, other),
+                }
             }
         };
 
-        if let Some(mode) = decision {
+        if let Some(decision) = decision {
+            let mode = decision.mode;
             // The whole profile, not just its OS half: a mode has to mean
             // the same thing whether the user picked it or the supervisor
             // did, or "Eco" would quietly be two different settings.
@@ -401,8 +413,9 @@ fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore, paths: limits:
             let mut guard = lock(&state);
             if !report.is_empty() {
                 guard.mode = mode;
-                guard.last_auto_switch = Some(format!("{mode:?} via {}", report.applied.join(", ")));
-                println!("omen-hub-daemon: power auto-switch -> {mode:?}");
+                guard.last_auto_switch =
+                    Some(format!("{mode:?}: {} ({})", decision.reason, report.applied.join(", ")));
+                println!("omen-hub-daemon: power auto-switch -> {mode:?} ({})", decision.reason);
                 // Only worth a disk write when the mode is meant to survive
                 // a reboot; otherwise the supervisor would rewrite the file
                 // every time conditions change.

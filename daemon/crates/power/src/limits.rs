@@ -119,21 +119,25 @@ pub struct Tuning {
 }
 
 impl Tuning {
-    /// Where the four modes sit by default.
+    /// Every mode starts at the machine's own envelope, untouched.
     ///
-    /// Eco gives up turbo, which is the single biggest thing one can do for
-    /// fan noise and battery: the short bursts it enables are what make a
-    /// laptop audible while idling on a web page. The other three keep it.
-    pub fn default_for(mode: PowerMode) -> Self {
-        match mode {
-            PowerMode::Eco => Self { pl1_percent: 45, pl2_percent: 55, turbo: false },
-            PowerMode::Balanced => Self { pl1_percent: 75, pl2_percent: 90, turbo: true },
-            PowerMode::Performance => Self { pl1_percent: 100, pl2_percent: 100, turbo: true },
-            // Not "beyond stock" - there is no software way to exceed the
-            // firmware's envelope that is not overclocking. Unlimited means
-            // this daemon imposes no limit of its own.
-            PowerMode::Unlimited => Self { pl1_percent: 100, pl2_percent: 100, turbo: true },
-        }
+    /// It is tempting to ship an opinion here - Eco at 45 %, Balanced at
+    /// 75 %, and so on - and it would be wrong. **Every laptop has its own
+    /// internal profiles, and their curves are not each other's.** A number
+    /// that is a sensible Eco on one chassis is a thermally-throttled mess
+    /// on the next, and this daemon has no way to know which it is looking
+    /// at. Inventing one and applying it everywhere would be worse than
+    /// doing nothing, because it would look deliberate.
+    ///
+    /// So out of the box a mode drives only the mechanisms the machine
+    /// itself provides - its ACPI platform profile, power-profiles-daemon,
+    /// the CPU's energy-performance hint - and the envelope is left where
+    /// the firmware set it. The knobs are all here, and `power.setTuning`
+    /// is how a value that someone actually measured on *this* machine gets
+    /// in. Importing the Windows OMEN profile would be another (see
+    /// `dev/TODO.md`); guessing is not.
+    pub fn default_for(_mode: PowerMode) -> Self {
+        Self { pl1_percent: 100, pl2_percent: 100, turbo: true }
     }
 
     /// The absolute limits this tuning asks for, given the machine's stock.
@@ -316,18 +320,23 @@ mod tests {
         Limits { pl1_uw: Some(77 * W), pl2_uw: Some(77 * W), pl4_uw: Some(168 * W) }
     }
 
+    /// No mode ships an opinion about watts. Whose watts would they be?
     #[test]
-    fn eco_asks_for_a_fraction_of_the_machines_own_envelope() {
-        let target = Tuning::default_for(PowerMode::Eco).target(stock());
-        assert_eq!(target.pl1_uw, Some(34 * W + 650_000));
-        assert_eq!(target.pl4_uw, stock().pl4_uw, "PL4 stays at stock");
+    fn every_mode_starts_at_the_machines_own_envelope() {
+        for mode in
+            [PowerMode::Eco, PowerMode::Balanced, PowerMode::Performance, PowerMode::Unlimited]
+        {
+            assert_eq!(Tuning::default_for(mode).target(stock()), stock());
+        }
     }
 
     #[test]
-    fn performance_and_unlimited_ask_for_exactly_stock() {
-        for mode in [PowerMode::Performance, PowerMode::Unlimited] {
-            assert_eq!(Tuning::default_for(mode).target(stock()), stock());
-        }
+    fn a_tuning_someone_set_is_a_fraction_of_that_envelope() {
+        let measured = Tuning { pl1_percent: 45, pl2_percent: 55, turbo: false };
+        let target = measured.target(stock());
+
+        assert_eq!(target.pl1_uw, Some(34 * W + 650_000));
+        assert_eq!(target.pl4_uw, stock().pl4_uw, "PL4 stays at stock");
     }
 
     /// The whole point of the ceiling: raising a limit past what the
@@ -353,10 +362,13 @@ mod tests {
         assert!(target.clamp_to_stock(Limits::default()).is_empty());
     }
 
+    /// Turbo is a behaviour choice, not a measurement, so it is not one
+    /// this daemon makes for anyone either.
     #[test]
-    fn only_eco_gives_up_turbo_by_default() {
-        assert!(!Tuning::default_for(PowerMode::Eco).turbo);
-        for mode in [PowerMode::Balanced, PowerMode::Performance, PowerMode::Unlimited] {
+    fn no_mode_gives_up_turbo_unless_someone_says_so() {
+        for mode in
+            [PowerMode::Eco, PowerMode::Balanced, PowerMode::Performance, PowerMode::Unlimited]
+        {
             assert!(Tuning::default_for(mode).turbo);
         }
     }

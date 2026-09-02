@@ -197,24 +197,32 @@ supervisor that can drive it automatically.
 
 ### A mode is a profile
 
-Each mode sets several things at once, and both halves matter:
+Each mode sets two kinds of thing:
 
 | | Eco | Balanced | Performance | Unlimited |
 |---|---|---|---|---|
 | OS profile | `low-power` | `balanced` | `performance` | `performance` |
 | EPP | `power` | `balance_performance` | `performance` | `performance` |
-| PL1 / PL2 | 45 % / 55 % | 75 % / 90 % | 100 % | 100 % |
-| turbo | off | on | on | on |
+| PL1 / PL2 | *stock* | *stock* | *stock* | *stock* |
+| turbo | on | on | on | on |
 
-The first two rows are *scheduling* preferences. The last two are the
-**power envelope**, and they are the half the fans feel: watts that the
-package is not allowed to draw are heat that does not have to be moved. On
-a machine with no firmware platform profile — board `8D2F` has none — the
-envelope is the entire profile.
+The first two rows are *scheduling* preferences, and they are what a mode
+does out of the box. The last two are the **power envelope** — the half the
+fans feel, since watts the package is not allowed to draw are heat that
+does not have to be moved — and **it ships untouched on purpose**.
 
-Percentages are of **this machine's own stock limits**, captured before the
-daemon ever writes one, so the same defaults suit a 15 W ultrabook and a
-77 W gaming laptop. They are reported by `getState`:
+Every laptop has its own internal profiles, and their curves are not each
+other's. A percentage that is a sensible Eco on one chassis is a
+thermally-throttled mess on the next, and the daemon has no way to tell
+which it is looking at. So it ships no opinion: a mode drives the
+mechanisms the machine itself provides, and the envelope stays where the
+firmware set it until someone puts a measured number in through
+`power.setTuning`. That is also why the numbers are stored as a percentage
+of **this machine's own stock limits**, captured before the daemon ever
+writes one — a value measured on a 77 W laptop means something different on
+a 15 W one, and a percentage at least travels honestly.
+
+`getState` reports the whole picture:
 
 ```json
 "limits": {
@@ -222,7 +230,7 @@ daemon ever writes one, so the same defaults suit a 15 W ultrabook and a
   "stock":   { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
   "current": { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
   "turbo": true,
-  "tuning": { "eco": { "pl1Percent": 45, "pl2Percent": 55, "turbo": false }, "...": {} }
+  "tuning": { "eco": { "pl1Percent": 100, "pl2Percent": 100, "turbo": true }, "...": {} }
 }
 ```
 
@@ -280,15 +288,43 @@ different platform profile.
 `power.getState`'s `auto` object configures a supervisor thread that runs
 whether or not the app is open:
 
+It is **two systems**, matching the two switches on the app's home screen:
+
+| | when it acts | what it does |
+|---|---|---|
+| `ecoOnBattery` | the machine is unplugged | drops to Balanced *at once*, then to Eco if it stays idle or the battery gets low |
+| `performanceOnLoad` | the machine is plugged in | steps up to Performance *at once*, then back to Balanced if it sits idle |
+
+So a change of power source is a discrete event with an immediate answer,
+and everything after it is a slow refinement inside the range that source
+allows:
+
+```text
+  on battery:   Eco  <--->  Balanced
+  on mains:            Balanced  <--->  Performance
+```
+
+Three consequences worth knowing:
+
+- **Unlimited is never chosen automatically.** It is the one mode that
+  removes the daemon's own limits, so it is the one mode the user has to
+  ask for. The supervisor does move *out* of it when the power source
+  changes — unplugging is a deliberate act, and a laptop running unlimited
+  off a battery is not what anyone meant — but it never refines its way in.
+- **No amount of load reaches Performance on battery**, and no amount of
+  idling reaches Eco on mains. The ranges do not overlap.
+- **A manual `setMode` suspends refinement, not transitions.** Plugging the
+  machine in is the user speaking too, and more recently than the last
+  click.
+
 | field | meaning |
 |---|---|
 | `enabled` | master switch |
-| `ecoOnBattery` | drop to Eco whenever running on battery (beats the load rule) |
-| `performanceOnLoad` | step up to Performance under sustained load |
 | `loadHigh` / `loadLow` | 1-minute load average **per core** above/below which load counts as high/low. The gap between them is a dead band where the supervisor has no opinion — this is what stops the mode flapping around a threshold. |
-| `samplesToSwitch` | consecutive agreeing samples required before switching |
+| `batteryLowPercent` | at or below this charge, Eco is preferred on battery whatever the load is doing |
+| `samplesToSwitch` | consecutive agreeing samples required before a *refinement*. Transitions ignore it. |
 | `intervalSecs` | how often it samples |
-| `manualOverrideSecs` | how long a manual `setMode` suspends the supervisor — whoever is at the keyboard wins |
+| `manualOverrideSecs` | how long a manual `setMode` suspends refinement — whoever is at the keyboard wins |
 
 The load average is used rather than instantaneous CPU usage precisely
 because it is already smoothed: a mode switch spins fans up or down and is

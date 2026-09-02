@@ -5,6 +5,7 @@
    * column holds what the daemon decides on its own (the background
    * Eco/Balanced watcher) and the right two hold manual controls.
    */
+  import InfoTip from "$lib/components/InfoTip.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
   import { t } from "$lib/i18n/index.svelte";
@@ -38,7 +39,7 @@
             onchange={(v) => hardware.setAutoSwitch(v, hardware.state.autoPerformance)}
             ariaLabel={t("home.autoEco")}
           />
-          <span>{t("home.autoEco")}</span>
+          <span>{t("home.autoEco")}<InfoTip>{t("home.autoEcoHint")}</InfoTip></span>
         </div>
         <div class="switch-row">
           <Toggle
@@ -46,7 +47,7 @@
             onchange={(v) => hardware.setAutoSwitch(hardware.state.autoEco, v)}
             ariaLabel={t("home.autoPerformance")}
           />
-          <span>{t("home.autoPerformance")}</span>
+          <span>{t("home.autoPerformance")}<InfoTip>{t("home.autoPerformanceHint")}</InfoTip></span>
         </div>
       </article>
 

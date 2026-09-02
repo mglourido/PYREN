@@ -57,7 +57,9 @@
     "networkBooster": "Network booster",
     "networkBoosterDesc": "Control home network traffic to prioritise your game.",
     "autoEco": "Switch to Eco mode automatically",
+    "autoEcoHint": "Unplugging drops to Balanced; a machine that stays idle, or whose battery gets low, goes on to Eco.",
     "autoPerformance": "Switch to Performance mode automatically",
+    "autoPerformanceHint": "Plugging in steps up to Performance; an idle machine on mains comes back down to Balanced. Unlimited is never chosen for you.",
     "new": "NEW"
   },
   "vitals": {

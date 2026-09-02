@@ -51,9 +51,12 @@ tools/      omen-check.sh, the dependency-free fan self-test
   stock limits, plus turbo. The envelope is the half the fans feel, and on
   a machine with no firmware platform profile it is the whole profile.
   Nothing is ever raised above stock — that would be overclocking, which is
-  deliberately not built yet. Plus a background supervisor that switches
-  modes on its own (Eco on battery, Performance under sustained load) with
-  hysteresis and a manual override.
+  deliberately not built yet — and no envelope numbers ship by default,
+  because every laptop's internal profiles are its own and guessing them
+  would be worse than doing nothing. Plus a background supervisor: two
+  systems, one per power source, where unplugging drops to Balanced and
+  plugging in steps up to Performance, each then refining towards Eco or
+  Performance as conditions hold. Unlimited is never chosen for you.
 - Fan-control self-test: `fan.diagnose`, the app's Hardware check page, a
   standalone `omen-hub-check` binary, and `tools/omen-check.sh` — a
   dependency-free shell version to copy onto a machine where building isn't
