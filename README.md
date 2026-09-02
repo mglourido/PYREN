@@ -28,7 +28,12 @@ tools/      omen-check.sh, the dependency-free fan self-test
 
 ## Status
 
-- Daemon skeleton + Unix socket IPC: working.
+- Daemon skeleton + Unix socket IPC: working. The socket is the trust
+  boundary and is enforced as one — bound `0660` to the `omen-hub` group, so
+  a local user who is not a member cannot reach a root daemon at all.
+- Continuous integration: `.github/workflows/ci.yml` runs the daemon tests
+  and clippy, `svelte-check` and the app build, `cargo check` on the Tauri
+  shell, and a syntax check on the shell script.
 - Config persistence: `omen-hub-config`, one JSON file per namespace with
   atomic writes, corrupt files preserved rather than overwritten, and
   version stamping. Shared by the daemon (`/etc/omen-hub/`) and the app
@@ -54,17 +59,25 @@ tools/      omen-check.sh, the dependency-free fan self-test
   → apply, kept for boards the stock driver doesn't support and for the
   systemd unit. Detection and planning are verified; the driver execution
   path is written but has never been run, because that needs an HP laptop.
-- `fan` module: read-only status (`getStatus`) implemented and verified
-  end-to-end; writing to hardware (`setMode`/`setCurve`/fan cleaner) not
-  ported yet.
+- `fan` module: status, the self-test, and the write path — `setMode`
+  (auto/max/manual/curve), `setCurve`, a control loop that follows a curve
+  with hysteresis and temperature smoothing, and `fan.json` persistence.
+  What a machine can actually do is reported as `capabilities` and enforced:
+  `auto` and `max` need only `pwm1_enable`, while a *speed* needs `pwm1`,
+  which the running driver exposes only for boards in its feature table. On
+  the test laptop (board 8D2F) that means max and auto are available and a
+  percentage is not — the module says so instead of failing silently. Max
+  and auto are verified against the hardware (fans go to ~3900 rpm and come
+  back); the fan cleaner and calibration are not ported.
 - App: full OMEN-Hub-style frontend — home dashboard, system vitals
   (basic + advanced views), performance control (power modes, fan
   toggle/curve, power limits), GPU overclocking, lighting, graphics
   switcher, network booster, key mapping, plus settings, drivers and help
-  pages. Bilingual (en/es) with a drop-in translation system. Falls back to
+  pages. The fan controls are wired to the daemon and hide what this
+  machine's driver cannot do. Bilingual (en/es) with a drop-in translation system. Falls back to
   simulated data when the daemon isn't reachable, so the UI is usable
-  without root. Hardware *writes* are wired in the UI but no-ops until the
-  daemon implements them.
+  without root. Fan and power writes reach the daemon; lighting, GPU
+  switching, network booster and key mapping are still UI-only.
 
 ## Running in development
 
@@ -77,5 +90,27 @@ Wayland workaround you'll likely need are in
 
 The daemon is meant to run as a systemd service as root, with
 `OMEN_HUB_SOCKET=/run/omen-hub/daemon.sock`; the app runs as a normal
-desktop user and connects to that socket. No systemd unit, installer, or
-packaging exists yet — see the roadmap in `docs/00-design-plan.md`.
+desktop user and connects to that socket, which requires being in the
+`omen-hub` group:
+
+```sh
+sudo groupadd -f omen-hub && sudo usermod -aG omen-hub "$USER"   # then log out and back in
+```
+
+`installer.apply` does the `groupadd` itself; the `usermod` is left to the
+user, since which accounts may control the machine is not the installer's
+decision. No packaging exists yet — see the roadmap in
+`docs/00-design-plan.md`.
+
+## License
+
+GPL-3.0-or-later, for the whole repository — daemon, app and tools. See
+[`LICENSE`](LICENSE).
+
+    Copyright (C) 2026 Mateo González
+
+This is not a free choice: the `fan` and `installer` modules are ports of
+[`omen-fan-control`](https://github.com/arfelious/omen-fan-control), which
+is GPL-3.0, and the driver they patch is GPL-2 kernel code. The frontend
+was original work and previously declared MIT in `app/package.json`; it now
+matches the rest, because the app and the daemon ship as one program.

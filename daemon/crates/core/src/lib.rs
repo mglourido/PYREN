@@ -6,13 +6,11 @@
 //! module id, using a small JSON-RPC-like protocol. See
 //! `docs/01-ipc-protocol.md` at the repo root for the wire format.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+mod socket;
+pub use socket::{serve_unix_socket, socket_group, Audience};
 
 /// Error returned by a module while handling a call. Converted to a plain
 /// string at the IPC boundary (see [`Response`]) - callers on the other
@@ -74,11 +72,11 @@ pub struct Response {
 }
 
 impl Response {
-    fn ok(id: u64, result: Value) -> Self {
+    pub(crate) fn ok(id: u64, result: Value) -> Self {
         Self { id, result: Some(result), error: None }
     }
 
-    fn err(id: u64, message: impl Into<String>) -> Self {
+    pub(crate) fn err(id: u64, message: impl Into<String>) -> Self {
         Self { id, result: None, error: Some(message.into()) }
     }
 }
@@ -143,58 +141,4 @@ impl Default for Registry {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Runs the daemon's IPC server: binds `path` as a Unix domain socket and
-/// serves newline-delimited JSON requests/responses forever, one thread per
-/// connection. This call blocks the calling thread.
-///
-/// Intentionally simple (std threads, blocking IO, one request in flight
-/// per connection) rather than async - the socket is a local low-throughput
-/// control plane, not a hot path. Revisit only if that stops being true.
-pub fn serve_unix_socket(path: &str, registry: Arc<Registry>) -> std::io::Result<()> {
-    if let Some(parent) = Path::new(path).parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // Stale socket file from a previous run (e.g. unclean shutdown) would
-    // otherwise make bind() fail with "address in use".
-    let _ = std::fs::remove_file(path);
-
-    let listener = UnixListener::bind(path)?;
-
-    for stream in listener.incoming() {
-        let stream = stream?;
-        let registry = Arc::clone(&registry);
-        std::thread::spawn(move || {
-            if let Err(e) = handle_connection(stream, &registry) {
-                eprintln!("omen-hub-daemon: connection error: {e}");
-            }
-        });
-    }
-
-    Ok(())
-}
-
-fn handle_connection(stream: UnixStream, registry: &Registry) -> std::io::Result<()> {
-    let mut writer = stream.try_clone()?;
-    let reader = BufReader::new(stream);
-
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => registry.dispatch(req),
-            Err(e) => Response::err(0, format!("invalid request: {e}")),
-        };
-
-        let mut payload = serde_json::to_string(&response)
-            .unwrap_or_else(|_| "{\"id\":0,\"error\":\"internal serialization error\"}".to_string());
-        payload.push('\n');
-        writer.write_all(payload.as_bytes())?;
-    }
-
-    Ok(())
 }

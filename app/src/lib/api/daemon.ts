@@ -15,11 +15,37 @@ import { invoke } from "@tauri-apps/api/core";
 /** False when the page is served by Vite in a normal browser, not Tauri. */
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** What this machine's hp-wmi driver actually exposes. */
+export type FanCapabilities = {
+  /** `pwm1_enable`: auto and max can be commanded. */
+  switchMode: boolean;
+  /** `pwm1`: a specific speed can be commanded. */
+  setSpeed: boolean;
+};
+
+export type FanDaemonMode = "auto" | "max" | "manual" | "curve";
+
+export type FanCurvePoint = { tempC: number; percent: number };
+
 export type FanStatus = {
   driverInstalled: boolean;
+  capabilities: FanCapabilities;
   cpuTempC: number | null;
   fanRpm: number;
   isReverse: boolean;
+  mode: FanDaemonMode;
+  /** Raw 0-255 the driver reports, or null where `pwm1` does not exist. */
+  pwm: number | null;
+  targetPwm: number | null;
+  manualPwm: number;
+  curve: FanCurvePoint[];
+  interpolation: "smooth" | "discrete";
+  restoreModeOnStart: boolean;
+  fanMaxRpm: number | null;
+  /** Last failure from the control loop, e.g. a write that needed root. */
+  error: string | null;
+  saved: boolean;
+  saveError: string | null;
 };
 
 export type ModuleCapability = { id: string; supported: boolean };
@@ -188,9 +214,14 @@ export const daemon = {
   fanStatus: () => call<FanStatus>("fan_get_status"),
   /** `allowWrites` opts into the one check that touches hardware. */
   fanDiagnose: (allowWrites = false) => call<FanDiagnosis>("fan_diagnose", { allowWrites }),
-  /** Not implemented daemon-side yet; the UI already calls it. */
-  setFanMode: (mode: "auto" | "manual" | "max", pwm?: number) =>
-    call<null>("fan_set_mode", { mode, pwm }),
+  /** `pwm` (0-255) is required for `manual` and ignored otherwise. */
+  setFanMode: (mode: FanDaemonMode, pwm?: number) =>
+    call<FanStatus>("fan_set_mode", { mode, pwm }),
+  /** Stores the curve; it only drives the fans while the mode is `curve`. */
+  setFanCurve: (curve: FanCurvePoint[], interpolation?: "smooth" | "discrete") =>
+    call<FanStatus>("fan_set_curve", { curve, interpolation }),
+  setFanRestoreOnStart: (enabled: boolean) =>
+    call<FanStatus>("fan_set_restore_on_start", { enabled }),
   powerState: () => call<PowerState>("power_get_state"),
   setPowerMode: (mode: PowerMode) => call<ApplyReport>("power_set_mode", { mode }),
   setAutoConfig: (config: AutoConfig) =>

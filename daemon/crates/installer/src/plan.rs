@@ -378,10 +378,25 @@ fn plan_install_service(env: &Environment) -> Plan {
         warnings.push("The service unit is already installed; it will be replaced.".to_string());
     }
 
+    // The daemon is root and its socket is the trust boundary, so the socket
+    // is handed to a group rather than left open to every local user. That
+    // group has to exist before the daemon first binds, or nobody but root
+    // can connect. See `omen_hub_core::socket`.
+    let group = omen_hub_core::socket_group();
+    warnings.push(format!(
+        "Add each user who should control this machine to the '{group}' group: \
+         sudo usermod -aG {group} $USER (then log out and back in)."
+    ));
+
     Plan {
         action: Action::InstallService,
         strategy: None,
         steps: vec![
+            Step::command(
+                "create-group",
+                &format!("Create the '{group}' group that may reach the daemon"),
+                &["groupadd", "-f", &group],
+            ),
             Step::internal(
                 "write-unit",
                 "Write /etc/systemd/system/omen-hub-daemon.service",
@@ -607,6 +622,19 @@ mod tests {
         assert!(plan.is_runnable());
         assert!(ids(&plan).contains(&"restore-backups"));
         assert!(ids(&plan).contains(&"remove-hooks"));
+    }
+
+    /// Without the group, the daemon binds its socket 0600 and the desktop
+    /// user it exists for cannot reach it.
+    #[test]
+    fn installing_the_service_creates_the_group_that_may_reach_it() {
+        let plan = plan(&ready_env(), Action::InstallService, PlanOptions::default());
+        let group = omen_hub_core::socket_group();
+
+        let step = plan.steps.iter().find(|s| s.id == "create-group").expect("group step");
+        assert_eq!(step.command, ["groupadd", "-f", &group]);
+        assert_eq!(plan.steps[0].id, "create-group", "must exist before the daemon starts");
+        assert!(plan.warnings.iter().any(|w| w.contains("usermod -aG")));
     }
 
     #[test]

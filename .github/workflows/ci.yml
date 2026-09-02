@@ -1,0 +1,73 @@
+# The checks from dev/README.md's "Verifying a change", run on every push.
+#
+# Split into four jobs rather than one so a red badge says *which* half
+# broke: the daemon and the app are separate Cargo workspaces shipping as
+# separate binaries, and the shell check needs nothing at all.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  daemon:
+    name: daemon (test + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      # Runs the parity test too, under dash rather than the developer's
+      # shell - which is the point of a POSIX sh script.
+      - run: cargo test --workspace
+        working-directory: daemon
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: daemon
+
+  app:
+    name: app (svelte-check + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: app
+      - run: bun run check
+        working-directory: app
+      - run: bun run build
+        working-directory: app
+
+  tauri:
+    name: tauri shell (cargo check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # webkit2gtk and friends are not on the runner image; without them
+      # the Tauri crates fail at their build scripts, not at compile time.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: cargo check --all-targets
+        working-directory: app/src-tauri
+
+  shell:
+    name: omen-check.sh (syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh -n tools/omen-check.sh

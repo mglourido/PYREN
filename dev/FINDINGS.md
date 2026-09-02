@@ -4,7 +4,7 @@ Things that took real work to establish. Written down so nobody has to
 re-derive them, and so that a surprising piece of code has a reason
 attached.
 
-## Board 8D2F: why fan control doesn't work on the test laptop
+## Board 8D2F: why a fan *percentage* can't be set on the test laptop
 
 The one HP machine this has run on is an **OMEN Gaming Laptop 16-am0xxx,
 board `8D2F`, kernel 7.2.2**. `omen-hub-check` reports `monitoringOnly`:
@@ -30,24 +30,118 @@ where `params` comes from `active_board_params`, which is set from the
 `hp_wmi_feature_boards` DMI table.
 
 **`8D2F` appears in `omen_thermal_profile_boards` but not in
-`hp_wmi_feature_boards`.** So installing the patched driver as-is would
-probably *still* not give working PWM control — the board would need an
-entry in the feature table with the right params variant
+`hp_wmi_feature_boards`** (verified directly against the driver source:
+line 383 versus the table at 411). The first reading of this was that a
+patched driver would *still* not give working PWM control — see the next
+section, which corrects that. What the board would need to be a
+first-class citizen is an entry in the feature table with the right params
+variant
 (`victus_s`, `omen_v1`, `omen_v1_legacy`, `omen_v1_no_ec`). That is exactly
 what the installer's `experimentalBoard` + `boardTable` parameters do, and
 why `boardTable` is required rather than guessed: the variants differ in
 which EC offset holds the thermal profile, so the wrong one gives a driver
 that loads and then misreads the hardware.
 
-**Still unverified**, because this reasons about the *patched* driver while
-the laptop runs the *stock* one. Two data points would settle it, and the
-current `omen-check.sh` collects both:
+**Re-confirmed on 2026-09-02**, on the laptop itself, kernel 7.2.2. The
+full hwmon listing is now on file and matches the table above exactly:
 
-- the full listing of `/sys/devices/platform/hp-wmi/hwmon/hwmon8/`
-- `dmesg | grep -i hp.wmi` (needs root; `kernel.dmesg_restrict` is set)
+```
+$ ls /sys/devices/platform/hp-wmi/hwmon/hwmon*/
+device  fan1_input  fan2_input  name  power  pwm1_enable  subsystem  uevent
+$ cat .../pwm1_enable  →  2          # firmware curve
+$ cat /sys/firmware/acpi/platform_profile  →  no such file
+```
 
-Run `sudo sh omen-check.sh --json`. The result on file as of writing is
-from the older version and has neither.
+So `pwm1` is genuinely absent rather than momentarily missing, and the
+`hp-wmi` platform node exposes no thermal-profile attribute either
+(`als display dock hddtemp postcode tablet`, and nothing else).
+
+Worth noting the disagreement this creates inside our own code: the daemon
+prints *"Supported: board 8D2F is on the known-good list"* from
+`system/boards.rs`, while `fan.diagnose` on the same machine says
+`monitoringOnly`. Both are right about different questions — the board is
+a known OMEN, and its fans are not writable — but `system.getInfo`'s
+`compatibility` should not be read as "fan control works". See §"`system`
+always reports supported" in `TODO.md`.
+
+**`dmesg` is now on file too**, and it is a single line:
+
+```
+[    5.585175] input: HP WMI hotkeys as /devices/virtual/input/input10
+```
+
+Nothing about fans, no error, no reduced-functionality warning — and
+notably none of the `pr_info` lines the driver emits when it *does* find
+fan hardware (`HP WMI: Hardware reported Max RPM: …`, the fan-table
+messages). The driver is not failing on this board; it simply never enters
+the code path, exactly as a board missing from `hp_wmi_feature_boards`
+would.
+
+## What the driver actually gates on the board table
+
+Read from the project's own copy of the driver source
+(`data/driver/hp-wmi-omen/hp-wmi.c`, which is byte-identical to its
+`.orig` — the patching happens at install time, so that file is plain
+upstream). This corrects the pessimistic reading above, and it is what
+makes a fan write path worth building at all:
+
+`pwm1_enable` is a *mode* switch, and the three modes do not need the same
+things (`hp_wmi_apply_fan_settings`):
+
+| value | mode | how it is applied | needs board params? |
+|---|---|---|---|
+| `0` | `PWM_MODE_MAX` | `hp_wmi_fan_speed_max_set(1)` | **no** |
+| `1` | `PWM_MODE_MANUAL` | `hp_wmi_fan_speed_set()` → a WMI query | **no** |
+| `2` | `PWM_MODE_AUTO` | `hp_wmi_fan_speed_max_set(0)` | **no** |
+
+`hp_wmi_fan_control_supported()` — the thing `active_board_params` decides
+— only affects *reading* the active fan speed, the clamping of a written
+PWM to the board's min/max, and an extra trigger call. **None of the three
+set paths is gated on it.** So the earlier conclusion, that a patched
+driver "would probably still not give working PWM control", is too
+pessimistic: in this version `hp_wmi_hwmon_is_visible` returns `0644` for
+`hwmon_pwm` unconditionally, so installing it would expose `pwm1` on 8D2F,
+and whether the firmware honours the query is then an empirical question
+rather than a driver one.
+
+**Confirmed on the hardware, 2026-09-02**, against a root daemon:
+
+```
+before        pwm1_enable=2 fan1=2093 fan2=1913
+setMode max   ok
+  +2s         pwm1_enable=0 fan1=2702 fan2=2536
+  +4s         pwm1_enable=0 fan1=3312 fan2=3138
+  +6s         pwm1_enable=0 fan1=3906 fan2=3737
+setMode auto  ok
+after         pwm1_enable=2 fan1=3654 fan2=3494   (already decaying)
+```
+
+So on a board that is *not* in `hp_wmi_feature_boards`, with the stock
+kernel driver, max and auto genuinely drive the fans. This is the first
+hardware write this project has ever made.
+
+That also explains what the laptop's owner reports: *everything works
+except setting the fan percentage*. Max and auto are reachable through
+`pwm1_enable` on the stock driver right now; only the percentage needs
+`pwm1`, which the running 7.2.2 driver does not expose. (The running driver
+must therefore gate `hwmon_pwm_input` on the board table, unlike the source
+above — the two cannot both describe the same code, and the kernel package
+here ships no source to diff against.)
+
+Three details that shape the port, all from the same file:
+
+- **`pwm1 = 0` does not mean "fans off".** It is `HP_FAN_SPEED_AUTOMATIC`,
+  and `hp_wmi_fan_speed_set` hands the fans straight back to the firmware.
+  A curve point at 0 % would silently stop being a curve, so anything
+  commanded is clamped to at least 1 (`curve::MIN_COMMANDED_PWM`).
+- **`pwm1_enable = 1` on its own applies 128.** `priv->cpu_pwm` is
+  initialised to 128 in `hp_wmi_setup_fan_settings`, so switching to manual
+  without writing `pwm1` first pins the fans at 50 % chosen by nobody. The
+  port writes the speed *before* the mode for exactly this reason.
+- **The driver keeps max/manual alive itself**, every
+  `KEEP_ALIVE_DELAY_SECS` = 90 s, and cancels that work on auto. The
+  daemon's own re-assert is 60 s, comfortably inside both that and the
+  ~120 s the EC takes to reclaim control.
 
 ## Manual fan control is upstream now
 
@@ -98,13 +192,34 @@ Researched alternatives, should this ever need revisiting:
   release** (`2eab8333…`, ≠ `v2.0.0`'s `f2c92786…`) — nobody knows which
   version it is, which is the problem pinning solves.
 
+## The test laptop has no per-key RGB keyboard
+
+Settled on 2026-09-02, on the laptop, and it decides which of the two RGB
+ports is worth writing:
+
+| probe | result |
+|---|---|
+| `lsusb \| grep -i 0d62` | **nothing** — no HP Gaming Keyboard II |
+| `ls /sys/devices/platform/hp-wmi` | present |
+| `ls /proc/acpi/call` | absent — `acpi_call` is not installed |
+| `ls /sys/class/leds` | no keyboard-backlight entry at all |
+
+The whole USB bus is a camera, a Bluetooth radio and four root hubs, so
+the per-key path (`driver.py`, `hidapi`, `0d62:54bf`) has nothing to talk
+to here and should not be ported first.
+
+That leaves the 4-zone lightbar path over `/proc/acpi/call`, which cannot
+be *tested* until the `acpi_call` module is installed (`acpi_call-dkms` on
+Arch). Until then "no per-key device" is proven and "the 4-zone interface
+answers" is not.
+
 ## The RGB project has two unrelated hardware paths
 
 Full review in [`docs/04-rgb-porting-review.md`](../docs/04-rgb-porting-review.md).
 Short version: per-key RGB over USB HID (`0d62:54bf`) and a 4-zone lightbar
 over ACPI share nothing, and which applies is not decided by the model
-name. Nothing can be ported until `lsusb | grep -i 0d62` is run on the
-laptop.
+name — which is why the probes above had to be run rather than reasoned
+about. On this laptop the answer is: not the per-key one.
 
 That review also found: a contradiction between `set_all()` and
 `data/keys.json` about backspace, an `lstrip("b0x")` that eats data bytes

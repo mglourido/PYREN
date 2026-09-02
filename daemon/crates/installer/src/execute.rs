@@ -393,7 +393,11 @@ fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
         .ok_or_else(|| "could not determine the daemon's own path".to_string())?;
 
     // Socket lives under /run so it disappears on reboot; RuntimeDirectory
-    // makes systemd create and clean it up.
+    // makes systemd create and clean it up. The directory stays traversable
+    // by everyone on purpose - the gate is the socket inside it, which the
+    // daemon binds 0660 to the 'omen-hub' group (see
+    // `omen_hub_core::socket`). A 0750 directory here would instead lock
+    // out the very group members it is meant to admit.
     let unit = format!(
         "[Unit]\n\
          Description=OMEN Hub hardware daemon\n\

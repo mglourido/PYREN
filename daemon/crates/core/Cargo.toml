@@ -8,3 +8,6 @@ license.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+# Only for socket ownership and permissions - the trust boundary is
+# enforced by the filesystem, which means chown(2), umask(2) and getgrnam(3).
+libc = "0.2"

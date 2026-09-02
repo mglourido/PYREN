@@ -34,6 +34,23 @@ tools/omen-check.sh     dependency-free shell twin of omen-hub-check
 docs/                   design, IPC protocol, development, frontend, RGB review
 ```
 
+## The source projects being ported from
+
+Not in this repository and not on the developer's disk — they live on a USB
+stick, which is worth writing down because every path in these notes that
+starts `../omen-fan-control-main` actually resolves to:
+
+```
+/run/media/paraguayo33/SAMSUNG USB/omen-fan-control-main (1)/    # docs/ + the Python source + the driver
+/run/media/paraguayo33/SAMSUNG USB/omen-rgb-linux-main/          # the RGB project
+```
+
+The one to read first is `docs/04-fan-control-logic.md` in the fan project
+(the behavioural spec) and
+`src/omen_fan_control/data/driver/hp-wmi-omen/hp-wmi.c` (the driver itself,
+which is plain upstream — the patching happens at install time, so the
+`.orig` beside it is byte-identical).
+
 ## Running everything
 
 ```sh
@@ -57,13 +74,19 @@ Full prerequisites and the Wayland workaround are in
   restart.
 - **Fan self-test**: three front ends (daemon method, app page, CLI + shell
   script), kept in step by a parity test.
+- **Fan control**: mode switching (max and auto measured on the laptop,
+  ~2000 → ~3900 rpm and back), a curve followed on the daemon's own thread,
+  hysteresis, and settings that survive a restart — as far as the hardware
+  allows, which it reports rather than guesses.
 - **Frontend**: the whole OMEN Hub surface, bilingual, with settings on disk.
+- **A socket other local users cannot open**: `0660`, group `omen-hub`.
 
 ## What does not work yet
 
-- **Setting fan speed.** `fan.setMode`/`setCurve` are unimplemented, and on
-  the one HP laptop tested the kernel exposes no `pwm1` anyway — see
-  `FINDINGS.md` §"Board 8D2F".
+- **Setting a fan *percentage* on this laptop.** The write path is built and
+  tested; the running kernel exposes no `pwm1`, so `manual` and `curve` are
+  refused here while `auto` and `max` are not. Installing the patched
+  driver should change that — see `TODO.md` §1.1.
 - **Lighting, GPU switching, network booster, key mapping**: the UI is
   complete and drives local state only. No daemon module behind any of them.
 - **The installer's execution path** has never been run.
@@ -71,9 +94,12 @@ Full prerequisites and the Wayland workaround are in
 ## Verifying a change
 
 ```sh
-cd daemon && cargo test && cargo clippy --all-targets   # 15 suites, 0 warnings
+cd daemon && cargo test && cargo clippy --all-targets   # 17 suites, 0 warnings
 cd app && bun run check && bun run build
 cd app/src-tauri && cargo check
+sh -n tools/omen-check.sh
 ```
 
-There is no CI, so this is manual — see `TODO.md`.
+`.github/workflows/ci.yml` runs all of these on every push and pull
+request, in four jobs so a failure says which half broke. Running them
+locally first is still faster than waiting for the badge.

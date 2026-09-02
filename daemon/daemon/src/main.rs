@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use omen_hub_core::{serve_unix_socket, Registry};
+use omen_hub_core::{serve_unix_socket, Audience, Registry};
 use omen_hub_fan::FanModule;
 use omen_hub_installer::InstallerModule;
 use omen_hub_power::PowerModule;
@@ -16,6 +16,15 @@ use omen_hub_system::{Compatibility, SystemModule};
 /// unprivileged local development without needing a real install.
 fn socket_path() -> String {
     std::env::var("OMEN_HUB_SOCKET").unwrap_or_else(|_| "/tmp/omen-hub-daemon.sock".to_string())
+}
+
+/// Whether the socket being owner-only is a problem. Unprivileged
+/// development is the case where it isn't: the app runs as the same user.
+fn is_root() -> bool {
+    std::fs::metadata("/proc/self").map(|m| {
+        use std::os::unix::fs::MetadataExt;
+        m.uid() == 0
+    }).unwrap_or(false)
 }
 
 fn main() {
@@ -54,9 +63,21 @@ fn main() {
     }
 
     let socket_path = socket_path();
-    println!("omen-hub-daemon: listening on {socket_path}");
 
-    if let Err(e) = serve_unix_socket(&socket_path, registry) {
+    let announce = |audience: &Audience| {
+        println!("omen-hub-daemon: listening on {socket_path}, {}", audience.summary());
+        // A root daemon nobody can reach looks exactly like a working one
+        // until the app fails to connect, so name the fix here.
+        if matches!(audience, Audience::OwnerOnly) && is_root() {
+            println!(
+                "  note:   no 'omen-hub' group on this system, so only root can connect.\n\
+                 \x20         create it and add your desktop user:\n\
+                 \x20           sudo groupadd -f omen-hub && sudo usermod -aG omen-hub $USER"
+            );
+        }
+    };
+
+    if let Err(e) = serve_unix_socket(&socket_path, registry, announce) {
         eprintln!("omen-hub-daemon: fatal: {e}");
         std::process::exit(1);
     }

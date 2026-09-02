@@ -42,8 +42,13 @@ rebuild.
 └────────────────────────────┘
 ```
 
-- The socket is the trust boundary. Day-to-day calls don't re-prompt for a
-  password — the daemon simply is root, always, and the app process never
+- The socket is the trust boundary, and it is enforced the only way the
+  kernel will enforce it for us: file permissions. The daemon binds it
+  `0660` to the `omen-hub` group, so being a member of that group is what
+  it means to be allowed to control this machine — see
+  `daemon/crates/core/src/socket.rs` and the Transport section of
+  `01-ipc-protocol.md`. Day-to-day calls don't re-prompt for a password —
+  the daemon simply is root, always, and the app process never
   is. A `pkexec`-driven flow only appears in the one-time installer
   (installing the patched kernel driver, installing `omen-hub-daemon` as a
   systemd service), reusing the approach documented in
@@ -93,10 +98,13 @@ is tested by actually creating the directory rather than by checking for
 root, since being root and the path being writable are different questions
 (read-only `/etc`, containers, immutable distros).
 
-The `fan` module has no config yet; when its write paths land, the
-persistent/volatile split from the original Python project (see
-`../omen-fan-control-main/docs/04-fan-control-logic.md`) is worth keeping
-for it specifically — other modules haven't needed it.
+The `fan` module now has `fan.json` too (mode, manual speed, curve,
+smoothing window, `restoreModeOnStart`). The original Python project's
+persistent/volatile split — a second copy under `/run` for settings that
+should not survive a reboot — was **not** carried over: it exists there to
+let a shutdown hook hand state to the next boot, and nothing here has
+needed that. Revisit it if the fan cleaner lands, which is the feature that
+wanted it.
 
 A `core.json` for cross-cutting settings (enabled modules, log level) still
 doesn't exist, because nothing has needed one yet.
@@ -104,13 +112,18 @@ doesn't exist, because nothing has needed one yet.
 ## Roadmap
 
 1. ~~Daemon skeleton + IPC socket + Tauri shell round-trip~~ — done: `fan.getStatus` and `core.capabilities` work end-to-end.
-2. Port the rest of the `fan` module: config persistence, `setMode`/curve write path, calibration, hysteresis loop (as a background task inside the daemon, replacing the Python `serve` loop).
+2. Port the rest of the `fan` module — mostly done: config persistence,
+   the `setMode`/`setCurve` write path, and the hysteresis loop (a
+   background thread inside the daemon, replacing the Python `serve` loop)
+   all exist. **Calibration does not**, so `fanMaxRpm` is unknown and the
+   hysteresis compares PWM rather than RPM. What a machine can actually do
+   is reported as `capabilities`, because `auto`/`max` and a *speed* have
+   different hardware requirements — see `01-ipc-protocol.md`.
 3. ~~Fan UI in the app matching OMEN Hub's Performance/Fans tab~~ — done,
    along with the rest of the OMEN Hub surface (vitals, advanced tuning,
    lighting, graphics switcher, network booster, key mapping, settings,
    drivers, help). See `docs/03-frontend.md`. The UI's *write* paths call
-   the daemon and currently get "not implemented" back, which is the next
-   thing to close.
+   the daemon; the fan ones now do something, the rest still do not.
 4. Fan-cleaner protocol (`docs/04-fan-control-logic.md` §"Fan cleaner protocol" in the source repo) — the ACPI-call sequence, once basic curve control is solid.
 5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary generalizes to a differently-shaped hardware surface — reviewed but not started, see `docs/04-rgb-porting-review.md`; the per-key and 4-zone paths share nothing, so which one to port has to be settled on the hardware first.
 6. ~~Privileged installer flow (kernel driver + daemon systemd unit)~~ —

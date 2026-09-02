@@ -109,7 +109,7 @@
 
   <Panel title={t("help.legal")}>
     <p>{t("help.legalBody")}</p>
-    <p class="muted">{t("help.license")}: MIT</p>
+    <p class="muted">{t("help.license")}: GPL-3.0-or-later</p>
   </Panel>
 </div>
 

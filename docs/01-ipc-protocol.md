@@ -11,9 +11,25 @@ and `app/src-tauri/src/lib.rs` (client) if either changes.
 - Unix domain socket, `SOCK_STREAM`.
 - Path: `$OMEN_HUB_SOCKET`, falling back to `/tmp/omen-hub-daemon.sock` for
   unprivileged local development. Production (daemon running as a root
-  systemd service) should set `OMEN_HUB_SOCKET=/run/omen-hub/daemon.sock`
-  and lock down that directory's permissions once auth beyond "can open
-  this socket" is needed.
+  systemd service) sets `OMEN_HUB_SOCKET=/run/omen-hub/daemon.sock`.
+- **Access control is the socket's file mode, and nothing else.** There is
+  no authentication in the protocol: opening the socket *is* the
+  authorization, so the daemon binds it `0660`, owned by the group
+  `omen-hub` (override with `OMEN_HUB_SOCKET_GROUP`). Members of that group
+  and root can connect; nobody else can. Where the daemon creates the
+  runtime directory itself it is `0750` and owned by the same group; under
+  systemd the directory is left world-traversable and the socket inside it
+  is the gate.
+  - If the group does not exist, the socket stays `0600` — the daemon says
+    so at startup, and the app turns the resulting `EACCES` into "add this
+    user to the 'omen-hub' group" rather than a bare I/O error.
+  - There is deliberately **no read-only tier** for non-members. Serving
+    `getStatus`-style methods to any local process would mean opening a
+    root daemon's socket to everything on the machine, sandboxed and
+    compromised processes included, to save an admin one `usermod -aG`.
+  - Consequently every method in this document assumes an already
+    authorized caller. Do not add a method whose safety depends on *which*
+    group member called it; the protocol cannot tell them apart.
 - Framing: one JSON object per line (`\n`-terminated). No length prefix,
   no batching — a client sends one request line and reads one response
   line before sending the next on that connection. The server accepts
@@ -311,10 +327,63 @@ then `/usr/share/omen-hub/driver`, then a sibling checkout, and reports a
 
 | method | params | result | status |
 |---|---|---|---|
-| `fan.getStatus` | none | `{ "driverInstalled": bool, "cpuTempC": number \| null, "fanRpm": number, "isReverse": bool }` | ✅ implemented, read-only, no privileges needed |
+| `fan.getStatus` | none | the status object below | ✅ implemented, read-only, no privileges needed |
 | `fan.diagnose` | `{ "allowWrites": bool }` | full self-test report (see below) | ✅ implemented |
-| `fan.setMode` | TBD | — | ❌ not implemented (see `daemon/crates/fan/src/lib.rs`) |
-| `fan.setCurve` | TBD | — | ❌ not implemented |
+| `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the status object | ✅ implemented, needs root |
+| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete" }` | the status object | ✅ implemented |
+| `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
+
+Every write returns the same status object `getStatus` does, so a caller
+never has to follow a write with a read:
+
+```json
+{
+  "driverInstalled": true,
+  "capabilities": { "switchMode": true, "setSpeed": false },
+  "cpuTempC": 38,
+  "fanRpm": 2097,
+  "isReverse": false,
+  "mode": "auto",
+  "pwm": null,
+  "targetPwm": null,
+  "manualPwm": 128,
+  "curve": [{ "tempC": 40, "percent": 20 }],
+  "interpolation": "smooth",
+  "restoreModeOnStart": false,
+  "fanMaxRpm": null,
+  "error": null,
+  "saved": true,
+  "saveError": null
+}
+```
+
+### What `capabilities` is for
+
+**Not every machine can do every mode, and the difference is not
+cosmetic.** `hp-wmi` exposes two files, and they are independent:
+
+- `pwm1_enable` → `switchMode`: `auto` and `max` can be commanded. These go
+  through a WMI query that needs no per-board parameters, so they work on
+  boards the driver has no entry for.
+- `pwm1` → `setSpeed`: a *specific speed* can be commanded, which is what
+  `manual` and `curve` need. The running driver only exposes it for boards
+  in its feature table.
+
+Board `8D2F` is the case that makes this real: `switchMode` true,
+`setSpeed` false. Asking such a machine for `manual` returns an error
+naming what is missing rather than accepting the call and doing nothing, so
+**a client should read `capabilities` and hide what it cannot offer**
+instead of discovering it from a failed write.
+
+Two further things a client must not assume:
+
+- `pwm = 0` is not "fans off". The driver reads 0 as
+  `HP_FAN_SPEED_AUTOMATIC` and hands the fans back to the firmware, so the
+  daemon clamps any commanded speed to at least 1.
+- `mode` is what is actually in force, which after a daemon restart is what
+  the *hardware* was found in, not what the config file says — unless
+  `restoreModeOnStart` is on. Until someone asks for a mode, the daemon
+  watches and does not write.
 
 ### `fan.diagnose`
 

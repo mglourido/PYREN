@@ -26,6 +26,7 @@ import {
   type SystemInfo,
   type TempReading,
 } from "$lib/api/daemon";
+import { hardware } from "./hardware.svelte";
 import { settings } from "./settings.svelte";
 
 /** Number of samples kept for the sparkline graphs (~2 min at 2s). */
@@ -142,6 +143,7 @@ export class Telemetry {
     try {
       const status = await daemon.fanStatus();
       reachable = true;
+      hardware.observeFan(status);
       this.driverInstalled = status.driverInstalled;
       this.fanReverse = status.isReverse;
       if (status.driverInstalled) {

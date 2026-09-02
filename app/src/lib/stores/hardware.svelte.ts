@@ -13,13 +13,26 @@ import {
   daemon,
   type ApplyReport,
   type AutoConfig,
+  type FanStatus,
   type PowerConfigReply,
   type PowerState,
 } from "$lib/api/daemon";
 import { DiskBacked } from "./persistence";
 
+/** Coalesces a slider drag or a dragged curve point into one daemon call. */
+const FAN_PUSH_DEBOUNCE_MS = 200;
+
+/**
+ * The 0-255 the driver takes. Never 0 for a positive percentage: `pwm1 = 0`
+ * is the driver's "automatic" sentinel, not "off" - the daemon clamps this
+ * too (`MIN_COMMANDED_PWM`), and the two must agree.
+ */
+function percentToPwm(percent: number): number {
+  return Math.max(1, Math.min(255, Math.round((percent / 100) * 255)));
+}
+
 export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
-export type FanMode = "auto" | "max" | "manual";
+export type FanMode = "auto" | "max" | "manual" | "curve";
 export type GpuMode = "integrated" | "hybrid" | "discrete";
 export type LightingMode = "static" | "breathing" | "wave" | "off";
 export type NetworkMode = "off" | "auto" | "custom";
@@ -103,8 +116,11 @@ class HardwareStore {
   lastApply = $state<ApplyReport | null>(null);
   /** Live power state from the daemon; null while it is unreachable. */
   power = $state<PowerState | null>(null);
+  /** Live fan state from the daemon; null while it is unreachable. */
+  fan = $state<FanStatus | null>(null);
 
   private disk = new DiskBacked<HardwareState>("ui", defaults);
+  private fanPushTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Synchronous, for the first render. */
   loadCache() {
@@ -223,12 +239,72 @@ class HardwareStore {
 
   async setFanMode(mode: FanMode) {
     this.set("fanMode", mode);
+    await this.pushFan(() => daemon.setFanMode(mode, percentToPwm(this.state.fanPercent)));
+  }
+
+  /**
+   * The manual speed. Only reaches the daemon while manual is the mode in
+   * force - moving the slider in any other mode is choosing a value for
+   * later, not commanding the fans now.
+   */
+  setFanPercent(percent: number) {
+    this.set("fanPercent", percent);
+    if (this.state.fanMode !== "manual") return;
+    this.pushFanSoon(() => daemon.setFanMode("manual", percentToPwm(percent)));
+  }
+
+  /**
+   * The curve is stored daemon-side whatever the current mode is, so that
+   * switching to `curve` later follows the shape the user drew rather than
+   * an empty one.
+   */
+  setFanCurve(curve: CurvePoint[]) {
+    this.set("fanCurve", curve);
+    this.pushFanSoon(() => daemon.setFanCurve(curve));
+  }
+
+  /** Asks the daemon to put the fans back where they were after a reboot. */
+  async setFanRestoreOnStart(enabled: boolean) {
+    await this.pushFan(() => daemon.setFanRestoreOnStart(enabled));
+  }
+
+  /**
+   * The daemon's own view of the fans, from the telemetry poll. It is the
+   * authority on what is actually in force - a machine that cannot do the
+   * mode the UI is showing corrects it here rather than leaving a button
+   * lit that nothing is honouring. Deliberately not saved to disk: this is
+   * an observation, and the daemon persists its own mode.
+   */
+  observeFan(status: FanStatus) {
+    this.fan = status;
+    if (status.driverInstalled && status.mode !== this.state.fanMode) {
+      this.state = { ...this.state, fanMode: status.mode };
+    }
+  }
+
+  private async pushFan(send: () => Promise<FanStatus>) {
     try {
-      await daemon.setFanMode(mode, Math.round((this.state.fanPercent / 100) * 255));
-      this.lastError = null;
+      this.fan = await send();
+      // The daemon is the authority on which mode is actually in force: a
+      // machine that cannot do manual says so here rather than leaving the
+      // UI showing a mode nothing is honouring.
+      this.state = { ...this.state, fanMode: this.fan.mode };
+      this.lastError = this.fan.error ?? null;
     } catch (e) {
       this.lastError = String(e);
     }
+  }
+
+  /**
+   * Same, but coalesced: a slider drag or a dragged curve point fires on
+   * every pixel, and each of these is a socket round trip.
+   */
+  private pushFanSoon(send: () => Promise<FanStatus>) {
+    if (this.fanPushTimer !== null) clearTimeout(this.fanPushTimer);
+    this.fanPushTimer = setTimeout(() => {
+      this.fanPushTimer = null;
+      void this.pushFan(send);
+    }, FAN_PUSH_DEBOUNCE_MS);
   }
 
   /** Writes immediately, e.g. before the window closes. */

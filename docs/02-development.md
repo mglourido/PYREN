@@ -29,6 +29,27 @@ fallback — see `daemon/daemon/src/main.rs`). Set `OMEN_HUB_SOCKET` to
 override. Leave this running in its own terminal; the app can't do
 anything useful without it.
 
+The socket is created `0660`. Run unprivileged, that means "you and nobody
+else", which is what you want for development — the app runs as the same
+user. Run it under `sudo` and the daemon will say
+
+```
+omen-hub-daemon: listening on …, restricted to the daemon's own user
+  note:   no 'omen-hub' group on this system, so only root can connect.
+```
+
+which is exactly what it means: your desktop user cannot reach a root
+daemon until the group exists and you are in it.
+
+```sh
+sudo groupadd -f omen-hub && sudo usermod -aG omen-hub "$USER"
+```
+
+Group membership is picked up at login, so either log out and back in, or
+start the test shell with `newgrp omen-hub`. `OMEN_HUB_SOCKET_GROUP`
+overrides the name. Trying to connect without it fails with a permission
+error the app spells out rather than swallowing.
+
 ## 2. Run the app
 
 ```sh
@@ -142,3 +163,25 @@ print(s.recv(4096).decode())
 ```
 
 See `docs/01-ipc-protocol.md` for the full wire format.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main`, every pull
+request, and on demand. Four jobs, so a failure names the half that broke:
+
+| job | what it runs |
+|---|---|
+| `daemon` | `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings` |
+| `app` | `bun install --frozen-lockfile`, `bun run check`, `bun run build` |
+| `tauri` | `cargo check --all-targets` on `app/src-tauri`, after installing WebKitGTK |
+| `shell` | `sh -n tools/omen-check.sh` |
+
+Two things worth knowing about it:
+
+- The daemon job runs `check/tests/parity.rs`, which invokes
+  `tools/omen-check.sh` through `/bin/sh` — `dash` on the runner, rather
+  than the `bash` or `zsh` it usually gets locally. That is the point of a
+  POSIX script, and CI is the only place it is regularly checked.
+- Nothing there can prove the socket's permissions *work*, only that the
+  mode bits are right: the assertion that matters is "a second local user
+  cannot connect", and CI has one user.

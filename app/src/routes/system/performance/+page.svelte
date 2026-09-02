@@ -47,10 +47,32 @@
     hardware.power === null || hardware.power.backend.available.length > 0,
   );
 
+  /**
+   * Whether this machine's driver can be told a *speed*, as opposed to just
+   * "max" or "let the firmware decide". Board 8D2F is the case that makes
+   * this necessary: it exposes `pwm1_enable` and no `pwm1`, so max and auto
+   * work and a percentage does not. Assumed available until the daemon says
+   * otherwise, so the demo mode still shows the full UI.
+   */
+  const canSetSpeed = $derived(hardware.fan?.capabilities.setSpeed ?? true);
+
   const fanModeOptions = $derived(
-    unlimited
-      ? (["max", "auto", "manual"] as FanMode[])
+    unlimited && canSetSpeed
+      ? (["max", "auto", "manual", "curve"] as FanMode[])
       : (["auto", "max"] as FanMode[]),
+  );
+
+  const fanModeLabels: Record<FanMode, string> = {
+    auto: "common.auto",
+    max: "common.max",
+    manual: "common.manual",
+    curve: "common.curve",
+  };
+
+  /** The curve editor is the point of curve mode, and the shape a manual
+   *  session is drawn against. */
+  const showCurve = $derived(
+    canSetSpeed && (hardware.state.fanMode === "manual" || hardware.state.fanMode === "curve"),
   );
 </script>
 
@@ -161,9 +183,7 @@
             value={hardware.state.fanMode}
             options={fanModeOptions.map((value) => ({
               value,
-              label: t(
-                value === "auto" ? "common.auto" : value === "max" ? "common.max" : "common.manual",
-              ),
+              label: t(fanModeLabels[value]),
             }))}
             onchange={(v) => hardware.setFanMode(v as FanMode)}
           />
@@ -184,29 +204,35 @@
           {/if}
         </div>
 
-        {#if unlimited && hardware.state.fanMode === "manual"}
+        {#if unlimited && showCurve}
           <div class="manual">
-            <div class="manual-slider">
-              <Slider
-                value={hardware.state.fanPercent}
-                min={0}
-                max={100}
-                minLabel="0%"
-                maxLabel="100%"
-                ariaLabel={t("performance.fanSpeed")}
-                onchange={(v) => hardware.set("fanPercent", v)}
-              />
-              <span class="pct">{hardware.state.fanPercent}%</span>
-            </div>
+            {#if hardware.state.fanMode === "manual"}
+              <div class="manual-slider">
+                <Slider
+                  value={hardware.state.fanPercent}
+                  min={0}
+                  max={100}
+                  minLabel="0%"
+                  maxLabel="100%"
+                  ariaLabel={t("performance.fanSpeed")}
+                  onchange={(v) => hardware.setFanPercent(v)}
+                />
+                <span class="pct">{hardware.state.fanPercent}%</span>
+              </div>
+            {/if}
 
             <h3 class="curve-title">{t("performance.fanCurve")}</h3>
             <p class="curve-desc">{t("performance.fanCurveDesc")}</p>
             <FanCurve
               curve={hardware.state.fanCurve}
               currentTempC={telemetry.cpuTempC}
-              onchange={(curve) => hardware.set("fanCurve", curve)}
+              onchange={(curve) => hardware.setFanCurve(curve)}
             />
           </div>
+        {/if}
+
+        {#if !canSetSpeed}
+          <p class="fan-note">{t("performance.fanSpeedUnavailable")}</p>
         {/if}
       </div>
     {:else}
@@ -469,6 +495,14 @@
     margin: 4px 0 12px;
     color: var(--text-mute);
     font-size: 13px;
+  }
+
+  .fan-note {
+    max-width: 62ch;
+    margin: 14px 0 0;
+    color: var(--text-mute);
+    font-size: 13px;
+    line-height: 1.5;
   }
 
   .power-area {

@@ -27,8 +27,7 @@ fn socket_path() -> String {
 /// `result`, or an `Err` built from the connection failure or the
 /// daemon's own `error` field.
 fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, String> {
-    let stream = UnixStream::connect(socket_path())
-        .map_err(|e| format!("cannot reach omen-hub-daemon at {}: {e}", socket_path()))?;
+    let stream = UnixStream::connect(socket_path()).map_err(connect_error)?;
 
     let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
     let request = json!({ "id": 1, "module": module, "method": method, "params": params });
@@ -47,9 +46,44 @@ fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, Strin
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
+/// The daemon's socket only admits root and members of the `omen-hub`
+/// group (see `daemon/crates/core/src/socket.rs`), so "permission denied"
+/// here is not a broken install - it is a user who has not been added to
+/// the group yet, and saying so is the whole difference between a
+/// two-minute fix and a bug report.
+fn connect_error(e: std::io::Error) -> String {
+    let path = socket_path();
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        return format!(
+            "not allowed to reach omen-hub-daemon at {path}. \
+             Add this user to the 'omen-hub' group \
+             (sudo usermod -aG omen-hub $USER), then log out and back in."
+        );
+    }
+    format!("cannot reach omen-hub-daemon at {path}: {e}")
+}
+
 #[tauri::command]
 fn fan_get_status() -> Result<Value, String> {
     call_daemon("fan", "getStatus", Value::Null)
+}
+
+/// `pwm` is only meaningful for `manual`; the daemon ignores it otherwise
+/// and refuses a mode this machine's driver cannot do, rather than
+/// pretending it worked.
+#[tauri::command]
+fn fan_set_mode(mode: String, pwm: Option<u8>) -> Result<Value, String> {
+    call_daemon("fan", "setMode", json!({ "mode": mode, "pwm": pwm }))
+}
+
+#[tauri::command]
+fn fan_set_curve(curve: Value, interpolation: Option<String>) -> Result<Value, String> {
+    call_daemon("fan", "setCurve", json!({ "curve": curve, "interpolation": interpolation }))
+}
+
+#[tauri::command]
+fn fan_set_restore_on_start(enabled: bool) -> Result<Value, String> {
+    call_daemon("fan", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
 
 #[tauri::command]
@@ -151,6 +185,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fan_get_status,
             fan_diagnose,
+            fan_set_mode,
+            fan_set_curve,
+            fan_set_restore_on_start,
             core_capabilities,
             system_get_info,
             system_get_metrics,

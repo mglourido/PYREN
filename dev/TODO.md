@@ -1,76 +1,75 @@
 # TODO
 
 Priority order within each section. Each item says what blocks it and how
-to tell when it's done. Items marked **[HP]** cannot be verified on the
-non-HP development desktop.
+to tell when it's done. Items marked **[HP]** need the HP laptop — which
+*is* the development machine as of 2026-09-02, so what they now need is
+root on it, not different hardware.
 
 ---
 
 ## 1. Do next
 
-### 1.1 Restrict the daemon socket — security
-The daemon runs as root and now *writes* (power modes, and fan control
-later). `UnixListener::bind` in `daemon/crates/core/src/lib.rs` leaves the
-socket at the default umask, so **any local user can drive it**. The design
-plan already calls the socket the trust boundary; it isn't one yet.
+### 1.1 Try the patched driver on 8D2F **[HP]**
+This is now the *only* thing standing between this laptop and a real fan
+percentage, and the reasoning changed: reading the driver source showed
+that none of the three `pwm1_enable` modes is gated on the board-params
+table, and that `hp_wmi_hwmon_is_visible` returns `0644` for `hwmon_pwm`
+unconditionally. See `FINDINGS.md` §"What the driver actually gates on the
+board table". So installing it should expose `pwm1` here, where the running
+7.2.2 driver does not — and whether the firmware honours the write is then
+an experiment, not an inference.
 
-Fix: `chmod` the socket to `0660` and own it by a group (`omen-hub`), or
-put it in a mode-`0750` `/run/omen-hub` and add the desktop user to the
-group. The systemd unit already uses `RuntimeDirectory=omen-hub`, so most
-of the plumbing exists. Decide whether a non-member should get read-only
-access rather than none.
+Everything the daemon needs is already built and refuses to run on this
+hardware only because `pwm1` is absent (`capabilities.setSpeed`), so this
+is a one-variable test:
 
-*Done when*: a second local user cannot change the power mode.
+1. `installer.plan` / `installer.apply` with `experimentalBoard: "8D2F"`
+   and a `boardTable` choice — the variants differ in which EC offset
+   holds the thermal profile, so the wrong one loads and misreads.
+2. `sh tools/omen-check.sh` and look for `pwm1`.
+3. `fan.setMode` with `{"mode":"manual","pwm":128}` and listen.
 
-### 1.2 Add a LICENSE file
-Every `Cargo.toml` declares `GPL-3.0-or-later` and `app/package.json` says
-MIT; the repository has neither file. Pick one, make them agree, add the
-text. Note the frontend and daemon *could* legitimately differ, but right
-now it looks like an oversight rather than a decision.
+*Done when*: `capabilities.setSpeed` is true, or it is established that
+the firmware refuses the query.
 
-### 1.3 Settle the 8D2F question **[HP]**
-Run `sudo sh omen-check.sh --json` on the laptop with the *current* script
-and read the two new checks. See `FINDINGS.md` §"Board 8D2F" — this decides
-whether the fan write path is worth building at all, so it comes before
-1.4.
+**This is also the first run of the installer's execution path**, which has
+never been executed. Take a backup of the stock module first — the plan
+does this itself (`backup-driver`), but knowing where it went matters:
+`hp-wmi.ko.bak` beside the original.
 
-### 1.4 Fan write path: `fan.setMode` / `fan.setCurve` **[HP]**
-The last thing standing between the app and actually controlling fans.
-Blocked on 1.3 on this hardware, but the logic can be built and unit-tested
-anywhere:
+### 1.2 Structured IPC errors
+The socket now returns a *permission* failure the app has to recognise, and
+`fan.setMode` returns three different kinds of refusal — unsupported
+hardware, bad params, needs root — all as prose. The app gets away with
+matching on `io::ErrorKind` for the connect, but nothing can branch on the
+rest. `docs/01-ipc-protocol.md` already warns against string-matching them.
+Move to `{ kind, message }` before any caller needs to.
 
-- curve interpolation already exists in the frontend
-  (`curveValueAt`) and needs a daemon-side twin
-- hysteresis so the fan doesn't oscillate at a threshold
-- a control loop that re-applies on a timer — the EC reverts to its own
-  curve ~120 s after being overridden, and the kernel driver's keep-alive
-  is only every 90 s
-- `pwm1_enable` semantics: 0 = max, 1 = manual, 2 = automatic
-- persist the curve through `omen-hub-config` (the fan module has no config
-  file yet; this is where the persistent/volatile split from the Python
-  original earns its keep)
-
-The behavioural spec is `docs/04-fan-control-logic.md` in the source
-project. Do **not** copy its numbers blindly — see `FINDINGS.md` on its
-documentation disagreeing with its own code.
-
-### 1.5 Continuous integration
-`cargo test`, `cargo clippy -- -D warnings`, `svelte-check`, `vite build`,
-`cargo check` on `src-tauri`, and `sh -n tools/omen-check.sh`. The parity
-test especially: it has caught three real bugs and nothing currently runs
-it automatically.
+### 1.3 Calibration
+`fanMaxRpm` is the one input the hysteresis wants and never has, so it
+currently falls back to comparing PWM values instead of RPM. The routine is
+specified in `docs/04-fan-control-logic.md` §Calibration (max for 30 s,
+read the fans, restore) and is worth doing right after 1.1, because on this
+board it is also the honest way to find out what full speed *is*.
 
 ---
 
 ## 2. Blocked on a decision or on hardware
 
-### 2.1 RGB module **[HP]**
-Blocked on one command on the laptop: `lsusb | grep -i 0d62`. Per-key USB
-HID and the 4-zone ACPI lightbar share nothing, so that answer decides
-which of two unrelated ports to write. Review and porting order are in
+### 2.1 RGB module
+**Which port to write is now decided**: `lsusb` on the laptop finds no
+`0d62` device, so the per-key USB HID path has nothing to talk to and the
+4-zone ACPI lightbar is the only candidate (`FINDINGS.md` §"The test laptop
+has no per-key RGB keyboard"). Review and porting order are in
 `docs/04-rgb-porting-review.md`.
 
-Whichever path: `/proc/acpi/call` needs a **cross-module** lock (the fan
+Still blocked, but on something installable rather than on an unknown:
+`/proc/acpi/call` does not exist here because `acpi_call` isn't installed
+(`acpi_call-dkms` on Arch). Install it, then confirm the lightbar answers
+before writing the module — "no per-key device" is proven; "the 4-zone
+interface works on this machine" is not.
+
+When it is written: `/proc/acpi/call` needs a **cross-module** lock (the fan
 cleaner uses it too), so that belongs in `core` or a new shared crate, not
 inside the `rgb` module.
 
@@ -97,17 +96,15 @@ real backend decision before any daemon work:
 
 ## 3. Worth doing, not urgent
 
-- **Structured IPC errors.** Everything is a string today, and
-  `docs/01-ipc-protocol.md` already warns against string-matching them. Move
-  to `{ kind, message }` before any caller needs to branch on kind.
 - **Logging.** ~20 `println!`/`eprintln!` calls. A level-filtered logger
   would let the daemon be quiet under systemd and verbose when diagnosing.
 - **Temperature in the power supervisor.** It decides on load and battery
   only; a hot chassis is a good reason to back off.
+- **A second reference sensor.** The curve follows the CPU only. The
+  original also supports GPU, with a fallback to CPU when the GPU reads 0
+  because it is asleep; `FanConfig` has no `referenceSensor` field yet.
 - **Fan cleaner** (reverse spin, `acpi_call`) — the protocol is documented
   in the source project, and it's the one genuinely novel feature.
-- **Calibration**: spin to max, measure, store — needed for a meaningful
-  0-100 % fan scale rather than raw PWM.
 - **Import Windows OMEN config** (`PowerControlConfig.json`, gzip'd UTF-16
   JSON on the Windows partition) to skip calibration for dual-booters.
 - **Per-process GPU usage** in the vitals table (the column exists and
@@ -121,7 +118,16 @@ real backend decision before any daemon work:
   mode cards and the fan-curve editor, focus visibility, reduced motion.
 - **End-to-end IPC test**: spawn the daemon on a temp socket, exercise every
   module method. Would have caught the Tauri command wiring being untested
-  for two sessions.
+  for two sessions. Now also the natural place to prove the socket's
+  permissions from the outside — the unit tests assert the mode bits, but
+  only a second user can prove the *effect*, and CI has no second user.
+- **`shellcheck` in CI.** The workflow runs `sh -n tools/omen-check.sh`,
+  which catches syntax and nothing else. `shellcheck` wasn't added because
+  it isn't installed here and a lint nobody has run locally would land red.
+- **Reconcile the two "supported" answers.** On 8D2F the daemon prints
+  "Supported: board 8D2F is on the known-good list" while `fan.diagnose`
+  says `monitoringOnly`. Both are correct about different questions, and
+  together they read as a contradiction in the logs.
 
 ---
 
@@ -129,6 +135,26 @@ real backend decision before any daemon work:
 
 Recorded so nobody "fixes" them by accident:
 
+- **No read-only access for non-members of `omen-hub`.** The socket is
+  `0660`; a user outside the group gets nothing, not "vitals but no
+  writes". Splitting reads from writes would mean opening a root daemon's
+  socket to every local process — sandboxed and compromised ones included —
+  to save an admin one `usermod -aG`. The protocol also cannot tell two
+  group members apart, so no future method may depend on *which* one
+  called.
+- **The installer creates the `omen-hub` group but never deletes it.**
+  Removing a group that users are still members of is not the installer's
+  call, and a leftover empty group costs nothing.
+- **The daemon does not touch the fans until asked.** At startup it reports
+  the mode the hardware is *in* rather than the one in its config, and
+  writes nothing. Adopting an observed `manual` and then "re-asserting" it
+  would put our idea of the speed over whatever the user had set, seconds
+  after boot, for no reason. `restoreModeOnStart` is the opt-in, and like
+  the power module's equivalent it defaults to off.
+- **`auto` is written once, not re-asserted.** In auto the firmware owns
+  the fans and the driver cancels its own keep-alive; re-issuing it every
+  minute would be a WMI call that changes nothing. Max, manual and curve
+  are re-asserted every 60 s.
 - **No `core.json`.** Cross-cutting daemon config has no contents yet.
 - **`system` always reports `supported: true`.** Any Linux machine can
   report its own vitals; hardware-*control* support is a different question,
@@ -153,3 +179,41 @@ remembered "don't show again", the help/legal section, the version and
 update check, and the documentation of how to contribute translations. The
 sixth, from the Obsidian notes — a background system that switches between
 Eco and Balanced on its own — is the `power` supervisor.
+
+## Done since these notes were written
+
+- **Max and auto verified on the hardware** (was 1.2): against a root
+  daemon, `fan.setMode max` took the fans from ~2000 to ~3900 rpm and
+  `auto` handed them back. The numbers are in `FINDINGS.md`. This is the
+  project's first real hardware write.
+- **The socket restriction verified end to end** (was 1.1): with the daemon
+  running as root, a process not in the `omen-hub` group gets
+  `PermissionDenied` on connect, and the same process reaches it through
+  `newgrp omen-hub`. The socket is `srw-rw---- root omen-hub`.
+- **The fan write path** (was 1.4): `fan.setMode`, `fan.setCurve` and
+  `fan.setRestoreOnStart`, a control loop that follows a curve on its own
+  thread, hysteresis, temperature smoothing, and `fan.json` persistence.
+  Split so that the arithmetic (`curve.rs`) and the hardware semantics
+  (`control.rs`) are testable without an HP laptop, which is most of it.
+  The `pwm1`-dependent modes correctly refuse to run on this board; see
+  1.1 and 1.2 above for what is left, both of which need hardware rather
+  than code.
+- **The Tauri fan commands existed only on the frontend's side.**
+  `daemon.setFanMode` called `fan_set_mode`, which was never registered in
+  `invoke_handler` — every call failed at the bridge. Now wired, along with
+  `fan_set_curve` and `fan_set_restore_on_start`. Exactly the gap the
+  end-to-end IPC test in §3 is meant to catch.
+- **The daemon socket is restricted** (was 1.1): bound `0660` to the
+  `omen-hub` group, with the runtime directory locked down when the daemon
+  creates it, an actionable startup message when the group is missing, and
+  an `EACCES` from the app turned into "add this user to the group". The
+  installer creates the group as its first step.
+- **LICENSE** (was 1.2): GPL-3.0-or-later for the whole repository.
+  `app/package.json` and the Help page said MIT; they now agree with the
+  `Cargo.toml`s. The choice is not free — the `fan` and `installer` modules
+  are ports of a GPL-3.0 project.
+- **Continuous integration** (was 1.5): `.github/workflows/ci.yml`, four
+  jobs — daemon (`cargo test` + `clippy -D warnings`), app (`svelte-check`
+  + `vite build`), Tauri shell (`cargo check`), and `sh -n` on the shell
+  script. The parity test runs under `dash` there rather than the
+  developer's shell, which is the point of a POSIX script.
