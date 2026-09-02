@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
-use crate::gpu::{GpuMetrics, GpuReader, ProcessGpuReader};
+use crate::gpu::{DrmUsageReader, GpuMetrics, GpuReader};
 
 /// Busiest processes reported per sample. Matches what the UI table shows.
 const TOP_PROCESSES: usize = 12;
@@ -155,7 +155,7 @@ pub struct Sampler {
     /// `None` for the very first sample taken at construction.
     last_sampled: Instant,
     gpus: GpuReader,
-    process_gpu: ProcessGpuReader,
+    drm_usage: DrmUsageReader,
 }
 
 impl Default for Sampler {
@@ -182,7 +182,7 @@ impl Sampler {
             process_ticks: HashMap::new(),
             last_sampled: Instant::now(),
             gpus: GpuReader::new(),
-            process_gpu: ProcessGpuReader::new(),
+            drm_usage: DrmUsageReader::new(),
         };
         // Prime the deltas so the first real call reports actual usage.
         sampler.prime();
@@ -206,9 +206,10 @@ impl Sampler {
         self.last_sampled = Instant::now();
 
         let temperatures = read_temperatures();
-        // Sampled before the process walk that consumes it, because both
-        // borrow the sampler.
-        let process_gpu = self.process_gpu.sample(elapsed);
+        // One walk of /proc/*/fdinfo feeds both the per-card utilisation and
+        // the process table's GPU column. Sampled before the process walk
+        // that consumes it, because both borrow the sampler.
+        let drm = self.drm_usage.sample(elapsed);
 
         Metrics {
             cpu: self.sample_cpu(&temperatures),
@@ -216,8 +217,8 @@ impl Sampler {
             fans: read_fans(),
             disks: read_disks(),
             network: self.sample_network(elapsed),
-            gpus: self.gpus.sample(elapsed),
-            processes: self.sample_processes(elapsed, &process_gpu),
+            gpus: self.gpus.sample(elapsed, &drm.per_card),
+            processes: self.sample_processes(elapsed, &drm.per_pid),
             temperatures,
         }
     }

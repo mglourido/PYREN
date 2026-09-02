@@ -1,12 +1,14 @@
 //! GPU readings, from whatever each vendor actually exposes.
 //!
-//! Three sources, in decreasing order of how much they tell us:
+//! Four sources, in decreasing order of how much they tell us:
 //!
 //! - `nvidia-smi`, which reports everything in one query.
 //! - DRM sysfs, where amdgpu publishes utilisation and VRAM, and Intel
 //!   publishes its GT clock.
-//! - The i915 perf PMU, which is the *only* place Intel exposes engine
-//!   utilisation. It needs `CAP_PERFMON` (the daemon runs as root in
+//! - DRM fdinfo, which is where a card with no `gpu_busy_percent` - every
+//!   Intel one - gets its utilisation from. See [`DrmUsageReader`].
+//! - The i915 perf PMU, kept only as the fallback for a card whose clients
+//!   we cannot read. It needs `CAP_PERFMON` (the daemon runs as root in
 //!   production); unprivileged it simply stays unavailable and the field
 //!   comes back `None` rather than a made-up zero.
 //!
@@ -67,21 +69,28 @@ impl GpuReader {
     }
 
     /// `elapsed` is the wall time since the previous sample, which is what
-    /// the PMU's busy nanoseconds have to be divided by.
-    pub fn sample(&mut self, elapsed: f64) -> Vec<GpuMetrics> {
+    /// the PMU's busy nanoseconds have to be divided by. `card_busy` is the
+    /// per-card utilisation [`DrmUsageReader`] measured over the same
+    /// window, keyed by PCI slot.
+    pub fn sample(&mut self, elapsed: f64, card_busy: &HashMap<String, f64>) -> Vec<GpuMetrics> {
         let mut gpus = Vec::new();
         if self.nvidia_smi_available {
             gpus.extend(read_nvidia_gpus());
         }
         let intel_busy = self.i915.as_mut().and_then(|pmu| pmu.busy_percent(elapsed));
-        gpus.extend(self.read_drm_gpus(intel_busy));
+        gpus.extend(self.read_drm_gpus(intel_busy, card_busy));
         gpus
     }
 
     /// GPUs exposed through DRM sysfs. amdgpu reports utilisation and VRAM
-    /// directly; Intel reports its clock here and its utilisation through
-    /// `intel_busy`, measured by the PMU.
-    fn read_drm_gpus(&self, intel_busy: Option<f64>) -> Vec<GpuMetrics> {
+    /// directly; Intel reports only its clock here, and takes its
+    /// utilisation from `card_busy`, falling back to the PMU's `intel_busy`
+    /// on a card whose clients we could not read.
+    fn read_drm_gpus(
+        &self,
+        intel_busy: Option<f64>,
+        card_busy: &HashMap<String, f64>,
+    ) -> Vec<GpuMetrics> {
         let Ok(entries) = fs::read_dir("/sys/class/drm") else {
             return Vec::new();
         };
@@ -113,17 +122,23 @@ impl GpuReader {
             }
 
             let intel = matches!(driver.as_str(), "i915" | "xe");
+            let slot = pci_slot(&device);
 
             gpus.push(GpuMetrics {
-                name: self.name_for(&device, &driver, &card),
+                name: self.name_for(slot.as_deref(), &driver, &card),
+                // amdgpu's own counter first, since that is the number every
+                // AMD tool shows; then fdinfo, which is the only good source
+                // on Intel; the PMU last, because at low load it reads 0%
+                // for whole samples and then spikes.
                 usage_percent: read_number(&device.join("gpu_busy_percent"))
+                    .or_else(|| slot.as_deref().and_then(|s| card_busy.get(s).copied()))
                     .or(if intel { intel_busy } else { None }),
                 temp_c: hwmon_value(&device, "temp1_input").map(|v| v / 1000.0),
                 power_w: hwmon_value(&device, "power1_average").map(|v| v / 1_000_000.0),
                 clock_mhz: gt_clock_mhz(&card, &device),
                 mem_used_mb: read_number(&device.join("mem_info_vram_used")).map(bytes_to_mb),
                 mem_total_mb: read_number(&device.join("mem_info_vram_total")).map(bytes_to_mb),
-                integrated: pci_slot(&device).as_deref().map(is_on_the_root_bus),
+                integrated: slot.as_deref().map(is_on_the_root_bus),
                 driver,
             });
         }
@@ -132,8 +147,8 @@ impl GpuReader {
 
     /// The marketing name where `lspci` knew one, otherwise something that
     /// at least identifies the card rather than "unknown".
-    fn name_for(&self, device: &Path, driver: &str, card: &Path) -> String {
-        if let Some(name) = pci_slot(device).and_then(|slot| self.names.get(&slot)) {
+    fn name_for(&self, slot: Option<&str>, driver: &str, card: &Path) -> String {
+        if let Some(name) = slot.and_then(|slot| self.names.get(slot)) {
             return name.clone();
         }
         let card = card.file_name().map(|n| n.to_string_lossy().to_string());
@@ -444,95 +459,156 @@ impl Drop for Counter {
 }
 
 // ---------------------------------------------------------------------------
-// Per-process GPU time
+// DRM fdinfo
 // ---------------------------------------------------------------------------
 
-/// How much GPU each process is using, from the kernel's DRM fdinfo
-/// interface (`/proc/<pid>/fdinfo/<fd>`, the `drm-engine-*` keys).
+/// How much GPU each process - and each card - is using, from the kernel's
+/// DRM fdinfo interface (`/proc/<pid>/fdinfo/<fd>`, the `drm-engine-*`
+/// keys).
 ///
 /// This is the same source `nvtop` and `intel_gpu_top` read, and it covers
 /// every in-tree driver - i915, xe, amdgpu. NVIDIA's proprietary driver
 /// publishes no fdinfo, so processes on such a card report `None` rather
-/// than a zero that would read as "idle". `nvidia-smi pmon` is the only
-/// alternative there and it is not one worth having: it samples for a whole
-/// second per invocation, and on consumer cards it answers "-" anyway.
+/// than a zero that would read as "idle"; the card itself is covered by
+/// `nvidia-smi` instead.
 ///
-/// Two things make this less obvious than the CPU equivalent:
+/// It is also the better source for *whole-card* utilisation on Intel, and
+/// the reason this walk feeds the GPU list and not just the process table.
+/// The i915 PMU's engine-busy counter is maintained by the GuC and
+/// refreshed lazily, so on a near-idle GT it reads exactly 0% for several
+/// consecutive samples and then spikes - measured on Arrow Lake-P, a steady
+/// 1.2% load came back as 0.0, 0.0, 0.0, 19.6. fdinfo accumulates as
+/// requests retire and stays steady at any polling interval.
+///
+/// Three things make this less obvious than the CPU equivalent:
 ///
 /// - Several file descriptors can refer to the *same* DRM client, each
 ///   reporting that client's whole counter. They have to be deduplicated by
-///   `drm-client-id`, or a compositor holding four fds reads as four times
-///   its real usage.
+///   `drm-client-id` - and across processes too, since an fd passed to
+///   another process is still one client - or a compositor holding four fds
+///   reads as four times its real usage.
 /// - An engine can have several instances (`drm-engine-capacity-video: 2`),
 ///   in which case its nanoseconds are spread over that many units of
 ///   parallel capacity.
-pub struct ProcessGpuReader {
-    /// pid -> engine-busy nanoseconds at the previous sample. Cumulative
-    /// counters mean only the delta says anything.
-    previous: HashMap<i32, u64>,
+/// - A machine can have more than one card, so the totals have to be kept
+///   apart by `drm-pdev` - the whole point on a hybrid laptop.
+pub struct DrmUsageReader {
+    /// The previous walk. The counters are cumulative, so only the delta
+    /// says anything.
+    previous: Snapshot,
 }
 
-impl Default for ProcessGpuReader {
+/// One walk of `/proc`, in the two shapes the caller wants it in.
+#[derive(Default)]
+struct Snapshot {
+    /// pid -> engine-busy nanoseconds across the clients that process owns.
+    per_pid: HashMap<i32, u64>,
+    /// PCI slot -> engine name -> busy nanoseconds, counting every DRM
+    /// client on the machine exactly once.
+    per_card: HashMap<String, HashMap<String, u64>>,
+}
+
+/// Busy percentages, from the delta between two [`Snapshot`]s.
+pub struct GpuUsage {
+    /// pid -> percentage of the window that process kept a GPU busy.
+    /// Absent means the process holds no DRM client at all.
+    pub per_pid: HashMap<i32, f64>,
+    /// PCI slot -> percentage of the window that card's busiest engine
+    /// spent executing.
+    pub per_card: HashMap<String, f64>,
+}
+
+impl Default for DrmUsageReader {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProcessGpuReader {
+impl DrmUsageReader {
     pub fn new() -> Self {
         // Primed, so the first real sample is a delta over a known window
         // rather than over "since each process started".
-        Self { previous: read_process_gpu_ns() }
+        Self { previous: read_fdinfo() }
     }
 
-    /// pid -> percentage of `elapsed` that process kept the GPU busy.
-    /// Absent from the map means the process holds no DRM client at all.
-    pub fn sample(&mut self, elapsed: f64) -> HashMap<i32, f64> {
+    pub fn sample(&mut self, elapsed: f64) -> GpuUsage {
         let window_ns = elapsed * 1_000_000_000.0;
-        let current = read_process_gpu_ns();
+        let current = read_fdinfo();
 
-        let mut percents = HashMap::with_capacity(current.len());
+        let mut usage = GpuUsage { per_pid: HashMap::new(), per_card: HashMap::new() };
         if window_ns > 0.0 {
-            for (pid, busy_ns) in &current {
-                let previous = self.previous.get(pid).copied().unwrap_or(*busy_ns);
+            for (pid, busy_ns) in &current.per_pid {
+                let previous = self.previous.per_pid.get(pid).copied().unwrap_or(*busy_ns);
                 let delta = busy_ns.saturating_sub(previous) as f64;
-                percents.insert(*pid, (delta / window_ns * 100.0).clamp(0.0, 100.0));
+                usage.per_pid.insert(*pid, (delta / window_ns * 100.0).clamp(0.0, 100.0));
+            }
+            for (slot, engines) in &current.per_card {
+                let previous = self.previous.per_card.get(slot);
+                // The busiest engine rather than a sum: a card whose render
+                // engine is saturated is a busy card, and averaging that
+                // against idle video-decode engines would hide it. This is
+                // the same rule the PMU path uses, so the two agree - under
+                // load they match to within a percentage point.
+                let busiest = engines
+                    .iter()
+                    .map(|(engine, ns)| {
+                        let was = previous.and_then(|e| e.get(engine)).copied().unwrap_or(*ns);
+                        (ns.saturating_sub(was) as f64 / window_ns * 100.0).clamp(0.0, 100.0)
+                    })
+                    .fold(0.0_f64, f64::max);
+                usage.per_card.insert(slot.clone(), busiest);
             }
         }
 
         self.previous = current;
-        percents
+        usage
     }
 }
 
-fn read_process_gpu_ns() -> HashMap<i32, u64> {
+fn read_fdinfo() -> Snapshot {
     let Ok(entries) = fs::read_dir("/proc") else {
-        return HashMap::new();
+        return Snapshot::default();
     };
 
-    let mut busy = HashMap::new();
+    let mut snapshot = Snapshot::default();
+    // Every DRM client on the machine, so one shared between processes is
+    // counted once towards its card.
+    let mut clients: HashMap<(String, String), HashMap<String, u64>> = HashMap::new();
+
     for entry in entries.filter_map(|e| e.ok()) {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
             continue;
         };
-        if let Some(ns) = pid_gpu_ns(pid) {
-            busy.insert(pid, ns);
+        let owned = pid_drm_clients(pid);
+        if owned.is_empty() {
+            continue;
+        }
+        let busy_ns = owned.values().flat_map(|engines| engines.values()).sum();
+        snapshot.per_pid.insert(pid, busy_ns);
+        clients.extend(owned);
+    }
+
+    for ((pdev, _), engines) in clients {
+        let card = snapshot.per_card.entry(pdev).or_default();
+        for (engine, ns) in engines {
+            *card.entry(engine).or_default() += ns;
         }
     }
-    busy
+    snapshot
 }
 
-/// Engine-busy nanoseconds across every DRM client a process owns, or
-/// `None` when it owns none.
-fn pid_gpu_ns(pid: i32) -> Option<u64> {
+/// The DRM clients one process owns, keyed by what makes a client unique
+/// and holding its per-engine busy nanoseconds. Empty when the process
+/// holds no DRM file descriptor.
+fn pid_drm_clients(pid: i32) -> HashMap<(String, String), HashMap<String, u64>> {
+    let mut clients = HashMap::new();
     // Reading every fdinfo of every process would be thousands of file
     // reads per poll. The link tells us which descriptors are worth opening
     // for a fraction of the cost.
     let Ok(descriptors) = fs::read_dir(format!("/proc/{pid}/fd")) else {
-        return None;
+        return clients;
     };
 
-    let mut clients: HashMap<(String, String), u64> = HashMap::new();
     for descriptor in descriptors.filter_map(|e| e.ok()) {
         match fs::read_link(descriptor.path()) {
             Ok(target) if target.starts_with("/dev/dri/") => {}
@@ -546,20 +622,18 @@ fn pid_gpu_ns(pid: i32) -> Option<u64> {
         if let Some(client) = parse_drm_client(&text) {
             // Insert, never add: a second fd onto the same client is the
             // same counter read twice.
-            clients.insert(client.key, client.busy_ns);
+            clients.insert(client.key, client.engines);
         }
     }
-
-    if clients.is_empty() {
-        return None;
-    }
-    Some(clients.values().sum())
+    clients
 }
 
 struct DrmClient {
-    /// What makes a client unique: its id, per GPU.
+    /// What makes a client unique: its id, per card.
     key: (String, String),
-    busy_ns: u64,
+    /// Engine name -> busy nanoseconds, already spread over the engine's
+    /// capacity.
+    engines: HashMap<String, u64>,
 }
 
 /// Parses one `/proc/<pid>/fdinfo/<fd>` describing a DRM client.
@@ -592,12 +666,14 @@ fn parse_drm_client(text: &str) -> Option<DrmClient> {
         }
     }
 
-    let busy_ns = engines
-        .iter()
-        .map(|(engine, ns)| ns / capacities.get(engine).copied().unwrap_or(1).max(1))
-        .sum();
+    let engines = engines
+        .into_iter()
+        .map(|(engine, ns)| {
+            (engine.to_string(), ns / capacities.get(engine).copied().unwrap_or(1).max(1))
+        })
+        .collect();
 
-    Some(DrmClient { key: (pdev, client_id?), busy_ns })
+    Some(DrmClient { key: (pdev, client_id?), engines })
 }
 
 #[cfg(test)]
@@ -618,10 +694,23 @@ drm-engine-copy:\t50232 ns
         assert_eq!(first.key, second.key);
 
         let mut clients = HashMap::new();
-        clients.insert(first.key, first.busy_ns);
-        clients.insert(second.key, second.busy_ns);
-        let total: u64 = clients.values().sum();
+        clients.insert(first.key, first.engines);
+        clients.insert(second.key, second.engines);
+        let total: u64 = clients.values().flat_map(|e| e.values()).sum();
         assert_eq!(total, 9_000_050_232);
+    }
+
+    #[test]
+    fn the_same_client_id_on_two_cards_is_two_clients() {
+        // Card and client id together are the key: ids restart per card, so
+        // the iGPU's client 7 and the dGPU's client 7 must not collapse into
+        // one and halve a hybrid laptop's totals.
+        let on = |pdev| {
+            format!("drm-pdev:\t{pdev}\ndrm-client-id:\t7\ndrm-engine-render:\t1000 ns\n")
+        };
+        let igpu = parse_drm_client(&on("0000:00:02.0")).expect("should parse");
+        let dgpu = parse_drm_client(&on("0000:01:00.0")).expect("should parse");
+        assert_ne!(igpu.key, dgpu.key);
     }
 
     #[test]
@@ -633,7 +722,7 @@ drm-engine-video:\t2000000000 ns
 drm-engine-capacity-video:\t2
 ";
         let client = parse_drm_client(fdinfo).expect("should parse");
-        assert_eq!(client.busy_ns, 1_000_000_000);
+        assert_eq!(client.engines.get("video"), Some(&1_000_000_000));
     }
 
     #[test]
