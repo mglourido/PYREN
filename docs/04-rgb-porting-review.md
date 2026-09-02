@@ -1,11 +1,15 @@
 # RGB module: review of `omen-rgb-linux` before porting
 
-Notes from reading `omen-rgb-linux` (`../omen-rgb-linux-main`) with a view
-to porting it as the `rgb` daemon module. **Nothing here was tested against
-hardware** — the development machine is an ASUS desktop with no HP
-keyboard, no `hp-wmi` and no `/proc/acpi/call`, so everything below comes
-from reading the code and the data files. Items marked ⚠ are things to
-check on the laptop before trusting them.
+Notes from reading `omen-rgb-linux` with a view to porting it as the `rgb`
+daemon module. **Nothing here was tested against hardware**: it was written
+on an ASUS desktop with no HP keyboard, no `hp-wmi` and no
+`/proc/acpi/call`, so everything below comes from reading the code and the
+data files. Items marked ⚠ are things to check before trusting them.
+
+Since then the development machine has become the OMEN laptop itself, which
+answers the review's central question — see "Suggested porting order" at
+the end. The source is on the USB stick, not in this repository:
+`/run/media/paraguayo33/SAMSUNG USB/omen-rgb-linux-main/`.
 
 ## There are two unrelated hardware paths
 
@@ -122,12 +126,28 @@ interface is the right fix rather than escalating the whole app.
 
 ## Suggested porting order
 
+The question this review could not answer has since been answered on the
+hardware (2026-09-02, see `dev/FINDINGS.md` §"The test laptop has no
+per-key RGB keyboard"): **`lsusb` finds no `0d62` device**, and
+`/sys/class/leds` has no keyboard-backlight entry either. The per-key path
+has nothing to talk to on this machine, so:
+
 1. Probe both paths and report what exists (`rgb.getCapabilities`), the way
-   the `system` module already reports hardware identity. This is testable
-   on the laptop immediately and settles the per-key vs 4-zone question.
-2. Port the 4-zone lightbar path first if that is what the hardware has: it
-   is ~250 lines, needs no HID dependency, and the payload layout is
-   already documented in `lightbar.py`.
-3. Port the per-key path only if the `0d62:54bf` device is present, and
-   settle finding 1 first — the key map is the whole value of that path and
-   it should not be ported with a known inconsistency in it.
+   the `system` module already reports what it found the machine able to
+   do. Probing rather than matching a model name is the rule everywhere in
+   this project now, and this module is no exception.
+2. **Port the 4-zone lightbar path.** It is ~250 lines, needs no HID
+   dependency, and the payload layout is already documented in
+   `lightbar.py`. It is blocked on something installable rather than on an
+   unknown: `/proc/acpi/call` does not exist until `acpi_call` is
+   (`acpi_call-dkms` on Arch). Install it and confirm the lightbar answers
+   before writing the module — "no per-key device" is proven, "the 4-zone
+   interface works here" is not.
+3. Port the per-key path only if a `0d62:54bf` device turns up on some
+   other machine, and settle finding 1 first — the key map is the whole
+   value of that path and it should not be ported with a known
+   inconsistency in it.
+
+Whichever lands, `/proc/acpi/call` needs a **cross-module** lock, since the
+fan cleaner will use it too. That belongs in `core` or a new shared crate,
+not inside the `rgb` module.

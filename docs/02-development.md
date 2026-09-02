@@ -147,10 +147,33 @@ node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json
 node node_modules/vite/bin/vite.js build
 ```
 
+## Driving the daemon from a shell
+
+`omen-hub-ctl` is a client for a running daemon, and the quickest way to
+see whether a change did anything:
+
+```sh
+cd daemon
+cargo run -q -p omen-hub-ctl -- status
+cargo run -q -p omen-hub-ctl -- power set eco
+cargo run -q -p omen-hub-ctl -- power tune --mode eco --pl1 35 --turbo off
+cargo run -q -p omen-hub-ctl -- fan curve 40:20,60:50,85:100
+cargo run -q -p omen-hub-ctl -- --json fan get
+```
+
+It reads `OMEN_HUB_SOCKET` like everything else, so it points at whichever
+daemon is running. Exit status is 0, 1 when the daemon refused, 2 for bad
+arguments, 3 when it could not be reached — enough to use it from a script
+or a keybinding.
+
+It is also how a *measured* power limit gets recorded: the daemon ships no
+opinion about what Eco should be worth in watts on a given laptop, so
+`power tune` is where a number someone actually measured goes in.
+
 ## Sanity-checking without the GUI
 
-The daemon's socket can be exercised directly, which is useful when
-iterating on a module without waiting on a GTK rebuild:
+The socket can also be exercised directly, which is useful when adding a
+method the CLI does not know about yet:
 
 ```sh
 python3 -c '

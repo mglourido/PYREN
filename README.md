@@ -4,7 +4,9 @@ A Tauri-based clone of HP's OMEN Gaming Hub for Linux, built as a
 privileged daemon (Rust) plus an unprivileged desktop app (Tauri +
 SvelteKit), so hardware-control modules can be ported in from separate
 source projects — starting with fan control from
-[`omen-fan-control`](../omen-fan-control-main).
+[`omen-fan-control`](https://github.com/arfelious/omen-fan-control). Those
+source projects are not vendored here; where the checkouts live is in
+[`dev/README.md`](dev/README.md).
 
 Work still to do, and the findings behind the decisions taken so far, are
 in [`dev/`](dev/README.md).
@@ -16,12 +18,15 @@ wire format between the app and the daemon, and
 run everything, and [`docs/03-frontend.md`](docs/03-frontend.md) for the
 frontend's structure and conventions.
 
+`omen-hub-ctl status` is the fastest way to see what a running daemon
+thinks the machine can do.
+
 ## Layout
 
 ```
 daemon/     Rust workspace: omen-hub-daemon + omen-hub-ctl + omen-hub-check + module crates
 app/        Tauri app: SvelteKit frontend + src-tauri shell
-docs/       design plan + IPC protocol + development + frontend guide
+docs/       design plan + IPC protocol + development + frontend + RGB review
 dev/        working notes: what is left to do, and what was learned
 tools/      omen-check.sh, the dependency-free fan self-test
 ```
@@ -40,27 +45,28 @@ tools/      omen-check.sh, the dependency-free fan self-test
   (`~/.config/omen-hub/`).
 - `system` module: machine identification (DMI/CPU/GPU, plus a
   compatibility verdict derived from what the hardware modules found they
-  could actually do — never from a board list) and full live monitoring — CPU per core, memory,
-  hwmon temperatures and fans, disks, network throughput, GPU (nvidia-smi
-  and DRM sysfs) and the busiest processes. Generic Linux, so it works and
-  is testable on any machine.
-- `power` module: Eco/Balanced/Performance/Unlimited as real *profiles* —
-  each sets the OS power profile (ACPI platform profile,
-  power-profiles-daemon or the CPU energy-performance hint) **and** the
-  package power envelope: PL1/PL2 as a percentage of the machine's own
-  stock limits, plus turbo. The envelope is the half the fans feel, and on
-  a machine with no firmware platform profile it is the whole profile.
-  Nothing is ever raised above stock — that would be overclocking, which is
-  deliberately not built yet — and no envelope numbers ship by default,
-  because every laptop's internal profiles are its own and guessing them
-  would be worse than doing nothing. Plus a background supervisor: two
-  systems, one per power source, where unplugging drops to Balanced and
-  plugging in steps up to Performance, each then refining towards Eco or
-  Performance as conditions hold. Unlimited is never chosen for you.
-  Changing the laptop's own firmware profile and changing the OS's
-  (power-profiles-daemon, which is delegated to rather than reimplemented)
-  are separate switches, because wanting one without the other is
-  reasonable.
+  could actually do — never from a board list), and full live monitoring:
+  CPU per core, memory, hwmon temperatures and fans, disks, network
+  throughput, GPU (nvidia-smi and DRM sysfs) and the busiest processes.
+  Generic Linux, so it works and is testable on any machine.
+- `power` module: Eco/Balanced/Performance/Unlimited as real *profiles*,
+  applied as three separable parts —
+
+  1. **the laptop's own** firmware profile (ACPI `platform_profile`), the
+     one that moves the EC's fan curve and internal power states;
+  2. **the OS profile**, delegated to power-profiles-daemon rather than
+     reimplemented, and optional: changing how the laptop behaves without
+     changing what the desktop thinks is a reasonable thing to want;
+  3. **the package power envelope** (PL1/PL2 and turbo), which ships
+     *untouched*. Every laptop's internal profiles are its own, so this
+     project invents no numbers; `omen-hub-ctl power tune` is how one that
+     somebody measured gets recorded. Nothing is ever raised above what the
+     firmware shipped — that would be overclocking, deliberately last.
+
+  Plus a background supervisor: two systems, one per power source.
+  Unplugging drops to Balanced and plugging in steps up to Performance,
+  each then refining towards Eco or Performance as conditions hold.
+  Unlimited is never chosen for you.
 - `omen-hub-ctl`: a CLI over the same socket — `status`, `power set`,
   `power tune --pl1 35W`, `fan curve 40:20,80:100`, and `--json` on any of
   them. It exists mainly so a number someone measured on their own machine
@@ -74,8 +80,10 @@ tools/      omen-check.sh, the dependency-free fan self-test
   nothing to install.
 - `installer` module: ports the driver/service installer as inspect → plan
   → apply, kept for boards the stock driver doesn't support and for the
-  systemd unit. Detection and planning are verified; the driver execution
-  path is written but has never been run, because that needs an HP laptop.
+  systemd unit. Detection and planning are verified; **the driver execution
+  path has still never been run**, and running it is the top item in
+  `dev/TODO.md` — it is also the experiment that would decide whether the
+  test laptop can be given a real fan percentage.
 - `fan` module: status, the self-test, and the write path — `setMode`
   (auto/max/manual/curve), `setCurve`, a control loop that follows a curve
   with hysteresis and temperature smoothing, and `fan.json` persistence.
@@ -90,11 +98,12 @@ tools/      omen-check.sh, the dependency-free fan self-test
   (basic + advanced views), performance control (power modes, fan
   toggle/curve, power limits), GPU overclocking, lighting, graphics
   switcher, network booster, key mapping, plus settings, drivers and help
-  pages. The fan controls are wired to the daemon and hide what this
-  machine's driver cannot do. Bilingual (en/es) with a drop-in translation system. Falls back to
-  simulated data when the daemon isn't reachable, so the UI is usable
-  without root. Fan and power writes reach the daemon; lighting, GPU
-  switching, network booster and key mapping are still UI-only.
+  pages. Fan and power writes reach the daemon, and the pages hide what
+  this machine's driver cannot do rather than offering controls that
+  silently fail. Lighting, GPU switching, network booster and key mapping
+  are still UI-only. Bilingual (en/es) with a drop-in translation system,
+  and it falls back to simulated data when the daemon isn't reachable, so
+  the UI is usable without root.
 
 ## Running in development
 

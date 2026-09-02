@@ -40,11 +40,24 @@ Three stores, deliberately separate:
   started once in the root layout so history graphs stay continuous across
   navigation. Ref-counted `start()`/`stop()`.
 - **`hardware`** — what the *user asked for* (power mode, fan mode, curve,
-  power limits, lighting, GPU mode). Power-mode writes go to the daemon and
-  report back what was actually applied (`hardware.lastApply`); fan,
-  lighting and GPU writes stay local-only until those daemon paths land.
+  power limits, lighting, GPU mode). Power and fan writes go to the daemon;
+  lighting and GPU stay local-only until those daemon paths land.
   `syncFromDaemon()` seeds the store from the machine's real state on
   startup, so the UI opens showing the mode the machine is actually in.
+
+  Two things about the daemon-backed half are worth knowing before adding
+  to it:
+
+  - **The daemon is the authority, not the store.** A write returns the new
+    state and the store adopts it, and `observeFan()` does the same on every
+    telemetry poll. A machine that refuses the mode the UI is showing
+    corrects the UI, rather than leaving a button lit that nothing is
+    honouring.
+  - **Gate on capabilities, never on the mode.** `hardware.fan.capabilities`
+    says whether this driver can be told a *speed* at all (board 8D2F can
+    switch auto/max and nothing else), and `hardware.power.limits.available`
+    the same for power limits. Pages hide what the machine cannot do instead
+    of discovering it from a failed write.
 - **`settings`** — app preferences (language, units, poll interval,
   dismissed notices).
 
@@ -63,7 +76,10 @@ a disk write, and the file wins on any disagreement.
 
 Writes are debounced (300 ms) so dragging a slider doesn't produce a write
 per frame, and flushed on `beforeunload` so nothing queued is lost when the
-window closes.
+window closes. Daemon calls are debounced separately and more tightly
+(200 ms, `FAN_PUSH_DEBOUNCE_MS`): a fan-curve point or a power-limit slider
+is a socket round trip that re-applies settings to hardware, which is a
+different cost from writing a JSON file.
 
 ## Demo mode
 
@@ -94,7 +110,10 @@ automatically — there is no language table to update.
 
 ## Not built yet (frontend side)
 
-- Per-process CPU/GPU/RAM and network rows (tables are laid out, data is
-  placeholder) — needs daemon support.
-- The privileged installer flow on `/drivers` (buttons are disabled).
-- Storage/disk list is hardcoded until the daemon reports mounts.
+- Per-process **GPU** usage: the column exists and shows `--`. CPU, memory
+  and the disk list are real.
+- The installer wizard on `/drivers`. The page runs the hardware check;
+  what it cannot yet do is walk someone through `installer.plan` /
+  `installer.apply`.
+- Lighting, GPU switching, network booster and key mapping drive local
+  state only — there is no daemon module behind any of them yet.

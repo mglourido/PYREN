@@ -235,6 +235,10 @@ Eco and Balanced on its own — is the `power` supervisor.
 
 ## Done since these notes were written
 
+Newest first. Kept because the *reasons* are the useful part - several of
+these replaced an earlier version of themselves, and knowing why saves
+someone re-proposing it.
+
 - **`omen-hub-ctl`**, a shell client over the same socket: `status`,
   `power set/tune/auto/os-profile`, `fan set/curve/diagnose`, `--json` on
   anything. Exists mainly so a measured number can be recorded without a
@@ -253,12 +257,14 @@ Eco and Balanced on its own — is the `power` supervisor.
   own range (Eco↔Balanced on battery, Balanced↔Performance on mains) as
   load and battery charge hold. Unlimited is never chosen automatically. A
   manual choice suspends refinement but not transitions.
-- **The power modes are profiles now**, not a single switch: each sets the
-  OS preference *and* the package power envelope (PL1/PL2 as a percentage
-  of the machine's stock limits, plus turbo), which is the half the fans
-  feel. `power.setTuning` edits them. The supervisor applies the whole
-  profile too — a mode has to mean the same thing whether the user picked
-  it or the auto-switcher did.
+- **The power modes are profiles now**, not a single switch: alongside the
+  OS preference there is a package power envelope (PL1/PL2 and turbo),
+  which is the half the fans feel on a machine with no firmware profile.
+  `power.setTuning` edits it, in watts, stored as a percentage of the
+  machine's own stock limits. It **ships untouched** — the first version of
+  this shipped invented percentages, which was wrong for the reason in §4.
+  The supervisor applies the whole profile too: a mode has to mean the same
+  thing whether the user picked it or the auto-switcher did.
 - **The compatibility verdict is now measured.** `system.getInfo` reports
   `controls` — what the fan and power modules found they could actually do
   — and `compatibility` is only their summary. `crates/system/src/boards.rs`

@@ -562,7 +562,8 @@ The same report is available without the app, from `omen-hub-check` - see
 Python original's fallback chain: `coretemp`/`k10temp` hwmon →
 `thermal_zone0` → give up). `fanRpm` is `max(fan1, fan2)`, decoded through
 the hp-wmi reverse-bit encoding — see
-`../omen-fan-control-main/docs/02-kernel-driver.md` for why raw values
+`docs/02-kernel-driver.md` in the `omen-fan-control` project (see
+`dev/README.md` for where that checkout is) for why raw values
 `>= 12800` get remapped.
 
 ## Adding a new module

@@ -19,16 +19,16 @@ the project's conversations are in Spanish.
 ## Where things are
 
 ```
-daemon/                 Rust workspace (root daemon + the CLI checker)
+daemon/                 Rust workspace (the daemon and its two CLIs)
 ├── daemon/             omen-hub-daemon: loads modules, serves the socket
 ├── check/              omen-hub-check: standalone fan self-test CLI
 ├── ctl/                omen-hub-ctl: shell client for a running daemon
 └── crates/
-    ├── core/           Module trait, Registry, wire types, socket server
+    ├── core/           Module trait, Registry, wire types, socket server + client
     ├── config/         on-disk settings (atomic writes, versioning)
     ├── system/         machine identity + generic Linux monitoring
-    ├── power/          power modes + background auto-switch supervisor
-    ├── fan/            fan status + the self-test (diagnostics.rs)
+    ├── power/          power profiles + the auto-switch supervisor
+    ├── fan/            fan status, the write path, the self-test
     └── installer/      driver/service installer (inspect → plan → apply)
 app/                    Tauri app: SvelteKit frontend + src-tauri shell
 tools/omen-check.sh     dependency-free shell twin of omen-hub-check
@@ -65,22 +65,41 @@ cd app && bun run tauri dev
 Full prerequisites and the Wayland workaround are in
 [`docs/02-development.md`](../docs/02-development.md).
 
+To see what the daemon thinks without opening the app:
+
+```sh
+cd daemon && cargo run -q -p omen-hub-ctl -- status
+```
+
+Reaching a daemon that is running as **root** means being in its group:
+`sudo groupadd -f omen-hub && sudo usermod -aG omen-hub $USER`, then a new
+login (or `newgrp omen-hub` for one shell).
+
 ## What actually works today
 
 - **Monitoring**: real, on any machine. CPU per core, memory, hwmon
   temperatures and fans, disks, network, GPU, top processes.
-- **Machine identification** and a supported/untested/unsupported verdict.
-- **Power modes**: platform_profile → power-profiles-daemon → EPP, plus the
-  background Eco/Performance supervisor, with settings that survive a
-  restart.
+- **Machine identification**, and a verdict about what this machine can be
+  *told to do*, measured rather than looked up in a board list.
+- **Power profiles**: the laptop's own firmware profile and the OS one
+  (delegated to power-profiles-daemon) as separate switches, plus a package
+  power envelope that ships untouched until someone measures their machine.
+  With the auto-switch supervisor: unplugging drops to Balanced, plugging
+  in steps up to Performance, each refining from there.
 - **Fan self-test**: three front ends (daemon method, app page, CLI + shell
   script), kept in step by a parity test.
 - **Fan control**: mode switching (max and auto measured on the laptop,
   ~2000 → ~3900 rpm and back), a curve followed on the daemon's own thread,
   hysteresis, and settings that survive a restart — as far as the hardware
   allows, which it reports rather than guesses.
-- **Frontend**: the whole OMEN Hub surface, bilingual, with settings on disk.
-- **A socket other local users cannot open**: `0660`, group `omen-hub`.
+- **Frontend**: the whole OMEN Hub surface, bilingual, with settings on
+  disk. Fan and power controls reach the daemon; the pages hide what this
+  machine cannot do.
+- **`omen-hub-ctl`**: `status`, `power set|tune|auto|os-profile`,
+  `fan set|curve|diagnose`, `--json` on anything.
+- **A socket other local users cannot open**: `0660`, group `omen-hub`
+  (verified against a root daemon - a process outside the group gets
+  `EACCES`).
 
 ## What does not work yet
 
@@ -90,12 +109,16 @@ Full prerequisites and the Wayland workaround are in
   driver should change that — see `TODO.md` §1.1.
 - **Lighting, GPU switching, network booster, key mapping**: the UI is
   complete and drives local state only. No daemon module behind any of them.
-- **The installer's execution path** has never been run.
+- **The installer's execution path** has never been run. It is `TODO.md`
+  §1.1 and the single most valuable thing left, because it is also the test
+  of whether this board can be given a fan percentage at all.
+- **Overclocking**, deliberately: it is the only feature that would leave
+  the envelope the firmware shipped, and it goes last.
 
 ## Verifying a change
 
 ```sh
-cd daemon && cargo test && cargo clippy --all-targets   # 17 suites, 0 warnings
+cd daemon && cargo test && cargo clippy --all-targets   # 158 tests, 0 warnings
 cd app && bun run check && bun run build
 cd app/src-tauri && cargo check
 sh -n tools/omen-check.sh

@@ -52,7 +52,8 @@ rebuild.
   is. A `pkexec`-driven flow only appears in the one-time installer
   (installing the patched kernel driver, installing `omen-hub-daemon` as a
   systemd service), reusing the approach documented in
-  `../omen-fan-control-main/docs/03-installation.md`.
+  `docs/03-installation.md` of the `omen-fan-control` project (that
+  checkout is not in this repository; `dev/README.md` says where it is).
 - Every module implementation should stay read/write-capability-aware:
   read-only status calls (e.g. `fan.getStatus`) don't need root and are
   safe to leave working even before the daemon is installed as a
@@ -65,8 +66,10 @@ rebuild.
 omen-hub-linux/
 ├── daemon/                 Cargo workspace, becomes the root systemd service
 │   ├── daemon/              bin crate: loads modules, runs the IPC server
+│   ├── ctl/                 omen-hub-ctl: shell client for a running daemon
+│   ├── check/               omen-hub-check: standalone fan self-test
 │   └── crates/
-│       ├── core/            Module trait, Registry, wire types, socket server
+│       ├── core/            Module trait, Registry, wire types, socket server + client
 │       ├── system/          machine identity + generic Linux monitoring
 │       ├── power/           power modes + background auto-switch supervisor
 │       ├── installer/       driver + service installer (inspect/plan/apply)
@@ -125,12 +128,28 @@ doesn't exist, because nothing has needed one yet.
    drivers, help). See `docs/03-frontend.md`. The UI's *write* paths call
    the daemon; the fan ones now do something, the rest still do not.
 4. Fan-cleaner protocol (`docs/04-fan-control-logic.md` §"Fan cleaner protocol" in the source repo) — the ACPI-call sequence, once basic curve control is solid.
-5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary generalizes to a differently-shaped hardware surface — reviewed but not started, see `docs/04-rgb-porting-review.md`; the per-key and 4-zone paths share nothing, so which one to port has to be settled on the hardware first.
+5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary
+   generalizes to a differently-shaped hardware surface — reviewed, not
+   started. Which of the two unrelated paths to port **is now settled**:
+   the laptop has no `0d62` USB device, so the 4-zone ACPI lightbar is the
+   only candidate. See `docs/04-rgb-porting-review.md`.
 6. ~~Privileged installer flow (kernel driver + daemon systemd unit)~~ —
    ported as the `installer` module (inspect/plan/apply, see
    `docs/01-ipc-protocol.md`). Its *execution* path is written but has
-   never been run, since that needs an HP laptop; the GUI wizard on top of
-   it is still to do.
+   never been run; running it on the test laptop is now the top item in
+   `dev/TODO.md`, because it is also the experiment that would decide
+   whether this board can be given a real fan percentage. The GUI wizard on
+   top of it is still to do.
+7. ~~Power modes as real profiles~~ — done: the laptop's own firmware
+   profile, the OS profile (delegated to power-profiles-daemon), and the
+   package power envelope, applied as three separable parts. The envelope
+   ships untouched, because per-chassis numbers are not something this
+   project can invent; `omen-hub-ctl power tune` is how a measured one gets
+   recorded.
+8. Overclocking — GPU offsets, and CPU limits above the firmware's own.
+   Deliberately last, and deliberately behind its own consent: everything
+   else in this project stays inside the envelope the machine shipped with.
+   See `dev/TODO.md` §3.
 
 ## Open decisions (intentionally not settled by this scaffold)
 
