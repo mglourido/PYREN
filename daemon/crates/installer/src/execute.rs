@@ -398,6 +398,13 @@ fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
     // daemon binds 0660 to the 'pyren' group (see
     // `pyren_core::socket`). A 0750 directory here would instead lock
     // out the very group members it is meant to admit.
+    // CAP_PERFMON is what lets the daemon open the i915 perf PMU, the only
+    // interface Intel exposes iGPU utilisation through; without it the
+    // integrated GPU reports no usage at all. Running as root already
+    // carries it, so `AmbientCapabilities` changes nothing today - it is
+    // here to *state the requirement*, so that hardening this unit (a
+    // `User=`, a `CapabilityBoundingSet`) does not silently take the
+    // reading away with no clue as to why.
     let unit = format!(
         "[Unit]\n\
          Description=Pyren hardware daemon\n\
@@ -410,6 +417,7 @@ fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
          Environment=PYREN_SOCKET=/run/pyren/daemon.sock\n\
          RuntimeDirectory=pyren\n\
          RuntimeDirectoryMode=0755\n\
+         AmbientCapabilities=CAP_PERFMON\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          \n\

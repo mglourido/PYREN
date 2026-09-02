@@ -14,10 +14,11 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::Instant;
 
 use serde::Serialize;
+
+use crate::gpu::{GpuMetrics, GpuReader, ProcessGpuReader};
 
 /// Busiest processes reported per sample. Matches what the UI table shows.
 const TOP_PROCESSES: usize = 12;
@@ -100,24 +101,15 @@ pub struct InterfaceRate {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GpuMetrics {
-    pub name: String,
-    pub driver: String,
-    pub usage_percent: Option<f64>,
-    pub temp_c: Option<f64>,
-    pub mem_used_mb: Option<f64>,
-    pub mem_total_mb: Option<f64>,
-    pub power_w: Option<f64>,
-    pub clock_mhz: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ProcessUsage {
     pub pid: i32,
     pub name: String,
     pub cpu_percent: f64,
     pub mem_mb: f64,
+    /// `None` for a process holding no GPU at all, and for every process on
+    /// a card whose driver publishes no per-client accounting - which is
+    /// not the same thing as zero, so the UI shows the two differently.
+    pub gpu_percent: Option<f64>,
 }
 
 /// Counters from one `/proc/stat` CPU line.
@@ -162,7 +154,8 @@ pub struct Sampler {
     process_ticks: HashMap<i32, u64>,
     /// `None` for the very first sample taken at construction.
     last_sampled: Instant,
-    nvidia_smi_available: bool,
+    gpus: GpuReader,
+    process_gpu: ProcessGpuReader,
 }
 
 impl Default for Sampler {
@@ -188,7 +181,8 @@ impl Sampler {
             net: HashMap::new(),
             process_ticks: HashMap::new(),
             last_sampled: Instant::now(),
-            nvidia_smi_available: which("nvidia-smi"),
+            gpus: GpuReader::new(),
+            process_gpu: ProcessGpuReader::new(),
         };
         // Prime the deltas so the first real call reports actual usage.
         sampler.prime();
@@ -202,11 +196,19 @@ impl Sampler {
         self.last_sampled = Instant::now();
     }
 
+    /// See [`GpuReader::engine_stats_available`].
+    pub fn engine_stats_available(&self) -> bool {
+        self.gpus.engine_stats_available()
+    }
+
     pub fn sample(&mut self) -> Metrics {
         let elapsed = self.last_sampled.elapsed().as_secs_f64().max(0.001);
         self.last_sampled = Instant::now();
 
         let temperatures = read_temperatures();
+        // Sampled before the process walk that consumes it, because both
+        // borrow the sampler.
+        let process_gpu = self.process_gpu.sample(elapsed);
 
         Metrics {
             cpu: self.sample_cpu(&temperatures),
@@ -214,8 +216,8 @@ impl Sampler {
             fans: read_fans(),
             disks: read_disks(),
             network: self.sample_network(elapsed),
-            gpus: self.sample_gpus(),
-            processes: self.sample_processes(elapsed),
+            gpus: self.gpus.sample(elapsed),
+            processes: self.sample_processes(elapsed, &process_gpu),
             temperatures,
         }
     }
@@ -261,7 +263,11 @@ impl Sampler {
         NetworkMetrics { up_mbps: up_total, down_mbps: down_total, interfaces }
     }
 
-    fn sample_processes(&mut self, elapsed: f64) -> Vec<ProcessUsage> {
+    fn sample_processes(
+        &mut self,
+        elapsed: f64,
+        gpu: &HashMap<i32, f64>,
+    ) -> Vec<ProcessUsage> {
         let cores = self.cpu.per_core.len().max(1) as f64;
         let mut current_ticks = HashMap::new();
         let mut processes = Vec::new();
@@ -295,6 +301,7 @@ impl Sampler {
                 cpu_percent: (delta / self.ticks_per_second / elapsed / cores * 100.0)
                     .clamp(0.0, 100.0),
                 mem_mb: (parsed.rss_pages * self.page_size) as f64 / 1024.0 / 1024.0,
+                gpu_percent: gpu.get(&pid).copied(),
             });
         }
 
@@ -309,21 +316,13 @@ impl Sampler {
         processes
     }
 
-    fn sample_gpus(&self) -> Vec<GpuMetrics> {
-        let mut gpus = Vec::new();
-        if self.nvidia_smi_available {
-            gpus.extend(read_nvidia_gpus());
-        }
-        gpus.extend(read_drm_gpus());
-        gpus
-    }
 }
 
 fn to_mbps(bytes: u64, elapsed: f64) -> f64 {
     bytes as f64 * 8.0 / 1_000_000.0 / elapsed
 }
 
-fn which(binary: &str) -> bool {
+pub(crate) fn which(binary: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
         return false;
     };
@@ -521,7 +520,7 @@ fn cpu_temperature(readings: &[TempReading]) -> Option<f64> {
     })
 }
 
-fn read_number(path: &Path) -> Option<f64> {
+pub(crate) fn read_number(path: &Path) -> Option<f64> {
     fs::read_to_string(path).ok()?.trim().parse::<f64>().ok()
 }
 
@@ -667,105 +666,6 @@ fn read_process_ticks() -> HashMap<i32, u64> {
             Some((pid, parse_process_stat(&stat)?.cpu_ticks))
         })
         .collect()
-}
-
-/// NVIDIA cards, via one `nvidia-smi` query.
-///
-/// Shelling out once per poll is cheap (~25 ms) and needs no NVML bindings;
-/// if the binary is missing or the driver isn't loaded it simply reports
-/// nothing and the sysfs path below still covers other vendors.
-fn read_nvidia_gpus() -> Vec<GpuMetrics> {
-    let output = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,clocks.gr",
-            "--format=csv,noheader,nounits",
-        ])
-        .output();
-
-    let Ok(output) = output else { return Vec::new() };
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split(',').map(str::trim).collect();
-            if fields.len() < 7 {
-                return None;
-            }
-            // "[N/A]" appears for values a given card doesn't report.
-            let number = |i: usize| fields.get(i).and_then(|v| v.parse::<f64>().ok());
-            Some(GpuMetrics {
-                name: fields[0].to_string(),
-                driver: "nvidia".to_string(),
-                usage_percent: number(1),
-                temp_c: number(2),
-                mem_used_mb: number(3),
-                mem_total_mb: number(4),
-                power_w: number(5),
-                clock_mhz: number(6),
-            })
-        })
-        .collect()
-}
-
-/// GPUs exposed through DRM sysfs (amdgpu reports utilisation and VRAM;
-/// i915/xe expose neither, so those come back as name-only entries).
-fn read_drm_gpus() -> Vec<GpuMetrics> {
-    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
-        return Vec::new();
-    };
-
-    let mut gpus = Vec::new();
-    for entry in entries.filter_map(|e| e.ok()) {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("card") || name.contains('-') {
-            continue;
-        }
-        let device = entry.path().join("device");
-        let Ok(uevent) = fs::read_to_string(device.join("uevent")) else { continue };
-        let driver = uevent
-            .lines()
-            .find_map(|l| l.strip_prefix("DRIVER="))
-            .unwrap_or("unknown")
-            .to_string();
-
-        // NVIDIA cards are already covered, with far better data, by nvidia-smi.
-        if driver == "nvidia" {
-            continue;
-        }
-
-        let mem_used_mb = read_number(&device.join("mem_info_vram_used")).map(bytes_to_mb);
-        let mem_total_mb = read_number(&device.join("mem_info_vram_total")).map(bytes_to_mb);
-
-        gpus.push(GpuMetrics {
-            name: format!("{driver} ({name})"),
-            usage_percent: read_number(&device.join("gpu_busy_percent")),
-            temp_c: drm_hwmon_value(&device, "temp1_input").map(|v| v / 1000.0),
-            power_w: drm_hwmon_value(&device, "power1_average").map(|v| v / 1_000_000.0),
-            clock_mhz: None,
-            mem_used_mb,
-            mem_total_mb,
-            driver,
-        });
-    }
-    gpus
-}
-
-fn bytes_to_mb(bytes: f64) -> f64 {
-    bytes / 1024.0 / 1024.0
-}
-
-/// Reads one attribute from the hwmon node a DRM device registers.
-fn drm_hwmon_value(device: &Path, attribute: &str) -> Option<f64> {
-    let entries = fs::read_dir(device.join("hwmon")).ok()?;
-    for entry in entries.filter_map(|e| e.ok()) {
-        if let Some(value) = read_number(&entry.path().join(attribute)) {
-            return Some(value);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
