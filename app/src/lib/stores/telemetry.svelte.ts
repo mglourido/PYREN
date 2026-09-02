@@ -119,6 +119,13 @@ export class Telemetry {
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private subscribers = 0;
+  /**
+   * The previous poll's reachability, so the console line below fires on
+   * the transition rather than once every interval - a machine with no
+   * daemon would otherwise print a line every two seconds forever.
+   * `null` until the first poll, so the first failure still logs.
+   */
+  private lastReachable: boolean | null = null;
 
   /**
    * The configured interval, floored at 250 ms. A settings file holding 0
@@ -196,6 +203,19 @@ export class Telemetry {
       }
     } catch {
       this.driverInstalled = false;
+    }
+
+    // A daemon that goes away swaps real telemetry for a random walk that
+    // looks exactly like real telemetry, and nothing on screen says so - so
+    // the console has to.
+    if (reachable !== this.lastReachable) {
+      if (!reachable) {
+        const data = settings.current.demoData ? "simulated demo data" : "stale";
+        console.warn(`pyren: daemon unreachable (${this.daemonError ?? "no reason given"});`, `vitals are ${data}`);
+      } else if (this.lastReachable === false) {
+        console.info("pyren: daemon reachable again; vitals are live");
+      }
+      this.lastReachable = reachable;
     }
 
     this.demo = !reachable;
