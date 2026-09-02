@@ -189,15 +189,65 @@ supervisor that can drive it automatically.
 
 | method | params | result | status |
 |---|---|---|---|
-| `power.getState` | none | current mode, backend state, battery, supervisor config | ✅ implemented |
+| `power.getState` | none | current mode, backend state, power envelope, battery, supervisor config | ✅ implemented |
 | `power.setMode` | `{ "mode": "eco" \| "balanced" \| "performance" \| "unlimited" }` | `{ "applied": [...], "failed": [...] }` | ✅ implemented |
 | `power.setAutoConfig` | full auto config object | stored config + whether it reached disk | ✅ implemented |
 | `power.setRestoreOnStart` | `{ "enabled": bool }` | as above | ✅ implemented |
+| `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState` | ✅ implemented |
+
+### A mode is a profile
+
+Each mode sets several things at once, and both halves matter:
+
+| | Eco | Balanced | Performance | Unlimited |
+|---|---|---|---|---|
+| OS profile | `low-power` | `balanced` | `performance` | `performance` |
+| EPP | `power` | `balance_performance` | `performance` | `performance` |
+| PL1 / PL2 | 45 % / 55 % | 75 % / 90 % | 100 % | 100 % |
+| turbo | off | on | on | on |
+
+The first two rows are *scheduling* preferences. The last two are the
+**power envelope**, and they are the half the fans feel: watts that the
+package is not allowed to draw are heat that does not have to be moved. On
+a machine with no firmware platform profile — board `8D2F` has none — the
+envelope is the entire profile.
+
+Percentages are of **this machine's own stock limits**, captured before the
+daemon ever writes one, so the same defaults suit a 15 W ultrabook and a
+77 W gaming laptop. They are reported by `getState`:
+
+```json
+"limits": {
+  "available": true, "turboAvailable": true,
+  "stock":   { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
+  "current": { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
+  "turbo": true,
+  "tuning": { "eco": { "pl1Percent": 45, "pl2Percent": 55, "turbo": false }, "...": {} }
+}
+```
+
+Four rules worth knowing before writing a client:
+
+- **Nothing ever asks for more than stock.** Raising a limit past what the
+  firmware shipped is overclocking, and is a separate feature with separate
+  consent — not something a mode does on the user's behalf.
+- **`setTuning` speaks watts, the daemon stores percentages.** Watts are
+  what the user is shown; percentages are what survives being restored onto
+  different hardware.
+- **PL4 is left at stock.** The peak-power ceiling exists to keep the VRM
+  in spec, and lowering it buys nothing a lower PL1 has not already bought.
+- **Applying a mode never touches the fans.** A lower limit makes them spin
+  less because there is less heat. Reaching into the fan module to also
+  command a fan mode would put two owners on one piece of hardware.
+
+`setTuning` defaults to the mode currently in force and re-applies it
+immediately when that is the one changed, so a slider is audible now rather
+than at the next mode switch.
 
 ### Mechanisms
 
-`setMode` tries, in order of how directly it maps to what the OMEN Gaming
-Hub does:
+The OS half of `setMode` tries, in order of how directly it maps to what
+the OMEN Gaming Hub does:
 
 1. **`/sys/firmware/acpi/platform_profile`** — the firmware-level switch
    behind Fn+P on HP laptops. Mode names are matched against

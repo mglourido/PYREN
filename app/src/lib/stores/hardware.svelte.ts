@@ -121,6 +121,7 @@ class HardwareStore {
 
   private disk = new DiskBacked<HardwareState>("ui", defaults);
   private fanPushTimer: ReturnType<typeof setTimeout> | null = null;
+  private powerTuningTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Synchronous, for the first render. */
   loadCache() {
@@ -261,6 +262,28 @@ class HardwareStore {
   setFanCurve(curve: CurvePoint[]) {
     this.set("fanCurve", curve);
     this.pushFanSoon(() => daemon.setFanCurve(curve));
+  }
+
+  /**
+   * Tunes the current mode's power envelope. Debounced like the fan
+   * controls - these are sliders, and each change is a socket round trip
+   * that re-applies the profile to the CPU.
+   */
+  setPowerTuning(tuning: { pl1W?: number; pl2W?: number; turbo?: boolean }) {
+    if (tuning.pl1W !== undefined) this.set("pl1", Math.round(tuning.pl1W));
+    if (tuning.pl2W !== undefined) this.set("pl2", Math.round(tuning.pl2W));
+    if (this.powerTuningTimer !== null) clearTimeout(this.powerTuningTimer);
+    this.powerTuningTimer = setTimeout(() => {
+      this.powerTuningTimer = null;
+      void (async () => {
+        try {
+          this.power = await daemon.setPowerTuning(tuning);
+          this.lastError = null;
+        } catch (e) {
+          this.lastError = String(e);
+        }
+      })();
+    }, FAN_PUSH_DEBOUNCE_MS);
   }
 
   /** Asks the daemon to put the fans back where they were after a reboot. */

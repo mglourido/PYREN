@@ -44,11 +44,16 @@ tools/      omen-check.sh, the dependency-free fan self-test
   hwmon temperatures and fans, disks, network throughput, GPU (nvidia-smi
   and DRM sysfs) and the busiest processes. Generic Linux, so it works and
   is testable on any machine.
-- `power` module: Eco/Balanced/Performance/Unlimited switching through the
-  ACPI platform profile, power-profiles-daemon or the CPU energy-performance
-  hint, plus a background supervisor that switches modes on its own (Eco on
-  battery, Performance under sustained load) with hysteresis and a manual
-  override.
+- `power` module: Eco/Balanced/Performance/Unlimited as real *profiles* —
+  each sets the OS power profile (ACPI platform profile,
+  power-profiles-daemon or the CPU energy-performance hint) **and** the
+  package power envelope: PL1/PL2 as a percentage of the machine's own
+  stock limits, plus turbo. The envelope is the half the fans feel, and on
+  a machine with no firmware platform profile it is the whole profile.
+  Nothing is ever raised above stock — that would be overclocking, which is
+  deliberately not built yet. Plus a background supervisor that switches
+  modes on its own (Eco on battery, Performance under sustained load) with
+  hysteresis and a manual override.
 - Fan-control self-test: `fan.diagnose`, the app's Hardware check page, a
   standalone `omen-hub-check` binary, and `tools/omen-check.sh` — a
   dependency-free shell version to copy onto a machine where building isn't

@@ -12,6 +12,22 @@
 //! | `power.setMode` | `{ "mode": "eco"\|"balanced"\|"performance"\|"unlimited" }` | what was applied |
 //! | `power.setAutoConfig` | [`AutoConfig`] | the stored config, and whether it reached disk |
 //! | `power.setRestoreOnStart` | `{ "enabled": bool }` | as above |
+//! | `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState`; defaults to the current mode |
+//!
+//! A **mode is a profile**, not a single switch. Each one sets:
+//!
+//! | | Eco | Balanced | Performance | Unlimited |
+//! |---|---|---|---|---|
+//! | OS profile | low-power | balanced | performance | performance |
+//! | EPP | power | balance_performance | performance | performance |
+//! | PL1 / PL2 | 45 % / 55 % | 75 % / 90 % | 100 % | 100 % |
+//! | turbo | off | on | on | on |
+//!
+//! The percentages are of the machine's *own* stock limits, captured before
+//! this daemon ever writes one, so the same defaults suit a 15 W ultrabook
+//! and a 77 W gaming laptop. Nothing ever asks for more than stock -
+//! raising a limit past what the firmware shipped is overclocking, and is a
+//! separate feature with separate consent.
 //!
 //! Settings live in `power.json` (see `omen-hub-config`), so the
 //! supervisor keeps running with the user's rules after a reboot - which
@@ -19,6 +35,7 @@
 
 mod auto;
 mod backend;
+mod limits;
 mod supply;
 
 use std::sync::{Arc, Mutex};
@@ -31,6 +48,7 @@ use serde_json::{json, Value};
 
 pub use auto::{AutoConfig, AutoInputs, AutoSwitcher};
 pub use backend::{ApplyReport, BackendState};
+pub use limits::{Limits, ModeTuning, Tuning};
 pub use supply::PowerSupplyState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +83,18 @@ pub struct PowerConfig {
     /// changing the machine's power behaviour at boot should be something
     /// the user opted into.
     pub restore_mode_on_start: bool,
+    /// The machine's own power limits, captured before this daemon ever
+    /// wrote one.
+    ///
+    /// Persisted, and never lowered once recorded, because it is the
+    /// ceiling everything else is measured against: re-reading it at
+    /// startup while Eco was in force would make Eco's reduced limit the
+    /// new "stock", and the machine would ratchet down a little on every
+    /// boot. It *is* raised if the hardware ever reports more than what is
+    /// stored, since a higher value can only have come from the firmware.
+    pub stock_limits: Option<Limits>,
+    /// Each mode's share of that envelope.
+    pub tuning: ModeTuning,
 }
 
 /// Shared between the IPC handlers and the supervisor thread.
@@ -85,6 +115,7 @@ struct State {
 pub struct PowerModule {
     state: Arc<Mutex<State>>,
     store: ConfigStore,
+    limits: limits::LimitPaths,
 }
 
 impl PowerModule {
@@ -116,7 +147,12 @@ impl PowerModule {
                 );
             }
         }
-        let config = loaded.value;
+        let mut config = loaded.value;
+
+        // Read the envelope before anything has had a chance to change it.
+        let limit_paths = limits::LimitPaths::discover();
+        let observed = limits::read(&limit_paths);
+        config.stock_limits = Some(highest(config.stock_limits, observed));
 
         // Start from whatever the machine is already set to rather than
         // assuming Balanced, so the first supervisor tick compares against
@@ -125,7 +161,7 @@ impl PowerModule {
 
         if config.restore_mode_on_start {
             if let Some(saved) = config.mode {
-                let report = backend::apply(saved);
+                let report = apply_profile(saved, &config, &limit_paths);
                 if report.is_empty() {
                     eprintln!(
                         "omen-hub-daemon: could not restore power mode {saved:?}: {}",
@@ -147,8 +183,8 @@ impl PowerModule {
             last_save_error: None,
         }));
 
-        spawn_supervisor(Arc::clone(&state), store.clone());
-        Self { state, store }
+        spawn_supervisor(Arc::clone(&state), store.clone(), limit_paths.clone());
+        Self { state, store, limits: limit_paths }
     }
 
     /// Path of the file this module reads and writes, for diagnostics.
@@ -157,7 +193,10 @@ impl PowerModule {
     }
 
     fn set_mode(&self, mode: PowerMode, manual: bool) -> ApplyReport {
-        let report = backend::apply(mode);
+        let report = {
+            let state = lock(&self.state);
+            apply_profile(mode, &state.config, &self.limits)
+        };
         let mut state = lock(&self.state);
         // Only record the mode if something actually took effect; otherwise
         // the UI would show a mode the machine isn't in.
@@ -188,6 +227,14 @@ impl PowerModule {
         json!({
             "mode": state.mode,
             "backend": backend::read_state(),
+            "limits": {
+                "available": self.limits.has_limits(),
+                "turboAvailable": self.limits.has_turbo(),
+                "stock": state.config.stock_limits,
+                "current": limits::read(&self.limits),
+                "turbo": limits::read_turbo(&self.limits),
+                "tuning": state.config.tuning,
+            },
             "supply": supply,
             "auto": state.config.auto,
             "restoreModeOnStart": state.config.restore_mode_on_start,
@@ -263,6 +310,42 @@ impl Module for PowerModule {
                 Ok(saved_response(&state))
             }
 
+            "setTuning" => {
+                let mode = params
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .and_then(PowerMode::parse)
+                    .unwrap_or_else(|| lock(&self.state).mode);
+
+                let mut state = lock(&self.state);
+                let mut tuning = state.config.tuning.get(mode);
+                let stock = state.config.stock_limits.unwrap_or_default();
+
+                // Watts on the wire, because that is what the user is
+                // shown; percentages on disk, because that is what
+                // survives being restored onto different hardware.
+                if let Some(watts) = params.get("pl1W").and_then(Value::as_f64) {
+                    tuning.pl1_percent = percent_of(watts, stock.pl1_uw)?;
+                }
+                if let Some(watts) = params.get("pl2W").and_then(Value::as_f64) {
+                    tuning.pl2_percent = percent_of(watts, stock.pl2_uw)?;
+                }
+                if let Some(turbo) = params.get("turbo").and_then(Value::as_bool) {
+                    tuning.turbo = turbo;
+                }
+                state.config.tuning.set(mode, tuning);
+                let applies_now = state.mode == mode;
+                persist(&self.store, &mut state);
+                drop(state);
+
+                // Tuning the mode the machine is in should be audible
+                // straight away, not after the next mode switch.
+                if applies_now {
+                    self.set_mode(mode, true);
+                }
+                Ok(self.state_json())
+            }
+
             "setRestoreOnStart" => {
                 let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
                     ModuleError::Other("params.enabled must be a boolean".to_string())
@@ -288,7 +371,7 @@ impl Module for PowerModule {
 /// Runs on its own thread rather than being driven by IPC calls, because it
 /// has to keep working when nothing is connected - the whole point is that
 /// it manages the machine while the app is closed.
-fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore) {
+fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore, paths: limits::LimitPaths) {
     std::thread::spawn(move || loop {
         let (interval, decision) = {
             let mut guard = lock(&state);
@@ -308,7 +391,13 @@ fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore) {
         };
 
         if let Some(mode) = decision {
-            let report = backend::apply(mode);
+            // The whole profile, not just its OS half: a mode has to mean
+            // the same thing whether the user picked it or the supervisor
+            // did, or "Eco" would quietly be two different settings.
+            let report = {
+                let guard = lock(&state);
+                apply_profile(mode, &guard.config, &paths)
+            };
             let mut guard = lock(&state);
             if !report.is_empty() {
                 guard.mode = mode;
@@ -344,6 +433,60 @@ fn manual_override_active(state: &State) -> bool {
 /// Writes the current config, recording rather than propagating a failure:
 /// a setting that could not be saved has still been applied, and the user
 /// needs to be told it won't survive a restart - not to have the call fail.
+/// Applies a whole profile: the OS-level preference, then the power
+/// envelope the fans actually feel.
+///
+/// Both halves are best-effort and both are reported, because on any given
+/// machine either can be missing - board 8D2F has no firmware platform
+/// profile at all, and its profiles are entirely the envelope half.
+///
+/// Deliberately does **not** touch the fans. A lower power limit makes the
+/// fans spin less because there is less heat, which is the honest way to
+/// get there; reaching across into the fan module to also command a fan
+/// mode would put two owners on one piece of hardware.
+fn apply_profile(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPaths) -> ApplyReport {
+    let mut report = backend::apply(mode);
+
+    let stock = config.stock_limits.unwrap_or_default();
+    let tuning = config.tuning.get(mode);
+    let target = tuning.target(stock).clamp_to_stock(stock);
+
+    if !target.is_empty() {
+        let (applied, failed) = limits::apply(paths, target);
+        report.applied.extend(applied);
+        report.failed.extend(failed);
+    }
+
+    match limits::apply_turbo(paths, tuning.turbo) {
+        Some(Ok(message)) => report.applied.push(message),
+        Some(Err(e)) => report.failed.push(e),
+        None => {}
+    }
+
+    report
+}
+
+/// Keeps the larger of each recorded limit.
+///
+/// See `PowerConfig::stock_limits`: a value higher than the one on file can
+/// only have come from the firmware, so it replaces ours; a lower one is
+/// most likely our own cap still in force from the last session, and must
+/// not be mistaken for the machine's ceiling.
+fn highest(stored: Option<Limits>, observed: Limits) -> Limits {
+    let stored = stored.unwrap_or_default();
+    fn pick(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (some, None) | (None, some) => some,
+        }
+    }
+    Limits {
+        pl1_uw: pick(stored.pl1_uw, observed.pl1_uw),
+        pl2_uw: pick(stored.pl2_uw, observed.pl2_uw),
+        pl4_uw: pick(stored.pl4_uw, observed.pl4_uw),
+    }
+}
+
 fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("power", &state.config) {
         Ok(()) => state.last_save_error = None,
@@ -377,6 +520,23 @@ fn current_mode() -> Option<PowerMode> {
 }
 
 /// A panicking supervisor must not take the whole daemon down with it.
+/// Watts, as a percentage of a stock limit in microwatts.
+///
+/// Refused rather than guessed when the machine's stock is unknown: a
+/// percentage of nothing would be applied as a limit of nothing.
+fn percent_of(watts: f64, stock_uw: Option<u64>) -> Result<u8, ModuleError> {
+    let stock_uw = stock_uw.ok_or_else(|| {
+        ModuleError::Other(
+            "this machine exposes no package power limit, so there is nothing to tune".to_string(),
+        )
+    })?;
+    if !watts.is_finite() || watts <= 0.0 {
+        return Err(ModuleError::Other("power limits must be a positive number of watts".into()));
+    }
+    let percent = (watts * 1_000_000.0 / stock_uw as f64 * 100.0).round();
+    Ok(percent.clamp(1.0, 100.0) as u8)
+}
+
 fn lock(state: &Arc<Mutex<State>>) -> std::sync::MutexGuard<'_, State> {
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -384,6 +544,59 @@ fn lock(state: &Arc<Mutex<State>>) -> std::sync::MutexGuard<'_, State> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const W: u64 = 1_000_000;
+
+    /// The ratchet this guards against: reading the envelope at startup
+    /// while Eco is in force would otherwise record Eco's reduced limit as
+    /// the machine's ceiling, and every boot would shave a little more off.
+    #[test]
+    fn a_capped_machine_does_not_become_its_own_new_ceiling() {
+        let stored = Limits { pl1_uw: Some(77 * W), pl2_uw: Some(77 * W), pl4_uw: None };
+        let while_capped = Limits { pl1_uw: Some(34 * W), pl2_uw: Some(42 * W), pl4_uw: None };
+
+        assert_eq!(highest(Some(stored), while_capped), stored);
+    }
+
+    /// A value above what is on file can only have come from the firmware.
+    #[test]
+    fn a_higher_reading_replaces_the_recorded_stock() {
+        let stored = Limits { pl1_uw: Some(45 * W), ..Default::default() };
+        let observed = Limits { pl1_uw: Some(77 * W), pl4_uw: Some(168 * W) , ..Default::default() };
+
+        let merged = highest(Some(stored), observed);
+        assert_eq!(merged.pl1_uw, Some(77 * W));
+        assert_eq!(merged.pl4_uw, Some(168 * W), "a limit seen for the first time is recorded");
+    }
+
+    #[test]
+    fn watts_become_a_percentage_of_this_machines_own_limit() {
+        assert_eq!(percent_of(38.5, Some(77 * W)).unwrap(), 50);
+        assert_eq!(percent_of(77.0, Some(77 * W)).unwrap(), 100);
+    }
+
+    #[test]
+    fn a_request_above_stock_is_capped_rather_than_refused() {
+        assert_eq!(percent_of(200.0, Some(77 * W)).unwrap(), 100);
+    }
+
+    #[test]
+    fn tuning_a_machine_with_no_power_limit_is_an_error_not_a_no_op() {
+        assert!(percent_of(30.0, None).is_err());
+        assert!(percent_of(-5.0, Some(77 * W)).is_err());
+        assert!(percent_of(f64::NAN, Some(77 * W)).is_err());
+    }
+
+    /// A machine with no powercap still gets the half of the profile it
+    /// does have, and says so.
+    #[test]
+    fn a_profile_on_a_machine_without_powercap_still_applies_the_os_half() {
+        let config = PowerConfig::default();
+        let report = apply_profile(PowerMode::Eco, &config, &limits::LimitPaths::default());
+
+        assert!(!report.applied.iter().any(|a| a.starts_with("PL")));
+        assert!(!report.applied.iter().any(|a| a.starts_with("turbo")));
+    }
 
     #[test]
     fn modes_parse_case_insensitively_and_reject_junk() {

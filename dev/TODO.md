@@ -100,6 +100,11 @@ real backend decision before any daemon work:
   would let the daemon be quiet under systemd and verbose when diagnosing.
 - **Temperature in the power supervisor.** It decides on load and battery
   only; a hot chassis is a good reason to back off.
+- **Reaching Eco and Balanced tuning from the UI.** The power-limit sliders
+  live in the power sub-tab, which the reference app only shows under
+  Performance and Unlimited — so the Eco and Balanced profiles can only be
+  tuned over IPC (`power.setTuning` takes a `mode`). The defaults are
+  reasonable, but a user who wants a 25 W Eco cannot get there by clicking.
 - **A second reference sensor.** The curve follows the CPU only. The
   original also supports GPU, with a fallback to CPU when the GPU reads 0
   because it is asleep; `FanConfig` has no `referenceSensor` field yet.
@@ -125,6 +130,30 @@ real backend decision before any daemon work:
   which catches syntax and nothing else. `shellcheck` wasn't added because
   it isn't installed here and a lint nobody has run locally would land red.
 
+### GPU overclocking — last on purpose
+
+The last piece of the profiles, and deliberately last. Everything the power
+module does today stays **inside the envelope the firmware shipped**;
+overclocking is the first feature that would leave it, so it needs more
+than a slider:
+
+- The UI already has core/memory offset sliders driving local state only
+  (`system/advanced`), so the temptation to wire them up quickly is real.
+  Don't: an offset that is stable in a benchmark and not in a game is the
+  normal case, and the failure mode is a hang or corrupted VRAM, not an
+  error message.
+- NVIDIA offsets go through `nvidia-settings`/NVML and need coolbits or the
+  newer `nvidia-smi -lgc`/`--lock-memory-clocks`; the mechanism differs by
+  driver version, so probe rather than assume.
+- Whatever lands must: default to zero offset, never restore an offset at
+  boot without an explicit opt-in (unlike the power modes, a bad offset can
+  stop the machine booting to a desktop), apply in small steps with a
+  revert-on-failure timer, and say plainly in the UI that this is the one
+  feature that can damage a session's work.
+
+Raising CPU PL1/PL2 above stock belongs in the same bucket and under the
+same consent, not in the power profiles.
+
 ---
 
 ## 4. Deliberately not done
@@ -138,6 +167,10 @@ Recorded so nobody "fixes" them by accident:
   to save an admin one `usermod -aG`. The protocol also cannot tell two
   group members apart, so no future method may depend on *which* one
   called.
+- **A power profile never exceeds the firmware's own limits.** Eco caps,
+  Performance and Unlimited restore; neither raises. "Unlimited" means this
+  daemon imposes no limit of its own, not that the machine is unlocked —
+  going past stock is overclocking, and belongs behind its own consent.
 - **The installer creates the `omen-hub` group but never deletes it.**
   Removing a group that users are still members of is not the installer's
   call, and a leftover empty group costs nothing.
@@ -184,6 +217,12 @@ Eco and Balanced on its own — is the `power` supervisor.
 
 ## Done since these notes were written
 
+- **The power modes are profiles now**, not a single switch: each sets the
+  OS preference *and* the package power envelope (PL1/PL2 as a percentage
+  of the machine's stock limits, plus turbo), which is the half the fans
+  feel. `power.setTuning` edits them. The supervisor applies the whole
+  profile too — a mode has to mean the same thing whether the user picked
+  it or the auto-switcher did.
 - **The compatibility verdict is now measured.** `system.getInfo` reports
   `controls` — what the fan and power modules found they could actually do
   — and `compatibility` is only their summary. `crates/system/src/boards.rs`

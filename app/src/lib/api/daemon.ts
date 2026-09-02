@@ -150,8 +150,26 @@ export type AutoConfig = {
   manualOverrideSecs: number;
 };
 
+/** Package power limits in microwatts; `null` for one this machine lacks. */
+export type PowerLimits = { pl1Uw: number | null; pl2Uw: number | null; pl4Uw: number | null };
+
+/** One mode's share of the machine's stock envelope. */
+export type PowerTuning = { pl1Percent: number; pl2Percent: number; turbo: boolean };
+
+export type PowerLimitState = {
+  available: boolean;
+  turboAvailable: boolean;
+  /** What the firmware shipped, captured before the daemon wrote anything.
+   *  Everything else is a percentage of this, and nothing exceeds it. */
+  stock: PowerLimits | null;
+  current: PowerLimits;
+  turbo: boolean | null;
+  tuning: Record<PowerMode, PowerTuning>;
+};
+
 export type PowerState = {
   mode: PowerMode;
+  limits: PowerLimitState;
   backend: {
     platformProfile: string | null;
     platformProfileChoices: string[];
@@ -243,4 +261,13 @@ export const daemon = {
     call<PowerConfigReply>("power_set_auto_config", { config }),
   setRestoreOnStart: (enabled: boolean) =>
     call<PowerConfigReply>("power_set_restore_on_start", { enabled }),
+  /** Tunes one mode's profile. Watts on the wire; the daemon stores them as
+   *  a percentage of this machine's own limits. Defaults to the mode in
+   *  force, and re-applies immediately when that is the one changed. */
+  setPowerTuning: (tuning: {
+    mode?: PowerMode;
+    pl1W?: number;
+    pl2W?: number;
+    turbo?: boolean;
+  }) => call<PowerState>("power_set_tuning", { tuning }),
 };

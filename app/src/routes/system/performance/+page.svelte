@@ -69,6 +69,51 @@
     curve: "common.curve",
   };
 
+  /**
+   * The real power envelope, from the daemon. `null` outside Tauri, where
+   * the demo data has no business inventing watt figures for a machine
+   * nobody has measured.
+   */
+  /** Never offer to cap the CPU below something the machine can run on. */
+  const PL_FLOOR_W = 5;
+
+  const powerLimits = $derived(hardware.power?.limits ?? null);
+  const currentTuning = $derived(powerLimits?.tuning?.[mode] ?? null);
+
+  /** Microwatts to whole watts, the unit everything above the daemon uses. */
+  const toWatts = (uw: number | null | undefined) => (uw == null ? null : Math.round(uw / 1e6));
+
+  /**
+   * One row per tunable limit. PL4 is missing on purpose: the daemon leaves
+   * the peak-power ceiling at stock, since it exists to keep the VRM in
+   * spec and lowering it buys nothing a lower PL1 has not already bought.
+   */
+  const pl = $derived.by(() => {
+    const stock = powerLimits?.stock;
+    const tuning = currentTuning;
+    if (!stock || !tuning) return [];
+    const rows = [];
+    const pl1Max = toWatts(stock.pl1Uw);
+    const pl2Max = toWatts(stock.pl2Uw);
+    if (pl1Max) {
+      rows.push({
+        key: "pl1" as const,
+        label: "PL1",
+        max: pl1Max,
+        watts: Math.round((pl1Max * tuning.pl1Percent) / 100),
+      });
+    }
+    if (pl2Max) {
+      rows.push({
+        key: "pl2" as const,
+        label: "PL2",
+        max: pl2Max,
+        watts: Math.round((pl2Max * tuning.pl2Percent) / 100),
+      });
+    }
+    return rows;
+  });
+
   /** The curve editor is the point of curve mode, and the shape a manual
    *  session is drawn against. */
   const showCurve = $derived(
@@ -237,29 +282,47 @@
       </div>
     {:else}
       <div class="power-area">
-        {#if unlimited}
+        {#if powerLimits?.available}
+          <p class="limit-scope">{t("performance.limitsApplyTo", { mode: t(`performance.modes.${mode}`) })}</p>
           <div class="limits">
-            {#each [["pl1", LIMITS.pl1], ["pl2", LIMITS.pl2], ["pl4", LIMITS.pl4]] as const as [key, range] (key)}
+            {#each pl as { key, label, watts, max } (key)}
               <div class="limit">
                 <span class="limit-label">
-                  {key.toUpperCase()}
+                  {label}
                   <InfoTip>
-                    Sustained ({key === "pl1" ? "long" : key === "pl2" ? "short" : "peak"}) CPU
-                    power limit, in watts.
+                    {key === "pl1"
+                      ? "Sustained CPU power limit, in watts. This is the one the fans feel."
+                      : "Short-term boost limit, in watts."}
                   </InfoTip>
                 </span>
                 <Slider
-                  value={hardware.state[key]}
-                  min={range.min}
-                  max={range.max}
-                  minLabel="{range.min}W"
-                  maxLabel="{range.max}W"
-                  ariaLabel={key}
-                  onchange={(v) => hardware.set(key, v)}
+                  value={watts}
+                  min={PL_FLOOR_W}
+                  max={max}
+                  minLabel="{PL_FLOOR_W}W"
+                  maxLabel="{max}W"
+                  ariaLabel={label}
+                  onchange={(v) =>
+                    hardware.setPowerTuning(key === "pl1" ? { pl1W: v } : { pl2W: v })}
                 />
-                <span class="limit-value">{hardware.state[key]}W</span>
+                <span class="limit-value">{watts}W</span>
               </div>
             {/each}
+
+            {#if powerLimits.turboAvailable}
+              <div class="limit">
+                <span class="limit-label">
+                  {t("performance.turbo")}
+                  <InfoTip>{t("performance.turboHint")}</InfoTip>
+                </span>
+                <Toggle
+                  checked={currentTuning?.turbo ?? true}
+                  onchange={(v) => hardware.setPowerTuning({ turbo: v })}
+                  labelOn={t("performance.activated")}
+                  ariaLabel={t("performance.turbo")}
+                />
+              </div>
+            {/if}
           </div>
         {/if}
 
@@ -493,6 +556,12 @@
 
   .curve-desc {
     margin: 4px 0 12px;
+    color: var(--text-mute);
+    font-size: 13px;
+  }
+
+  .limit-scope {
+    margin: 0 0 12px;
     color: var(--text-mute);
     font-size: 13px;
   }
