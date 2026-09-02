@@ -14,6 +14,7 @@
   import { formatTemp, settings } from "$lib/stores/settings.svelte";
   import { telemetry, tempColor, type Series } from "$lib/stores/telemetry.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
+  import type { GpuMetrics } from "$lib/api/daemon";
 
   const advanced = $derived(settings.current.vitalsAdvancedView);
 
@@ -21,9 +22,26 @@
     { label: t("vitals.usage"), color: "#2f8fff", values: telemetry.cpuUsageHistory },
     { label: t("vitals.temperature"), color: "#b14cff", values: telemetry.cpuTempHistory },
   ]);
-  const gpuSeries = $derived<Series[]>([
-    { label: t("vitals.usage"), color: "#ffb020", values: telemetry.gpuUsageHistory },
-  ]);
+  /** One series per GPU, so each block graphs its own chip. */
+  function seriesFor(gpu: GpuMetrics): Series[] {
+    return [
+      {
+        label: t("vitals.usage"),
+        color: "#ffb020",
+        values: telemetry.gpuHistories[gpu.name] ?? [],
+      },
+    ];
+  }
+
+  /**
+   * What to call a GPU on a machine that has more than one. A hybrid laptop
+   * runs the desktop on the integrated chip and games on the card, so
+   * "GPU" alone would leave the user guessing which gauge is which.
+   */
+  function gpuHeading(gpu: GpuMetrics): string {
+    if (telemetry.gpus.length < 2 || gpu.integrated === null) return "GPU";
+    return gpu.integrated ? t("vitals.gpuIntegrated") : t("vitals.gpuDiscrete");
+  }
   /** Per-core rows in the advanced view, excluding the package sensor. */
   const cpuCoreTemps = $derived(
     telemetry.temperatures.filter(
@@ -82,16 +100,32 @@
 
   {#if !advanced}
     <div class="grid">
-      <section class="card">
-        <h2>GPU</h2>
-        <Gauge value={telemetry.gpuUsage} label={t("vitals.gpuUsage")} id="gpu" />
-        <div class="foot">
-          <span class="digital" style="color:{tempColor(telemetry.gpuTempC)}">
-            {formatTemp(telemetry.gpuTempC)}
-          </span>
-          <small>{t("vitals.gpuTemp")}</small>
-        </div>
-      </section>
+      <!-- One card per GPU: a hybrid machine has two, and which of them is
+           working is exactly what this page is asked. -->
+      {#each telemetry.gpus as gpu (gpu.name)}
+        <section class="card">
+          <h2>{gpuHeading(gpu)}</h2>
+          <Gauge value={gpu.usagePercent} label={t("vitals.gpuUsage")} id="gpu-{gpu.name}" />
+          <p class="chip-name" title={gpu.name}>{gpu.name}</p>
+          <div class="foot">
+            <span class="digital" style="color:{tempColor(gpu.tempC)}">
+              {formatTemp(gpu.tempC)}
+            </span>
+            <small>{t("vitals.gpuTemp")}</small>
+          </div>
+        </section>
+      {:else}
+        <section class="card">
+          <h2>GPU</h2>
+          <Gauge value={telemetry.gpuUsage} label={t("vitals.gpuUsage")} id="gpu" />
+          <div class="foot">
+            <span class="digital" style="color:{tempColor(telemetry.gpuTempC)}">
+              {formatTemp(telemetry.gpuTempC)}
+            </span>
+            <small>{t("vitals.gpuTemp")}</small>
+          </div>
+        </section>
+      {/each}
 
       <section class="card">
         <h2>CPU</h2>
@@ -178,7 +212,9 @@
               <tr>
                 <td class="proc-name" title="PID {process.pid}">{process.name}</td>
                 <td>{process.cpuPercent.toFixed(1)} %</td>
-                <td>--</td>
+                <td>
+                  {process.gpuPercent === null ? "--" : `${process.gpuPercent.toFixed(1)} %`}
+                </td>
                 <td>{process.memMb.toFixed(0)} MB</td>
                 <td><span class="mute">{process.pid}</span></td>
               </tr>
@@ -236,7 +272,7 @@
 
       {#each telemetry.gpus as gpu (gpu.name)}
         <section class="block">
-          <h2 class="block-title"><Icon name="chevronDown" size={16} /> GPU</h2>
+          <h2 class="block-title"><Icon name="chevronDown" size={16} /> {gpuHeading(gpu)}</h2>
           <p class="model">{gpu.name}</p>
           <div class="cols">
             <dl>
@@ -275,8 +311,8 @@
               </dd>
             </dl>
             <div class="chart">
-              <Sparkline series={gpuSeries} max={100} />
-              <Legend series={gpuSeries} />
+              <Sparkline series={seriesFor(gpu)} max={100} />
+              <Legend series={seriesFor(gpu)} />
             </div>
           </div>
         </section>
@@ -432,6 +468,19 @@
   .card.wide {
     grid-column: span 2;
     align-items: stretch;
+  }
+
+  .chip-name {
+    align-self: flex-start;
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 12px;
+    /* Card names run long ("Intel Corporation Arrow Lake-P [Arc Pro
+       130T/140T]"); one clipped line beats a card that grows to fit. */
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .foot {

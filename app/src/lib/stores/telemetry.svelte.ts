@@ -40,6 +40,37 @@ function pushCapped(values: number[], value: number): number[] {
   return next;
 }
 
+/** Shape of the machine the demo signal pretends to be. */
+const DEMO_CORES = Array.from({ length: 8 });
+
+const DEMO_DISKS: DiskUsage[] = [
+  {
+    mount: "/",
+    device: "/dev/nvme0n1p2",
+    fstype: "ext4",
+    totalBytes: 1_000_204_886_016,
+    freeBytes: 412_316_860_416,
+  },
+  {
+    mount: "/home",
+    device: "/dev/nvme0n1p3",
+    fstype: "ext4",
+    totalBytes: 2_000_398_934_016,
+    freeBytes: 1_331_439_861_760,
+  },
+];
+
+const DEMO_PROCESSES = [
+  "chrome",
+  "code",
+  "pyren",
+  "gnome-shell",
+  "steam",
+  "node",
+  "Xorg",
+  "pipewire",
+];
+
 /** Smooth pseudo-random walk, kept inside [min, max]. */
 function drift(previous: number, min: number, max: number, step: number): number {
   const next = previous + (Math.random() - 0.5) * step * 2;
@@ -79,12 +110,25 @@ export class Telemetry {
   cpuTempHistory = $state<number[]>([]);
   cpuUsageHistory = $state<number[]>([]);
   gpuUsageHistory = $state<number[]>([]);
+  /** One history per GPU, keyed by name, so a hybrid machine's two chips
+   *  each get their own graph instead of sharing the primary one's. */
+  gpuHistories = $state<Record<string, number[]>>({});
   gpuTempHistory = $state<number[]>([]);
   ramHistory = $state<number[]>([]);
   fanHistory = $state<number[]>([]);
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private subscribers = 0;
+
+  /**
+   * The configured interval, floored at 250 ms. A settings file holding 0
+   * (or anything unparseable) would otherwise schedule a timer that fires
+   * as fast as the browser will allow and never lets the page paint.
+   */
+  private get intervalMs(): number {
+    const value = settings.current.pollIntervalMs;
+    return Number.isFinite(value) ? Math.max(250, value) : 2000;
+  }
 
   get ramPercent(): number {
     return this.ramTotalGb > 0 ? (this.ramUsedGb / this.ramTotalGb) * 100 : 0;
@@ -98,7 +142,7 @@ export class Telemetry {
     this.subscribers += 1;
     if (this.timer !== null) return;
     void this.poll();
-    this.timer = setInterval(() => void this.poll(), settings.current.pollIntervalMs);
+    this.timer = setInterval(() => void this.poll(), this.intervalMs);
   }
 
   stop() {
@@ -113,7 +157,7 @@ export class Telemetry {
   restart() {
     if (this.timer === null) return;
     clearInterval(this.timer);
-    this.timer = setInterval(() => void this.poll(), settings.current.pollIntervalMs);
+    this.timer = setInterval(() => void this.poll(), this.intervalMs);
   }
 
   async loadSystemInfo() {
@@ -206,12 +250,78 @@ export class Telemetry {
       this.cpuTempC < 55 ? 0 : Math.round((1200 + (this.cpuTempC - 55) * 90) / 100) * 100;
     this.netDownMbps = drift(this.netDownMbps, 0, 90, 12);
     this.netUpMbps = drift(this.netUpMbps, 0, 20, 3);
+
+    // Everything below used to be left untouched, so a machine with no
+    // daemon showed drifting gauges next to an empty storage panel, an
+    // empty process table and no GPU section at all - which reads as a
+    // half-finished page rather than as "there is no daemon". A demo has to
+    // fill every panel it is standing in for.
+    this.perCoreUsage = DEMO_CORES.map((_, i) =>
+      drift(this.perCoreUsage[i] ?? this.cpuUsage, 0, 100, 14),
+    );
+    this.coreClocksMhz = DEMO_CORES.map((_, i) =>
+      drift(this.coreClocksMhz[i] ?? 2400, 800, 4800, 300),
+    );
+    this.temperatures = [
+      { chip: "coretemp", label: "Package id 0", celsius: this.cpuTempC },
+      ...DEMO_CORES.map((_, i) => ({
+        chip: "coretemp",
+        label: `Core ${i}`,
+        celsius: drift(this.cpuTempC, this.cpuTempC - 6, this.cpuTempC + 4, 3),
+      })),
+      { chip: "acpitz", label: "temp1", celsius: this.chassisTempC ?? 39 },
+    ];
+    // A hybrid pair, because that is what these laptops are: the demo
+    // should stand in for the layout a real machine produces, not a
+    // simpler one.
+    this.gpus = [
+      {
+        name: "Demo discrete GPU",
+        driver: "demo",
+        integrated: false,
+        usagePercent: this.gpuUsage,
+        tempC: this.gpuTempC,
+        memUsedMb: drift(this.gpus[0]?.memUsedMb ?? 1200, 400, 7800, 180),
+        memTotalMb: 8192,
+        powerW: drift(this.gpus[0]?.powerW ?? 40, 8, 120, 9),
+        clockMhz: drift(this.gpus[0]?.clockMhz ?? 1600, 300, 2600, 180),
+      },
+      {
+        name: "Demo integrated GPU",
+        driver: "demo",
+        integrated: true,
+        usagePercent: drift(this.gpus[1]?.usagePercent ?? 8, 0, 70, 6),
+        tempC: this.cpuTempC,
+        memUsedMb: null,
+        memTotalMb: null,
+        powerW: null,
+        clockMhz: drift(this.gpus[1]?.clockMhz ?? 900, 150, 2200, 140),
+      },
+    ];
+    this.disks = DEMO_DISKS;
+    this.processes = DEMO_PROCESSES.map((name, i) => ({
+      pid: 1000 + i,
+      name,
+      cpuPercent: drift(this.processes[i]?.cpuPercent ?? 4, 0, 60, 6),
+      memMb: drift(this.processes[i]?.memMb ?? 260, 40, 2600, 60),
+      // Only some processes hold a GPU; the rest report null, which is what
+      // the table draws as "--".
+      gpuPercent: i % 3 === 0 ? drift(this.processes[i]?.gpuPercent ?? 3, 0, 40, 5) : null,
+    })).sort((a, b) => b.cpuPercent - a.cpuPercent);
   }
 
   private record() {
     this.cpuTempHistory = pushCapped(this.cpuTempHistory, this.cpuTempC);
     this.cpuUsageHistory = pushCapped(this.cpuUsageHistory, this.cpuUsage);
     this.gpuUsageHistory = pushCapped(this.gpuUsageHistory, this.gpuUsage ?? 0);
+    // Rebuilt rather than updated in place, so a card that goes away does
+    // not leave its history behind for the next one to inherit.
+    this.gpuHistories = Object.fromEntries(
+      this.gpus.map((gpu) => [
+        gpu.name,
+        pushCapped(this.gpuHistories[gpu.name] ?? [], gpu.usagePercent ?? 0),
+      ]),
+    );
     this.gpuTempHistory = pushCapped(this.gpuTempHistory, this.gpuTempC ?? 0);
     this.ramHistory = pushCapped(this.ramHistory, this.ramPercent);
     this.fanHistory = pushCapped(this.fanHistory, this.fanRpm);
