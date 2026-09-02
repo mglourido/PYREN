@@ -75,6 +75,7 @@
     "ramUsage": "RAM utilization",
     "storage": "Storage",
     "gpuTemp": "GPU temperature",
+    "gpuTempUnavailable": "This chip publishes no temperature sensor; the kernel exposes none for it.",
     "cpuTemp": "CPU temperature",
     "chassisTemp": "Chassis temperature",
     "yourConfig": "Your configuration",

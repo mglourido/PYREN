@@ -111,7 +111,15 @@
             <span class="digital" style="color:{tempColor(gpu.tempC)}">
               {formatTemp(gpu.tempC)}
             </span>
-            <small>{t("vitals.gpuTemp")}</small>
+            <small>
+              {t("vitals.gpuTemp")}
+              <!-- An integrated chip usually registers no hwmon node, so the
+                   dash is the honest reading rather than a failure. Saying so
+                   is the difference between "not measured" and "broken". -->
+              {#if gpu.tempC === null}
+                <InfoTip>{t("vitals.gpuTempUnavailable")}</InfoTip>
+              {/if}
+            </small>
           </div>
         </section>
       {:else}
@@ -294,7 +302,12 @@
             <dl>
               <dt class="col-head">{t("vitals.temperature")}</dt>
               <dd class="row">
-                <span>{t("vitals.core")}</span>
+                <span>
+                  {t("vitals.core")}
+                  {#if gpu.tempC === null}
+                    <InfoTip>{t("vitals.gpuTempUnavailable")}</InfoTip>
+                  {/if}
+                </span>
                 <b style="color:{tempColor(gpu.tempC)}">{formatTemp(gpu.tempC)}</b>
               </dd>
               <dt class="col-head">{t("vitals.power")}</dt>

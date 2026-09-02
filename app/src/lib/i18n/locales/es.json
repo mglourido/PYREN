@@ -75,6 +75,7 @@
     "ramUsage": "Utilización de la RAM",
     "storage": "Almacenamiento",
     "gpuTemp": "Temperatura de la GPU",
+    "gpuTempUnavailable": "Este chip no publica sensor de temperatura; el kernel no expone ninguno para él.",
     "cpuTemp": "Temperatura de la CPU",
     "chassisTemp": "Temperatura del chasis",
     "yourConfig": "Tu configuración",
