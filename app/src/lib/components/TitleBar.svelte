@@ -15,7 +15,7 @@
 
 <header class="titlebar">
   <div class="brand">
-    <span class="logo" aria-hidden="true"></span>
+    <img class="logo" src="/favicon.svg" alt="" aria-hidden="true" />
     <span class="name">{t("app.name")}</span>
   </div>
 
@@ -60,14 +60,12 @@
     gap: 10px;
   }
 
-  /* The OMEN mark is a rotated square with the brand gradient; drawn in CSS
-     so no HP artwork ships with this project. */
+  /* The Pyren star, from the same app/static/favicon.svg the webview and
+     the bundler load for the window and desktop icons. */
   .logo {
-    width: 16px;
-    height: 16px;
-    transform: rotate(45deg);
-    background: var(--gradient);
-    border-radius: 2px;
+    width: 18px;
+    height: 18px;
+    display: block;
   }
 
   .name {
