@@ -151,6 +151,8 @@ pub(crate) fn diagnose(paths: &FanPaths, allow_writes: bool) -> Diagnosis {
     checks.push(check_pwm(paths.pwm1.as_deref()));
     checks.push(check_pwm_enable(paths.pwm1_enable.as_deref()));
     checks.push(check_write(paths, allow_writes));
+    checks.push(check_hwmon_attributes(paths.hwmon_dir.as_deref()));
+    checks.push(check_kernel_log());
     checks.push(check_platform_profile());
     checks.push(check_cpu_temp(paths.cpu_temp.as_deref()));
     checks.push(check_acpi_call());
@@ -423,6 +425,81 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
         check.status = CheckStatus::Warn;
     }
     check
+}
+
+/// Lists what the hwmon node actually exposes.
+///
+/// Without this, a missing `pwm1` is a dead end: the report says the file
+/// isn't there but not what *is*, which is the first thing anyone
+/// diagnosing a partially-supported board needs to know.
+fn check_hwmon_attributes(hwmon_dir: Option<&Path>) -> Check {
+    const ID: &str = "hwmon-attrs";
+    const TITLE: &str = "hwmon attributes";
+
+    let Some(dir) = hwmon_dir else {
+        return Check::new(ID, TITLE, CheckStatus::Skip, "no hwmon node");
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Check::new(ID, TITLE, CheckStatus::Skip, format!("{} is unreadable", dir.display()));
+    };
+
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        // Symlinks back to the device and the power/ subtree say nothing
+        // about what the driver exposes.
+        .filter(|name| !matches!(name.as_str(), "device" | "subsystem" | "power" | "uevent"))
+        .collect();
+    names.sort();
+
+    if names.is_empty() {
+        return Check::new(ID, TITLE, CheckStatus::Warn, "the hwmon node is empty");
+    }
+    Check::new(ID, TITLE, CheckStatus::Pass, names.join(" "))
+}
+
+/// hp-wmi's own kernel messages, which usually say why a board came up
+/// with reduced functionality.
+fn check_kernel_log() -> Check {
+    const ID: &str = "kernel-log";
+    const TITLE: &str = "hp-wmi kernel messages";
+
+    // Via `dmesg` rather than /dev/kmsg: reading that device directly can
+    // block waiting for new messages, and it is root-only wherever
+    // kernel.dmesg_restrict is set.
+    let Ok(output) = std::process::Command::new("dmesg").output() else {
+        return Check::new(ID, TITLE, CheckStatus::Skip, "dmesg is not available");
+    };
+    if !output.status.success() {
+        return Check::new(
+            ID,
+            TITLE,
+            CheckStatus::Skip,
+            "kernel log not readable; run as root, or paste `dmesg | grep -i hp.wmi`",
+        );
+    }
+    let log = String::from_utf8_lossy(&output.stdout);
+
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("hp-wmi") || lower.contains("hp_wmi")
+        })
+        .collect();
+
+    if lines.is_empty() {
+        return Check::new(ID, TITLE, CheckStatus::Pass, "no hp-wmi messages");
+    }
+    // Only the message text matters; the priority/timestamp prefix is noise.
+    let cleaned: Vec<String> = lines
+        .iter()
+        .rev()
+        .take(4)
+        .rev()
+        .map(|line| line.trim().to_string())
+        .collect();
+    Check::new(ID, TITLE, CheckStatus::Warn, cleaned.join(" | "))
 }
 
 fn check_platform_profile() -> Check {

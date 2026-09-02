@@ -228,6 +228,48 @@ else
 	fi
 fi
 
+# What the hwmon node actually exposes. Without this a missing pwm1 is a
+# dead end: the report says the file isn't there but not what is, which is
+# the first thing anyone diagnosing a partially-supported board needs.
+if [ -z "$HWMON" ]; then
+	record skip hwmon-attrs "hwmon attributes" "no hwmon node"
+else
+	attrs=""
+	for entry in "$HWMON"/*; do
+		[ -e "$entry" ] || continue
+		base="${entry##*/}"
+		case "$base" in
+		device | subsystem | power | uevent) continue ;;
+		esac
+		attrs="${attrs:+$attrs }$base"
+	done
+	if [ -z "$attrs" ]; then
+		record warn hwmon-attrs "hwmon attributes" "the hwmon node is empty"
+	else
+		record pass hwmon-attrs "hwmon attributes" "$attrs"
+	fi
+fi
+
+# hp-wmi's own kernel messages usually say why a board came up with
+# reduced functionality.
+# Via `dmesg` rather than /dev/kmsg: reading that device directly can block
+# waiting for new messages, and it is root-only wherever
+# kernel.dmesg_restrict is set.
+if ! command -v dmesg >/dev/null 2>&1; then
+	record skip kernel-log "hp-wmi kernel messages" "dmesg is not available"
+elif ! klog="$(dmesg 2>/dev/null)"; then
+	record skip kernel-log "hp-wmi kernel messages" \
+		"kernel log not readable; run as root, or paste \`dmesg | grep -i hp.wmi\`"
+else
+	hp_lines="$(printf '%s\n' "$klog" | grep -i -e 'hp-wmi' -e 'hp_wmi' | tail -4 |
+		sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '\n' '|' | sed 's/|$//;s/|/ | /g')"
+	if [ -z "$hp_lines" ]; then
+		record pass kernel-log "hp-wmi kernel messages" "no hp-wmi messages"
+	else
+		record warn kernel-log "hp-wmi kernel messages" "$hp_lines"
+	fi
+fi
+
 if [ -r /sys/firmware/acpi/platform_profile ] && [ -r /sys/firmware/acpi/platform_profile_choices ]; then
 	record pass platform-profile "ACPI platform profile" \
 		"$(read_value /sys/firmware/acpi/platform_profile) (available: $(read_value /sys/firmware/acpi/platform_profile_choices))"
