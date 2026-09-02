@@ -129,6 +129,40 @@ opens the app window. First build compiles ~490 crates (WebKitGTK/GTK
 bindings etc.) and takes a minute or two; rebuilds after that are fast
 (only `app/src-tauri` needs recompiling).
 
+### Finding the app's processes
+
+The Rust shell runs as `pyren` (`mainBinaryName`, so `cargo run` and a
+packaged build agree). Its children:
+
+- `WebKitWebProcess` — the renderer; the one that shows CPU and most of
+  the RSS.
+- `WebKitNetworkProcess` — small, handles fetches.
+- `glycin-svg` behind two `bwrap` sandboxes — the desktop stack's
+  out-of-process, sandboxed image decoder (not ours; GDK/WebKitGTK start it
+  at launch). A few MB, no ongoing CPU.
+
+WebKitGTK hard-codes those names and exposes no way to rebrand them, so
+identify them by parentage:
+
+```sh
+pgrep -P "$(pgrep -x pyren)"     # the two helper PIDs
+htop -p "$(pgrep -x pyren -d,),$(pgrep -d, -P "$(pgrep -x pyren)")"
+```
+
+For a clean number over the whole app — every child stays in the
+launcher's cgroup — run it in a transient scope and watch that instead:
+
+```sh
+systemd-run --user --scope --unit=pyren-app app/src-tauri/target/debug/pyren
+# then, from another shell:
+systemctl --user status pyren-app.scope   # aggregate CPU / memory / task count
+systemd-cgtop -m | grep pyren-app         # the same, live
+```
+
+`bun run tauri dev` adds `node`/`vite`/`esbuild` to the tree; measure a
+plain `cargo run --release` (or the built binary) instead when the numbers
+matter.
+
 ### Wayland: window opens then immediately closes
 
 If the window flashes open and dies with something like:
