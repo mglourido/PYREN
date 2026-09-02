@@ -11,6 +11,7 @@ use std::os::unix::net::UnixStream;
 
 use pyren_config::{ConfigStore, LoadOutcome};
 use serde_json::{json, Map, Value};
+use tauri::Manager;
 
 /// Config namespaces the frontend is allowed to read and write.
 ///
@@ -317,6 +318,17 @@ pub fn run() {
     workaround_webkit_dmabuf();
 
     tauri::Builder::default()
+        // Must be the first plugin registered. A second `pyren` launch hands
+        // its argv to the instance already running and exits; we answer by
+        // bringing the existing window forward rather than opening a rival
+        // one that would fight over the config files.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             fan_get_status,
