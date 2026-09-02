@@ -8,10 +8,9 @@
 //!
 //! | method | params | result |
 //! |---|---|---|
-//! | `system.getInfo` | none | machine identity + compatibility verdict (cached at startup) |
+//! | `system.getInfo` | none | machine identity + what the machine was found able to control (cached at startup) |
 //! | `system.getMetrics` | none | live CPU/memory/temps/fans/disks/network/GPU/process readings |
 
-mod boards;
 mod identity;
 mod metrics;
 
@@ -20,7 +19,7 @@ use std::sync::Mutex;
 use omen_hub_core::{Module, ModuleError, ModuleResult};
 use serde_json::Value;
 
-pub use identity::{Compatibility, SystemIdentity};
+pub use identity::{Compatibility, Controls, SystemIdentity};
 pub use metrics::Metrics;
 
 pub struct SystemModule {
@@ -32,21 +31,18 @@ pub struct SystemModule {
 }
 
 impl SystemModule {
-    pub fn new() -> Self {
+    /// `controls` is what the hardware modules reported they could actually
+    /// do; the daemon collects it from them (see `daemon/daemon/src/main.rs`)
+    /// because no amount of reading DMI can answer it.
+    pub fn new(controls: Controls) -> Self {
         Self {
-            identity: SystemIdentity::detect(),
+            identity: SystemIdentity::detect(controls),
             sampler: Mutex::new(metrics::Sampler::new()),
         }
     }
 
     pub fn identity(&self) -> &SystemIdentity {
         &self.identity
-    }
-}
-
-impl Default for SystemModule {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -280,7 +280,7 @@
     "formFactor": "Formato",
     "laptop": "Portátil",
     "desktop": "Sobremesa",
-    "untested": "Placa no probada",
+    "monitoringOnly": "Solo monitorización",
     "biosDate": "Fecha de BIOS"
   },
   "diagnostics": {

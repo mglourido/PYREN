@@ -75,14 +75,14 @@
 
     <p
       class="compat"
-      class:ok={info?.compatibility === "supported"}
-      class:warn={info?.compatibility === "untested"}
+      class:ok={info?.compatibility === "controllable"}
+      class:warn={info?.compatibility === "monitoringOnly"}
       class:err={info?.compatibility === "unsupported"}
     >
-      <Icon name={info?.compatibility === "supported" ? "check" : "warning"} size={15} />
+      <Icon name={info?.compatibility === "controllable" ? "check" : "warning"} size={15} />
       <span>
-        {#if info?.compatibility === "supported"}{t("system.compatible")}
-        {:else if info?.compatibility === "untested"}{t("system.untested")}
+        {#if info?.compatibility === "controllable"}{t("system.compatible")}
+        {:else if info?.compatibility === "monitoringOnly"}{t("system.monitoringOnly")}
         {:else}{t("system.incompatible")}{/if}
       </span>
       {#if info?.reason}<span class="reason">— {info.reason}</span>{/if}

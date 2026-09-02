@@ -9,20 +9,50 @@ use std::process::Command;
 
 use serde::Serialize;
 
-use crate::boards::is_supported_board;
-
 const DMI: &str = "/sys/class/dmi/id";
+const HP_WMI: &str = "/sys/devices/platform/hp-wmi";
 
-/// How much the OMEN-specific features can be trusted on this machine.
+/// What this machine was found able to *do*.
+///
+/// Assembled by the daemon from the modules that own each hardware surface,
+/// rather than probed here: `system` re-implementing their checks would be
+/// a second copy of the same question, and a second copy is one that
+/// drifts. See `daemon/daemon/src/main.rs`.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Controls {
+    /// Fan mode switching (auto/max) was accepted.
+    pub fan_mode: bool,
+    /// A specific fan speed can be commanded.
+    pub fan_speed: bool,
+    /// Some power-mode mechanism answered (platform profile, PPD, EPP).
+    pub power_mode: bool,
+}
+
+impl Controls {
+    fn any(&self) -> bool {
+        self.fan_mode || self.fan_speed || self.power_mode
+    }
+}
+
+/// How much of this machine can actually be driven.
+///
+/// **This is an observation, not a lookup.** An earlier version answered it
+/// from a hand-copied list of DMI board ids, which was wrong in both
+/// directions: it called board 8D2F "supported" on a machine that cannot
+/// set a fan speed, and it would have called an unlisted board that works
+/// perfectly "untested". It also had to be extended by hand, one board at a
+/// time, for a driver this project does not install and cannot vouch for.
+/// So the question is now put to the hardware.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Compatibility {
-    /// HP board present in the known-good list.
-    Supported,
-    /// An HP OMEN/Victus machine whose board isn't in the list. Fan control
-    /// may well work; the UI should warn rather than block.
-    Untested,
-    /// Not an HP gaming machine - monitoring works, hardware control won't.
+    /// Something here accepts control. `reason` says what.
+    Controllable,
+    /// The interfaces are present to read but nothing accepted control -
+    /// e.g. fan speeds are readable and `pwm1` does not exist.
+    MonitoringOnly,
+    /// Nothing beyond what any Linux machine offers.
     Unsupported,
 }
 
@@ -41,6 +71,9 @@ pub struct SystemIdentity {
     pub gpus: Vec<String>,
     pub form_factor: &'static str,
     pub compatibility: Compatibility,
+    /// What was found to work, itemised. The UI should gate on these rather
+    /// than on `compatibility`, which is only their summary.
+    pub controls: Controls,
     /// Convenience flag for the UI: true unless `Unsupported`.
     pub supported: bool,
     /// Short human-readable justification, shown next to the flag.
@@ -48,13 +81,16 @@ pub struct SystemIdentity {
 }
 
 impl SystemIdentity {
-    pub fn detect() -> Self {
+    /// `controls` is what the hardware modules found they could do. Pass
+    /// [`Controls::default`] when that is not known yet - the verdict then
+    /// reflects only what is visible, which is the honest answer.
+    pub fn detect(controls: Controls) -> Self {
         let vendor = dmi("sys_vendor");
         let board_name = dmi("board_name");
         let model = product_name(&board_name);
         let form_factor = form_factor(dmi("chassis_type").as_deref());
 
-        let (compatibility, reason) = classify(&vendor, &model, &board_name);
+        let (compatibility, reason) = classify(controls, hp_wmi_present());
 
         Self {
             board_vendor: dmi("board_vendor"),
@@ -67,6 +103,7 @@ impl SystemIdentity {
             form_factor,
             supported: compatibility != Compatibility::Unsupported,
             compatibility,
+            controls,
             reason,
             vendor,
             model,
@@ -137,60 +174,45 @@ fn form_factor(chassis_type: Option<&str>) -> &'static str {
     }
 }
 
-fn classify(
-    vendor: &Option<String>,
-    model: &Option<String>,
-    board_name: &Option<String>,
-) -> (Compatibility, String) {
-    let is_hp = vendor
-        .as_deref()
-        .map(|v| {
-            let v = v.to_ascii_lowercase();
-            v.starts_with("hp") || v.contains("hewlett")
-        })
-        .unwrap_or(false);
+/// Whether the HP WMI platform interface exists at all. A directory test,
+/// not a capability test - it separates "this machine has none of this
+/// hardware" from "it has it and nothing is writable".
+fn hp_wmi_present() -> bool {
+    std::path::Path::new(HP_WMI).is_dir()
+}
 
-    if !is_hp {
-        return (
-            Compatibility::Unsupported,
-            format!(
-                "{} is not an HP machine; monitoring works, OMEN hardware control does not",
-                vendor.as_deref().unwrap_or("this machine")
-            ),
-        );
+fn classify(controls: Controls, hp_wmi: bool) -> (Compatibility, String) {
+    if !controls.any() {
+        return if hp_wmi {
+            (
+                Compatibility::MonitoringOnly,
+                "the hp-wmi interface is present but nothing here accepted control; \
+                 fan speeds and temperatures can still be read"
+                    .to_string(),
+            )
+        } else {
+            (
+                Compatibility::Unsupported,
+                "no hp-wmi interface and no power-mode mechanism; monitoring works, \
+                 hardware control does not"
+                    .to_string(),
+            )
+        };
     }
 
-    if let Some(board) = board_name {
-        if is_supported_board(board) {
-            return (
-                Compatibility::Supported,
-                format!("board {board} is on the known-good list"),
-            );
-        }
+    let mut works = Vec::new();
+    if controls.fan_speed {
+        works.push("fan speed");
+    } else if controls.fan_mode {
+        // Worth spelling out: it is the common case on a board the driver
+        // has no entry for, and "fans" alone would overpromise.
+        works.push("fan mode (auto/max only)");
+    }
+    if controls.power_mode {
+        works.push("power modes");
     }
 
-    let looks_like_omen = model
-        .as_deref()
-        .map(|m| {
-            let m = m.to_ascii_lowercase();
-            m.contains("omen") || m.contains("victus")
-        })
-        .unwrap_or(false);
-
-    if looks_like_omen {
-        (
-            Compatibility::Untested,
-            format!(
-                "HP OMEN/Victus machine, but board {} is untested - fan control may or may not work",
-                board_name.as_deref().unwrap_or("?")
-            ),
-        )
-    } else {
-        (
-            Compatibility::Unsupported,
-            "HP machine, but not an OMEN or Victus model".to_string(),
-        )
-    }
+    (Compatibility::Controllable, format!("this machine accepts: {}", works.join(", ")))
 }
 
 fn kernel_release() -> Option<String> {
@@ -329,34 +351,48 @@ mod tests {
         assert_eq!(form_factor(None), "unknown");
     }
 
+    /// A machine with none of the interfaces, e.g. a desktop.
     #[test]
-    fn non_hp_hardware_is_unsupported() {
-        let (compat, _) = classify(
-            &Some("ASUS".into()),
-            &Some("PRIME B660M-K D4".into()),
-            &Some("PRIME B660M-K D4".into()),
-        );
+    fn nothing_controllable_and_no_hp_wmi_is_unsupported() {
+        let (compat, reason) = classify(Controls::default(), false);
         assert_eq!(compat, Compatibility::Unsupported);
+        assert!(reason.contains("monitoring works"));
+    }
+
+    /// Board 8D2F: the interface is there, and none of it is writable.
+    /// The old board-list version called this machine "supported".
+    #[test]
+    fn an_interface_that_accepts_nothing_is_monitoring_only() {
+        let (compat, _) = classify(Controls::default(), true);
+        assert_eq!(compat, Compatibility::MonitoringOnly);
+    }
+
+    /// What 8D2F actually is once the fan module has reported in.
+    #[test]
+    fn fan_mode_without_fan_speed_says_so_rather_than_promising_fans() {
+        let controls = Controls { fan_mode: true, fan_speed: false, power_mode: false };
+        let (compat, reason) = classify(controls, true);
+
+        assert_eq!(compat, Compatibility::Controllable);
+        assert!(reason.contains("auto/max only"), "got: {reason}");
     }
 
     #[test]
-    fn known_hp_board_is_supported() {
-        let (compat, _) = classify(
-            &Some("HP".into()),
-            &Some("OMEN by HP Laptop 16".into()),
-            &Some("8D41".into()),
-        );
-        assert_eq!(compat, Compatibility::Supported);
+    fn a_controllable_machine_lists_what_works() {
+        let controls = Controls { fan_mode: true, fan_speed: true, power_mode: true };
+        let (compat, reason) = classify(controls, true);
+
+        assert_eq!(compat, Compatibility::Controllable);
+        assert!(reason.contains("fan speed") && reason.contains("power modes"), "got: {reason}");
     }
 
+    /// Power modes are not HP-specific, and a machine where only they work
+    /// is still a machine this app can drive. The verdict follows what was
+    /// observed, not what the vendor string says.
     #[test]
-    fn unknown_omen_board_is_untested_not_rejected() {
-        let (compat, _) = classify(
-            &Some("HP".into()),
-            &Some("OMEN by HP Laptop 17".into()),
-            &Some("FFFF".into()),
-        );
-        assert_eq!(compat, Compatibility::Untested);
+    fn power_modes_alone_are_enough_to_be_controllable() {
+        let controls = Controls { fan_mode: false, fan_speed: false, power_mode: true };
+        assert_eq!(classify(controls, false).0, Compatibility::Controllable);
     }
 
     #[test]

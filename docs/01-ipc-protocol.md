@@ -102,26 +102,49 @@ UI be developed and tested away from an OMEN laptop, and it answers the
   "cpu": "12th Gen Intel(R) Core(TM) i5-12400F", "cpuCores": 12,
   "gpus": ["NVIDIA Corporation GA106 [GeForce RTX 3060]"],
   "formFactor": "desktop",
-  "compatibility": "unsupported",
-  "supported": false,
-  "reason": "ASUS is not an HP machine; monitoring works, OMEN hardware control does not"
+  "compatibility": "controllable",
+  "controls": { "fanMode": false, "fanSpeed": false, "powerMode": true },
+  "supported": true,
+  "reason": "this machine accepts: power modes"
 }
 ```
 
-Fields are read from `/sys/class/dmi/id`, `/proc/cpuinfo` and `lspci`.
-Firmware placeholder strings (`"To be filled by O.E.M."`, `"System Product
-Name"`) are reported as `null` rather than shown to the user verbatim.
+Identity fields are read from `/sys/class/dmi/id`, `/proc/cpuinfo` and
+`lspci`. Firmware placeholder strings (`"To be filled by O.E.M."`,
+`"System Product Name"`) are reported as `null` rather than shown to the
+user verbatim.
 
-`compatibility` is one of:
+#### `controls` and `compatibility` are measured, not looked up
+
+`controls` is what each hardware module reported it could **actually do**
+on this machine, collected by the daemon at startup:
+
+| field | true when |
+|---|---|
+| `fanMode` | `pwm1_enable` exists, so auto and max can be commanded |
+| `fanSpeed` | `pwm1` exists, so a specific speed can be commanded |
+| `powerMode` | some power mechanism answered — ACPI platform profile, power-profiles-daemon, or the CPU's energy-performance hint |
+
+`compatibility` is only their summary:
 
 | value | meaning |
 |---|---|
-| `supported` | HP board present in the known-good list (`daemon/crates/system/src/boards.rs`) |
-| `untested` | HP OMEN/Victus machine whose board isn't listed — fan control may still work, so the UI **warns rather than blocks** |
-| `unsupported` | not an HP gaming machine; monitoring works, hardware control won't |
+| `controllable` | at least one of `controls` is true; `reason` says which |
+| `monitoringOnly` | the `hp-wmi` interface is present and nothing accepted control — fan speeds and temperatures still read fine |
+| `unsupported` | neither; this is an ordinary Linux machine as far as this app is concerned |
 
-The board list is advisory only, exactly as in the Python original — it
-never gates functionality, only the warning the UI shows.
+**Gate UI on `controls`, not on `compatibility`.** A machine can be
+`controllable` and still refuse the thing a given page wants: board `8D2F`
+has `fanMode` without `fanSpeed`, so the fan page must offer auto and max
+and hide the percentage.
+
+This replaced a hand-copied list of DMI board ids, and the reason is worth
+keeping: the list was wrong in both directions. It called `8D2F`
+"supported" on a machine that cannot set a fan speed, and it would have
+called an unlisted board that works perfectly "untested" — while needing to
+be extended by hand, one board at a time, for a driver this project does
+not install and cannot vouch for. What a machine accepts is a question the
+machine can be asked.
 
 ### `system.getMetrics`
 

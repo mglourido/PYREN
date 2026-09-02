@@ -50,8 +50,22 @@ export type FanStatus = {
 
 export type ModuleCapability = { id: string; supported: boolean };
 
-/** How far the OMEN-specific features can be trusted on this machine. */
-export type Compatibility = "supported" | "untested" | "unsupported";
+/**
+ * What this machine was found able to control. An observation the daemon
+ * makes by asking each hardware module what it could actually do - not a
+ * lookup of the board id, which used to call a machine "supported" on the
+ * strength of a copied list while its fans refused to be set.
+ */
+export type Compatibility = "controllable" | "monitoringOnly" | "unsupported";
+
+/** The itemised version of `Compatibility`. Gate UI on these, not on the summary. */
+export type Controls = {
+  /** Fan mode switching (auto/max). */
+  fanMode: boolean;
+  /** A specific fan speed, i.e. manual and curve. */
+  fanSpeed: boolean;
+  powerMode: boolean;
+};
 
 export type SystemInfo = {
   vendor: string | null;
@@ -66,6 +80,7 @@ export type SystemInfo = {
   gpus: string[];
   formFactor: "laptop" | "desktop" | "unknown";
   compatibility: Compatibility;
+  controls: Controls;
   supported: boolean;
   reason: string;
 };

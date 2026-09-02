@@ -205,16 +205,26 @@ impl Default for PowerModule {
     }
 }
 
+/// Whether the machine offers any way at all to change its power behaviour.
+///
+/// A free function rather than a method because callers that only want the
+/// answer - the compatibility verdict, `omen-hub-check` - must not have to
+/// build a `PowerModule` to get it: constructing one loads config and
+/// starts the supervisor, which is a thread that can change the machine's
+/// power mode on its own. A question should not have side effects.
+pub fn power_mode_available() -> bool {
+    !backend::read_state().available.is_empty()
+}
+
 impl Module for PowerModule {
     fn id(&self) -> &'static str {
         "power"
     }
 
-    /// True when the machine offers any way at all to change its power
-    /// behaviour. On hardware with none of them the UI should show the
-    /// modes as unavailable rather than pretending they work.
+    /// On hardware with no mechanism at all the UI should show the modes as
+    /// unavailable rather than pretending they work.
     fn is_supported(&self) -> bool {
-        !backend::read_state().available.is_empty()
+        power_mode_available()
     }
 
     fn call(&self, method: &str, params: Value) -> ModuleResult {

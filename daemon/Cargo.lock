@@ -25,6 +25,7 @@ name = "omen-hub-check"
 version = "0.1.0"
 dependencies = [
  "omen-hub-fan",
+ "omen-hub-power",
  "omen-hub-system",
  "serde_json",
 ]

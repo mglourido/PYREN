@@ -17,7 +17,7 @@ use omen_hub_fan::{
     diagnostics::{CheckStatus, Verdict},
     FanModule,
 };
-use omen_hub_system::SystemIdentity;
+use omen_hub_system::{Controls, SystemIdentity};
 
 const HELP: &str = "\
 omen-hub-check - verify that fan control works on this machine
@@ -53,8 +53,16 @@ fn main() -> ExitCode {
     let allow_writes = args.iter().any(|a| a == "--write");
     let json = args.iter().any(|a| a == "--json");
 
-    let identity = SystemIdentity::detect();
-    let diagnosis = FanModule::new().diagnose(allow_writes);
+    // Same verdict the daemon prints, from the same probes - someone
+    // pasting this output into a bug report should not then be told
+    // something different by the app.
+    let fan = FanModule::inspector();
+    let identity = SystemIdentity::detect(Controls {
+        fan_mode: fan.capabilities().switch_mode,
+        fan_speed: fan.capabilities().set_speed,
+        power_mode: omen_hub_power::power_mode_available(),
+    });
+    let diagnosis = fan.diagnose(allow_writes);
 
     if json {
         let report = serde_json::json!({ "system": identity, "fan": diagnosis });

@@ -38,8 +38,9 @@ tools/      omen-check.sh, the dependency-free fan self-test
   atomic writes, corrupt files preserved rather than overwritten, and
   version stamping. Shared by the daemon (`/etc/omen-hub/`) and the app
   (`~/.config/omen-hub/`).
-- `system` module: machine identification (DMI/CPU/GPU + an OMEN
-  compatibility verdict) and full live monitoring — CPU per core, memory,
+- `system` module: machine identification (DMI/CPU/GPU, plus a
+  compatibility verdict derived from what the hardware modules found they
+  could actually do — never from a board list) and full live monitoring — CPU per core, memory,
   hwmon temperatures and fans, disks, network throughput, GPU (nvidia-smi
   and DRM sysfs) and the busiest processes. Generic Linux, so it works and
   is testable on any machine.

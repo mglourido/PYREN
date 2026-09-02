@@ -280,7 +280,7 @@
     "formFactor": "Form factor",
     "laptop": "Laptop",
     "desktop": "Desktop",
-    "untested": "Untested board",
+    "monitoringOnly": "Monitoring only",
     "biosDate": "BIOS date"
   },
   "diagnostics": {

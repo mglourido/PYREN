@@ -56,13 +56,17 @@ So `pwm1` is genuinely absent rather than momentarily missing, and the
 `hp-wmi` platform node exposes no thermal-profile attribute either
 (`als display dock hddtemp postcode tablet`, and nothing else).
 
-Worth noting the disagreement this creates inside our own code: the daemon
-prints *"Supported: board 8D2F is on the known-good list"* from
-`system/boards.rs`, while `fan.diagnose` on the same machine says
-`monitoringOnly`. Both are right about different questions — the board is
-a known OMEN, and its fans are not writable — but `system.getInfo`'s
-`compatibility` should not be read as "fan control works". See §"`system`
-always reports supported" in `TODO.md`.
+This is what killed the board list. The daemon used to print *"Supported:
+board 8D2F is on the known-good list"* on this machine — from a list copied
+out of the driver's DMI tables — while `fan.diagnose` said `monitoringOnly`
+about the same hardware, five lines later. The list was wrong in both
+directions, and could only ever be fixed one board at a time for a driver
+this project does not install. `compatibility` is now derived from what the
+modules found they could do; see `docs/01-ipc-protocol.md`
+§"`controls` and `compatibility` are measured, not looked up". The same
+machine now reports:
+
+    Controllable: this machine accepts: fan mode (auto/max only), power modes
 
 **`dmesg` is now on file too**, and it is a single line:
 

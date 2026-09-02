@@ -124,10 +124,6 @@ real backend decision before any daemon work:
 - **`shellcheck` in CI.** The workflow runs `sh -n tools/omen-check.sh`,
   which catches syntax and nothing else. `shellcheck` wasn't added because
   it isn't installed here and a lint nobody has run locally would land red.
-- **Reconcile the two "supported" answers.** On 8D2F the daemon prints
-  "Supported: board 8D2F is on the known-good list" while `fan.diagnose`
-  says `monitoringOnly`. Both are correct about different questions, and
-  together they read as a contradiction in the logs.
 
 ---
 
@@ -156,9 +152,15 @@ Recorded so nobody "fixes" them by accident:
   minute would be a WMI call that changes nothing. Max, manual and curve
   are re-asserted every 60 s.
 - **No `core.json`.** Cross-cutting daemon config has no contents yet.
-- **`system` always reports `supported: true`.** Any Linux machine can
-  report its own vitals; hardware-*control* support is a different question,
-  answered by `system.getInfo`'s `compatibility`.
+- **`system` always reports `supported: true`** as a *module*. Any Linux
+  machine can report its own vitals; hardware-*control* support is a
+  different question, answered by `system.getInfo`'s `controls`.
+- **No board allowlist anywhere.** What a machine can do is probed, never
+  looked up. A list of DMI ids cannot know whether the driver came up with
+  reduced functionality on this boot, has to be extended by hand, and — on
+  the one machine available to test — was simply wrong. If something ever
+  needs a board id again, it must be advice attached to a *probe result*,
+  not a substitute for probing.
 - **The installer refuses to run when fan control already works**, unless
   forced. Replacing a working stock driver is a downgrade.
 - **`restoreModeOnStart` defaults to off.** Changing a machine's power
@@ -182,6 +184,10 @@ Eco and Balanced on its own — is the `power` supervisor.
 
 ## Done since these notes were written
 
+- **The compatibility verdict is now measured.** `system.getInfo` reports
+  `controls` — what the fan and power modules found they could actually do
+  — and `compatibility` is only their summary. `crates/system/src/boards.rs`
+  and its 80-odd hand-copied board ids are gone.
 - **Max and auto verified on the hardware** (was 1.2): against a root
   daemon, `fan.setMode max` took the fans from ~2000 to ~3900 rpm and
   `auto` handed them back. The numbers are in `FINDINGS.md`. This is the

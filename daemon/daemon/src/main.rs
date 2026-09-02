@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use omen_hub_core::{serve_unix_socket, Audience, Registry};
+use omen_hub_core::{serve_unix_socket, Audience, Module, Registry};
 use omen_hub_fan::FanModule;
 use omen_hub_installer::InstallerModule;
 use omen_hub_power::PowerModule;
-use omen_hub_system::{Compatibility, SystemModule};
+use omen_hub_system::{Compatibility, Controls, SystemModule};
 
 /// Production (systemd, running as root) should set `OMEN_HUB_SOCKET` to
 /// `/run/omen-hub/daemon.sock`. This fallback keeps `cargo run` usable for
@@ -28,7 +28,19 @@ fn is_root() -> bool {
 }
 
 fn main() {
-    let system = SystemModule::new();
+    // The hardware modules come first, because what this machine can be
+    // told to do is something only they can answer - `system` used to
+    // answer it from a copied list of DMI board ids, which said "supported"
+    // about a machine whose fans cannot be set. Probe, then report.
+    let fan = FanModule::new();
+    let power = PowerModule::new();
+    let controls = Controls {
+        fan_mode: fan.capabilities().switch_mode,
+        fan_speed: fan.capabilities().set_speed,
+        power_mode: power.is_supported(),
+    };
+
+    let system = SystemModule::new(controls);
 
     // Printing what we detected at startup is the fastest way to diagnose a
     // "nothing works on my machine" report - it is the first thing to ask
@@ -44,17 +56,14 @@ fn main() {
     if let Some(kernel) = &identity.kernel {
         println!("  kernel: {kernel}");
     }
-    if identity.compatibility != Compatibility::Supported {
-        println!(
-            "  note:   hardware control is expected to be unavailable here; \
-             monitoring still works"
-        );
+    if identity.compatibility != Compatibility::Controllable {
+        println!("  note:   {}", identity.reason);
     }
 
     let mut registry = Registry::new();
     registry.register(Box::new(system));
-    registry.register(Box::new(PowerModule::new()));
-    registry.register(Box::new(FanModule::new()));
+    registry.register(Box::new(power));
+    registry.register(Box::new(fan));
     registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);
 

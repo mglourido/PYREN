@@ -191,6 +191,34 @@ impl FanModule {
         module
     }
 
+    /// A module for tools that only want to *look*: no config is read or
+    /// written and no control loop is started.
+    ///
+    /// `omen-hub-check` uses this. A self-test that created files and
+    /// started a thread capable of driving fans would be a self-test nobody
+    /// should run on a machine they care about.
+    pub fn inspector() -> Self {
+        let paths = discover_paths();
+        let caps = Capabilities::detect(&paths);
+        let config = FanConfig::default();
+
+        Self {
+            state: Arc::new(Mutex::new(State {
+                smoother: curve::TempSmoother::new(config.ma_window),
+                mode: observed_mode(&paths).unwrap_or(FanMode::Auto),
+                config,
+                owned: false,
+                hysteresis: curve::Hysteresis::new(),
+                last_target_pwm: None,
+                last_control_error: None,
+                last_save_error: None,
+            })),
+            store: ConfigStore::system(),
+            paths,
+            caps,
+        }
+    }
+
     /// Runs the fan-control self-test against this machine.
     ///
     /// `allow_writes` opts into the one check that touches hardware; it
