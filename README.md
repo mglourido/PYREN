@@ -6,6 +6,9 @@ SvelteKit), so hardware-control modules can be ported in from separate
 source projects — starting with fan control from
 [`omen-fan-control`](../omen-fan-control-main).
 
+Work still to do, and the findings behind the decisions taken so far, are
+in [`dev/`](dev/README.md).
+
 See [`docs/00-design-plan.md`](docs/00-design-plan.md) for the
 architecture, [`docs/01-ipc-protocol.md`](docs/01-ipc-protocol.md) for the
 wire format between the app and the daemon, and
@@ -19,6 +22,8 @@ frontend's structure and conventions.
 daemon/     Rust workspace: omen-hub-daemon + omen-hub-check (CLI) + module crates
 app/        Tauri app: SvelteKit frontend + src-tauri shell
 docs/       design plan + IPC protocol + development + frontend guide
+dev/        working notes: what is left to do, and what was learned
+tools/      omen-check.sh, the dependency-free fan self-test
 ```
 
 ## Status
