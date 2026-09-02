@@ -5,7 +5,7 @@
    * while the user moves between pages.
    */
   import "$lib/styles/theme.css";
-  import type { Snippet } from "svelte";
+  import { onMount, type Snippet } from "svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import Banner from "$lib/components/Banner.svelte";
@@ -25,7 +25,12 @@
   settings.loadCache();
   hardware.loadCache();
 
-  $effect(() => {
+  // Deliberately `onMount` and not `$effect`: this block reads settings
+  // (`start()` needs the poll interval) *and* writes them (`hydrate()`
+  // replaces `settings.current`). As an effect that is a cycle - every
+  // hydrate re-ran the block, which re-polled, re-hydrated, and so on
+  // until the page froze. Startup happens once, so say so.
+  onMount(() => {
     void settings.hydrate();
     void hardware.hydrate().then(() => hardware.syncFromDaemon());
     telemetry.start();
