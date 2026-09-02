@@ -56,6 +56,10 @@ FANS
                                e.g. fan curve 40:20,60:50,85:100
   fan restore-on-start <on|off>
   fan diagnose [--write]       the fan-control self-test
+  fan calibrate [--seconds N]  run the fans at max and measure what full
+                               speed is on this machine, then put back the
+                               mode it found. Loud, and the only way to
+                               give the curve's hysteresis a real ceiling
 
 OPTIONS
   --json                       print the daemon's reply verbatim
@@ -181,6 +185,14 @@ fn run(command: &args::Command) -> Run {
         ["fan", "restore-on-start", value] => {
             let enabled = word_switch("restore-on-start", value)?;
             show(command, client::call("fan", "setRestoreOnStart", json!({ "enabled": enabled }))?, print_fan)
+        }
+        ["fan", "calibrate"] => {
+            let seconds = command.number("seconds")?;
+            let params = match seconds {
+                Some(seconds) => json!({ "seconds": seconds.round().max(0.0) as u64 }),
+                None => Value::Null,
+            };
+            show(command, client::call("fan", "calibrate", params)?, print_calibration)
         }
         ["fan", "diagnose"] => {
             let allow_writes = command.options.contains_key("write");
@@ -486,8 +498,57 @@ fn print_fan(status: &Value) {
             row("curve", drawn.join(","));
         }
     }
+
+    // Only worth a line once it exists: an absent ceiling is the normal
+    // state, not a missing setting, and `fan calibrate` is what fills it.
+    row(
+        "full speed",
+        match status.get("fanMaxRpm").and_then(Value::as_i64) {
+            Some(rpm) => format!("{rpm} rpm, measured"),
+            None => "not calibrated - run 'fan calibrate'".to_string(),
+        },
+    );
     if let Some(error) = status.get("error").and_then(Value::as_str) {
         println!("  ! {error}");
+    }
+}
+
+fn print_calibration(result: &Value) {
+    row("verdict", text(result, "verdict"));
+    println!("  {}", text(result, "detail"));
+
+    let rpm = |key: &str| match result.get(key).and_then(Value::as_i64) {
+        Some(rpm) => format!("{rpm} rpm"),
+        None => "-".to_string(),
+    };
+    row("stored", format!("fan1 {}, fan2 {}", rpm("fan1MaxRpm"), rpm("fan2MaxRpm")));
+    row(
+        "run",
+        format!(
+            "{}s from {} rpm, restored to {}",
+            result.get("seconds").and_then(Value::as_u64).unwrap_or(0),
+            result.get("baselineRpm").and_then(Value::as_i64).unwrap_or(0),
+            text(result, "restoredMode"),
+        ),
+    );
+    if let Some(error) = result.get("restoreError").and_then(Value::as_str) {
+        println!("  ! could not put the fans back: {error}");
+    }
+
+    // The trace is the evidence for the verdict, so it is worth seeing
+    // when a run concludes something surprising.
+    for sample in result.get("samples").and_then(Value::as_array).unwrap_or(&Vec::new()) {
+        println!(
+            "  +{:>3}s      fan1 {:>5}  fan2 {:>5}{}",
+            sample.get("atSecs").and_then(Value::as_u64).unwrap_or(0),
+            sample.get("fan1Rpm").and_then(Value::as_i64).unwrap_or(0),
+            sample.get("fan2Rpm").and_then(Value::as_i64).unwrap_or(0),
+            if sample.get("isReverse").and_then(Value::as_bool) == Some(true) {
+                "  (reverse)"
+            } else {
+                ""
+            }
+        );
     }
 }
 

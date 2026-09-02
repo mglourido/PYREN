@@ -9,14 +9,14 @@
 //! | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the new status |
 //! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete" }` | the new status |
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
+//! | `fan.calibrate` | `{ "seconds"?: 10-120 }` | what full speed measured, see [`calibration`] |
 //!
 //! What a given machine will accept is not the same everywhere, and the
 //! difference is not cosmetic - see [`control`] for the `pwm1` /
 //! `pwm1_enable` split. `getStatus` reports it as `capabilities` so the UI
 //! can hide a slider that would do nothing.
 //!
-//! Not ported yet: calibration (`fanMaxRpm` is therefore usually unknown,
-//! which only costs some hysteresis precision) and the fan cleaner.
+//! Not ported yet: the fan cleaner.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,12 +28,14 @@ use pyren_core::{Module, ModuleError, ModuleResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub mod calibration;
 // Private because its functions take the crate-private `FanPaths`; the
 // types callers need are re-exported below.
 mod control;
 pub mod curve;
 pub mod diagnostics;
 
+pub use calibration::Calibration;
 pub use control::{Capabilities, FanMode};
 pub use curve::{CurvePoint, Interpolation};
 
@@ -71,9 +73,16 @@ pub struct FanConfig {
     pub interpolation: Interpolation,
     /// Samples of temperature smoothing, ~2 s apart.
     pub ma_window: usize,
-    /// Measured full-speed RPM, once calibration exists. Only sharpens the
-    /// hysteresis; everything works without it.
+    /// Full-speed RPM as measured by `fan.calibrate`, of whichever fan
+    /// reads faster - the form the hysteresis compares against. Only
+    /// sharpens it; everything works without it.
     pub fan_max_rpm: Option<i64>,
+    /// The same measurement per fan, which is the form the driver's
+    /// `OMEN_CPU_MAX_RPM` / `OMEN_GPU_MAX_RPM` constants want. Kept
+    /// because the installer can patch them and nothing else produces
+    /// the numbers.
+    pub fan1_max_rpm: Option<i64>,
+    pub fan2_max_rpm: Option<i64>,
     /// Off by default, like the power module's equivalent: putting a
     /// machine's fans somewhere the user last left them, at boot, before
     /// they have asked for anything, is not a decision this should make on
@@ -90,6 +99,8 @@ impl Default for FanConfig {
             interpolation: Interpolation::default(),
             ma_window: 5,
             fan_max_rpm: None,
+            fan1_max_rpm: None,
+            fan2_max_rpm: None,
             restore_mode_on_start: false,
         }
     }
@@ -111,6 +122,10 @@ struct State {
     owned: bool,
     hysteresis: curve::Hysteresis,
     smoother: curve::TempSmoother,
+    /// A calibration run has the fans, and the control loop must not take
+    /// them back mid-measurement - it would drop them out of max and the
+    /// run would measure the ramp back down.
+    calibrating: bool,
     last_target_pwm: Option<u8>,
     last_control_error: Option<String>,
     last_save_error: Option<String>,
@@ -179,6 +194,7 @@ impl FanModule {
             mode,
             owned: restoring,
             hysteresis: curve::Hysteresis::new(),
+            calibrating: false,
             last_target_pwm: None,
             last_control_error: None,
             last_save_error: None,
@@ -209,6 +225,7 @@ impl FanModule {
                 config,
                 owned: false,
                 hysteresis: curve::Hysteresis::new(),
+                calibrating: false,
                 last_target_pwm: None,
                 last_control_error: None,
                 last_save_error: None,
@@ -252,6 +269,9 @@ impl FanModule {
             "interpolation": state.config.interpolation,
             "restoreModeOnStart": state.config.restore_mode_on_start,
             "fanMaxRpm": state.config.fan_max_rpm,
+            "fan1MaxRpm": state.config.fan1_max_rpm,
+            "fan2MaxRpm": state.config.fan2_max_rpm,
+            "calibrating": state.calibrating,
             "error": state.last_control_error,
             "saved": state.last_save_error.is_none(),
             "saveError": state.last_save_error,
@@ -317,6 +337,75 @@ impl FanModule {
         Ok(self.status())
     }
 
+    /// Measures what full speed is on this machine and remembers it.
+    ///
+    /// Blocks for up to `seconds` while the fans are at max - the caller
+    /// is waiting on a physical process, and there is nothing to return
+    /// until it finishes. Holding the state lock for that long would
+    /// block `getStatus` too, so the flag is set, the lock dropped, and
+    /// the run happens outside it.
+    fn calibrate(&self, seconds: u64) -> ModuleResult {
+        if !self.caps.supports(FanMode::Max) {
+            return Err(ModuleError::Other(format!(
+                "calibration puts the fans at max and watches them, which this \
+                 machine cannot do: the hp-wmi driver exposes {}. \
+                 Run fan.diagnose for the details.",
+                describe(self.caps)
+            )));
+        }
+
+        {
+            let mut state = lock(&self.state);
+            if state.calibrating {
+                return Err(ModuleError::Other(
+                    "a calibration run is already in progress".into(),
+                ));
+            }
+            state.calibrating = true;
+        }
+
+        let outcome = calibration::run(&self.paths, self.caps, seconds);
+
+        let mut state = lock(&self.state);
+        state.calibrating = false;
+        // The fans were moved out from under the hysteresis, so what it
+        // last wrote says nothing about where they are now.
+        state.hysteresis.reset();
+
+        let calibration = match outcome {
+            Ok(calibration) => calibration,
+            Err(e) => {
+                let message = e.to_string();
+                state.last_control_error = Some(message.clone());
+                return Err(match e {
+                    control::ControlError::PermissionDenied(_, _) => {
+                        ModuleError::PermissionDenied(message)
+                    }
+                    _ => ModuleError::Other(message),
+                });
+            }
+        };
+
+        // A run that measured nothing must not erase a run that did.
+        if calibration.verdict.worth_storing() {
+            state.config.fan_max_rpm = calibration.fan_max_rpm;
+            state.config.fan1_max_rpm = calibration.fan1_max_rpm;
+            state.config.fan2_max_rpm = calibration.fan2_max_rpm;
+            persist(&self.store, &mut state);
+        }
+        drop(state);
+
+        let mut result = serde_json::to_value(&calibration)
+            .map_err(|e| ModuleError::Other(e.to_string()))?;
+        // The same shape every other fan write returns, so a caller never
+        // has to follow one with a read.
+        result["status"] = self.status();
+        // Re-assert whatever the mode in force is, now rather than up to a
+        // TICK later. Only does anything when this daemon owns the fans.
+        let _ = self.tick_once();
+        Ok(result)
+    }
+
     fn set_restore_on_start(&self, enabled: bool) -> ModuleResult {
         let mut state = lock(&self.state);
         state.config.restore_mode_on_start = enabled;
@@ -339,6 +428,10 @@ impl FanModule {
             read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
 
         let mut state = lock(&self.state);
+        if state.calibrating {
+            // Somebody else is driving, on purpose. See `State::calibrating`.
+            return Ok(());
+        }
         if !state.owned {
             // Watching, not driving. See `State::owned`.
             return Ok(());
@@ -508,6 +601,18 @@ impl Module for FanModule {
                     ModuleError::Other("params.enabled must be a boolean".into())
                 })?;
                 self.set_restore_on_start(enabled)
+            }
+
+            "calibrate" => {
+                // Unlike `diagnose`, there is no read-only version of this
+                // to default to: measuring full speed means reaching it.
+                // The method name is the consent - it does exactly what it
+                // says, and puts back what it found.
+                let seconds = params
+                    .get("seconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(calibration::DEFAULT_SECONDS);
+                self.calibrate(seconds)
             }
 
             other => Err(ModuleError::UnknownMethod(other.to_string())),

@@ -134,9 +134,10 @@ const RPM_DEADBAND: i64 = 200;
 
 /// Deadband when no calibrated maximum RPM is known, in PWM units.
 ///
-/// The RPM form of this test needs `fan_max`, which comes from calibration,
-/// not ported yet. 8/255 is a hair over 3 %, small enough to track a curve
-/// and large enough to swallow the jitter of a smoothed temperature.
+/// The RPM form of this test needs `fan_max`, which `fan.calibrate`
+/// measures and most machines have never been asked for. 8/255 is a hair
+/// over 3 %, small enough to track a curve and large enough to swallow the
+/// jitter of a smoothed temperature.
 const PWM_DEADBAND: u8 = 8;
 
 /// Longest a write may be suppressed for.
@@ -166,7 +167,8 @@ impl Hysteresis {
     /// `measured_rpm` and `fan_max_rpm` are the calibrated form of the
     /// test: when both are known the question is "is the fan already going
     /// roughly this fast", which tolerates a fan that is still spinning up.
-    /// Without calibration it falls back to comparing PWM values.
+    /// Without calibration (see [`crate::calibration`]) it falls back to
+    /// comparing PWM values.
     pub fn should_apply(
         &self,
         target: u8,
