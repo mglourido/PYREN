@@ -91,6 +91,23 @@ Exit status is the verdict: `0` full control, `1` monitoring only, `2` no
 fan-control interface. `--write` rewrites the value already set and puts
 the previous mode back, so no fan changes speed.
 
+### Running it without building the project
+
+`tools/omen-check.sh` is the same self-test as a single POSIX shell script
+with no dependencies — for a machine where building this project isn't
+practical. Copy that one file across and run it:
+
+```sh
+scp tools/omen-check.sh laptop:
+ssh laptop './omen-check.sh'          # or: sudo ./omen-check.sh --write
+```
+
+It performs the same checks in the same order, with the same verdicts and
+exit codes. `daemon/check/tests/parity.rs` runs both against the same
+fixtures and compares verdicts, exit status and per-check results, so the
+two cannot drift apart silently — that test caught two real divergences the
+first time it ran.
+
 To exercise the checks without HP hardware, point it at a fixture:
 
 ```sh
@@ -98,6 +115,7 @@ mkdir -p /tmp/fake && cd /tmp/fake
 echo hp > name; echo 2400 > fan1_input; echo 2550 > fan2_input
 echo 128 > pwm1; echo 2 > pwm1_enable
 OMEN_HUB_HWMON_DIR=/tmp/fake cargo run -p omen-hub-check -- --write
+OMEN_HUB_HWMON_DIR=/tmp/fake ~/omen-hub-linux/tools/omen-check.sh --write
 ```
 
 ## Checking the frontend

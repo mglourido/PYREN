@@ -38,8 +38,10 @@ docs/       design plan + IPC protocol + development + frontend guide
   hint, plus a background supervisor that switches modes on its own (Eco on
   battery, Performance under sustained load) with hysteresis and a manual
   override.
-- Fan-control self-test: `fan.diagnose`, the app's Hardware check page, and
-  a standalone `omen-hub-check` binary. Verifies what the running kernel
+- Fan-control self-test: `fan.diagnose`, the app's Hardware check page, a
+  standalone `omen-hub-check` binary, and `tools/omen-check.sh` — a
+  dependency-free shell version to copy onto a machine where building isn't
+  practical (kept in step by a parity test). Verifies what the running kernel
   actually supports instead of installing a patched driver — manual fan
   control is upstream in recent kernels, so on most machines there is
   nothing to install.

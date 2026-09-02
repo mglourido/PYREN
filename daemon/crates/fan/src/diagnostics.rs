@@ -155,19 +155,32 @@ pub(crate) fn diagnose(paths: &FanPaths, allow_writes: bool) -> Diagnosis {
     checks.push(check_cpu_temp(paths.cpu_temp.as_deref()));
     checks.push(check_acpi_call());
 
-    let can_read = paths.fan1_input.is_some() || paths.fan2_input.is_some();
-    let can_write = checks
-        .iter()
-        .any(|c| c.id == "pwm-write" && c.status == CheckStatus::Pass)
-        || (paths.pwm1.is_some() && paths.pwm1_enable.is_some() && !allow_writes);
+    // The verdict follows the *check results*, never the mere presence of a
+    // path. Discovery fills in every path as soon as an hwmon directory
+    // exists, whether or not the files behind them do - so deriving the
+    // verdict from paths reported "fan control available" on exactly the
+    // machines this tool exists for: an HP laptop whose stock driver has no
+    // pwm1 for its board.
+    let status_of = |id: &str| checks.iter().find(|c| c.id == id).map(|c| c.status);
+    let readable = |id: &str| matches!(status_of(id), Some(CheckStatus::Pass | CheckStatus::Warn));
 
-    let verdict = match (can_read, paths.pwm1.is_some(), can_write) {
-        (_, true, true) => Verdict::FullControl,
-        (true, _, _) => Verdict::MonitoringOnly,
-        _ => Verdict::Unsupported,
+    let can_read = readable("fan1") || readable("fan2");
+    let can_write = status_of("pwm1") == Some(CheckStatus::Pass)
+        && status_of("pwm1_enable") == Some(CheckStatus::Pass)
+        // Only an actual write failure rules control out. A skipped write
+        // test (not requested, or no permission) leaves it untested, not
+        // disproven - the summary says which.
+        && status_of("pwm-write") != Some(CheckStatus::Fail);
+
+    let verdict = match (can_read, can_write) {
+        (_, true) => Verdict::FullControl,
+        (true, false) => Verdict::MonitoringOnly,
+        (false, false) => Verdict::Unsupported,
     };
 
-    let (summary, driver_notice) = conclude(verdict, hp_wmi, paths, allow_writes);
+    let write_tested = status_of("pwm-write") == Some(CheckStatus::Pass);
+
+    let (summary, driver_notice) = conclude(verdict, hp_wmi, paths, write_tested);
 
     Diagnosis {
         verdict,
@@ -182,11 +195,11 @@ fn conclude(
     verdict: Verdict,
     hp_wmi: bool,
     paths: &FanPaths,
-    allow_writes: bool,
+    write_tested: bool,
 ) -> (String, Option<String>) {
     match verdict {
         Verdict::FullControl => {
-            let summary = if allow_writes {
+            let summary = if write_tested {
                 "Fan control works: speeds can be read and the PWM channel accepted a write."
                     .to_string()
             } else {
@@ -257,6 +270,12 @@ fn check_readable_number(
     let Some(path) = path else {
         return Check::new(id, title, CheckStatus::Skip, "not exposed by this driver");
     };
+    // Discovery fills in a path as soon as an hwmon node exists, so the
+    // file behind it may not. A missing fan2_input means the machine has
+    // one fan, which is normal - not a failure.
+    if !path.exists() {
+        return Check::new(id, title, CheckStatus::Skip, "not exposed by this driver");
+    }
     match fs::read_to_string(path) {
         Ok(text) => match text.trim().parse::<i64>() {
             Ok(value) => {
@@ -497,20 +516,77 @@ mod tests {
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Skip);
     }
 
+    /// A single-fan machine is not a broken one.
     #[test]
-    fn readable_fans_without_pwm_are_monitoring_only() {
-        let dir = fixture("monitoring");
+    fn a_missing_second_fan_is_skipped_rather_than_failed() {
+        let dir = fixture("onefan");
+        write(&dir, "fan1_input", "2400\n");
+        write(&dir, "pwm1", "128\n");
+        write(&dir, "pwm1_enable", "2\n");
+        // No fan2_input: the path is discovered, the file does not exist.
+
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        assert_eq!(check(&diagnosis, "fan2").status, CheckStatus::Skip);
+        assert_eq!(diagnosis.verdict, Verdict::FullControl);
+    }
+
+    /// The case this whole tool exists for: an HP laptop whose hwmon node
+    /// is present but whose stock driver exposes no PWM for the board.
+    ///
+    /// Discovery fills in the pwm1 path regardless of whether the file
+    /// exists, so a verdict derived from paths rather than results claimed
+    /// fan control worked here - which it does not.
+    #[test]
+    fn an_hwmon_node_without_a_pwm_file_is_monitoring_only() {
+        let dir = fixture("nopwm");
         write(&dir, "fan1_input", "2400\n");
         write(&dir, "fan2_input", "2300\n");
-        let mut paths = paths_for_testing(dir, None);
-        // The board's driver exposes speeds but no control channel.
-        paths.pwm1 = None;
-        paths.pwm1_enable = None;
+        // No pwm1 or pwm1_enable written: the paths exist, the files don't.
 
-        let diagnosis = diagnose(&paths, false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
         assert_eq!(diagnosis.verdict, Verdict::MonitoringOnly);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Pass);
         assert_eq!(check(&diagnosis, "pwm1").status, CheckStatus::Fail);
+    }
+
+    /// Not being *allowed* to write is not the same as the driver refusing
+    /// the write, so it must not downgrade the verdict - it asks for root.
+    #[test]
+    fn a_write_test_blocked_by_permissions_asks_for_root_instead_of_failing() {
+        let dir = fixture("readonly");
+        write(&dir, "fan1_input", "2400\n");
+        write(&dir, "pwm1", "128\n");
+        write(&dir, "pwm1_enable", "2\n");
+
+        let mut perms = fs::metadata(dir.join("pwm1")).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(dir.join("pwm1"), perms).unwrap();
+
+        // Root ignores the permission bits, which would make this test
+        // assert the opposite of what it means to.
+        if fs::write(dir.join("pwm1"), "128").is_ok() {
+            eprintln!("skipped: running with privileges that bypass file permissions");
+            return;
+        }
+
+        let diagnosis = diagnose(&paths_for_testing(dir, None), true);
+        let write_check = check(&diagnosis, "pwm-write");
+        assert_eq!(write_check.status, CheckStatus::Skip);
+        assert!(write_check.detail.contains("root"), "got: {}", write_check.detail);
+        assert_eq!(diagnosis.verdict, Verdict::FullControl);
+    }
+
+    #[test]
+    fn a_write_test_that_was_never_asked_for_does_not_rule_control_out() {
+        let dir = fixture("untested");
+        write(&dir, "fan1_input", "2400\n");
+        write(&dir, "pwm1", "128\n");
+        write(&dir, "pwm1_enable", "2\n");
+
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        assert_eq!(diagnosis.verdict, Verdict::FullControl);
+        // ...but it must say the write path is unverified.
+        assert!(diagnosis.summary.contains("Re-run"), "got: {}", diagnosis.summary);
     }
 
     #[test]
