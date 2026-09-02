@@ -58,6 +58,11 @@ fn core_capabilities() -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn fan_diagnose(allow_writes: bool) -> Result<Value, String> {
+    call_daemon("fan", "diagnose", json!({ "allowWrites": allow_writes }))
+}
+
+#[tauri::command]
 fn system_get_info() -> Result<Value, String> {
     call_daemon("system", "getInfo", Value::Null)
 }
@@ -145,6 +150,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             fan_get_status,
+            fan_diagnose,
             core_capabilities,
             system_get_info,
             system_get_metrics,

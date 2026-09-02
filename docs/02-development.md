@@ -73,6 +73,33 @@ GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 bun run tauri dev
 This is a known WebKitGTK/compositor interaction, not specific to this
 project's code — if it stops being needed on your setup, drop it.
 
+## Checking that fan control works on a machine
+
+`omen-hub-check` runs the same self-test as the app's Hardware check page,
+as a standalone binary with no daemon, socket or GUI involved. It is the
+first thing to run on an unfamiliar laptop, and the thing to paste into a
+bug report.
+
+```sh
+cd daemon
+cargo run -p omen-hub-check            # read-only, safe on any machine
+sudo cargo run -p omen-hub-check -- --write   # also verify the PWM accepts writes
+cargo run -p omen-hub-check -- --json  # machine-readable
+```
+
+Exit status is the verdict: `0` full control, `1` monitoring only, `2` no
+fan-control interface. `--write` rewrites the value already set and puts
+the previous mode back, so no fan changes speed.
+
+To exercise the checks without HP hardware, point it at a fixture:
+
+```sh
+mkdir -p /tmp/fake && cd /tmp/fake
+echo hp > name; echo 2400 > fan1_input; echo 2550 > fan2_input
+echo 128 > pwm1; echo 2 > pwm1_enable
+OMEN_HUB_HWMON_DIR=/tmp/fake cargo run -p omen-hub-check -- --write
+```
+
 ## Checking the frontend
 
 ```sh

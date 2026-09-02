@@ -8,7 +8,7 @@
     "performance": "Rendimiento",
     "lighting": "Iluminación",
     "device": "Dispositivo",
-    "drivers": "Controladores",
+    "drivers": "Comprobación",
     "settings": "Ajustes",
     "help": "Ayuda"
   },
@@ -280,5 +280,22 @@
     "desktop": "Sobremesa",
     "untested": "Placa no probada",
     "biosDate": "Fecha de BIOS"
+  },
+  "diagnostics": {
+    "title": "Comprobación de hardware",
+    "runCheck": "Ejecutar comprobación",
+    "running": "Comprobando...",
+    "allowWrites": "Probar también que el ventilador acepta escrituras",
+    "allowWritesHint": "Reescribe el valor que ya estaba puesto y restaura el modo anterior, así que ningún ventilador cambia de velocidad. Requiere que el daemon corra como root.",
+    "verdict": {
+      "fullControl": "El control de ventiladores funciona",
+      "monitoringOnly": "Solo monitorización — no se puede fijar la velocidad",
+      "unsupported": "Este equipo no expone interfaz de control de ventiladores"
+    },
+    "checks": "Comprobaciones",
+    "remedy": "Qué hacer",
+    "neverRun": "Todavía no se ha ejecutado la comprobación.",
+    "cliHint": "La misma comprobación se ejecuta sin la app: <code>cargo run -p omen-hub-check</code> (añade <code>--json</code> para un reporte de fallo).",
+    "wroteToHardware": "Esta ejecución escribió en el hardware y restauró el estado anterior."
   }
 }

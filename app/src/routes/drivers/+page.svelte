@@ -1,77 +1,124 @@
 <script lang="ts">
   /**
-   * Driver / service installer.
+   * Hardware check.
    *
-   * The privileged work (DKMS build, systemd unit, acpi_call) belongs in
-   * the daemon-side installer flow; this page is its front end and shows
-   * detected state plus what each component is for, so the user knows what
-   * they are about to authorise.
+   * This page used to be an installer. It is a verifier instead: manual fan
+   * control is upstream in recent kernels, so on most machines the right
+   * answer is "the stock driver already does this" and the useful thing is
+   * to prove it - and, when it doesn't work, to say precisely which part is
+   * missing rather than offering to replace a kernel module.
    */
   import Icon from "$lib/components/Icon.svelte";
+  import InfoTip from "$lib/components/InfoTip.svelte";
   import Panel from "$lib/components/Panel.svelte";
+  import Toggle from "$lib/components/Toggle.svelte";
+  import { daemon, type FanDiagnosis, type CheckStatus } from "$lib/api/daemon";
   import { t } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
 
-  type Component = {
-    id: string;
-    title: string;
-    desc: string;
-    installed: boolean;
-    required: boolean;
-  };
+  let diagnosis = $state<FanDiagnosis | null>(null);
+  let running = $state(false);
+  let error = $state<string | null>(null);
+  let allowWrites = $state(false);
 
-  const components = $derived<Component[]>([
-    {
-      id: "hp-wmi",
-      title: t("drivers.hpWmi"),
-      desc: t("drivers.hpWmiDesc"),
-      installed: telemetry.driverInstalled,
-      required: true,
-    },
-    {
-      id: "daemon",
-      title: t("drivers.daemon"),
-      desc: t("drivers.daemonDesc"),
-      installed: !telemetry.demo,
-      required: true,
-    },
-    {
-      id: "acpi-call",
-      title: t("drivers.acpiCall"),
-      desc: t("drivers.acpiCallDesc"),
-      installed: false,
-      required: false,
-    },
-  ]);
+  async function run() {
+    running = true;
+    error = null;
+    try {
+      diagnosis = await daemon.fanDiagnose(allowWrites);
+    } catch (e) {
+      error = String(e);
+      diagnosis = null;
+    } finally {
+      running = false;
+    }
+  }
+
+  const icons: Record<CheckStatus, string> = {
+    pass: "check",
+    fail: "close",
+    warn: "warning",
+    skip: "info",
+  };
 </script>
 
 <div class="drivers">
-  <h1 class="page-title">{t("drivers.title")}</h1>
+  <h1 class="page-title">{t("diagnostics.title")}</h1>
 
-  {#each components as component (component.id)}
+  <Panel>
+    <div class="controls">
+      <button class="run" onclick={run} disabled={running}>
+        <Icon name="refresh" size={15} />
+        {running ? t("diagnostics.running") : t("diagnostics.runCheck")}
+      </button>
+
+      <label class="writes">
+        <Toggle
+          checked={allowWrites}
+          onchange={(v) => (allowWrites = v)}
+          ariaLabel={t("diagnostics.allowWrites")}
+        />
+        <span>
+          {t("diagnostics.allowWrites")}
+          <InfoTip>{t("diagnostics.allowWritesHint")}</InfoTip>
+        </span>
+      </label>
+    </div>
+
+    <p class="hint">{@html t("diagnostics.cliHint")}</p>
+
+    {#if error}
+      <p class="notice err">{error}</p>
+    {:else if telemetry.demo && !diagnosis}
+      <p class="notice">{t("notices.daemonDownBody")}</p>
+    {:else if !diagnosis}
+      <p class="notice">{t("diagnostics.neverRun")}</p>
+    {/if}
+  </Panel>
+
+  {#if diagnosis}
     <Panel>
-      <div class="item">
-        <div class="text">
-          <h2>
-            {component.title}
-            {#if !component.required}<span class="opt">optional</span>{/if}
-          </h2>
-          <p>{component.desc}</p>
+      <div class="verdict {diagnosis.verdict}">
+        <Icon
+          name={diagnosis.verdict === "fullControl" ? "check" : "warning"}
+          size={22}
+        />
+        <div>
+          <strong>{t(`diagnostics.verdict.${diagnosis.verdict}`)}</strong>
+          <p>{diagnosis.summary}</p>
         </div>
-
-        <div class="state" class:ok={component.installed}>
-          <Icon name={component.installed ? "check" : "close"} size={16} />
-          {component.installed ? t("drivers.installed") : t("drivers.notInstalled")}
-        </div>
-
-        <button class="action" disabled>
-          {component.installed ? t("drivers.uninstall") : t("drivers.install")}
-        </button>
       </div>
-    </Panel>
-  {/each}
 
-  <p class="note"><Icon name="info" size={14} /> {t("drivers.needsRoot")}</p>
+      <!-- The point of the whole page: when control is missing, say what
+           could fix it, rather than silently offering to install anything. -->
+      {#if diagnosis.driverNotice}
+        <p class="notice warn">{diagnosis.driverNotice}</p>
+      {/if}
+      {#if diagnosis.wroteToHardware}
+        <p class="notice">{t("diagnostics.wroteToHardware")}</p>
+      {/if}
+    </Panel>
+
+    <Panel title={t("diagnostics.checks")}>
+      <ul class="checks">
+        {#each diagnosis.checks as check (check.id)}
+          <li class={check.status}>
+            <Icon name={icons[check.status]} size={15} />
+            <div class="body">
+              <span class="check-title">{check.title}</span>
+              <span class="detail">{check.detail}</span>
+              {#if check.remedy}
+                <span class="remedy">
+                  <strong>{t("diagnostics.remedy")}:</strong>
+                  {check.remedy}
+                </span>
+              {/if}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    </Panel>
+  {/if}
 </div>
 
 <style>
@@ -89,72 +136,142 @@
     font-size: 24px;
   }
 
-  .item {
-    display: grid;
-    grid-template-columns: 1fr auto auto;
-    gap: 20px;
-    align-items: center;
-  }
-
-  h2 {
+  .controls {
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 15px;
+    gap: 26px;
+    flex-wrap: wrap;
   }
 
-  .opt {
-    padding: 1px 7px;
-    border: 1px solid var(--line);
+  .run {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 20px;
+    border: none;
     border-radius: 2px;
-    font-size: 10px;
-    letter-spacing: 0.06em;
+    background: #f2f2f4;
+    color: #17171a;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--text-mute);
   }
 
-  p {
-    margin: 6px 0 0;
+  .run:disabled {
+    opacity: 0.5;
+  }
+
+  .writes {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .hint {
+    margin: 14px 0 0;
+    color: var(--text-mute);
+    font-size: 12px;
+  }
+
+  .notice {
+    margin: 14px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-dim);
+  }
+
+  .notice.err {
+    color: var(--danger);
+  }
+
+  .notice.warn {
+    color: var(--warn);
+  }
+
+  .verdict {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+
+  .verdict strong {
+    font-size: 16px;
+  }
+
+  .verdict p {
+    margin: 5px 0 0;
     color: var(--text-dim);
     font-size: 13px;
-    line-height: 1.45;
-    max-width: 560px;
+    line-height: 1.5;
   }
 
-  .state {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 13px;
-    color: var(--text-mute);
-    white-space: nowrap;
-  }
-
-  .state.ok {
+  .verdict.fullControl {
     color: var(--ok);
   }
 
-  .action {
-    padding: 8px 20px;
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    background: transparent;
-    color: var(--text);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+  .verdict.monitoringOnly {
+    color: var(--warn);
   }
 
-  .action:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .note {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .verdict.unsupported {
     color: var(--text-mute);
-    font-size: 12px;
+  }
+
+  .checks {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .checks li {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .checks li:last-child {
+    border-bottom: none;
+  }
+
+  .checks li.pass {
+    color: var(--ok);
+  }
+  .checks li.fail {
+    color: var(--danger);
+  }
+  .checks li.warn {
+    color: var(--warn);
+  }
+  .checks li.skip {
+    color: var(--text-mute);
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .check-title {
+    color: var(--text);
+    font-size: 14px;
+  }
+
+  .detail,
+  .remedy {
+    color: var(--text-dim);
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+
+  .remedy {
+    color: var(--text-mute);
   }
 </style>

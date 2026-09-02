@@ -148,6 +148,28 @@ export type PowerConfigReply = {
 /** What `power.setMode` actually managed to change. */
 export type ApplyReport = { applied: string[]; failed: string[] };
 
+export type CheckStatus = "pass" | "fail" | "warn" | "skip";
+
+export type FanCheck = {
+  id: string;
+  title: string;
+  status: CheckStatus;
+  detail: string;
+  remedy: string | null;
+};
+
+/** Overall conclusion of the fan-control self-test. */
+export type FanVerdict = "fullControl" | "monitoringOnly" | "unsupported";
+
+export type FanDiagnosis = {
+  verdict: FanVerdict;
+  summary: string;
+  /** Set when a driver that might help exists but isn't in use. */
+  driverNotice: string | null;
+  checks: FanCheck[];
+  wroteToHardware: boolean;
+};
+
 export class DaemonUnavailable extends Error {}
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -164,6 +186,8 @@ export const daemon = {
   systemInfo: () => call<SystemInfo>("system_get_info"),
   systemMetrics: () => call<SystemMetrics>("system_get_metrics"),
   fanStatus: () => call<FanStatus>("fan_get_status"),
+  /** `allowWrites` opts into the one check that touches hardware. */
+  fanDiagnose: (allowWrites = false) => call<FanDiagnosis>("fan_diagnose", { allowWrites }),
   /** Not implemented daemon-side yet; the UI already calls it. */
   setFanMode: (mode: "auto" | "manual" | "max", pwm?: number) =>
     call<null>("fan_set_mode", { mode, pwm }),

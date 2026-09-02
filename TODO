@@ -56,6 +56,17 @@ cambiar de modo (eco/equilibrado/rendimiento) solo:
 
 ---
 
+[cambio de enfoque] Pasamos de INSTALAR el driver a VERIFICAR que funciona,
+porque el control de ventiladores ya viene de serie en kernels recientes.
+Hecho: fan.diagnose + pagina "Comprobacion" en la app + binario
+omen-hub-check (cargo run -p omen-hub-check). El instalador se queda para
+placas que el driver de serie no soporte y para el unit de systemd.
+
+  Pendiente: ejecutar omen-hub-check en el portatil HP y ver que dice.
+  Si sale "fullControl", el siguiente paso es fan.setMode/setCurve.
+
+---
+
 [parcial] instalador del driver y del servicio: crate omen-hub-installer,
 metodos installer.inspect / plan / apply. Deteccion y planificacion
 probadas en este PC; la EJECUCION esta escrita pero nunca se ha ejecutado

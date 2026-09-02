@@ -238,8 +238,17 @@ which a discharging mouse makes a desktop look like an unplugged laptop.
 ## `installer` module
 
 Ports the source project's `install_driver.sh` and the install paths in
-`omen_logic.py`. Split into **inspect → plan → apply** rather than one
-imperative script: installing means unloading a kernel module, replacing a
+`omen_logic.py`.
+
+> **This is no longer the recommended path for the driver.** Manual fan
+> control is upstream in recent kernels, so installing a patched
+> out-of-tree driver is usually a downgrade. Use `fan.diagnose` to verify
+> what the running kernel already does; the driver actions here remain for
+> the case where a board genuinely isn't supported by the stock driver, and
+> `installService`/`removeService` are still the normal way to install the
+> daemon's systemd unit.
+
+Split into **inspect → plan → apply** rather than one imperative script: installing means unloading a kernel module, replacing a
 file under `/lib/modules` and regenerating the initramfs, so the user
 should see exactly what will run before authorising it — and a rendered
 plan is also something that pastes into a bug report.
@@ -303,8 +312,51 @@ then `/usr/share/omen-hub/driver`, then a sibling checkout, and reports a
 | method | params | result | status |
 |---|---|---|---|
 | `fan.getStatus` | none | `{ "driverInstalled": bool, "cpuTempC": number \| null, "fanRpm": number, "isReverse": bool }` | ✅ implemented, read-only, no privileges needed |
+| `fan.diagnose` | `{ "allowWrites": bool }` | full self-test report (see below) | ✅ implemented |
 | `fan.setMode` | TBD | — | ❌ not implemented (see `daemon/crates/fan/src/lib.rs`) |
 | `fan.setCurve` | TBD | — | ❌ not implemented |
+
+### `fan.diagnose`
+
+The fan-control self-test. This is the project's answer to "is the driver
+right?", and it replaced installing one: manual fan control is upstream in
+recent kernels, so on most machines the right answer is *the stock driver
+already does this*, and the useful thing is to prove it rather than replace
+it.
+
+```json
+{
+  "verdict": "fullControl" | "monitoringOnly" | "unsupported",
+  "summary": "…",
+  "driverNotice": "…" | null,
+  "wroteToHardware": false,
+  "checks": [
+    { "id": "pwm1", "title": "PWM channel", "status": "pass",
+      "detail": "pwm1 = 128 (0-255)", "remedy": null }
+  ]
+}
+```
+
+Checks cover the hp-wmi platform device, the hwmon node, both fan inputs
+(decoding the reverse-spin encoding rather than reporting a 15200 "rpm"),
+`pwm1`, `pwm1_enable` and what its value means, the ACPI platform profile,
+the CPU temperature sensor and `acpi_call`. Each carries a `remedy` when
+there is something to do about it.
+
+**Every check is read-only unless `allowWrites` is set.** That one check
+writes the value that is *already* set - so no fan changes speed - and
+restores the previous mode afterwards, including when the readback fails.
+It needs root, and reports `skip` rather than failing when run
+unprivileged.
+
+`driverNotice` is the "there is a driver that might help" message, and only
+appears when it would be useful: an HP machine whose kernel exposes no
+`pwm1` is told to try a newer kernel **first** and only then the patched
+out-of-tree driver; a machine with no hp-wmi at all is told what that means
+instead of being pointed at an HP driver it can't use.
+
+The same report is available without the app, from `omen-hub-check` - see
+`docs/02-development.md`.
 
 `cpuTempC` is `null` if no CPU temperature sensor was found (mirrors the
 Python original's fallback chain: `coretemp`/`k10temp` hwmon →

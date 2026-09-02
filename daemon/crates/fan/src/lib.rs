@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use omen_hub_core::{Module, ModuleError, ModuleResult};
 use serde_json::{json, Value};
 
+pub mod diagnostics;
+
 const HWMON_ROOT: &str = "/sys/devices/platform/hp-wmi/hwmon";
 const HWMON_CLASS_ROOT: &str = "/sys/class/hwmon";
 const THERMAL_ZONE0: &str = "/sys/class/thermal/thermal_zone0/temp";
@@ -23,15 +25,13 @@ const THERMAL_ZONE0: &str = "/sys/class/thermal/thermal_zone0/temp";
 /// the patched hp-wmi driver isn't installed, or if no supported CPU temp
 /// sensor was found - callers must handle that, not assume presence.
 #[derive(Debug, Clone, Default)]
-struct FanPaths {
-    hwmon_dir: Option<PathBuf>,
-    #[allow(dead_code)] // not read yet; wired up once `setMode` is implemented
-    pwm1: Option<PathBuf>,
-    #[allow(dead_code)]
-    pwm1_enable: Option<PathBuf>,
-    fan1_input: Option<PathBuf>,
-    fan2_input: Option<PathBuf>,
-    cpu_temp: Option<PathBuf>,
+pub(crate) struct FanPaths {
+    pub(crate) hwmon_dir: Option<PathBuf>,
+    pub(crate) pwm1: Option<PathBuf>,
+    pub(crate) pwm1_enable: Option<PathBuf>,
+    pub(crate) fan1_input: Option<PathBuf>,
+    pub(crate) fan2_input: Option<PathBuf>,
+    pub(crate) cpu_temp: Option<PathBuf>,
 }
 
 pub struct FanModule {
@@ -41,6 +41,15 @@ pub struct FanModule {
 impl FanModule {
     pub fn new() -> Self {
         Self { paths: discover_paths() }
+    }
+
+    /// Runs the fan-control self-test against this machine.
+    ///
+    /// `allow_writes` opts into the one check that touches hardware; it
+    /// rewrites the value already set and restores the previous mode, so no
+    /// fan changes speed.
+    pub fn diagnose(&self, allow_writes: bool) -> diagnostics::Diagnosis {
+        diagnostics::diagnose(&self.paths, allow_writes)
     }
 
     fn get_status(&self) -> Value {
@@ -75,6 +84,18 @@ impl Module for FanModule {
     fn call(&self, method: &str, _params: Value) -> ModuleResult {
         match method {
             "getStatus" => Ok(self.get_status()),
+
+            "diagnose" => {
+                // Writing is opt-in and off by default: a diagnostic that
+                // silently drives the fans would be a surprising thing for
+                // a "check my hardware" button to do.
+                let allow_writes = _params
+                    .get("allowWrites")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                serde_json::to_value(self.diagnose(allow_writes))
+                    .map_err(|e| ModuleError::Other(e.to_string()))
+            }
             "setMode" | "setCurve" => Err(ModuleError::Other(format!(
                 "'{method}' is not implemented yet - writing to hardware needs the daemon \
                  to run privileged and is deliberately not scaffolded here yet; see \
@@ -102,7 +123,16 @@ fn discover_paths() -> FanPaths {
 
 /// Mirrors `FanController._find_paths` (`glob.glob(HWMON_PATH_PATTERN)`
 /// taking the first match) in the Python original.
+///
+/// `OMEN_HUB_HWMON_DIR` overrides the search, which is how the self-test
+/// can be exercised against a fixture directory on hardware that has no
+/// hp-wmi - including in CI.
 fn find_hp_wmi_hwmon_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("OMEN_HUB_HWMON_DIR") {
+        let dir = PathBuf::from(dir);
+        return dir.is_dir().then_some(dir);
+    }
+
     fs::read_dir(HWMON_ROOT)
         .ok()?
         .filter_map(|e| e.ok())

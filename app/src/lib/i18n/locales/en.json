@@ -8,7 +8,7 @@
     "performance": "Performance",
     "lighting": "Lighting",
     "device": "Device",
-    "drivers": "Drivers",
+    "drivers": "Hardware check",
     "settings": "Settings",
     "help": "Help"
   },
@@ -280,5 +280,22 @@
     "desktop": "Desktop",
     "untested": "Untested board",
     "biosDate": "BIOS date"
+  },
+  "diagnostics": {
+    "title": "Hardware check",
+    "runCheck": "Run check",
+    "running": "Checking...",
+    "allowWrites": "Also test that the fan accepts writes",
+    "allowWritesHint": "Rewrites the value already set and restores the previous mode, so no fan changes speed. Needs the daemon to be running as root.",
+    "verdict": {
+      "fullControl": "Fan control works",
+      "monitoringOnly": "Monitoring only — fan speed cannot be set",
+      "unsupported": "No fan-control interface on this machine"
+    },
+    "checks": "Checks",
+    "remedy": "What to do",
+    "neverRun": "The check has not been run yet.",
+    "cliHint": "The same check runs without the app: <code>cargo run -p omen-hub-check</code> (add <code>--json</code> for a bug report).",
+    "wroteToHardware": "This run wrote to the hardware and restored the previous state."
   }
 }

@@ -16,7 +16,7 @@ frontend's structure and conventions.
 ## Layout
 
 ```
-daemon/     Rust workspace: omen-hub-daemon (bin) + omen-hub-core + omen-hub-fan
+daemon/     Rust workspace: omen-hub-daemon + omen-hub-check (CLI) + module crates
 app/        Tauri app: SvelteKit frontend + src-tauri shell
 docs/       design plan + IPC protocol + development + frontend guide
 ```
@@ -38,9 +38,15 @@ docs/       design plan + IPC protocol + development + frontend guide
   hint, plus a background supervisor that switches modes on its own (Eco on
   battery, Performance under sustained load) with hysteresis and a manual
   override.
+- Fan-control self-test: `fan.diagnose`, the app's Hardware check page, and
+  a standalone `omen-hub-check` binary. Verifies what the running kernel
+  actually supports instead of installing a patched driver — manual fan
+  control is upstream in recent kernels, so on most machines there is
+  nothing to install.
 - `installer` module: ports the driver/service installer as inspect → plan
-  → apply. Detection and planning are verified; the execution path is
-  written but has never been run, because that needs an HP laptop.
+  → apply, kept for boards the stock driver doesn't support and for the
+  systemd unit. Detection and planning are verified; the driver execution
+  path is written but has never been run, because that needs an HP laptop.
 - `fan` module: read-only status (`getStatus`) implemented and verified
   end-to-end; writing to hardware (`setMode`/`setCurve`/fan cleaner) not
   ported yet.
