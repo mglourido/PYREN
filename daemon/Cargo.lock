@@ -21,101 +21,101 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "omen-hub-check"
-version = "0.1.0"
-dependencies = [
- "omen-hub-fan",
- "omen-hub-power",
- "omen-hub-system",
- "serde_json",
-]
-
-[[package]]
-name = "omen-hub-config"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "omen-hub-core"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "omen-hub-ctl"
-version = "0.1.0"
-dependencies = [
- "omen-hub-core",
- "serde_json",
-]
-
-[[package]]
-name = "omen-hub-daemon"
-version = "0.1.0"
-dependencies = [
- "omen-hub-core",
- "omen-hub-fan",
- "omen-hub-installer",
- "omen-hub-power",
- "omen-hub-system",
-]
-
-[[package]]
-name = "omen-hub-fan"
-version = "0.1.0"
-dependencies = [
- "omen-hub-config",
- "omen-hub-core",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "omen-hub-installer"
-version = "0.1.0"
-dependencies = [
- "omen-hub-core",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "omen-hub-power"
-version = "0.1.0"
-dependencies = [
- "omen-hub-config",
- "omen-hub-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "omen-hub-system"
-version = "0.1.0"
-dependencies = [
- "libc",
- "omen-hub-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pyren-check"
+version = "0.1.0"
+dependencies = [
+ "pyren-fan",
+ "pyren-power",
+ "pyren-system",
+ "serde_json",
+]
+
+[[package]]
+name = "pyren-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "pyren-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "pyren-ctl"
+version = "0.1.0"
+dependencies = [
+ "pyren-core",
+ "serde_json",
+]
+
+[[package]]
+name = "pyren-daemon"
+version = "0.1.0"
+dependencies = [
+ "pyren-core",
+ "pyren-fan",
+ "pyren-installer",
+ "pyren-power",
+ "pyren-system",
+]
+
+[[package]]
+name = "pyren-fan"
+version = "0.1.0"
+dependencies = [
+ "pyren-config",
+ "pyren-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "pyren-installer"
+version = "0.1.0"
+dependencies = [
+ "pyren-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "pyren-power"
+version = "0.1.0"
+dependencies = [
+ "pyren-config",
+ "pyren-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pyren-system"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pyren-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

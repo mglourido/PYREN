@@ -17,7 +17,7 @@
   // The app's own file path isn't reported until a load has happened, so
   // fall back to the conventional location rather than showing nothing.
   const configPath = $derived(
-    settings.configPath ?? "~/.config/omen-hub/app.json",
+    settings.configPath ?? "~/.config/pyren/app.json",
   );
 </script>
 

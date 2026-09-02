@@ -1,4 +1,4 @@
-//! Shared host contract for omen-hub-daemon modules.
+//! Shared host contract for pyren-daemon modules.
 //!
 //! A "module" owns one hardware surface (fans, RGB, ...) and is loaded
 //! statically into the daemon binary. The daemon exposes every registered
@@ -34,7 +34,7 @@ pub type ModuleResult = Result<Value, ModuleError>;
 
 /// One hardware-control surface (fans, RGB lighting, battery, ...).
 ///
-/// Implementors live in their own crate (e.g. `omen-hub-fan`) and are
+/// Implementors live in their own crate (e.g. `pyren-fan`) and are
 /// registered into the daemon's [`Registry`] at startup. A module should
 /// never talk to another module directly - cross-module coordination, if
 /// ever needed, belongs in the daemon binary or a new shared crate, not in

@@ -1,6 +1,6 @@
 # IPC protocol (app ⟷ daemon)
 
-The Tauri app and `omen-hub-daemon` are separate OS processes (see
+The Tauri app and `pyren-daemon` are separate OS processes (see
 `00-design-plan.md` for why). They talk over a Unix domain socket using a
 small JSON-RPC-like protocol. This document is the source of truth for that
 wire format — keep it in sync with `daemon/crates/core/src/lib.rs` (server)
@@ -9,20 +9,20 @@ and `app/src-tauri/src/lib.rs` (client) if either changes.
 ## Transport
 
 - Unix domain socket, `SOCK_STREAM`.
-- Path: `$OMEN_HUB_SOCKET`, falling back to `/tmp/omen-hub-daemon.sock` for
+- Path: `$PYREN_SOCKET`, falling back to `/tmp/pyren-daemon.sock` for
   unprivileged local development. Production (daemon running as a root
-  systemd service) sets `OMEN_HUB_SOCKET=/run/omen-hub/daemon.sock`.
+  systemd service) sets `PYREN_SOCKET=/run/pyren/daemon.sock`.
 - **Access control is the socket's file mode, and nothing else.** There is
   no authentication in the protocol: opening the socket *is* the
   authorization, so the daemon binds it `0660`, owned by the group
-  `omen-hub` (override with `OMEN_HUB_SOCKET_GROUP`). Members of that group
+  `pyren` (override with `PYREN_SOCKET_GROUP`). Members of that group
   and root can connect; nobody else can. Where the daemon creates the
   runtime directory itself it is `0750` and owned by the same group; under
   systemd the directory is left world-traversable and the socket inside it
   is the gate.
   - If the group does not exist, the socket stays `0600` — the daemon says
     so at startup, and the app turns the resulting `EACCES` into "add this
-    user to the 'omen-hub' group" rather than a bare I/O error.
+    user to the 'pyren' group" rather than a bare I/O error.
   - There is deliberately **no read-only tier** for non-members. Serving
     `getStatus`-style methods to any local process would mean opening a
     root daemon's socket to everything on the machine, sandboxed and
@@ -61,7 +61,7 @@ Exactly one of `result` / `error` is present:
 ```
 
 `error` is always a plain string (module-side errors, e.g.
-`omen_hub_core::ModuleError`, are converted with `.to_string()` at the
+`pyren_core::ModuleError`, are converted with `.to_string()` at the
 boundary) — there is no structured error code yet. If callers need to
 branch on error *kind* later (e.g. "needs privilege" vs "unsupported
 hardware" vs "bad params"), that should become a structured `{ kind, message }`
@@ -450,8 +450,8 @@ The port picks the generator matching the distribution family first.
 
 `hp-wmi.c` is a modified copy of a GPL-2 kernel driver maintained in the
 `omen-fan-control` project; carrying a fork of it here would mean tracking
-their changes by hand. `inspect` looks for it in `$OMEN_HUB_DRIVER_DIR`,
-then `/usr/share/omen-hub/driver`, then a sibling checkout, and reports a
+their changes by hand. `inspect` looks for it in `$PYREN_DRIVER_DIR`,
+then `/usr/share/pyren/driver`, then a sibling checkout, and reports a
 `no-driver-source` blocker when it finds none.
 
 ## `fan` module
@@ -555,7 +555,7 @@ appears when it would be useful: an HP machine whose kernel exposes no
 out-of-tree driver; a machine with no hp-wmi at all is told what that means
 instead of being pointed at an HP driver it can't use.
 
-The same report is available without the app, from `omen-hub-check` - see
+The same report is available without the app, from `pyren-check` - see
 `docs/02-development.md`.
 
 `cpuTempC` is `null` if no CPU temperature sensor was found (mirrors the
@@ -568,7 +568,7 @@ the hp-wmi reverse-bit encoding — see
 
 ## Adding a new module
 
-1. New crate under `daemon/crates/<name>`, depending on `omen-hub-core`,
+1. New crate under `daemon/crates/<name>`, depending on `pyren-core`,
    implementing `Module`.
 2. Register it in `daemon/daemon/src/main.rs` (`registry.register(Box::new(...))`).
 3. Document its methods in a new table in this file.

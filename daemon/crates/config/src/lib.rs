@@ -24,8 +24,8 @@
 //! Layout:
 //!
 //! ```text
-//! /etc/omen-hub/power.json     system config, written by the root daemon
-//! ~/.config/omen-hub/app.json  per-user config, written by the desktop app
+//! /etc/pyren/power.json     system config, written by the root daemon
+//! ~/.config/pyren/app.json  per-user config, written by the desktop app
 //! ```
 
 use std::fs;
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// changes shape in a way older builds could not read correctly.
 pub const CURRENT_VERSION: u32 = 1;
 
-const SYSTEM_ROOT: &str = "/etc/omen-hub";
+const SYSTEM_ROOT: &str = "/etc/pyren";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -49,7 +49,7 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    #[error("{path} was written by a newer version of omen-hub (v{found} > v{supported}); \
+    #[error("{path} was written by a newer version of pyren (v{found} > v{supported}); \
              refusing to overwrite it")]
     FutureVersion { path: PathBuf, found: u32, supported: u32 },
     #[error("could not serialize config: {0}")]
@@ -104,14 +104,14 @@ pub struct ConfigStore {
 impl ConfigStore {
     /// System-wide config, for the daemon.
     ///
-    /// Prefers `/etc/omen-hub` and falls back to the per-user directory
+    /// Prefers `/etc/pyren` and falls back to the per-user directory
     /// when that isn't writable - which is exactly the case when the daemon
     /// is run unprivileged with `cargo run` during development. Writability
     /// is tested by actually creating the directory rather than by checking
     /// the effective uid, since being root is not the same as the path
     /// being writable (read-only /etc, containers, immutable distros).
     pub fn system() -> Self {
-        if let Ok(dir) = std::env::var("OMEN_HUB_CONFIG_DIR") {
+        if let Ok(dir) = std::env::var("PYREN_CONFIG_DIR") {
             return Self::at(dir);
         }
         if fs::create_dir_all(SYSTEM_ROOT).is_ok() && is_writable(Path::new(SYSTEM_ROOT)) {
@@ -122,7 +122,7 @@ impl ConfigStore {
 
     /// Per-user config, for the desktop app. Never `/etc`.
     pub fn user() -> Self {
-        if let Ok(dir) = std::env::var("OMEN_HUB_CONFIG_DIR") {
+        if let Ok(dir) = std::env::var("PYREN_CONFIG_DIR") {
             return Self::at(dir);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -131,7 +131,7 @@ impl ConfigStore {
             .map(PathBuf::from)
             .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
             .unwrap_or_else(|| PathBuf::from("."));
-        Self::at(base.join("omen-hub"))
+        Self::at(base.join("pyren"))
     }
 
     /// A store rooted at an explicit directory. Used by tests, and by
@@ -254,7 +254,7 @@ fn sanitize_name(name: &str) -> String {
 }
 
 fn is_writable(dir: &Path) -> bool {
-    let probe = dir.join(".omen-hub-write-test");
+    let probe = dir.join(".pyren-write-test");
     match fs::File::create(&probe) {
         Ok(_) => {
             let _ = fs::remove_file(&probe);
@@ -285,7 +285,7 @@ mod tests {
 
     /// Each test gets its own directory under the process temp dir.
     fn store(tag: &str) -> ConfigStore {
-        let root = std::env::temp_dir().join(format!("omen-hub-config-test-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("pyren-config-test-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         ConfigStore::at(root)
     }
@@ -385,11 +385,11 @@ mod tests {
 
     #[test]
     fn a_namespace_cannot_escape_the_config_directory() {
-        let store = ConfigStore::at("/tmp/omen-hub-root");
-        assert_eq!(store.path_for("../../etc/shadow"), Path::new("/tmp/omen-hub-root/etcshadow.json"));
-        assert_eq!(store.path_for("power"), Path::new("/tmp/omen-hub-root/power.json"));
+        let store = ConfigStore::at("/tmp/pyren-root");
+        assert_eq!(store.path_for("../../etc/shadow"), Path::new("/tmp/pyren-root/etcshadow.json"));
+        assert_eq!(store.path_for("power"), Path::new("/tmp/pyren-root/power.json"));
         // A name with nothing usable left still stays inside the root.
-        assert_eq!(store.path_for("../.."), Path::new("/tmp/omen-hub-root/invalid.json"));
+        assert_eq!(store.path_for("../.."), Path::new("/tmp/pyren-root/invalid.json"));
     }
 
     #[test]

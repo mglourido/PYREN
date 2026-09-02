@@ -1,4 +1,4 @@
-//! `omen-hub-check` - standalone fan-control verifier.
+//! `pyren-check` - standalone fan-control verifier.
 //!
 //! Runs the same self-test as the app's `fan.diagnose`, but as a small
 //! binary that needs no daemon, no socket and no GUI. That matters because
@@ -6,24 +6,24 @@
 //! the thing to paste into a bug report.
 //!
 //! ```text
-//! omen-hub-check              # read-only, safe anywhere
-//! omen-hub-check --write      # also test that the PWM accepts writes (needs root)
-//! omen-hub-check --json       # machine-readable, for bug reports
+//! pyren-check              # read-only, safe anywhere
+//! pyren-check --write      # also test that the PWM accepts writes (needs root)
+//! pyren-check --json       # machine-readable, for bug reports
 //! ```
 
 use std::process::ExitCode;
 
-use omen_hub_fan::{
+use pyren_fan::{
     diagnostics::{CheckStatus, Verdict},
     FanModule,
 };
-use omen_hub_system::{Controls, SystemIdentity};
+use pyren_system::{Controls, SystemIdentity};
 
 const HELP: &str = "\
-omen-hub-check - verify that fan control works on this machine
+pyren-check - verify that fan control works on this machine
 
 USAGE:
-    omen-hub-check [OPTIONS]
+    pyren-check [OPTIONS]
 
 OPTIONS:
     --write    Also verify that the PWM channel accepts writes. Rewrites the
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if let Some(unknown) = args.iter().find(|a| !matches!(a.as_str(), "--write" | "--json")) {
-        eprintln!("omen-hub-check: unknown argument '{unknown}'\n\n{HELP}");
+        eprintln!("pyren-check: unknown argument '{unknown}'\n\n{HELP}");
         return ExitCode::from(64);
     }
 
@@ -60,7 +60,7 @@ fn main() -> ExitCode {
     let identity = SystemIdentity::detect(Controls {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
-        power_mode: omen_hub_power::power_mode_available(),
+        power_mode: pyren_power::power_mode_available(),
     });
     let diagnosis = fan.diagnose(allow_writes);
 
@@ -80,10 +80,10 @@ fn main() -> ExitCode {
 
 fn print_report(
     identity: &SystemIdentity,
-    diagnosis: &omen_hub_fan::diagnostics::Diagnosis,
+    diagnosis: &pyren_fan::diagnostics::Diagnosis,
     allow_writes: bool,
 ) {
-    println!("omen-hub-check\n");
+    println!("pyren-check\n");
     println!("  machine  {}", identity.summary());
     if let Some(kernel) = &identity.kernel {
         println!("  kernel   {kernel}");

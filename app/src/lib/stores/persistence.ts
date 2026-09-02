@@ -36,7 +36,7 @@ export class DiskBacked<T extends object> {
   ) {}
 
   private get cacheKey(): string {
-    return `omen-hub.${this.namespace}.cache`;
+    return `pyren.${this.namespace}.cache`;
   }
 
   /**
@@ -108,7 +108,7 @@ export class DiskBacked<T extends object> {
     } catch (e) {
       // Reported rather than thrown: the setting has been applied in the
       // running app, it just won't survive a restart.
-      console.error(`omen-hub: could not save ${this.namespace} settings`, e);
+      console.error(`pyren: could not save ${this.namespace} settings`, e);
     }
   }
 

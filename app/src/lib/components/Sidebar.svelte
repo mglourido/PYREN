@@ -85,7 +85,7 @@
 
   <div class="status" class:offline={telemetry.demo}>
     <span class="dot"></span>
-    <span>{telemetry.demo ? "demo" : "omen-hub-daemon"}</span>
+    <span>{telemetry.demo ? "demo" : "pyren-daemon"}</span>
   </div>
 </nav>
 

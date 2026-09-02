@@ -1,21 +1,21 @@
-//! omen-hub-daemon: the privileged host process. Loads every hardware
+//! pyren-daemon: the privileged host process. Loads every hardware
 //! module and serves them over a Unix domain socket. Intended to run as
 //! root via a systemd service in production; see docs/01-ipc-protocol.md
 //! for the wire format the Tauri app speaks to reach it.
 
 use std::sync::Arc;
 
-use omen_hub_core::{serve_unix_socket, Audience, Module, Registry};
-use omen_hub_fan::FanModule;
-use omen_hub_installer::InstallerModule;
-use omen_hub_power::PowerModule;
-use omen_hub_system::{Compatibility, Controls, SystemModule};
+use pyren_core::{serve_unix_socket, Audience, Module, Registry};
+use pyren_fan::FanModule;
+use pyren_installer::InstallerModule;
+use pyren_power::PowerModule;
+use pyren_system::{Compatibility, Controls, SystemModule};
 
-/// Production (systemd, running as root) should set `OMEN_HUB_SOCKET` to
-/// `/run/omen-hub/daemon.sock`. This fallback keeps `cargo run` usable for
+/// Production (systemd, running as root) should set `PYREN_SOCKET` to
+/// `/run/pyren/daemon.sock`. This fallback keeps `cargo run` usable for
 /// unprivileged local development without needing a real install.
 fn socket_path() -> String {
-    std::env::var("OMEN_HUB_SOCKET").unwrap_or_else(|_| "/tmp/omen-hub-daemon.sock".to_string())
+    std::env::var("PYREN_SOCKET").unwrap_or_else(|_| "/tmp/pyren-daemon.sock".to_string())
 }
 
 /// Whether the socket being owner-only is a problem. Unprivileged
@@ -46,7 +46,7 @@ fn main() {
     // "nothing works on my machine" report - it is the first thing to ask
     // for, so make it appear without needing a debug flag.
     let identity = system.identity();
-    println!("omen-hub-daemon: {}", identity.summary());
+    println!("pyren-daemon: {}", identity.summary());
     if let Some(cpu) = &identity.cpu {
         println!("  cpu:    {cpu} ({} threads)", identity.cpu_cores);
     }
@@ -74,20 +74,20 @@ fn main() {
     let socket_path = socket_path();
 
     let announce = |audience: &Audience| {
-        println!("omen-hub-daemon: listening on {socket_path}, {}", audience.summary());
+        println!("pyren-daemon: listening on {socket_path}, {}", audience.summary());
         // A root daemon nobody can reach looks exactly like a working one
         // until the app fails to connect, so name the fix here.
         if matches!(audience, Audience::OwnerOnly) && is_root() {
             println!(
-                "  note:   no 'omen-hub' group on this system, so only root can connect.\n\
+                "  note:   no 'pyren' group on this system, so only root can connect.\n\
                  \x20         create it and add your desktop user:\n\
-                 \x20           sudo groupadd -f omen-hub && sudo usermod -aG omen-hub $USER"
+                 \x20           sudo groupadd -f pyren && sudo usermod -aG pyren $USER"
             );
         }
     };
 
     if let Err(e) = serve_unix_socket(&socket_path, registry, announce) {
-        eprintln!("omen-hub-daemon: fatal: {e}");
+        eprintln!("pyren-daemon: fatal: {e}");
         std::process::exit(1);
     }
 }

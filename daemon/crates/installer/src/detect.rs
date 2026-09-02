@@ -98,8 +98,8 @@ impl Environment {
             hp_wmi_loaded: Path::new("/sys/devices/platform/hp-wmi").exists(),
             acpi_call_available: Path::new("/proc/acpi/call").exists(),
             driver_source: find_driver_source(),
-            service_installed: Path::new("/etc/systemd/system/omen-hub-daemon.service").exists()
-                || Path::new("/usr/lib/systemd/system/omen-hub-daemon.service").exists(),
+            service_installed: Path::new("/etc/systemd/system/pyren-daemon.service").exists()
+                || Path::new("/usr/lib/systemd/system/pyren-daemon.service").exists(),
             dkms_status,
             distro_id,
             kernel,
@@ -281,10 +281,10 @@ fn fan_control_available() -> bool {
 /// development.
 fn find_driver_source() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(dir) = std::env::var("OMEN_HUB_DRIVER_DIR") {
+    if let Ok(dir) = std::env::var("PYREN_DRIVER_DIR") {
         candidates.push(PathBuf::from(dir));
     }
-    candidates.push(PathBuf::from("/usr/share/omen-hub/driver"));
+    candidates.push(PathBuf::from("/usr/share/pyren/driver"));
     candidates.push(PathBuf::from(
         "../omen-fan-control-main/src/omen_fan_control/data/driver",
     ));

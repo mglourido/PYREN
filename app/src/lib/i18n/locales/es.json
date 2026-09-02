@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "OMEN Hub",
+    "name": "Pyren",
     "tagline": "Centro gaming para Linux"
   },
   "nav": {
@@ -207,7 +207,7 @@
     "title": "Controladores",
     "hpWmi": "Controlador de kernel hp-wmi parcheado",
     "hpWmiDesc": "Añade control manual del ventilador (pwm1 / pwm1_enable) al controlador hp-wmi del kernel. Necesario para todo lo que no sea monitorización de solo lectura.",
-    "daemon": "Servicio omen-hub-daemon",
+    "daemon": "Servicio pyren-daemon",
     "daemonDesc": "Servicio en segundo plano privilegiado que habla con el hardware en nombre de esta app.",
     "acpiCall": "Módulo acpi_call",
     "acpiCallDesc": "Solo lo necesita la función de limpieza del ventilador (giro inverso).",
@@ -222,7 +222,7 @@
     "driverMissingBody": "No se encontró el controlador hp-wmi parcheado, así que el control de ventiladores y energía no está disponible. Solo funciona la monitorización de solo lectura.",
     "goToDrivers": "Instalar",
     "dontShowAgain": "No mostrar de nuevo",
-    "daemonDownTitle": "No se puede contactar con omen-hub-daemon",
+    "daemonDownTitle": "No se puede contactar con pyren-daemon",
     "daemonDownBody": "Mostrando datos simulados. Inicia el daemon para controlar tu hardware.",
     "unsupportedTitle": "Equipo no compatible",
     "unsupportedBody": "Esto no parece un portátil HP OMEN o Victus. La app funciona, pero el control de hardware no."
@@ -255,7 +255,7 @@
   "help": {
     "title": "Ayuda e información",
     "about": "Acerca de",
-    "aboutBody": "OMEN Hub es un clon libre y hecho por la comunidad del OMEN Gaming Hub de HP para Linux. No está afiliado, respaldado ni soportado por HP Inc.",
+    "aboutBody": "Pyren es un clon libre y hecho por la comunidad del OMEN Gaming Hub de HP para Linux. No está afiliado, respaldado ni soportado por HP Inc.",
     "version": "Versión",
     "checkUpdates": "Buscar actualizaciones",
     "upToDate": "Estás en la última versión.",
@@ -302,7 +302,7 @@
     "checks": "Comprobaciones",
     "remedy": "Qué hacer",
     "neverRun": "Todavía no se ha ejecutado la comprobación.",
-    "cliHint": "La misma comprobación se ejecuta sin la app: <code>cargo run -p omen-hub-check</code> (añade <code>--json</code> para un reporte de fallo).",
+    "cliHint": "La misma comprobación se ejecuta sin la app: <code>cargo run -p pyren-check</code> (añade <code>--json</code> para un reporte de fallo).",
     "wroteToHardware": "Esta ejecución escribió en el hardware y restauró el estado anterior."
   }
 }

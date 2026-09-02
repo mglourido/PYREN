@@ -21,11 +21,11 @@
 
 ```sh
 cd daemon
-cargo run -p omen-hub-daemon
+cargo run -p pyren-daemon
 ```
 
-Listens on `/tmp/omen-hub-daemon.sock` by default (unprivileged dev
-fallback — see `daemon/daemon/src/main.rs`). Set `OMEN_HUB_SOCKET` to
+Listens on `/tmp/pyren-daemon.sock` by default (unprivileged dev
+fallback — see `daemon/daemon/src/main.rs`). Set `PYREN_SOCKET` to
 override. Leave this running in its own terminal; the app can't do
 anything useful without it.
 
@@ -34,19 +34,19 @@ else", which is what you want for development — the app runs as the same
 user. Run it under `sudo` and the daemon will say
 
 ```
-omen-hub-daemon: listening on …, restricted to the daemon's own user
-  note:   no 'omen-hub' group on this system, so only root can connect.
+pyren-daemon: listening on …, restricted to the daemon's own user
+  note:   no 'pyren' group on this system, so only root can connect.
 ```
 
 which is exactly what it means: your desktop user cannot reach a root
 daemon until the group exists and you are in it.
 
 ```sh
-sudo groupadd -f omen-hub && sudo usermod -aG omen-hub "$USER"
+sudo groupadd -f pyren && sudo usermod -aG pyren "$USER"
 ```
 
 Group membership is picked up at login, so either log out and back in, or
-start the test shell with `newgrp omen-hub`. `OMEN_HUB_SOCKET_GROUP`
+start the test shell with `newgrp pyren`. `PYREN_SOCKET_GROUP`
 overrides the name. Trying to connect without it fails with a permission
 error the app spells out rather than swallowing.
 
@@ -96,16 +96,16 @@ project's code — if it stops being needed on your setup, drop it.
 
 ## Checking that fan control works on a machine
 
-`omen-hub-check` runs the same self-test as the app's Hardware check page,
+`pyren-check` runs the same self-test as the app's Hardware check page,
 as a standalone binary with no daemon, socket or GUI involved. It is the
 first thing to run on an unfamiliar laptop, and the thing to paste into a
 bug report.
 
 ```sh
 cd daemon
-cargo run -p omen-hub-check            # read-only, safe on any machine
-sudo cargo run -p omen-hub-check -- --write   # also verify the PWM accepts writes
-cargo run -p omen-hub-check -- --json  # machine-readable
+cargo run -p pyren-check            # read-only, safe on any machine
+sudo cargo run -p pyren-check -- --write   # also verify the PWM accepts writes
+cargo run -p pyren-check -- --json  # machine-readable
 ```
 
 Exit status is the verdict: `0` full control, `1` monitoring only, `2` no
@@ -114,13 +114,13 @@ the previous mode back, so no fan changes speed.
 
 ### Running it without building the project
 
-`tools/omen-check.sh` is the same self-test as a single POSIX shell script
+`tools/pyren-check.sh` is the same self-test as a single POSIX shell script
 with no dependencies — for a machine where building this project isn't
 practical. Copy that one file across and run it:
 
 ```sh
-scp tools/omen-check.sh laptop:
-ssh laptop './omen-check.sh'          # or: sudo ./omen-check.sh --write
+scp tools/pyren-check.sh laptop:
+ssh laptop './pyren-check.sh'          # or: sudo ./pyren-check.sh --write
 ```
 
 It performs the same checks in the same order, with the same verdicts and
@@ -135,8 +135,8 @@ To exercise the checks without HP hardware, point it at a fixture:
 mkdir -p /tmp/fake && cd /tmp/fake
 echo hp > name; echo 2400 > fan1_input; echo 2550 > fan2_input
 echo 128 > pwm1; echo 2 > pwm1_enable
-OMEN_HUB_HWMON_DIR=/tmp/fake cargo run -p omen-hub-check -- --write
-OMEN_HUB_HWMON_DIR=/tmp/fake ~/omen-hub-linux/tools/omen-check.sh --write
+PYREN_HWMON_DIR=/tmp/fake cargo run -p pyren-check -- --write
+PYREN_HWMON_DIR=/tmp/fake ~/pyren-linux/tools/pyren-check.sh --write
 ```
 
 ## Checking the frontend
@@ -149,19 +149,19 @@ node node_modules/vite/bin/vite.js build
 
 ## Driving the daemon from a shell
 
-`omen-hub-ctl` is a client for a running daemon, and the quickest way to
+`pyren-ctl` is a client for a running daemon, and the quickest way to
 see whether a change did anything:
 
 ```sh
 cd daemon
-cargo run -q -p omen-hub-ctl -- status
-cargo run -q -p omen-hub-ctl -- power set eco
-cargo run -q -p omen-hub-ctl -- power tune --mode eco --pl1 35 --turbo off
-cargo run -q -p omen-hub-ctl -- fan curve 40:20,60:50,85:100
-cargo run -q -p omen-hub-ctl -- --json fan get
+cargo run -q -p pyren-ctl -- status
+cargo run -q -p pyren-ctl -- power set eco
+cargo run -q -p pyren-ctl -- power tune --mode eco --pl1 35 --turbo off
+cargo run -q -p pyren-ctl -- fan curve 40:20,60:50,85:100
+cargo run -q -p pyren-ctl -- --json fan get
 ```
 
-It reads `OMEN_HUB_SOCKET` like everything else, so it points at whichever
+It reads `PYREN_SOCKET` like everything else, so it points at whichever
 daemon is running. Exit status is 0, 1 when the daemon refused, 2 for bad
 arguments, 3 when it could not be reached — enough to use it from a script
 or a keybinding.
@@ -179,7 +179,7 @@ method the CLI does not know about yet:
 python3 -c '
 import socket, json
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect("/tmp/omen-hub-daemon.sock")
+s.connect("/tmp/pyren-daemon.sock")
 s.sendall((json.dumps({"id":1,"module":"fan","method":"getStatus"})+"\n").encode())
 print(s.recv(4096).decode())
 '
@@ -197,12 +197,12 @@ request, and on demand. Four jobs, so a failure names the half that broke:
 | `daemon` | `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings` |
 | `app` | `bun install --frozen-lockfile`, `bun run check`, `bun run build` |
 | `tauri` | `cargo check --all-targets` on `app/src-tauri`, after installing WebKitGTK |
-| `shell` | `sh -n tools/omen-check.sh` |
+| `shell` | `sh -n tools/pyren-check.sh` |
 
 Two things worth knowing about it:
 
 - The daemon job runs `check/tests/parity.rs`, which invokes
-  `tools/omen-check.sh` through `/bin/sh` — `dash` on the runner, rather
+  `tools/pyren-check.sh` through `/bin/sh` — `dash` on the runner, rather
   than the `bash` or `zsh` it usually gets locally. That is the point of a
   POSIX script, and CI is the only place it is regularly checked.
 - Nothing there can prove the socket's permissions *work*, only that the

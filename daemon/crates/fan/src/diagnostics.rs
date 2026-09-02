@@ -572,7 +572,7 @@ mod tests {
 
     fn fixture(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir()
-            .join(format!("omen-hub-fan-diag-{tag}-{}", std::process::id()));
+            .join(format!("pyren-fan-diag-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

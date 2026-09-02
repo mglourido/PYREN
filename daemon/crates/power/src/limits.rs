@@ -387,7 +387,7 @@ mod tests {
     /// unprivileged daemon, would be reported as a permission failure.
     #[test]
     fn a_limit_that_is_already_set_is_not_written_again() {
-        let dir = std::env::temp_dir().join(format!("omen-hub-rapl-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pyren-rapl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("constraint_0_power_limit_uw"), (45 * W).to_string()).unwrap();

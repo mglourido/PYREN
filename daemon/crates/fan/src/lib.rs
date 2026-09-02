@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use omen_hub_config::{ConfigStore, LoadOutcome};
-use omen_hub_core::{Module, ModuleError, ModuleResult};
+use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{Module, ModuleError, ModuleResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -137,12 +137,12 @@ impl FanModule {
         let loaded = store.load::<FanConfig>("fan");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                println!("omen-hub-daemon: fan config loaded from {}", store.path_for("fan").display());
+                println!("pyren-daemon: fan config loaded from {}", store.path_for("fan").display());
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
                 eprintln!(
-                    "omen-hub-daemon: fan config was unreadable ({reason}); using defaults{}",
+                    "pyren-daemon: fan config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -151,7 +151,7 @@ impl FanModule {
             }
             LoadOutcome::TooNew { found } => {
                 eprintln!(
-                    "omen-hub-daemon: fan config is version {found}, newer than this build \
+                    "pyren-daemon: fan config is version {found}, newer than this build \
                      understands; using defaults and leaving the file alone"
                 );
             }
@@ -194,7 +194,7 @@ impl FanModule {
     /// A module for tools that only want to *look*: no config is read or
     /// written and no control loop is started.
     ///
-    /// `omen-hub-check` uses this. A self-test that created files and
+    /// `pyren-check` uses this. A self-test that created files and
     /// started a thread capable of driving fans would be a self-test nobody
     /// should run on a machine they care about.
     pub fn inspector() -> Self {
@@ -542,7 +542,7 @@ fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("fan", &state.config) {
         Ok(()) => state.last_save_error = None,
         Err(e) => {
-            eprintln!("omen-hub-daemon: could not save fan config: {e}");
+            eprintln!("pyren-daemon: could not save fan config: {e}");
             state.last_save_error = Some(e.to_string());
         }
     }
@@ -579,11 +579,11 @@ fn discover_paths() -> FanPaths {
 /// Mirrors `FanController._find_paths` (`glob.glob(HWMON_PATH_PATTERN)`
 /// taking the first match) in the Python original.
 ///
-/// `OMEN_HUB_HWMON_DIR` overrides the search, which is how the self-test
+/// `PYREN_HWMON_DIR` overrides the search, which is how the self-test
 /// can be exercised against a fixture directory on hardware that has no
 /// hp-wmi - including in CI.
 fn find_hp_wmi_hwmon_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("OMEN_HUB_HWMON_DIR") {
+    if let Ok(dir) = std::env::var("PYREN_HWMON_DIR") {
         let dir = PathBuf::from(dir);
         return dir.is_dir().then_some(dir);
     }

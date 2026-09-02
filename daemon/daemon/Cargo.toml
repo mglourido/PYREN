@@ -1,12 +1,12 @@
 [package]
-name = "omen-hub-daemon"
+name = "pyren-daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-omen-hub-core = { path = "../crates/core" }
-omen-hub-fan = { path = "../crates/fan" }
-omen-hub-system = { path = "../crates/system" }
-omen-hub-power = { path = "../crates/power" }
-omen-hub-installer = { path = "../crates/installer" }
+pyren-core = { path = "../crates/core" }
+pyren-fan = { path = "../crates/fan" }
+pyren-system = { path = "../crates/system" }
+pyren-power = { path = "../crates/power" }
+pyren-installer = { path = "../crates/installer" }

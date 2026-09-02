@@ -1,5 +1,5 @@
 /**
- * Thin wrapper around the Tauri commands that proxy to omen-hub-daemon
+ * Thin wrapper around the Tauri commands that proxy to pyren-daemon
  * (see docs/01-ipc-protocol.md). Everything the UI needs from the outside
  * world goes through here, so the rest of the frontend never imports
  * `@tauri-apps/api` directly and stays runnable in a plain browser tab

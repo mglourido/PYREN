@@ -12,20 +12,20 @@ use std::os::unix::net::UnixStream;
 use serde_json::Value;
 
 /// Default socket path, matching the daemon's own fallback.
-pub const DEFAULT_SOCKET: &str = "/tmp/omen-hub-daemon.sock";
+pub const DEFAULT_SOCKET: &str = "/tmp/pyren-daemon.sock";
 
 pub fn socket_path() -> String {
-    std::env::var("OMEN_HUB_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET.to_string())
+    std::env::var("PYREN_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET.to_string())
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     /// Nothing is listening, or this user may not open the socket.
-    #[error("cannot reach omen-hub-daemon at {path}: {source}")]
+    #[error("cannot reach pyren-daemon at {path}: {source}")]
     Connect { path: String, source: std::io::Error },
-    #[error("talking to omen-hub-daemon: {0}")]
+    #[error("talking to pyren-daemon: {0}")]
     Io(#[from] std::io::Error),
-    #[error("omen-hub-daemon sent something that is not a response: {0}")]
+    #[error("pyren-daemon sent something that is not a response: {0}")]
     Protocol(String),
     /// The daemon answered, and the answer was a refusal.
     #[error("{0}")]

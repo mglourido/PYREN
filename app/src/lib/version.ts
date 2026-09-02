@@ -1,8 +1,8 @@
 /** Where the update check and the help links point. */
-export const REPO_URL = "https://github.com/paraguayo33/omen-hub-linux";
+export const REPO_URL = "https://github.com/mglourido/PYREN";
 export const ISSUES_URL = `${REPO_URL}/issues`;
 export const LATEST_RELEASE_API =
-  "https://api.github.com/repos/paraguayo33/omen-hub-linux/releases/latest";
+  "https://api.github.com/repos/mglourido/PYREN/releases/latest";
 
 export const APP_VERSION = __APP_VERSION__;
 

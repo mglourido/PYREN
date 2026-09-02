@@ -1,13 +1,13 @@
 //! Tauri commands are the only bridge the frontend has to the outside
 //! world. This process runs unprivileged; it never touches hardware
-//! directly - every module call is forwarded to omen-hub-daemon over its
+//! directly - every module call is forwarded to pyren-daemon over its
 //! Unix domain socket. See docs/01-ipc-protocol.md at the repo root for
 //! the wire format.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
-use omen_hub_config::{ConfigStore, LoadOutcome};
+use pyren_config::{ConfigStore, LoadOutcome};
 use serde_json::{json, Map, Value};
 
 /// Config namespaces the frontend is allowed to read and write.
@@ -20,10 +20,10 @@ const APP_CONFIG_NAMESPACES: &[&str] = &["app", "ui"];
 /// Must match the daemon's own default in `daemon/daemon/src/main.rs` -
 /// keep both in sync until this moves into a shared config/env convention.
 fn socket_path() -> String {
-    std::env::var("OMEN_HUB_SOCKET").unwrap_or_else(|_| "/tmp/omen-hub-daemon.sock".to_string())
+    std::env::var("PYREN_SOCKET").unwrap_or_else(|_| "/tmp/pyren-daemon.sock".to_string())
 }
 
-/// Sends one JSON-RPC-ish request to omen-hub-daemon and returns its
+/// Sends one JSON-RPC-ish request to pyren-daemon and returns its
 /// `result`, or an `Err` built from the connection failure or the
 /// daemon's own `error` field.
 fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -46,7 +46,7 @@ fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, Strin
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
-/// The daemon's socket only admits root and members of the `omen-hub`
+/// The daemon's socket only admits root and members of the `pyren`
 /// group (see `daemon/crates/core/src/socket.rs`), so "permission denied"
 /// here is not a broken install - it is a user who has not been added to
 /// the group yet, and saying so is the whole difference between a
@@ -55,12 +55,12 @@ fn connect_error(e: std::io::Error) -> String {
     let path = socket_path();
     if e.kind() == std::io::ErrorKind::PermissionDenied {
         return format!(
-            "not allowed to reach omen-hub-daemon at {path}. \
-             Add this user to the 'omen-hub' group \
-             (sudo usermod -aG omen-hub $USER), then log out and back in."
+            "not allowed to reach pyren-daemon at {path}. \
+             Add this user to the 'pyren' group \
+             (sudo usermod -aG pyren $USER), then log out and back in."
         );
     }
-    format!("cannot reach omen-hub-daemon at {path}: {e}")
+    format!("cannot reach pyren-daemon at {path}: {e}")
 }
 
 #[tauri::command]
@@ -136,7 +136,7 @@ fn power_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("power", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
 
-/// Per-user settings, stored under `~/.config/omen-hub/`.
+/// Per-user settings, stored under `~/.config/pyren/`.
 ///
 /// The frontend owns the shape of these documents, so they are persisted as
 /// opaque JSON objects rather than mirrored into Rust structs that would

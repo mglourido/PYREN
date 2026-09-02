@@ -36,7 +36,7 @@
 //! shipped is overclocking, and is a separate feature with separate
 //! consent.
 //!
-//! Settings live in `power.json` (see `omen-hub-config`), so the
+//! Settings live in `power.json` (see `pyren-config`), so the
 //! supervisor keeps running with the user's rules after a reboot - which
 //! is the whole point of it being a daemon rather than part of the app.
 
@@ -48,8 +48,8 @@ mod supply;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use omen_hub_config::{ConfigStore, LoadOutcome};
-use omen_hub_core::{Module, ModuleError, ModuleResult};
+use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{Module, ModuleError, ModuleResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -162,12 +162,12 @@ impl PowerModule {
         let loaded = store.load::<PowerConfig>("power");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                println!("omen-hub-daemon: power config loaded from {}", store.path_for("power").display());
+                println!("pyren-daemon: power config loaded from {}", store.path_for("power").display());
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
                 eprintln!(
-                    "omen-hub-daemon: power config was unreadable ({reason}); using defaults{}",
+                    "pyren-daemon: power config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -176,7 +176,7 @@ impl PowerModule {
             }
             LoadOutcome::TooNew { found } => {
                 eprintln!(
-                    "omen-hub-daemon: power config is version {found}, newer than this build                      understands; using defaults and leaving the file alone"
+                    "pyren-daemon: power config is version {found}, newer than this build                      understands; using defaults and leaving the file alone"
                 );
             }
         }
@@ -197,11 +197,11 @@ impl PowerModule {
                 let report = apply_profile(saved, &config, &limit_paths);
                 if report.is_empty() {
                     eprintln!(
-                        "omen-hub-daemon: could not restore power mode {saved:?}: {}",
+                        "pyren-daemon: could not restore power mode {saved:?}: {}",
                         report.failed.join("; ")
                     );
                 } else {
-                    println!("omen-hub-daemon: restored power mode {saved:?}");
+                    println!("pyren-daemon: restored power mode {saved:?}");
                     mode = saved;
                 }
             }
@@ -289,7 +289,7 @@ impl Default for PowerModule {
 /// Whether the machine offers any way at all to change its power behaviour.
 ///
 /// A free function rather than a method because callers that only want the
-/// answer - the compatibility verdict, `omen-hub-check` - must not have to
+/// answer - the compatibility verdict, `pyren-check` - must not have to
 /// build a `PowerModule` to get it: constructing one loads config and
 /// starts the supervisor, which is a thread that can change the machine's
 /// power mode on its own. A question should not have side effects.
@@ -466,7 +466,7 @@ fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore, paths: limits:
                 guard.mode = mode;
                 guard.last_auto_switch =
                     Some(format!("{mode:?}: {} ({})", decision.reason, report.applied.join(", ")));
-                println!("omen-hub-daemon: power auto-switch -> {mode:?} ({})", decision.reason);
+                println!("pyren-daemon: power auto-switch -> {mode:?} ({})", decision.reason);
                 // Only worth a disk write when the mode is meant to survive
                 // a reboot; otherwise the supervisor would rewrite the file
                 // every time conditions change.
@@ -477,7 +477,7 @@ fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore, paths: limits:
             } else {
                 guard.last_auto_switch = Some(format!("{mode:?} failed: {}", report.failed.join("; ")));
                 eprintln!(
-                    "omen-hub-daemon: power auto-switch to {mode:?} failed: {}",
+                    "pyren-daemon: power auto-switch to {mode:?} failed: {}",
                     report.failed.join("; ")
                 );
             }
@@ -555,7 +555,7 @@ fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("power", &state.config) {
         Ok(()) => state.last_save_error = None,
         Err(e) => {
-            eprintln!("omen-hub-daemon: could not save power config: {e}");
+            eprintln!("pyren-daemon: could not save power config: {e}");
             state.last_save_error = Some(e.to_string());
         }
     }
@@ -677,7 +677,7 @@ mod tests {
     /// A store under the temp dir, so tests never touch the real /etc.
     fn test_store(tag: &str) -> ConfigStore {
         let root = std::env::temp_dir()
-            .join(format!("omen-hub-power-test-{tag}-{}", std::process::id()));
+            .join(format!("pyren-power-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         ConfigStore::at(root)
     }

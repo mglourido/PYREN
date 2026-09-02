@@ -1,7 +1,7 @@
 #!/bin/sh
-# omen-check.sh - verify that fan control works on this machine.
+# pyren-check.sh - verify that fan control works on this machine.
 #
-# Portable stand-in for `omen-hub-check` (daemon/check), for when building
+# Portable stand-in for `pyren-check` (daemon/check), for when building
 # the project isn't practical: copy this one file to the laptop and run it.
 # POSIX sh, no dependencies beyond coreutils.
 #
@@ -9,9 +9,9 @@
 # exit codes as the Rust version. `daemon/check/tests/parity.rs` compares
 # the two against fixtures so they cannot drift apart silently.
 #
-#   ./omen-check.sh            read-only, safe on any machine
-#   sudo ./omen-check.sh -w    also verify the PWM accepts writes
-#   ./omen-check.sh --json     machine-readable, for bug reports
+#   ./pyren-check.sh            read-only, safe on any machine
+#   sudo ./pyren-check.sh -w    also verify the PWM accepts writes
+#   ./pyren-check.sh --json     machine-readable, for bug reports
 #
 # Exit status: 0 full control, 1 monitoring only, 2 no interface.
 
@@ -23,10 +23,10 @@ AS_JSON=0
 
 usage() {
 	cat <<'USAGE'
-omen-check.sh - verify that fan control works on this machine
+pyren-check.sh - verify that fan control works on this machine
 
 USAGE:
-    omen-check.sh [OPTIONS]
+    pyren-check.sh [OPTIONS]
 
 OPTIONS:
     -w, --write   Also verify that the PWM channel accepts writes. Rewrites
@@ -51,7 +51,7 @@ for arg in "$@"; do
 		exit 0
 		;;
 	*)
-		echo "omen-check.sh: unknown argument '$arg'" >&2
+		echo "pyren-check.sh: unknown argument '$arg'" >&2
 		usage >&2
 		exit 64
 		;;
@@ -86,11 +86,11 @@ is_number() {
 
 # --- discovery ---------------------------------------------------------
 
-# OMEN_HUB_HWMON_DIR points the checks at a fixture, matching the Rust
+# PYREN_HWMON_DIR points the checks at a fixture, matching the Rust
 # version, so this can be exercised without HP hardware.
 HWMON=""
-if [ -n "${OMEN_HUB_HWMON_DIR:-}" ]; then
-	[ -d "$OMEN_HUB_HWMON_DIR" ] && HWMON="$OMEN_HUB_HWMON_DIR"
+if [ -n "${PYREN_HWMON_DIR:-}" ]; then
+	[ -d "$PYREN_HWMON_DIR" ] && HWMON="$PYREN_HWMON_DIR"
 else
 	for candidate in "$HP_WMI_DIR"/hwmon/*/; do
 		[ -d "$candidate" ] || continue
@@ -364,7 +364,7 @@ json_escape() {
 }
 
 if [ "$AS_JSON" -eq 1 ]; then
-	# Same top-level shape as `omen-hub-check --json`, so either can be
+	# Same top-level shape as `pyren-check --json`, so either can be
 	# pasted into a bug report and read the same way.
 	printf '{\n  "system": {"vendor": "%s", "model": "%s", "boardName": "%s", "kernel": "%s"},\n' \
 		"$(json_escape "$(read_value /sys/class/dmi/id/sys_vendor 2>/dev/null || echo '')")" \
@@ -395,7 +395,7 @@ if [ "$AS_JSON" -eq 1 ]; then
 	exit "$EXIT_CODE"
 fi
 
-echo "omen-check"
+echo "pyren-check"
 echo
 echo "  machine  $(read_value /sys/class/dmi/id/sys_vendor 2>/dev/null || echo unknown) $(read_value /sys/class/dmi/id/product_name 2>/dev/null || echo '') (board $(read_value /sys/class/dmi/id/board_name 2>/dev/null || echo '?'))"
 echo "  kernel   $(uname -r)"

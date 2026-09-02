@@ -25,7 +25,7 @@
   let apps = $state<App[]>([
     { pid: 1, name: "steam", down: 0, up: 0, priority: "medium", blocked: false },
     { pid: 2, name: "steamwebhelper", down: 0, up: 0, priority: "low", blocked: false },
-    { pid: 3, name: "omen-hub", down: 0, up: 0, priority: "medium", blocked: false },
+    { pid: 3, name: "pyren", down: 0, up: 0, priority: "medium", blocked: false },
     { pid: 4, name: "firefox", down: 0, up: 0, priority: "medium", blocked: false },
     { pid: 5, name: "systemd-resolved", down: 0, up: 0, priority: "low", blocked: false },
   ]);

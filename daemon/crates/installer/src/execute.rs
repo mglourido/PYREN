@@ -27,7 +27,7 @@ use crate::plan::{Plan, Step, DKMS_NAME, DKMS_VERSION};
 pub struct ExecuteContext {
     pub max_rpm: MaxRpm,
     pub experimental_board: Option<(BoardTable, String)>,
-    /// Path of the omen-hub-daemon binary, for the systemd unit.
+    /// Path of the pyren-daemon binary, for the systemd unit.
     pub daemon_binary: Option<PathBuf>,
 }
 
@@ -383,7 +383,7 @@ fn restore_backups(kernel_release: &str) -> Result<String, String> {
     })
 }
 
-const SERVICE_PATH: &str = "/etc/systemd/system/omen-hub-daemon.service";
+const SERVICE_PATH: &str = "/etc/systemd/system/pyren-daemon.service";
 
 fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
     let binary = context
@@ -395,20 +395,20 @@ fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
     // Socket lives under /run so it disappears on reboot; RuntimeDirectory
     // makes systemd create and clean it up. The directory stays traversable
     // by everyone on purpose - the gate is the socket inside it, which the
-    // daemon binds 0660 to the 'omen-hub' group (see
-    // `omen_hub_core::socket`). A 0750 directory here would instead lock
+    // daemon binds 0660 to the 'pyren' group (see
+    // `pyren_core::socket`). A 0750 directory here would instead lock
     // out the very group members it is meant to admit.
     let unit = format!(
         "[Unit]\n\
-         Description=OMEN Hub hardware daemon\n\
-         Documentation=https://github.com/paraguayo33/omen-hub-linux\n\
+         Description=Pyren hardware daemon\n\
+         Documentation=https://github.com/mglourido/PYREN\n\
          After=multi-user.target\n\
          \n\
          [Service]\n\
          Type=simple\n\
          ExecStart={}\n\
-         Environment=OMEN_HUB_SOCKET=/run/omen-hub/daemon.sock\n\
-         RuntimeDirectory=omen-hub\n\
+         Environment=PYREN_SOCKET=/run/pyren/daemon.sock\n\
+         RuntimeDirectory=pyren\n\
          RuntimeDirectoryMode=0755\n\
          Restart=on-failure\n\
          RestartSec=5\n\

@@ -20,9 +20,9 @@ the project's conversations are in Spanish.
 
 ```
 daemon/                 Rust workspace (the daemon and its two CLIs)
-├── daemon/             omen-hub-daemon: loads modules, serves the socket
-├── check/              omen-hub-check: standalone fan self-test CLI
-├── ctl/                omen-hub-ctl: shell client for a running daemon
+├── daemon/             pyren-daemon: loads modules, serves the socket
+├── check/              pyren-check: standalone fan self-test CLI
+├── ctl/                pyren-ctl: shell client for a running daemon
 └── crates/
     ├── core/           Module trait, Registry, wire types, socket server + client
     ├── config/         on-disk settings (atomic writes, versioning)
@@ -31,7 +31,7 @@ daemon/                 Rust workspace (the daemon and its two CLIs)
     ├── fan/            fan status, the write path, the self-test
     └── installer/      driver/service installer (inspect → plan → apply)
 app/                    Tauri app: SvelteKit frontend + src-tauri shell
-tools/omen-check.sh     dependency-free shell twin of omen-hub-check
+tools/pyren-check.sh     dependency-free shell twin of pyren-check
 docs/                   design, IPC protocol, development, frontend, RGB review
 ```
 
@@ -56,7 +56,7 @@ which is plain upstream — the patching happens at install time, so the
 
 ```sh
 # terminal 1
-cd daemon && cargo run -p omen-hub-daemon
+cd daemon && cargo run -p pyren-daemon
 
 # terminal 2
 cd app && bun run tauri dev
@@ -68,12 +68,12 @@ Full prerequisites and the Wayland workaround are in
 To see what the daemon thinks without opening the app:
 
 ```sh
-cd daemon && cargo run -q -p omen-hub-ctl -- status
+cd daemon && cargo run -q -p pyren-ctl -- status
 ```
 
 Reaching a daemon that is running as **root** means being in its group:
-`sudo groupadd -f omen-hub && sudo usermod -aG omen-hub $USER`, then a new
-login (or `newgrp omen-hub` for one shell).
+`sudo groupadd -f pyren && sudo usermod -aG pyren $USER`, then a new
+login (or `newgrp pyren` for one shell).
 
 ## What actually works today
 
@@ -92,12 +92,12 @@ login (or `newgrp omen-hub` for one shell).
   ~2000 → ~3900 rpm and back), a curve followed on the daemon's own thread,
   hysteresis, and settings that survive a restart — as far as the hardware
   allows, which it reports rather than guesses.
-- **Frontend**: the whole OMEN Hub surface, bilingual, with settings on
+- **Frontend**: the whole Pyren surface, bilingual, with settings on
   disk. Fan and power controls reach the daemon; the pages hide what this
   machine cannot do.
-- **`omen-hub-ctl`**: `status`, `power set|tune|auto|os-profile`,
+- **`pyren-ctl`**: `status`, `power set|tune|auto|os-profile`,
   `fan set|curve|diagnose`, `--json` on anything.
-- **A socket other local users cannot open**: `0660`, group `omen-hub`
+- **A socket other local users cannot open**: `0660`, group `pyren`
   (verified against a root daemon - a process outside the group gets
   `EACCES`).
 
@@ -115,13 +115,29 @@ login (or `newgrp omen-hub` for one shell).
 - **Overclocking**, deliberately: it is the only feature that would leave
   the envelope the firmware shipped, and it goes last.
 
+## The rename
+
+The project was **Omen Hub** until 2026-09-02 and is now **Pyren**, which
+moved every name it owns: crates and binaries (`pyren-daemon`,
+`pyren-ctl`, `pyren-check`), the socket group, `/etc/pyren`,
+`~/.config/pyren`, `PYREN_SOCKET`, and `tools/pyren-check.sh`.
+
+What deliberately did **not** move: `hp-wmi`, `omen-fan-control`,
+`omen-rgb-linux`, `omen_thermal_profile_boards`, `OMEN_CPU_MAX_RPM` and
+"OMEN Gaming Hub". Those are other people's names — the kernel's, the
+upstream projects', HP's — and renaming them would be renaming things this
+project does not own.
+
+A machine that ran the old build keeps its old files; the three commands
+that move them are in the README's deployment section.
+
 ## Verifying a change
 
 ```sh
 cd daemon && cargo test && cargo clippy --all-targets   # 158 tests, 0 warnings
 cd app && bun run check && bun run build
 cd app/src-tauri && cargo check
-sh -n tools/omen-check.sh
+sh -n tools/pyren-check.sh
 ```
 
 `.github/workflows/ci.yml` runs all of these on every push and pull

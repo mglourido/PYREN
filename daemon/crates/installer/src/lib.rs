@@ -20,7 +20,7 @@ pub mod execute;
 pub mod patch;
 pub mod plan;
 
-use omen_hub_core::{Module, ModuleError, ModuleResult};
+use pyren_core::{Module, ModuleError, ModuleResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 

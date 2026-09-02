@@ -31,7 +31,7 @@ jobs:
       - run: cargo test --workspace
         working-directory: daemon
       # The CLI's help text is the only documentation most people will read.
-      - run: cargo run -q -p omen-hub-ctl -- --help
+      - run: cargo run -q -p pyren-ctl -- --help
         working-directory: daemon
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: daemon
@@ -69,8 +69,8 @@ jobs:
         working-directory: app/src-tauri
 
   shell:
-    name: omen-check.sh (syntax)
+    name: pyren-check.sh (syntax)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sh -n tools/omen-check.sh
+      - run: sh -n tools/pyren-check.sh

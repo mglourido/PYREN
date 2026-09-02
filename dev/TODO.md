@@ -26,7 +26,7 @@ is a one-variable test:
 1. `installer.plan` / `installer.apply` with `experimentalBoard: "8D2F"`
    and a `boardTable` choice — the variants differ in which EC offset
    holds the thermal profile, so the wrong one loads and misreads.
-2. `sh tools/omen-check.sh` and look for `pwm1`.
+2. `sh tools/pyren-check.sh` and look for `pwm1`.
 3. `fan.setMode` with `{"mode":"manual","pwm":128}` and listen.
 
 *Done when*: `capabilities.setSpeed` is true, or it is established that
@@ -137,7 +137,7 @@ real backend decision before any daemon work:
   for two sessions. Now also the natural place to prove the socket's
   permissions from the outside — the unit tests assert the mode bits, but
   only a second user can prove the *effect*, and CI has no second user.
-- **`shellcheck` in CI.** The workflow runs `sh -n tools/omen-check.sh`,
+- **`shellcheck` in CI.** The workflow runs `sh -n tools/pyren-check.sh`,
   which catches syntax and nothing else. `shellcheck` wasn't added because
   it isn't installed here and a lint nobody has run locally would land red.
 
@@ -171,7 +171,7 @@ same consent, not in the power profiles.
 
 Recorded so nobody "fixes" them by accident:
 
-- **No read-only access for non-members of `omen-hub`.** The socket is
+- **No read-only access for non-members of `pyren`.** The socket is
   `0660`; a user outside the group gets nothing, not "vitals but no
   writes". Splitting reads from writes would mean opening a root daemon's
   socket to every local process — sandboxed and compromised ones included —
@@ -189,7 +189,7 @@ Recorded so nobody "fixes" them by accident:
   Performance and Unlimited restore; neither raises. "Unlimited" means this
   daemon imposes no limit of its own, not that the machine is unlocked —
   going past stock is overclocking, and belongs behind its own consent.
-- **The installer creates the `omen-hub` group but never deletes it.**
+- **The installer creates the `pyren` group but never deletes it.**
   Removing a group that users are still members of is not the installer's
   call, and a leftover empty group costs nothing.
 - **The daemon does not touch the fans until asked.** At startup it reports
@@ -239,11 +239,11 @@ Newest first. Kept because the *reasons* are the useful part - several of
 these replaced an earlier version of themselves, and knowing why saves
 someone re-proposing it.
 
-- **`omen-hub-ctl`**, a shell client over the same socket: `status`,
+- **`pyren-ctl`**, a shell client over the same socket: `status`,
   `power set/tune/auto/os-profile`, `fan set/curve/diagnose`, `--json` on
   anything. Exists mainly so a measured number can be recorded without a
   slider. The wire format now has one client implementation
-  (`omen_hub_core::client`) rather than one per caller; the Tauri app still
+  (`pyren_core::client`) rather than one per caller; the Tauri app still
   carries its own, being a separate workspace.
 - **The laptop's profile and the OS's are applied separately.** The app has
   had an "apply to the OS power profile" switch since before the daemon
@@ -274,9 +274,9 @@ someone re-proposing it.
   `auto` handed them back. The numbers are in `FINDINGS.md`. This is the
   project's first real hardware write.
 - **The socket restriction verified end to end** (was 1.1): with the daemon
-  running as root, a process not in the `omen-hub` group gets
+  running as root, a process not in the `pyren` group gets
   `PermissionDenied` on connect, and the same process reaches it through
-  `newgrp omen-hub`. The socket is `srw-rw---- root omen-hub`.
+  `newgrp pyren`. The socket is `srw-rw---- root pyren`.
 - **The fan write path** (was 1.4): `fan.setMode`, `fan.setCurve` and
   `fan.setRestoreOnStart`, a control loop that follows a curve on its own
   thread, hysteresis, temperature smoothing, and `fan.json` persistence.
@@ -291,7 +291,7 @@ someone re-proposing it.
   `fan_set_curve` and `fan_set_restore_on_start`. Exactly the gap the
   end-to-end IPC test in §3 is meant to catch.
 - **The daemon socket is restricted** (was 1.1): bound `0660` to the
-  `omen-hub` group, with the runtime directory locked down when the daemon
+  `pyren` group, with the runtime directory locked down when the daemon
   creates it, an actionable startup message when the group is missing, and
   an `EACCES` from the app turned into "add this user to the group". The
   installer creates the group as its first step.

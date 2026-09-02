@@ -1,4 +1,4 @@
-//! omen-hub-ctl: talk to a running omen-hub-daemon from a shell.
+//! pyren-ctl: talk to a running pyren-daemon from a shell.
 //!
 //! The app is the ordinary way to drive this; the CLI exists for the two
 //! cases the app is bad at. One is scripting - a keybinding, a systemd
@@ -8,7 +8,7 @@
 //! (see the `power` module's `Tuning::default_for`), so somebody has to
 //! measure their own machine and say so, and
 //!
-//!     omen-hub-ctl power tune --mode eco --pl1 35 --turbo off
+//!     pyren-ctl power tune --mode eco --pl1 35 --turbo off
 //!
 //! is a better way to record that than a slider.
 //!
@@ -19,14 +19,14 @@ mod args;
 
 use std::process::ExitCode;
 
-use omen_hub_core::client::{self, ClientError};
+use pyren_core::client::{self, ClientError};
 use serde_json::{json, Value};
 
 const HELP: &str = "\
-omen-hub-ctl - control a running omen-hub-daemon
+pyren-ctl - control a running pyren-daemon
 
 USAGE
-  omen-hub-ctl [--json] <command>
+  pyren-ctl [--json] <command>
 
 MACHINE
   status                       one screen: what is on, and what this
@@ -62,8 +62,8 @@ OPTIONS
   -h, --help
   -V, --version
 
-The socket is $OMEN_HUB_SOCKET, or /tmp/omen-hub-daemon.sock. Reaching a
-daemon running as root means being in the 'omen-hub' group.
+The socket is $PYREN_SOCKET, or /tmp/pyren-daemon.sock. Reaching a
+daemon running as root means being in the 'pyren' group.
 ";
 
 const USAGE_ERROR: u8 = 2;
@@ -77,7 +77,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if argv.iter().any(|a| a == "-V" || a == "--version") {
-        println!("omen-hub-ctl {}", env!("CARGO_PKG_VERSION"));
+        println!("pyren-ctl {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
 
@@ -90,12 +90,12 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(Failure::Usage(message)) => fail(&message, USAGE_ERROR),
         Err(Failure::Client(e)) => {
-            eprintln!("omen-hub-ctl: {e}");
+            eprintln!("pyren-ctl: {e}");
             if e.is_permission_denied() {
                 eprintln!(
                     "  the daemon is running as root and this user is not in its group.\n\
-                     \x20 sudo usermod -aG omen-hub $USER, then log out and back in\n\
-                     \x20 (or run this once through: newgrp omen-hub)"
+                     \x20 sudo usermod -aG pyren $USER, then log out and back in\n\
+                     \x20 (or run this once through: newgrp pyren)"
                 );
             }
             ExitCode::from(match e {
@@ -107,7 +107,7 @@ fn main() -> ExitCode {
 }
 
 fn fail(message: &str, code: u8) -> ExitCode {
-    eprintln!("omen-hub-ctl: {message}\n\nTry 'omen-hub-ctl --help'.");
+    eprintln!("pyren-ctl: {message}\n\nTry 'pyren-ctl --help'.");
     ExitCode::from(code)
 }
 

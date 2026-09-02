@@ -165,7 +165,7 @@ mod tests {
 
     fn fixture(tag: &str, files: &[&str]) -> PathBuf {
         let dir = std::env::temp_dir()
-            .join(format!("omen-hub-fan-control-{tag}-{}", std::process::id()));
+            .join(format!("pyren-fan-control-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         for f in files {

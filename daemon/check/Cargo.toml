@@ -1,13 +1,13 @@
 [package]
-name = "omen-hub-check"
+name = "pyren-check"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-omen-hub-fan = { path = "../crates/fan" }
-omen-hub-system = { path = "../crates/system" }
+pyren-fan = { path = "../crates/fan" }
+pyren-system = { path = "../crates/system" }
 # Only for power_mode_available(): the verdict this prints must match the
 # daemon's, and power modes are half of it.
-omen-hub-power = { path = "../crates/power" }
+pyren-power = { path = "../crates/power" }
 serde_json = "1"

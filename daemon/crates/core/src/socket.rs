@@ -16,9 +16,9 @@ use std::sync::Arc;
 use crate::{Registry, Request, Response};
 
 /// Group whose members may talk to the daemon. Overridable with
-/// `OMEN_HUB_SOCKET_GROUP` so a packager can use whatever name the
+/// `PYREN_SOCKET_GROUP` so a packager can use whatever name the
 /// distribution prefers.
-const DEFAULT_GROUP: &str = "omen-hub";
+const DEFAULT_GROUP: &str = "pyren";
 
 /// Who ended up being able to reach the socket.
 ///
@@ -52,7 +52,7 @@ impl Audience {
 /// Public because the installer has to create this group, and the two must
 /// not be able to disagree about its name.
 pub fn socket_group() -> String {
-    std::env::var("OMEN_HUB_SOCKET_GROUP").unwrap_or_else(|_| DEFAULT_GROUP.to_string())
+    std::env::var("PYREN_SOCKET_GROUP").unwrap_or_else(|_| DEFAULT_GROUP.to_string())
 }
 
 /// gid for a group name, or `None` if no such group exists here.
@@ -162,7 +162,7 @@ pub fn serve_unix_socket(
         let registry = Arc::clone(&registry);
         std::thread::spawn(move || {
             if let Err(e) = handle_connection(stream, &registry) {
-                eprintln!("omen-hub-daemon: connection error: {e}");
+                eprintln!("pyren-daemon: connection error: {e}");
             }
         });
     }
@@ -200,7 +200,7 @@ mod tests {
 
     fn fixture(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir()
-            .join(format!("omen-hub-socket-{tag}-{}", std::process::id()));
+            .join(format!("pyren-socket-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -227,7 +227,7 @@ mod tests {
     fn an_unknown_group_leaves_the_socket_to_its_owner_alone() {
         let path = fixture("nogroup").join("daemon.sock");
         let (_listener, audience) =
-            bind_restricted(&path, "omen-hub-group-that-does-not-exist").unwrap();
+            bind_restricted(&path, "pyren-group-that-does-not-exist").unwrap();
 
         assert_eq!(audience, Audience::OwnerOnly);
         assert_eq!(mode_of(&path), 0o600, "must not be reachable by other users");
@@ -266,7 +266,7 @@ mod tests {
     fn an_existing_directory_is_left_as_it_was() {
         let dir = fixture("existing");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let (_listener, _) = bind_restricted(&dir.join("daemon.sock"), "omen-hub").unwrap();
+        let (_listener, _) = bind_restricted(&dir.join("daemon.sock"), "pyren").unwrap();
 
         assert_eq!(mode_of(&dir), 0o777);
     }
@@ -276,6 +276,6 @@ mod tests {
         let path = fixture("stale").join("daemon.sock");
         std::fs::write(&path, "left over from a crash").unwrap();
 
-        assert!(bind_restricted(&path, "omen-hub").is_ok());
+        assert!(bind_restricted(&path, "pyren").is_ok());
     }
 }

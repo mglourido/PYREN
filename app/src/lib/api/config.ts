@@ -1,7 +1,7 @@
 /**
- * Per-user settings on disk (`~/.config/omen-hub/<namespace>.json`).
+ * Per-user settings on disk (`~/.config/pyren/<namespace>.json`).
  *
- * The files are written by the Tauri shell through `omen-hub-config`, the
+ * The files are written by the Tauri shell through `pyren-config`, the
  * same crate the daemon uses, so app settings get the same guarantees as
  * daemon settings: atomic writes, a corrupt file preserved rather than
  * silently replaced, and a version stamp.

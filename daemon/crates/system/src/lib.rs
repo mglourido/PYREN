@@ -16,7 +16,7 @@ mod metrics;
 
 use std::sync::Mutex;
 
-use omen_hub_core::{Module, ModuleError, ModuleResult};
+use pyren_core::{Module, ModuleError, ModuleResult};
 use serde_json::Value;
 
 pub use identity::{Compatibility, Controls, SystemIdentity};

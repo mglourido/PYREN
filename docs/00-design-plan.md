@@ -1,6 +1,6 @@
 # Design plan
 
-Omen Hub is a Tauri clone of HP's OMEN Gaming Hub for Linux, built as a
+Pyren is a Tauri clone of HP's OMEN Gaming Hub for Linux, built as a
 **host daemon + pluggable hardware modules**, so features can be ported in
 from different source repos (this project starts with fan control, ported
 from `omen-fan-control`; lighting from `omen-rgb-linux` is the planned
@@ -15,9 +15,9 @@ systemd service, install a kernel module) does need root. Splitting into a
 privileged daemon and an unprivileged app makes that boundary explicit and
 auditable instead of scattered `pkexec` calls throughout UI code.
 
-Modules are Rust crates implementing one shared trait (`omen_hub_core::Module`,
+Modules are Rust crates implementing one shared trait (`pyren_core::Module`,
 see `daemon/crates/core/src/lib.rs`), statically linked into a single
-`omen-hub-daemon` binary — not runtime-loaded plugins (Rust's dynamic
+`pyren-daemon` binary — not runtime-loaded plugins (Rust's dynamic
 plugin loading has real ABI stability costs that aren't worth it yet).
 "Modular" here means modular *in source layout and responsibility*, so a
 module ported from another repo lives in its own crate and can be
@@ -28,7 +28,7 @@ rebuild.
 
 ```
 ┌─────────────────────────┐
-│   omen-hub-daemon (root)  │  systemd service
+│   pyren-daemon (root)  │  systemd service
 │   ┌────────┐ ┌───────┐ ┌─────┐ │
 │   │ system │ │ power │ │ fan │ │  ...one crate per hardware surface
 │   └────────┘ └───────┘ └─────┘ │
@@ -44,13 +44,13 @@ rebuild.
 
 - The socket is the trust boundary, and it is enforced the only way the
   kernel will enforce it for us: file permissions. The daemon binds it
-  `0660` to the `omen-hub` group, so being a member of that group is what
+  `0660` to the `pyren` group, so being a member of that group is what
   it means to be allowed to control this machine — see
   `daemon/crates/core/src/socket.rs` and the Transport section of
   `01-ipc-protocol.md`. Day-to-day calls don't re-prompt for a password —
   the daemon simply is root, always, and the app process never
   is. A `pkexec`-driven flow only appears in the one-time installer
-  (installing the patched kernel driver, installing `omen-hub-daemon` as a
+  (installing the patched kernel driver, installing `pyren-daemon` as a
   systemd service), reusing the approach documented in
   `docs/03-installation.md` of the `omen-fan-control` project (that
   checkout is not in this repository; `dev/README.md` says where it is).
@@ -63,11 +63,11 @@ rebuild.
 ## Repo layout
 
 ```
-omen-hub-linux/
+pyren-linux/
 ├── daemon/                 Cargo workspace, becomes the root systemd service
 │   ├── daemon/              bin crate: loads modules, runs the IPC server
-│   ├── ctl/                 omen-hub-ctl: shell client for a running daemon
-│   ├── check/               omen-hub-check: standalone fan self-test
+│   ├── ctl/                 pyren-ctl: shell client for a running daemon
+│   ├── check/               pyren-check: standalone fan self-test
 │   └── crates/
 │       ├── core/            Module trait, Registry, wire types, socket server + client
 │       ├── system/          machine identity + generic Linux monitoring
@@ -86,16 +86,16 @@ separate matches how they're actually deployed.
 
 ## Config
 
-Implemented in `daemon/crates/config` (`omen-hub-config`). Each module owns
+Implemented in `daemon/crates/config` (`pyren-config`). Each module owns
 one namespace, written as a single JSON file:
 
 ```
-/etc/omen-hub/power.json       system config, written by the root daemon
-~/.config/omen-hub/app.json    the desktop app's own preferences
-~/.config/omen-hub/ui.json     UI state (fan curve, lighting, GPU mode)
+/etc/pyren/power.json       system config, written by the root daemon
+~/.config/pyren/app.json    the desktop app's own preferences
+~/.config/pyren/ui.json     UI state (fan curve, lighting, GPU mode)
 ```
 
-The daemon falls back to the per-user directory when `/etc/omen-hub` isn't
+The daemon falls back to the per-user directory when `/etc/pyren` isn't
 writable, which is what makes `cargo run` usable unprivileged. Writability
 is tested by actually creating the directory rather than by checking for
 root, since being root and the path being writable are different questions
@@ -122,8 +122,8 @@ doesn't exist, because nothing has needed one yet.
    hysteresis compares PWM rather than RPM. What a machine can actually do
    is reported as `capabilities`, because `auto`/`max` and a *speed* have
    different hardware requirements — see `01-ipc-protocol.md`.
-3. ~~Fan UI in the app matching OMEN Hub's Performance/Fans tab~~ — done,
-   along with the rest of the OMEN Hub surface (vitals, advanced tuning,
+3. ~~Fan UI in the app matching Pyren's Performance/Fans tab~~ — done,
+   along with the rest of the Pyren surface (vitals, advanced tuning,
    lighting, graphics switcher, network booster, key mapping, settings,
    drivers, help). See `docs/03-frontend.md`. The UI's *write* paths call
    the daemon; the fan ones now do something, the rest still do not.
@@ -144,7 +144,7 @@ doesn't exist, because nothing has needed one yet.
    profile, the OS profile (delegated to power-profiles-daemon), and the
    package power envelope, applied as three separable parts. The envelope
    ships untouched, because per-chassis numbers are not something this
-   project can invent; `omen-hub-ctl power tune` is how a measured one gets
+   project can invent; `pyren-ctl power tune` is how a measured one gets
    recorded.
 8. Overclocking — GPU offsets, and CPU limits above the firmware's own.
    Deliberately last, and deliberately behind its own consent: everything
@@ -159,7 +159,7 @@ doesn't exist, because nothing has needed one yet.
   `path` deps become git/registry deps) — don't assume it until it's
   actually needed.
 - ~~**Config persistence mechanism**~~ — **decided**: hand-rolled JSON, like
-  the Python original, in `omen-hub-config`. The requirements are narrow (a
+  the Python original, in `pyren-config`. The requirements are narrow (a
   few small files, no layering, no environment interpolation) and what
   actually matters is failure behaviour, which a config framework would not
   have given us for free:

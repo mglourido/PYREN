@@ -1,5 +1,5 @@
 /**
- * User settings, stored in `~/.config/omen-hub/app.json`.
+ * User settings, stored in `~/.config/pyren/app.json`.
  *
  * Loading is two-stage on purpose (see `DiskBacked`): a synchronous cache
  * read for the first paint, so the app doesn't render in English before

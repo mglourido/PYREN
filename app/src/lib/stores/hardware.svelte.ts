@@ -128,7 +128,7 @@ class HardwareStore {
     this.state = this.disk.readCache();
   }
 
-  /** Reads `~/.config/omen-hub/ui.json` and takes it as authoritative. */
+  /** Reads `~/.config/pyren/ui.json` and takes it as authoritative. */
   async hydrate() {
     const { values } = await this.disk.hydrate();
     this.state = values;

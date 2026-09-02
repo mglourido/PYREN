@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "OMEN Hub",
+    "name": "Pyren",
     "tagline": "Gaming hub for Linux"
   },
   "nav": {
@@ -207,7 +207,7 @@
     "title": "Drivers",
     "hpWmi": "Patched hp-wmi kernel driver",
     "hpWmiDesc": "Adds manual fan control (pwm1 / pwm1_enable) to the in-kernel hp-wmi driver. Required for anything beyond read-only monitoring.",
-    "daemon": "omen-hub-daemon service",
+    "daemon": "pyren-daemon service",
     "daemonDesc": "Privileged background service that talks to the hardware on behalf of this app.",
     "acpiCall": "acpi_call module",
     "acpiCallDesc": "Required only by the fan cleaner (reverse spin) feature.",
@@ -222,7 +222,7 @@
     "driverMissingBody": "The patched hp-wmi driver was not found, so fan and power control are unavailable. Only read-only monitoring works.",
     "goToDrivers": "Install",
     "dontShowAgain": "Don't show this again",
-    "daemonDownTitle": "Cannot reach omen-hub-daemon",
+    "daemonDownTitle": "Cannot reach pyren-daemon",
     "daemonDownBody": "Showing simulated data. Start the daemon to control your hardware.",
     "unsupportedTitle": "Unsupported machine",
     "unsupportedBody": "This does not look like an HP OMEN or Victus laptop. The app runs, but hardware control will not work."
@@ -255,7 +255,7 @@
   "help": {
     "title": "Help & about",
     "about": "About",
-    "aboutBody": "OMEN Hub is a free, community-built clone of HP's OMEN Gaming Hub for Linux. It is not affiliated with, endorsed by, or supported by HP Inc.",
+    "aboutBody": "Pyren is a free, community-built clone of HP's OMEN Gaming Hub for Linux. It is not affiliated with, endorsed by, or supported by HP Inc.",
     "version": "Version",
     "checkUpdates": "Check for updates",
     "upToDate": "You are on the latest version.",
@@ -302,7 +302,7 @@
     "checks": "Checks",
     "remedy": "What to do",
     "neverRun": "The check has not been run yet.",
-    "cliHint": "The same check runs without the app: <code>cargo run -p omen-hub-check</code> (add <code>--json</code> for a bug report).",
+    "cliHint": "The same check runs without the app: <code>cargo run -p pyren-check</code> (add <code>--json</code> for a bug report).",
     "wroteToHardware": "This run wrote to the hardware and restored the previous state."
   }
 }

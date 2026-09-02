@@ -1,4 +1,4 @@
-//! Keeps `tools/omen-check.sh` and `omen-hub-check` from drifting apart.
+//! Keeps `tools/pyren-check.sh` and `pyren-check` from drifting apart.
 //!
 //! The shell script exists so the self-test can be run on a machine where
 //! building this project isn't practical - which means it is the version
@@ -15,14 +15,14 @@ use serde_json::Value;
 
 fn script_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/omen-check.sh")
+        .join("../../tools/pyren-check.sh")
         .canonicalize()
-        .expect("tools/omen-check.sh should exist")
+        .expect("tools/pyren-check.sh should exist")
 }
 
 /// A fixture hwmon directory containing exactly the given files.
 fn fixture(tag: &str, files: &[(&str, &str)]) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("omen-check-parity-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("pyren-check-parity-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("fixture dir");
     for (name, contents) in files {
@@ -39,7 +39,7 @@ struct Run {
 fn run(program: &str, args: &[&str], hwmon: &Path) -> Run {
     let output = Command::new(program)
         .args(args)
-        .env("OMEN_HUB_HWMON_DIR", hwmon)
+        .env("PYREN_HWMON_DIR", hwmon)
         .output()
         .unwrap_or_else(|e| panic!("running {program}: {e}"));
 
@@ -52,7 +52,7 @@ fn run(program: &str, args: &[&str], hwmon: &Path) -> Run {
 
 fn compare(tag: &str, files: &[(&str, &str)]) {
     let hwmon = fixture(tag, files);
-    let rust = run(env!("CARGO_BIN_EXE_omen-hub-check"), &["--json"], &hwmon);
+    let rust = run(env!("CARGO_BIN_EXE_pyren-check"), &["--json"], &hwmon);
     let shell = run("sh", &[script_path().to_str().unwrap(), "--json"], &hwmon);
 
     assert_eq!(

@@ -158,8 +158,8 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         blockers.push(Blocker {
             id: "no-driver-source".to_string(),
             message: "The patched hp-wmi sources were not found. They are not bundled with \
-                      omen-hub; point OMEN_HUB_DRIVER_DIR at a checkout of omen-fan-control's \
-                      data/driver directory, or install them to /usr/share/omen-hub/driver."
+                      pyren; point PYREN_DRIVER_DIR at a checkout of omen-fan-control's \
+                      data/driver directory, or install them to /usr/share/pyren/driver."
                 .to_string(),
             fix: None,
         });
@@ -381,8 +381,8 @@ fn plan_install_service(env: &Environment) -> Plan {
     // The daemon is root and its socket is the trust boundary, so the socket
     // is handed to a group rather than left open to every local user. That
     // group has to exist before the daemon first binds, or nobody but root
-    // can connect. See `omen_hub_core::socket`.
-    let group = omen_hub_core::socket_group();
+    // can connect. See `pyren_core::socket`.
+    let group = pyren_core::socket_group();
     warnings.push(format!(
         "Add each user who should control this machine to the '{group}' group: \
          sudo usermod -aG {group} $USER (then log out and back in)."
@@ -399,7 +399,7 @@ fn plan_install_service(env: &Environment) -> Plan {
             ),
             Step::internal(
                 "write-unit",
-                "Write /etc/systemd/system/omen-hub-daemon.service",
+                "Write /etc/systemd/system/pyren-daemon.service",
             ),
             Step::command(
                 "daemon-reload",
@@ -409,7 +409,7 @@ fn plan_install_service(env: &Environment) -> Plan {
             Step::command(
                 "enable",
                 "Enable and start the daemon at boot",
-                &["systemctl", "enable", "--now", "omen-hub-daemon.service"],
+                &["systemctl", "enable", "--now", "pyren-daemon.service"],
             ),
         ],
         blockers: Vec::new(),
@@ -426,7 +426,7 @@ fn plan_remove_service(_env: &Environment) -> Plan {
             Step::command(
                 "disable",
                 "Stop the daemon and remove it from boot",
-                &["systemctl", "disable", "--now", "omen-hub-daemon.service"],
+                &["systemctl", "disable", "--now", "pyren-daemon.service"],
             )
             .optional(),
             Step::internal("remove-unit", "Delete the systemd unit file"),
@@ -476,7 +476,7 @@ mod tests {
             fan_control_available: false,
             hp_wmi_loaded: true,
             acpi_call_available: false,
-            driver_source: Some(PathBuf::from("/usr/share/omen-hub/driver")),
+            driver_source: Some(PathBuf::from("/usr/share/pyren/driver")),
             service_installed: false,
         }
     }
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn installing_the_service_creates_the_group_that_may_reach_it() {
         let plan = plan(&ready_env(), Action::InstallService, PlanOptions::default());
-        let group = omen_hub_core::socket_group();
+        let group = pyren_core::socket_group();
 
         let step = plan.steps.iter().find(|s| s.id == "create-group").expect("group step");
         assert_eq!(step.command, ["groupadd", "-f", &group]);

@@ -1,8 +1,8 @@
 [package]
 name = "app"
 version = "0.1.0"
-description = "OMEN Hub - gaming hub for Linux"
-authors = ["omen-hub contributors"]
+description = "Pyren - gaming hub for Linux"
+authors = ["pyren contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -26,5 +26,5 @@ serde_json = "1"
 # config files and both need the same atomic-write, corruption-recovery and
 # versioning behaviour. The two remain separate Cargo workspaces and ship as
 # separate binaries; this is one small library crate in common, not a merge.
-omen-hub-config = { path = "../../daemon/crates/config" }
+pyren-config = { path = "../../daemon/crates/config" }
 

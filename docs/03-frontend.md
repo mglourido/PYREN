@@ -61,8 +61,8 @@ Three stores, deliberately separate:
 - **`settings`** — app preferences (language, units, poll interval,
   dismissed notices).
 
-`settings` and `hardware` persist to `~/.config/omen-hub/app.json` and
-`ui.json`, written by the Tauri shell through the same `omen-hub-config`
+`settings` and `hardware` persist to `~/.config/pyren/app.json` and
+`ui.json`, written by the Tauri shell through the same `pyren-config`
 crate the daemon uses - so app settings get the same atomic writes,
 corruption recovery and version stamping.
 

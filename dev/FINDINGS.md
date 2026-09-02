@@ -7,7 +7,7 @@ attached.
 ## Board 8D2F: why a fan *percentage* can't be set on the test laptop
 
 The one HP machine this has run on is an **OMEN Gaming Laptop 16-am0xxx,
-board `8D2F`, kernel 7.2.2**. `omen-hub-check` reports `monitoringOnly`:
+board `8D2F`, kernel 7.2.2**. `pyren-check` reports `monitoringOnly`:
 
 | | |
 |---|---|
@@ -233,7 +233,7 @@ daemon must serialise **across modules** since the fan cleaner uses it too.
 
 ## Bugs the parity test caught
 
-`tools/omen-check.sh` and `omen-hub-check` are compared against shared
+`tools/pyren-check.sh` and `pyren-check` are compared against shared
 fixtures by `daemon/check/tests/parity.rs`. It has earned its place three
 times, and every time the Rust side was the wrong one:
 
