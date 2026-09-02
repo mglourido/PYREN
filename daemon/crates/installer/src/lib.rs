@@ -100,15 +100,15 @@ impl Module for InstallerModule {
 
             "plan" => {
                 let request: PlanRequest = serde_json::from_value(params)
-                    .map_err(|e| ModuleError::Other(format!("invalid plan request: {e}")))?;
+                    .map_err(|e| ModuleError::InvalidParams(format!("invalid plan request: {e}")))?;
                 let env = Environment::detect();
                 let plan = plan::plan(&env, request.action, PlanOptions::from(&request));
-                serde_json::to_value(plan).map_err(|e| ModuleError::Other(e.to_string()))
+                serde_json::to_value(plan).map_err(|e| ModuleError::Internal(e.to_string()))
             }
 
             "apply" => {
                 let request: ApplyRequest = serde_json::from_value(params)
-                    .map_err(|e| ModuleError::Other(format!("invalid apply request: {e}")))?;
+                    .map_err(|e| ModuleError::InvalidParams(format!("invalid apply request: {e}")))?;
 
                 let env = Environment::detect();
                 let options =
@@ -118,7 +118,10 @@ impl Module for InstallerModule {
                 if !plan.is_runnable() {
                     let reasons: Vec<&str> =
                         plan.blockers.iter().map(|b| b.message.as_str()).collect();
-                    return Err(ModuleError::Other(format!(
+                    // Not the caller's mistake and not a permanent
+                    // property of the machine either - the blockers say
+                    // what would have to change first.
+                    return Err(ModuleError::NotCapable(format!(
                         "this plan cannot run: {}",
                         reasons.join("; ")
                     )));
@@ -130,7 +133,7 @@ impl Module for InstallerModule {
                         // Which table a board goes into decides which EC
                         // offsets the driver reads; guessing it would give a
                         // driver that loads and then misreads the hardware.
-                        return Err(ModuleError::Other(
+                        return Err(ModuleError::InvalidParams(
                             "experimentalBoard also needs boardTable, since the table decides \
                              which thermal-profile code path the board uses"
                                 .to_string(),
@@ -147,7 +150,7 @@ impl Module for InstallerModule {
 
                 let report = execute::execute(&plan, &env, &context, !request.confirm);
                 serde_json::to_value(json!({ "plan": plan, "report": report }))
-                    .map_err(|e| ModuleError::Other(e.to_string()))
+                    .map_err(|e| ModuleError::Internal(e.to_string()))
             }
 
             other => Err(ModuleError::UnknownMethod(other.to_string())),

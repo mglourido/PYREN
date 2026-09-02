@@ -57,16 +57,53 @@ Exactly one of `result` / `error` is present:
 
 ```json
 { "id": 1, "result": { "...": "..." } }
-{ "id": 1, "error": "human-readable message" }
+{ "id": 1, "error": { "kind": "permissionDenied", "message": "writing /sys/…/pwm1_enable needs root: Permission denied (os error 13)" } }
 ```
 
-`error` is always a plain string (module-side errors, e.g.
-`pyren_core::ModuleError`, are converted with `.to_string()` at the
-boundary) — there is no structured error code yet. If callers need to
-branch on error *kind* later (e.g. "needs privilege" vs "unsupported
-hardware" vs "bad params"), that should become a structured `{ kind, message }`
-object rather than string-matching — don't build string-matching error
-handling against today's messages.
+**Branch on `kind`, show `message`.** The message is written for a person
+and gets reworded; anything matching on the prose breaks the next time
+somebody improves a sentence. `kind` is a closed set:
+
+| `kind` | what it means | what a caller should do |
+|---|---|---|
+| `unknownModule` | no module with that id is loaded | fix the call |
+| `unknownMethod` | the module is there, the method is not | fix the call |
+| `unsupported` | this module's hardware is absent on this machine | hide the feature |
+| `notCapable` | the hardware is present and cannot do this *particular* thing | hide **this control**, not the feature |
+| `invalidParams` | the caller sent something wrong | fix the call; no privilege makes it work |
+| `permissionDenied` | the daemon is running unprivileged | offer to restart it as root |
+| `io` | the machine refused while the work was being done | show it |
+| `busy` | something else has the hardware | wait and ask again |
+| `internal` | the daemon could not serialise its own reply | a bug here |
+| `failed` | a genuine runtime failure that is none of the above | show it |
+| `malformedRequest` | what arrived was not a request; carries `id: 0` | a bug in the client |
+
+Three of these are the reason the field exists at all, because `fan.setMode`
+returns all three and they used to be indistinguishable prose:
+
+- `notCapable` — board 8D2F has no `pwm1`, so `manual` will never work
+  there however it is asked. **Do not offer to elevate.**
+- `permissionDenied` — the same call works fine against a root daemon.
+- `invalidParams` — `pwm` was 300, and neither privilege nor different
+  hardware helps.
+
+Conflating the first two is the specific mistake this prevents: a UI that
+offers "run as administrator" for hardware that will never comply, or that
+reports working hardware as unsupported because the daemon lacked root.
+
+**An unknown `kind` is not an error.** A newer daemon may name one this
+client has never heard of; treat it as `failed` and show the message.
+Refusing to parse a refusal is worse than showing it. For the same reason a
+client should still accept a bare-string `error` — that is a daemon from
+before this format — rather than reading an unparseable error as *absent*,
+which would turn a refusal into a silent success.
+
+`pyren_core::client` does all of this already, and is the copy to follow:
+`ClientError::Daemon { kind, message }`, with `needs_root()` for the
+`permissionDenied` case. `pyren-ctl` turns the kind into an exit code — `2`
+fix the command, `3` cannot reach the daemon, `4` this machine will not do
+it, `5` the daemon needs root, `6` busy — so a shell script can branch
+without reading English.
 
 ## Built-in `core` module
 

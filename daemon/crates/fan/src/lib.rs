@@ -280,7 +280,7 @@ impl FanModule {
 
     fn set_mode(&self, mode: FanMode, pwm: Option<u8>) -> ModuleResult {
         if !self.caps.supports(mode) {
-            return Err(ModuleError::Other(format!(
+            return Err(ModuleError::NotCapable(format!(
                 "this machine cannot do '{}': the hp-wmi driver exposes {}. \
                  Run fan.diagnose for the details.",
                 mode.as_str(),
@@ -310,10 +310,10 @@ impl FanModule {
 
     fn set_curve(&self, curve: Vec<CurvePoint>, interpolation: Option<Interpolation>) -> ModuleResult {
         if curve.is_empty() {
-            return Err(ModuleError::Other("params.curve must have at least one point".into()));
+            return Err(ModuleError::InvalidParams("params.curve must have at least one point".into()));
         }
         if let Some(bad) = curve.iter().find(|p| !p.temp_c.is_finite() || !p.percent.is_finite()) {
-            return Err(ModuleError::Other(format!(
+            return Err(ModuleError::InvalidParams(format!(
                 "curve point ({}, {}) is not a finite number",
                 bad.temp_c, bad.percent
             )));
@@ -346,7 +346,7 @@ impl FanModule {
     /// the run happens outside it.
     fn calibrate(&self, seconds: u64) -> ModuleResult {
         if !self.caps.supports(FanMode::Max) {
-            return Err(ModuleError::Other(format!(
+            return Err(ModuleError::NotCapable(format!(
                 "calibration puts the fans at max and watches them, which this \
                  machine cannot do: the hp-wmi driver exposes {}. \
                  Run fan.diagnose for the details.",
@@ -357,7 +357,7 @@ impl FanModule {
         {
             let mut state = lock(&self.state);
             if state.calibrating {
-                return Err(ModuleError::Other(
+                return Err(ModuleError::Busy(
                     "a calibration run is already in progress".into(),
                 ));
             }
@@ -377,12 +377,7 @@ impl FanModule {
             Err(e) => {
                 let message = e.to_string();
                 state.last_control_error = Some(message.clone());
-                return Err(match e {
-                    control::ControlError::PermissionDenied(_, _) => {
-                        ModuleError::PermissionDenied(message)
-                    }
-                    _ => ModuleError::Other(message),
-                });
+                return Err(control_error(e));
             }
         };
 
@@ -396,7 +391,7 @@ impl FanModule {
         drop(state);
 
         let mut result = serde_json::to_value(&calibration)
-            .map_err(|e| ModuleError::Other(e.to_string()))?;
+            .map_err(|e| ModuleError::Internal(e.to_string()))?;
         // The same shape every other fan write returns, so a caller never
         // has to follow one with a read.
         result["status"] = self.status();
@@ -494,12 +489,7 @@ impl FanModule {
             Err(e) => {
                 let message = e.to_string();
                 state.last_control_error = Some(message.clone());
-                Err(match e {
-                    control::ControlError::PermissionDenied(_, _) => {
-                        ModuleError::PermissionDenied(message)
-                    }
-                    _ => ModuleError::Other(message),
-                })
+                Err(control_error(e))
             }
         }
     }
@@ -554,7 +544,7 @@ impl Module for FanModule {
                 let allow_writes =
                     params.get("allowWrites").and_then(Value::as_bool).unwrap_or(false);
                 serde_json::to_value(self.diagnose(allow_writes))
-                    .map_err(|e| ModuleError::Other(e.to_string()))
+                    .map_err(|e| ModuleError::Internal(e.to_string()))
             }
 
             "setMode" => {
@@ -563,7 +553,7 @@ impl Module for FanModule {
                     .and_then(Value::as_str)
                     .and_then(FanMode::parse)
                     .ok_or_else(|| {
-                        ModuleError::Other(
+                        ModuleError::InvalidParams(
                             "params.mode must be one of auto, max, manual, curve".into(),
                         )
                     })?;
@@ -572,7 +562,7 @@ impl Module for FanModule {
                     .and_then(Value::as_u64)
                     .map(|v| v.min(255) as u8);
                 if mode == FanMode::Manual && pwm.is_none() {
-                    return Err(ModuleError::Other(
+                    return Err(ModuleError::InvalidParams(
                         "params.pwm (0-255) is required for manual mode".into(),
                     ));
                 }
@@ -583,14 +573,14 @@ impl Module for FanModule {
                 let points = params
                     .get("curve")
                     .cloned()
-                    .ok_or_else(|| ModuleError::Other("params.curve is required".into()))?;
+                    .ok_or_else(|| ModuleError::InvalidParams("params.curve is required".into()))?;
                 let points: Vec<CurvePoint> = serde_json::from_value(points)
-                    .map_err(|e| ModuleError::Other(format!("invalid curve: {e}")))?;
+                    .map_err(|e| ModuleError::InvalidParams(format!("invalid curve: {e}")))?;
                 let interpolation = match params.get("interpolation") {
                     None | Some(Value::Null) => None,
                     Some(v) => Some(
                         serde_json::from_value(v.clone())
-                            .map_err(|e| ModuleError::Other(format!("invalid interpolation: {e}")))?,
+                            .map_err(|e| ModuleError::InvalidParams(format!("invalid interpolation: {e}")))?,
                     ),
                 };
                 self.set_curve(points, interpolation)
@@ -598,7 +588,7 @@ impl Module for FanModule {
 
             "setRestoreOnStart" => {
                 let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::Other("params.enabled must be a boolean".into())
+                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
                 })?;
                 self.set_restore_on_start(enabled)
             }
@@ -617,6 +607,22 @@ impl Module for FanModule {
 
             other => Err(ModuleError::UnknownMethod(other.to_string())),
         }
+    }
+}
+
+/// Hardware failures, translated for the socket.
+///
+/// The distinction that earns its keep is `notCapable` against
+/// `permissionDenied`: the first will never work on this board however it
+/// is asked, and the second works fine as root. A UI that cannot tell them
+/// apart either hides a control that would work or offers one that never
+/// will.
+fn control_error(e: control::ControlError) -> ModuleError {
+    let message = e.to_string();
+    match e {
+        control::ControlError::Unsupported(_, _) => ModuleError::NotCapable(message),
+        control::ControlError::PermissionDenied(_, _) => ModuleError::PermissionDenied(message),
+        control::ControlError::Io(_, _) => ModuleError::Io(message),
     }
 }
 

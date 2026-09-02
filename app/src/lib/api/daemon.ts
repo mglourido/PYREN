@@ -311,11 +311,20 @@ async function callViaDevBridge<T>(
     throw new DaemonUnavailable(String(e));
   }
 
+  // Two shapes arrive here. The daemon's own refusals are
+  // `{ kind, message }` - see `docs/01-ipc-protocol.md` - while the bridge
+  // reports its own failures (no daemon, timeout) as a plain string.
   const reply = (await response.json().catch(() => null)) as
-    | { result?: T; error?: string }
+    | { result?: T; error?: string | { kind?: string; message?: string } }
     | null;
   if (!reply) throw new DaemonUnavailable("malformed reply from the dev bridge");
-  if (reply.error !== undefined) throw new DaemonUnavailable(reply.error);
+  if (reply.error !== undefined && reply.error !== null) {
+    const message =
+      typeof reply.error === "string"
+        ? reply.error
+        : (reply.error.message ?? "the daemon refused without saying why");
+    throw new DaemonUnavailable(message);
+  }
   return reply.result as T;
 }
 

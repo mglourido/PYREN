@@ -37,20 +37,22 @@ never been executed. Take a backup of the stock module first — the plan
 does this itself (`backup-driver`), but knowing where it went matters:
 `hp-wmi.ko.bak` beside the original.
 
-### 1.2 Structured IPC errors
-The socket now returns a *permission* failure the app has to recognise, and
-`fan.setMode` returns three different kinds of refusal — unsupported
-hardware, bad params, needs root — all as prose. The app gets away with
-matching on `io::ErrorKind` for the connect, but nothing can branch on the
-rest. `docs/01-ipc-protocol.md` already warns against string-matching them.
-Move to `{ kind, message }` before any caller needs to.
+### 1.2 Run `fan.calibrate` on the laptop **[HP]**
+The routine is written, unit-tested and wired into `pyren-ctl`; it has
+**never been run against hardware**, and unlike 1.1 nothing is blocking
+that but a root daemon. It needs only `switchMode`, which this board has,
+so it is the cheapest hardware experiment left:
 
-### 1.3 Calibration
-`fanMaxRpm` is the one input the hysteresis wants and never has, so it
-currently falls back to comparing PWM values instead of RPM. The routine is
-specified in `docs/04-fan-control-logic.md` §Calibration (max for 30 s,
-read the fans, restore) and is worth doing right after 1.1, because on this
-board it is also the honest way to find out what full speed *is*.
+```sh
+cd daemon && sudo -E cargo run -p pyren-daemon      # terminal 1
+cargo run -q -p pyren-ctl -- fan calibrate          # terminal 2, loud
+```
+
+*Done when*: `fanMaxRpm` is a number in `fan.getStatus`, and the sample
+trace in the reply is in `FINDINGS.md` next to the `max`/`auto` one. Worth
+doing **before** 1.1 rather than after: it is the number the installer's
+`cpuMaxRpm`/`gpuMaxRpm` patch wants, and measuring it with the stock driver
+means the patched one can be given a real value on its first build.
 
 ---
 
@@ -238,6 +240,42 @@ Eco and Balanced on its own — is the `power` supervisor.
 Newest first. Kept because the *reasons* are the useful part - several of
 these replaced an earlier version of themselves, and knowing why saves
 someone re-proposing it.
+
+- **Structured IPC errors** (was 1.2): a refusal is now
+  `{ kind, message }` instead of a sentence, with eleven kinds and one rule
+  - branch on `kind`, show `message`. The distinction that pays for it is
+  `notCapable` against `permissionDenied`: the first will never work on
+  this board however it is asked and the second works fine as root, and a
+  UI that conflates them either offers to elevate for hardware that will
+  never comply or reports working hardware as broken. `ModuleError::Other`
+  is gone - all 31 uses were reclassified, which was most of the work and
+  the actual point, since a catch-all variant is how the prose happened.
+  `pyren-ctl` turns the kind into an exit code (2/3/4/5/6) so a script can
+  branch without reading English. Two decisions worth keeping: an unknown
+  kind is treated as `failed` rather than refused, because a client that
+  cannot parse a newer daemon's refusal is worse than one that shows it;
+  and both clients still accept a bare-string `error`, because reading an
+  unparseable error as *absent* would turn a refusal into a silent success
+  - which is exactly what `and_then(Value::as_str)` would have done.
+  **The app only carries the message through**: a Tauri command's error is
+  a string and nothing branches yet. Wiring the kind into admin mode is the
+  obvious next step and belongs to whoever owns that flow - `notCapable` is
+  the case where "run as administrator" must *not* be offered.
+
+- **Calibration** (was 1.3): `fan.calibrate` - max, watch the fans, keep
+  the peak, put back the mode it found - plus `fan1MaxRpm`/`fan2MaxRpm` in
+  `fan.json` and `pyren-ctl fan calibrate`. Three decisions worth keeping:
+  it **stops as soon as the reading settles** (the fans reach ~3900 rpm in
+  six seconds here, so a fixed thirty is twenty-four seconds of noise that
+  measures nothing); a run that did not move the fans **stores nothing**,
+  because a machine's idle speed recorded as its ceiling is worse than no
+  calibration at all - the hysteresis would believe every target above idle
+  was already reached; and the restore is a `Drop` guard rather than a line
+  at the end, falling back to `auto` when the observed mode cannot be put
+  back, because leaving a machine at full speed is the worse failure. It
+  needs only `switchMode`, so it runs on 8D2F. **Not yet run on hardware** -
+  that is now 1.3 above. No app UI either: the fan pages were being edited
+  in another session when this landed.
 
 - **`pyren-ctl`**, a shell client over the same socket: `status`,
   `power set/tune/auto/os-profile`, `fan set/curve/diagnose`, `--json` on

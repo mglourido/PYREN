@@ -20,6 +20,7 @@ mod args;
 use std::process::ExitCode;
 
 use pyren_core::client::{self, ClientError};
+use pyren_core::ErrorKind;
 use serde_json::{json, Value};
 
 const HELP: &str = "\
@@ -70,8 +71,17 @@ The socket is $PYREN_SOCKET, or /tmp/pyren-daemon.sock. Reaching a
 daemon running as root means being in the 'pyren' group.
 ";
 
+// Exit codes a script can branch on, which is the point of the daemon
+// answering with a `kind` rather than a sentence. "Refused" on its own
+// tells a caller nothing about whether to fix the command, wait, or stop.
 const USAGE_ERROR: u8 = 2;
 const UNREACHABLE: u8 = 3;
+/// This machine will not do it however it is asked. Stop retrying.
+const NOT_CAPABLE: u8 = 4;
+/// The daemon was reached and is running unprivileged.
+const NEEDS_ROOT: u8 = 5;
+/// Something else has the hardware. Asking again later is the fix.
+const BUSY: u8 = 6;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -102,11 +112,42 @@ fn main() -> ExitCode {
                      \x20 (or run this once through: newgrp pyren)"
                 );
             }
-            ExitCode::from(match e {
-                ClientError::Daemon(_) => 1,
-                _ => UNREACHABLE,
-            })
+            if e.needs_root() {
+                // The opposite problem to the one above, and it is worth
+                // saying which: there the caller lacks a group, here the
+                // daemon lacks root, and swapping the two fixes wastes an
+                // evening.
+                eprintln!(
+                    "  the daemon was reached but is running unprivileged, so it\n\
+                     \x20 cannot write to the hardware. Restart it as root:\n\
+                     \x20 sudo -E cargo run -p pyren-daemon"
+                );
+            }
+            ExitCode::from(exit_code(&e))
         }
+    }
+}
+
+/// Turns a refusal into something a shell script can act on.
+fn exit_code(e: &ClientError) -> u8 {
+    let Some(kind) = e.kind() else {
+        // Either not a refusal at all, or a kind this build does not know.
+        // Both mean "the daemon is not where the answer is".
+        return match e {
+            ClientError::Daemon { .. } => 1,
+            _ => UNREACHABLE,
+        };
+    };
+    match kind {
+        // The daemon rejecting the arguments and this binary rejecting
+        // them are the same mistake, so they get the same code.
+        ErrorKind::InvalidParams | ErrorKind::UnknownMethod | ErrorKind::UnknownModule => {
+            USAGE_ERROR
+        }
+        ErrorKind::NotCapable | ErrorKind::Unsupported => NOT_CAPABLE,
+        ErrorKind::PermissionDenied => NEEDS_ROOT,
+        ErrorKind::Busy => BUSY,
+        _ => 1,
     }
 }
 

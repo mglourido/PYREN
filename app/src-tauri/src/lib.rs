@@ -95,10 +95,34 @@ fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, Strin
     reader.read_line(&mut response_line).map_err(|e| e.to_string())?;
 
     let response: Value = serde_json::from_str(&response_line).map_err(|e| e.to_string())?;
-    if let Some(err) = response.get("error").and_then(Value::as_str) {
-        return Err(err.to_string());
+    if let Some(err) = response.get("error") {
+        return Err(daemon_error(err));
     }
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// The daemon answers a refusal with `{ kind, message }` - `kind` being a
+/// closed set the UI can branch on, `message` being prose for a person.
+///
+/// Only the message crosses into the frontend today, because a Tauri
+/// command's error is a string and nothing on the other side branches yet.
+/// The kind is where admin mode should look when it does: `permissionDenied`
+/// is a daemon running unprivileged, and `notCapable` is hardware that will
+/// never do it however it is asked - offering to elevate for the second is
+/// the mistake this field exists to prevent.
+///
+/// A bare string is a daemon older than that format, and is passed through
+/// rather than dropped: reading an unparseable error as *absent* would turn
+/// a refusal into a silent success.
+fn daemon_error(error: &Value) -> String {
+    match error {
+        Value::String(message) => message.clone(),
+        _ => error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the daemon refused without saying why")
+            .to_string(),
+    }
 }
 
 /// The daemon's socket only admits root and members of the `pyren`

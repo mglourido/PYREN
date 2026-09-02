@@ -11,6 +11,8 @@ use std::os::unix::net::UnixStream;
 
 use serde_json::Value;
 
+use crate::ErrorKind;
+
 /// Default socket path, matching the daemon's own unprivileged fallback.
 pub const DEFAULT_SOCKET: &str = "/tmp/pyren-daemon.sock";
 
@@ -80,16 +82,42 @@ pub enum ClientError {
     #[error("pyren-daemon sent something that is not a response: {0}")]
     Protocol(String),
     /// The daemon answered, and the answer was a refusal.
-    #[error("{0}")]
-    Daemon(String),
+    ///
+    /// `kind` is kept as the raw string rather than a parsed
+    /// [`crate::ErrorKind`] on purpose: a newer daemon may name a kind this
+    /// build has never heard of, and a client that fails to parse the
+    /// refusal is worse than one that shows it. Compare against
+    /// `ErrorKind::_.as_str()` to branch.
+    #[error("{message}")]
+    Daemon { kind: String, message: String },
 }
 
 impl ClientError {
     /// Whether this is "you are not allowed to open the socket", which has
     /// a specific fix worth telling the user about.
+    ///
+    /// Deliberately *not* the same question as [`Self::needs_root`]: this
+    /// one is about reaching the daemon at all, that one is about the
+    /// daemon reaching the hardware, and they have different fixes.
     pub fn is_permission_denied(&self) -> bool {
         matches!(self, Self::Connect { source, .. }
             if source.kind() == std::io::ErrorKind::PermissionDenied)
+    }
+
+    /// The daemon was reached, did the work, and could not write: it is
+    /// running unprivileged. The fix is to restart *it* as root, not to
+    /// change anything about the caller.
+    pub fn needs_root(&self) -> bool {
+        self.kind() == Some(ErrorKind::PermissionDenied)
+    }
+
+    /// The parsed kind of a refusal, or `None` when this was not a refusal
+    /// or names a kind this build does not know.
+    pub fn kind(&self) -> Option<ErrorKind> {
+        match self {
+            Self::Daemon { kind, .. } => ErrorKind::parse(kind),
+            _ => None,
+        }
     }
 }
 
@@ -118,8 +146,28 @@ pub fn call(module: &str, method: &str, params: Value) -> Result<Value, ClientEr
 
     let parsed: Value =
         serde_json::from_str(&response).map_err(|e| ClientError::Protocol(e.to_string()))?;
-    if let Some(error) = parsed.get("error").and_then(Value::as_str) {
-        return Err(ClientError::Daemon(error.to_string()));
+    if let Some(error) = parsed.get("error") {
+        // A bare string is a daemon older than the `{ kind, message }`
+        // format. Reading it as `failed` keeps the message in front of the
+        // user instead of turning a refusal into a silent success, which
+        // is what treating an unreadable error as absent would do.
+        let (kind, message) = match error {
+            Value::String(message) => (ErrorKind::Failed.as_str().to_string(), message.clone()),
+            Value::Object(_) => (
+                error.get("kind").and_then(Value::as_str).unwrap_or("failed").to_string(),
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the daemon refused without saying why")
+                    .to_string(),
+            ),
+            other => {
+                return Err(ClientError::Protocol(format!(
+                    "the daemon's error field is neither a string nor an object: {other}"
+                )))
+            }
+        };
+        return Err(ClientError::Daemon { kind, message });
     }
     Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
 }

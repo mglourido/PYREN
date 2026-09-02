@@ -182,11 +182,21 @@ fn handle_connection(stream: UnixStream, registry: &Registry) -> std::io::Result
 
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(req) => registry.dispatch(req),
-            Err(e) => Response::err(0, format!("invalid request: {e}")),
+            Err(e) => Response::err(
+                0,
+                crate::ErrorKind::MalformedRequest,
+                format!("invalid request: {e}"),
+            ),
         };
 
-        let mut payload = serde_json::to_string(&response)
-            .unwrap_or_else(|_| "{\"id\":0,\"error\":\"internal serialization error\"}".to_string());
+        // The fallback has to be the same shape as everything else, or a
+        // client that branches on `error.kind` meets a bare string on the
+        // one reply it can do least about.
+        let mut payload = serde_json::to_string(&response).unwrap_or_else(|_| {
+            "{\"id\":0,\"error\":{\"kind\":\"internal\",\
+             \"message\":\"the daemon could not serialise its own reply\"}}"
+                .to_string()
+        });
         payload.push('\n');
         writer.write_all(payload.as_bytes())?;
     }

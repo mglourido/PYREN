@@ -318,7 +318,7 @@ impl Module for PowerModule {
                     .and_then(Value::as_str)
                     .and_then(PowerMode::parse)
                     .ok_or_else(|| {
-                        ModuleError::Other(
+                        ModuleError::InvalidParams(
                             "params.mode must be one of eco, balanced, performance, unlimited"
                                 .to_string(),
                         )
@@ -331,12 +331,12 @@ impl Module for PowerModule {
                     // say which one and why rather than a bare "failed".
                     return Err(ModuleError::PermissionDenied(report.failed.join("; ")));
                 }
-                serde_json::to_value(report).map_err(|e| ModuleError::Other(e.to_string()))
+                serde_json::to_value(report).map_err(|e| ModuleError::Internal(e.to_string()))
             }
 
             "setAutoConfig" => {
                 let auto: AutoConfig = serde_json::from_value(params)
-                    .map_err(|e| ModuleError::Other(format!("invalid auto config: {e}")))?;
+                    .map_err(|e| ModuleError::InvalidParams(format!("invalid auto config: {e}")))?;
                 let mut state = lock(&self.state);
                 state.switcher.reset();
                 state.config.auto = auto;
@@ -382,7 +382,7 @@ impl Module for PowerModule {
 
             "setApplyToOsProfile" => {
                 let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::Other("params.enabled must be a boolean".to_string())
+                    ModuleError::InvalidParams("params.enabled must be a boolean".to_string())
                 })?;
                 let mode = {
                     let mut state = lock(&self.state);
@@ -399,7 +399,7 @@ impl Module for PowerModule {
 
             "setRestoreOnStart" => {
                 let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::Other("params.enabled must be a boolean".to_string())
+                    ModuleError::InvalidParams("params.enabled must be a boolean".to_string())
                 })?;
                 let mut state = lock(&self.state);
                 state.config.restore_mode_on_start = enabled;
@@ -590,12 +590,12 @@ fn current_mode() -> Option<PowerMode> {
 /// percentage of nothing would be applied as a limit of nothing.
 fn percent_of(watts: f64, stock_uw: Option<u64>) -> Result<u8, ModuleError> {
     let stock_uw = stock_uw.ok_or_else(|| {
-        ModuleError::Other(
+        ModuleError::NotCapable(
             "this machine exposes no package power limit, so there is nothing to tune".to_string(),
         )
     })?;
     if !watts.is_finite() || watts <= 0.0 {
-        return Err(ModuleError::Other("power limits must be a positive number of watts".into()));
+        return Err(ModuleError::InvalidParams("power limits must be a positive number of watts".into()));
     }
     let percent = (watts * 1_000_000.0 / stock_uw as f64 * 100.0).round();
     Ok(percent.clamp(1.0, 100.0) as u8)

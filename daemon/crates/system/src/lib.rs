@@ -95,9 +95,9 @@ impl Module for SystemModule {
         match method {
             "getInfo" => {
                 let mut info = serde_json::to_value(&self.identity)
-                    .map_err(|e| ModuleError::Other(e.to_string()))?;
+                    .map_err(|e| ModuleError::Internal(e.to_string()))?;
                 let privileges = serde_json::to_value(self.privileges)
-                    .map_err(|e| ModuleError::Other(e.to_string()))?;
+                    .map_err(|e| ModuleError::Internal(e.to_string()))?;
                 // Merged rather than nested inside the identity struct:
                 // this says something about the daemon, not the machine.
                 info["privileges"] = privileges;
@@ -108,7 +108,7 @@ impl Module for SystemModule {
                 // data rather than taking the whole daemon down with it.
                 let mut sampler = self.sampler.lock().unwrap_or_else(|e| e.into_inner());
                 serde_json::to_value(sampler.sample())
-                    .map_err(|e| ModuleError::Other(e.to_string()))
+                    .map_err(|e| ModuleError::Internal(e.to_string()))
             }
             other => Err(ModuleError::UnknownMethod(other.to_string())),
         }

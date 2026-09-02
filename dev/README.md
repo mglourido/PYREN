@@ -136,7 +136,7 @@ that move them are in the README's deployment section.
 ## Verifying a change
 
 ```sh
-cd daemon && cargo test && cargo clippy --all-targets   # 178 tests, 0 warnings
+cd daemon && cargo test && cargo clippy --all-targets   # 185 tests, 0 warnings
 cd app && bun run check && bun run build
 cd app/src-tauri && cargo check
 sh -n tools/pyren-check.sh
