@@ -11,6 +11,7 @@ members = [
     "crates/system",
     "crates/power",
     "crates/rgb",
+    "crates/overclock",
 ]
 
 [workspace.package]

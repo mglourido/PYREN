@@ -158,29 +158,31 @@ real backend decision before any daemon work:
   which catches syntax and nothing else. `shellcheck` wasn't added because
   it isn't installed here and a lint nobody has run locally would land red.
 
-### GPU overclocking — last on purpose
+### GPU overclocking — what is left of it
 
-The last piece of the profiles, and deliberately last. Everything the power
-module does today stays **inside the envelope the firmware shipped**;
-overclocking is the first feature that would leave it, so it needs more
-than a slider:
+The module landed (see §"Done"). What remains needs hardware or root
+rather than design:
 
-- The UI already has core/memory offset sliders driving local state only
-  (`system/advanced`), so the temptation to wire them up quickly is real.
-  Don't: an offset that is stable in a benchmark and not in a game is the
-  normal case, and the failure mode is a hang or corrupted VRAM, not an
-  error message.
-- NVIDIA offsets go through `nvidia-settings`/NVML and need coolbits or the
-  newer `nvidia-smi -lgc`/`--lock-memory-clocks`; the mechanism differs by
-  driver version, so probe rather than assume.
-- Whatever lands must: default to zero offset, never restore an offset at
-  boot without an explicit opt-in (unlike the power modes, a bad offset can
-  stop the machine booting to a desktop), apply in small steps with a
-  revert-on-failure timer, and say plainly in the UI that this is the one
-  feature that can damage a session's work.
-
-Raising CPU PL1/PL2 above stock belongs in the same bucket and under the
-same consent, not in the power profiles.
+- **No offset has ever been written, on any machine.** The development
+  laptop reads both NVIDIA offset attributes and refuses to be written to
+  them - its X screen has no `Coolbits`, and it is a Wayland session - so
+  the climb, the read-back and the revert have been exercised against
+  refusals and never against a card that says yes. Anyone with `Coolbits`
+  set: `pyren-ctl oc probe --write` first, then a small `oc set --core 15`.
+- **The clock lock has not been run as root.** `nvidia-smi
+  --lock-gpu-clocks` needs it and the development daemon runs
+  unprivileged, so what is proven today is that it refuses correctly with
+  `permissionDenied`. It is the one mechanism this laptop *can* do, so it
+  is the first thing to try once the systemd unit is installed.
+- **AMD Overdrive is detected and not driven.** `pp_od_clk_voltage` is a
+  two-line write away and stays unwritten until there is an AMD machine to
+  test on: a wrong value there does not fail with an error message. The
+  probe already says so in words.
+- **Raising CPU PL1/PL2 above stock** belongs behind the same consent, and
+  is deliberately not in the module yet: the `power` module owns those
+  registers and re-applies them, clamped to stock, on every mode change.
+  Doing it means giving one of the two modules ownership of the envelope,
+  which is a decision, not an addition.
 
 ---
 
@@ -255,6 +257,29 @@ Eco and Balanced on its own — is the `power` supervisor.
 Newest first. Kept because the *reasons* are the useful part - several of
 these replaced an earlier version of themselves, and knowing why saves
 someone re-proposing it.
+
+- **GPU overclocking** (was §3's "last on purpose"): the `overclock`
+  module, plus the page that drives it. The four conditions this file set
+  for it are what most of the code is: an offset defaults to zero, an
+  offset is never restored at boot without an explicit opt-in, an apply is
+  a climb in 15 MHz steps with a revert-on-failure timer, and the warning
+  is the daemon's own text rather than something the app can reword.
+  Decisions worth keeping: **the timer is a thread, not a check on the next
+  call**, because the case it exists for is exactly the one where no next
+  call arrives - the desktop is gone and the only thing still running is a
+  root daemon with a deadline; **the armed flag is persisted**, so a daemon
+  that starts and finds it set knows the machine went away while
+  overclocked and restores nothing that boot (`unconfirmedAtStart` says
+  so); **a knob that is known not to be writable is withdrawn from the
+  state**, since a slider that can only fail is worse than no slider; and
+  `reset` is refused in no state of the module, consent included, because
+  "put it back" must always work. `nvidia-smi --lock-gpu-clocks` is
+  included even though it is *not* an overclock - it cannot exceed what the
+  card ships with - because it is the only mechanism this laptop has and it
+  is the knob somebody on that page usually wants. The write-probe
+  (`oc probe --write`, a no-op assignment of the current offset) is what
+  turned "the offsets are readable" into "the offsets are readable and not
+  settable, because there is no Coolbits here".
 
 - **The driver installer wizard**, the last unbuilt piece of the frontend
   (`docs/03-frontend.md` §"Not built yet", roadmap item 6): `/drivers` now

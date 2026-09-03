@@ -76,6 +76,7 @@ dependencies = [
  "pyren-core",
  "pyren-fan",
  "pyren-installer",
+ "pyren-overclock",
  "pyren-power",
  "pyren-rgb",
  "pyren-system",
@@ -96,6 +97,17 @@ dependencies = [
 name = "pyren-installer"
 version = "0.1.0"
 dependencies = [
+ "pyren-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "pyren-overclock"
+version = "0.1.0"
+dependencies = [
+ "pyren-config",
  "pyren-core",
  "serde",
  "serde_json",

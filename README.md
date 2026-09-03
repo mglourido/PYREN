@@ -61,15 +61,16 @@ tools/      pyren-check.sh, the dependency-free compatibility check
      *untouched*. Every laptop's internal profiles are its own, so this
      project invents no numbers; `pyren-ctl power tune` is how one that
      somebody measured gets recorded. Nothing is ever raised above what the
-     firmware shipped — that would be overclocking, deliberately last.
+     firmware shipped — that is overclocking, and it lives behind the
+     `overclock` module's own consent rather than inside a power mode.
 
   Plus a background supervisor: two systems, one per power source.
   Unplugging drops to Balanced and plugging in steps up to Performance,
   each then refining towards Eco or Performance as conditions hold.
   Unlimited is never chosen for you.
 - `pyren-ctl`: a CLI over the same socket — `status`, `power set`,
-  `power tune --pl1 35W`, `fan curve 40:20,80:100`, `rgb probe`, and
-  `--json` on any of them. It exists mainly so a number someone measured on their own machine
+  `power tune --pl1 35W`, `fan curve 40:20,80:100`, `rgb probe`,
+  `oc set --core 90`, and `--json` on any of them. It exists mainly so a number someone measured on their own machine
   can be recorded without a slider.
 - Compatibility check: `pyren-check`, and `tools/pyren-check.sh` — a
   dependency-free POSIX shell twin to copy onto a machine where building
@@ -119,9 +120,51 @@ tools/      pyren-check.sh, the dependency-free compatibility check
   `/proc/acpi/call` is a single global interface with no locking, so every
   use goes through one process-wide lock in `pyren-core` — shared, because
   the fan cleaner will need it too.
+- `overclock` module: the one feature that leaves the envelope the firmware
+  shipped, and the only one whose failure mode is a frozen screen rather
+  than an error message — so three things stand between a slider and a
+  clock. A **consent** in the daemon's own words, refused until accepted
+  and version-stamped so a rewording stops counting; a **climb** in 15 MHz
+  steps, each written, read back and re-queried, that puts the card back
+  where it started if any step stops answering; and a **revert timer** that
+  undoes an applied change unless somebody confirms it — armed by the
+  daemon, disarmed by hand, and persisted, so a machine that went away
+  while overclocked restores nothing on the next boot and says why. What
+  each card can do is probed, never looked up: NVIDIA offsets through
+  `nvidia-settings` (which need `Coolbits`), NVIDIA clock locks through
+  `nvidia-smi` (which need root and stay inside what the card already
+  supports), AMD Overdrive detected and deliberately not driven, and Intel
+  reported for what it is — a frequency ceiling, not an offset, with
+  nothing there to overclock. On the test laptop the offsets read fine and
+  refuse to be written, so `pyren-ctl oc probe --write` finds that out by
+  writing one back at its current value and the UI withdraws the slider
+  rather than offering one that can only fail.
+- `hotkey` module + `pyren-osd`: **Fn+P, replicated** — the key the laptop
+  already has, and the widget Windows draws when it is pressed. Split at
+  the privilege boundary, because that is where the problem is: the daemon
+  hears the key (`/dev/input` is `root:input`, so nothing unprivileged can)
+  and cycles the mode; `pyren-osd`, a small GTK4 binary in the user's
+  session, draws the four modes in the middle of the screen over
+  everything else — a `wlr-layer-shell` overlay surface, which is the only
+  way to sit above a fullscreen game on Wayland, with an ordinary window as
+  the fallback where the protocol is missing. Between them is one new
+  method, `core.nextEvent`: a long poll that leaves the request/response
+  framing exactly as it was.
+
+  **No key is bound by default and there is no table of keycodes per
+  model** — `pyren-ctl hotkey learn` asks the machine, because which key a
+  laptop sends is not something that can be looked up (the board-list
+  mistake again). A key the kernel has no keycode for is bindable by its
+  raw scancode, so nothing about the system has to be changed to hear it:
+  no `setkeycodes`, no udev rule. The widget shows what actually happened,
+  refusals included — on the test laptop the mode currently does not move
+  at all, and it says so with the reason (see `dev/FINDINGS.md`).
+  **The one step never run is binding a real key**, which needs fingers on
+  the laptop; everything up to it is covered by tests.
 - App: a full OMEN Gaming Hub-style frontend — home dashboard, system vitals
   (basic + advanced views), performance control (power modes, fan
-  toggle/curve, power limits), GPU overclocking, lighting, graphics
+  toggle/curve, power limits), GPU overclocking (wired to the daemon,
+  consent gate and countdown included), lighting, graphics
   switcher, network booster, key mapping, plus settings, drivers and help
   pages. Fan and power writes reach the daemon, and the pages hide what
   this machine's driver cannot do rather than offering controls that

@@ -99,7 +99,8 @@ login (or `newgrp pyren` for one shell).
   disk. Fan and power controls reach the daemon; the pages hide what this
   machine cannot do.
 - **`pyren-ctl`**: `status`, `power set|tune|auto|os-profile`,
-  `fan set|curve|diagnose|calibrate`, `--json` on anything.
+  `fan set|curve|diagnose|calibrate`, `oc get|probe|consent|set|confirm`,
+  `--json` on anything.
 - **A socket other local users cannot open**: `0660`, group `pyren`
   (verified against a root daemon - a process outside the group gets
   `EACCES`).
@@ -115,8 +116,12 @@ login (or `newgrp pyren` for one shell).
 - **The installer's execution path** has never been run. It is `TODO.md`
   §1.1 and the single most valuable thing left, because it is also the test
   of whether this board can be given a fan percentage at all.
-- **Overclocking**, deliberately: it is the only feature that would leave
-  the envelope the firmware shipped, and it goes last.
+- **Writing a GPU offset.** The `overclock` module is built and wired to
+  the app, and on this laptop the NVIDIA offsets read fine and refuse to be
+  written: the X screen has no `Coolbits`. So the climb and the revert have
+  been exercised against refusals only. The clock lock (`nvidia-smi
+  --lock-gpu-clocks`) is the mechanism this machine *does* have, and it
+  needs the daemon to be running as root - see `TODO.md` §3.
 
 ## The rename
 

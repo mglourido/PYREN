@@ -10,6 +10,7 @@ use pyren_fan::FanModule;
 use pyren_installer::{
     execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
 };
+use pyren_overclock::OverclockModule;
 use pyren_power::PowerModule;
 use pyren_rgb::RgbModule;
 use pyren_system::{Compatibility, Controls, SystemModule};
@@ -107,6 +108,11 @@ fn main() {
     // by its model name, so the lightbar is one of the things `controls`
     // has to have been told about before the verdict is computed.
     let rgb = RgbModule::new();
+    // Probed here for the same reason as the lighting: whether a GPU can be
+    // tuned depends on the driver and the session, not on the model, so it
+    // is a question that has to be put to the machine before anything can
+    // be said about it.
+    let overclock = OverclockModule::new();
     let controls = Controls {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
@@ -156,11 +162,21 @@ fn main() {
         println!("  note:   {}", rgb.probe().per_key.detail);
     }
 
+    // One line per card, because "the overclocking page is empty" is
+    // answered by *which* of the mechanisms this machine has, and that
+    // differs between the two GPUs in the same laptop.
+    let gpu_tuning = overclock.probe();
+    println!("  gpu oc: {}", gpu_tuning.detail);
+    for gpu in &gpu_tuning.gpus {
+        println!("    {}: {}", gpu.name, gpu.detail);
+    }
+
     let mut registry = Registry::new();
     registry.register(Box::new(system));
     registry.register(Box::new(power));
     registry.register(Box::new(fan));
     registry.register(Box::new(rgb));
+    registry.register(Box::new(overclock));
     registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);
 

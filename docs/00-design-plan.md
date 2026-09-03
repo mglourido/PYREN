@@ -153,10 +153,16 @@ doesn't exist, because nothing has needed one yet.
    ships untouched, because per-chassis numbers are not something this
    project can invent; `pyren-ctl power tune` is how a measured one gets
    recorded.
-8. Overclocking — GPU offsets, and CPU limits above the firmware's own.
-   Deliberately last, and deliberately behind its own consent: everything
-   else in this project stays inside the envelope the machine shipped with.
-   See `dev/TODO.md` §3.
+8. ~~Overclocking — GPU offsets~~ — done as the `overclock` module, and
+   the only feature in this project that leaves the envelope the machine
+   shipped with, so it is the only one behind a consent of its own: an
+   offset is applied as a climb in small steps and undone automatically
+   unless somebody confirms it, and nothing is restored at boot without an
+   explicit opt-in. **CPU limits above the firmware's own are still not
+   here**: the `power` module owns those registers and re-applies them,
+   clamped to stock, on every mode change, so raising them means deciding
+   which module owns the envelope. See `docs/01-ipc-protocol.md`
+   §"`overclock` module" and `dev/TODO.md` §3.
 
 ## Open decisions (intentionally not settled by this scaffold)
 

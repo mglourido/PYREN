@@ -11,3 +11,4 @@ pyren-system = { path = "../crates/system" }
 pyren-power = { path = "../crates/power" }
 pyren-installer = { path = "../crates/installer" }
 pyren-rgb = { path = "../crates/rgb" }
+pyren-overclock = { path = "../crates/overclock" }

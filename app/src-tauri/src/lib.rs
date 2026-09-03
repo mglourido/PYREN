@@ -175,6 +175,59 @@ fn power_set_tuning(tuning: Value) -> Result<Value, String> {
     call_daemon("power", "setTuning", tuning)
 }
 
+/// GPU overclocking. The one module whose calls can leave the machine
+/// running outside what the firmware shipped, so three of its five
+/// commands exist purely to make that hard to do by accident: the consent,
+/// the confirmation, and the reset.
+///
+/// `request` is passed through as the daemon's params for the same reason
+/// the installer's is - the shape is documented in
+/// `docs/01-ipc-protocol.md`, and what makes an apply safe is the daemon's
+/// own rules (consent, the ramp, the revert timer), not a re-typing of the
+/// fields here.
+#[tauri::command]
+fn overclock_get_state() -> Result<Value, String> {
+    call_daemon("overclock", "getState", Value::Null)
+}
+
+/// `allowWrites` opts into the one question that costs a write: whether
+/// the clock offsets can be *set*, as opposed to merely read.
+#[tauri::command]
+fn overclock_probe(allow_writes: bool) -> Result<Value, String> {
+    call_daemon("overclock", "probe", json!({ "allowWrites": allow_writes }))
+}
+
+#[tauri::command]
+fn overclock_set_consent(accepted: bool) -> Result<Value, String> {
+    call_daemon("overclock", "setConsent", json!({ "accepted": accepted }))
+}
+
+#[tauri::command]
+fn overclock_apply(request: Value) -> Result<Value, String> {
+    call_daemon("overclock", "apply", request)
+}
+
+#[tauri::command]
+fn overclock_confirm() -> Result<Value, String> {
+    call_daemon("overclock", "confirm", Value::Null)
+}
+
+/// Undoes a pending change now instead of at the end of its timer.
+#[tauri::command]
+fn overclock_cancel() -> Result<Value, String> {
+    call_daemon("overclock", "cancel", Value::Null)
+}
+
+#[tauri::command]
+fn overclock_reset(gpu: Option<String>) -> Result<Value, String> {
+    call_daemon("overclock", "reset", json!({ "gpu": gpu }))
+}
+
+#[tauri::command]
+fn overclock_set_restore_on_start(enabled: bool) -> Result<Value, String> {
+    call_daemon("overclock", "setRestoreOnStart", json!({ "enabled": enabled }))
+}
+
 /// The driver installer, in the three parts the module is split into.
 ///
 /// `request` is passed through as the daemon's params rather than being
@@ -367,6 +420,14 @@ pub fn run() {
             power_set_restore_on_start,
             power_set_tuning,
             power_set_apply_to_os_profile,
+            overclock_get_state,
+            overclock_probe,
+            overclock_set_consent,
+            overclock_apply,
+            overclock_confirm,
+            overclock_cancel,
+            overclock_reset,
+            overclock_set_restore_on_start,
             installer_inspect,
             installer_plan,
             installer_apply,

@@ -257,6 +257,87 @@ export type FanDiagnosis = {
   wroteToHardware: boolean;
 };
 
+/* --- overclock ----------------------------------------------------------
+ *
+ * Mirrors `daemon/crates/overclock/src/{lib,plan,probe}.rs`. The wire
+ * shapes, and the reasons this module has a consent and a confirmation
+ * when no other one does, are in `docs/01-ipc-protocol.md`.
+ */
+
+/** An inclusive range the driver itself advertised. */
+export type OcRange = { min: number; max: number };
+
+/** Clocks pinned to a range inside the stock one. */
+export type OcClockLock = { minMhz: number; maxMhz: number };
+
+/** What a card was asked to run at. All-zero is stock. */
+export type OcTarget = {
+  coreOffsetMhz: number;
+  memOffsetMhz: number;
+  coreClock: OcClockLock | null;
+};
+
+export type OcVendor = "nvidia" | "amd" | "intel" | "unknown";
+
+/**
+ * One GPU and what of it can be moved. A `null` range is a knob this card
+ * does not have - never a knob with a range of zero - so a UI draws a
+ * slider only where there is one to draw.
+ */
+export type OcGpu = {
+  id: string;
+  name: string;
+  vendor: OcVendor;
+  driver: string;
+  /** Whether anything here can be driven at all. */
+  drivable: boolean;
+  coreOffset: OcRange | null;
+  memOffset: OcRange | null;
+  /** The frequencies this card lists as supported; a lock stays inside them. */
+  clockLock: OcRange | null;
+  /** Whether the offsets can be *set*, which reading them does not answer.
+   *  `null` until a probe with `allowWrites` has asked. */
+  offsetsWritable: boolean | null;
+  /** What can be done to this card, or why nothing can, in a sentence. */
+  detail: string;
+  /** What a human confirmed, as opposed to what is on the card this second. */
+  confirmed: OcTarget;
+  applied: OcTarget | null;
+};
+
+export type OverclockState = {
+  supported: boolean;
+  detail: string;
+  gpus: OcGpu[];
+  defaultGpu: string | null;
+  /** The warning, in the daemon's words. Shown as it arrives: the app does
+   *  not get to reword what somebody is agreeing to. */
+  consent: { text: string; version: number; accepted: boolean; acceptedAt: number | null };
+  /** An applied change waiting to be confirmed. The daemon undoes it when
+   *  `secondsLeft` runs out, including - especially - when the desktop that
+   *  should have confirmed it is gone. */
+  pending: { gpu: string; secondsLeft: number; revertsTo: OcTarget } | null;
+  holdSecs: number;
+  restoreOnStart: boolean;
+  restoredOnStart: boolean;
+  /** The last change was never confirmed, so this boot restored nothing. */
+  unconfirmedAtStart: boolean;
+  note: string | null;
+  error: string | null;
+  configPath: string;
+  saved: boolean;
+  saveError: string | null;
+};
+
+/** Fields left out are left alone; `clockLock: null` takes a lock off. */
+export type OverclockRequest = {
+  gpu?: string;
+  coreOffsetMhz?: number;
+  memOffsetMhz?: number;
+  clockLock?: OcClockLock | null;
+  holdSecs?: number;
+};
+
 /* --- installer ---------------------------------------------------------
  *
  * Mirrors `daemon/crates/installer/src/{detect,plan,execute,patch}.rs`.
@@ -402,6 +483,14 @@ const DAEMON_ROUTES: Record<
   power_set_restore_on_start: { module: "power", method: "setRestoreOnStart" },
   power_set_tuning: { module: "power", method: "setTuning", params: (a) => a.tuning },
   power_set_apply_to_os_profile: { module: "power", method: "setApplyToOsProfile" },
+  overclock_get_state: { module: "overclock", method: "getState" },
+  overclock_probe: { module: "overclock", method: "probe" },
+  overclock_set_consent: { module: "overclock", method: "setConsent" },
+  overclock_apply: { module: "overclock", method: "apply", params: (a) => a.request },
+  overclock_confirm: { module: "overclock", method: "confirm" },
+  overclock_cancel: { module: "overclock", method: "cancel" },
+  overclock_reset: { module: "overclock", method: "reset" },
+  overclock_set_restore_on_start: { module: "overclock", method: "setRestoreOnStart" },
   installer_inspect: { module: "installer", method: "inspect" },
   installer_plan: { module: "installer", method: "plan", params: (a) => a.request },
   installer_apply: { module: "installer", method: "apply", params: (a) => a.request },
@@ -486,6 +575,30 @@ export const daemon = {
   /** Whether a mode change also moves the OS power profile. */
   setApplyToOsProfile: (enabled: boolean) =>
     call<PowerState>("power_set_apply_to_os_profile", { enabled }),
+  /** Every GPU, what can be tuned on it, and what is set right now. */
+  overclockState: () => call<OverclockState>("overclock_get_state"),
+  /** `allowWrites` opts into the one check that touches the hardware:
+   *  whether an offset can be set, asked by writing back the current one. */
+  overclockProbe: (allowWrites = false) =>
+    call<OverclockState>("overclock_probe", { allowWrites }),
+  /** Accepting the warning is what unlocks `applyOverclock`, and nothing
+   *  else; withdrawing it puts every card back to stock. */
+  setOverclockConsent: (accepted: boolean) =>
+    call<OverclockState>("overclock_set_consent", { accepted }),
+  /** Applies in steps and arms the daemon's revert timer. The reply's
+   *  `pending` is the countdown a UI has to show - and act on, because
+   *  saying nothing means the change is undone. */
+  applyOverclock: (request: OverclockRequest) =>
+    call<OverclockState>("overclock_apply", { request }),
+  /** Keeps what was just applied. */
+  confirmOverclock: () => call<OverclockState>("overclock_confirm"),
+  /** Undoes it now rather than at the end of the countdown - the same
+   *  revert the daemon would do on its own. */
+  cancelOverclock: () => call<OverclockState>("overclock_cancel"),
+  /** Back to the clocks the firmware shipped. Never refused. */
+  resetOverclock: (gpu?: string) => call<OverclockState>("overclock_reset", { gpu }),
+  setOverclockRestoreOnStart: (enabled: boolean) =>
+    call<OverclockState>("overclock_set_restore_on_start", { enabled }),
   /** What this machine has, and whether the patched driver is needed. */
   installerInspect: () => call<InstallerInspection>("installer_inspect"),
   /** Pure: works out the steps without touching anything. */

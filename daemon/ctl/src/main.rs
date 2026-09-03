@@ -73,6 +73,25 @@ LIGHTS
   rgb restore-on-start <on|off>
                                'set' and 'zones' also take --brightness 0-100
 
+GPU
+  oc get                       what can be tuned on each GPU, what is set,
+                               and - where nothing can be - why not
+  oc probe [--write]           ask the machine again. --write finds out
+                               whether the offsets can actually be *set*,
+                               by writing one back at the value it has
+  oc consent <on|off>          accept the warning 'oc get' prints. Nothing
+                               can be applied until it is, and turning it
+                               off puts every card back to stock
+  oc set [--gpu id] [--core MHz] [--memory MHz] [--lock min-max|off]
+         [--hold SECS]         apply, in steps, and wait to be confirmed.
+                               Unconfirmed changes are undone by the daemon
+  oc confirm                   keep what was just applied
+  oc cancel                    undo it now, without waiting for the timer
+  oc reset [--gpu id]          back to the clocks the firmware shipped
+  oc restore-on-start <on|off> re-apply the confirmed offsets at boot. Off
+                               by default, and skipped after a boot that
+                               followed an unconfirmed change
+
 OPTIONS
   --json                       print the daemon's reply verbatim
   -h, --help
@@ -285,6 +304,46 @@ fn run(command: &args::Command) -> Run {
                 command,
                 client::call("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))?,
                 print_rgb,
+            )
+        }
+
+        ["oc", "get"] => show(command, client::call("overclock", "getState", Value::Null)?, print_oc),
+        ["oc", "probe"] => {
+            let allow_writes = command.options.contains_key("write");
+            show(
+                command,
+                client::call("overclock", "probe", json!({ "allowWrites": allow_writes }))?,
+                print_oc,
+            )
+        }
+        ["oc", "consent", value] => {
+            let accepted = word_switch("consent", value)?;
+            show(
+                command,
+                client::call("overclock", "setConsent", json!({ "accepted": accepted }))?,
+                print_oc,
+            )
+        }
+        ["oc", "set"] => oc_set(command),
+        ["oc", "confirm"] => {
+            show(command, client::call("overclock", "confirm", Value::Null)?, print_oc)
+        }
+        ["oc", "cancel"] => {
+            show(command, client::call("overclock", "cancel", Value::Null)?, print_oc)
+        }
+        ["oc", "reset"] => {
+            let params = match command.option("gpu") {
+                Some(gpu) => json!({ "gpu": gpu }),
+                None => Value::Null,
+            };
+            show(command, client::call("overclock", "reset", params)?, print_oc)
+        }
+        ["oc", "restore-on-start", value] => {
+            let enabled = word_switch("restore-on-start", value)?;
+            show(
+                command,
+                client::call("overclock", "setRestoreOnStart", json!({ "enabled": enabled }))?,
+                print_oc,
             )
         }
 
@@ -662,6 +721,116 @@ fn print_diagnosis(diagnosis: &Value) {
     }
     if let Some(notice) = diagnosis.get("driverNotice").and_then(Value::as_str) {
         println!("\n  {notice}");
+    }
+}
+
+/// `oc set`, which is the one command here that changes a clock.
+///
+/// Every option is optional and what is left out is left alone, so
+/// `oc set --core 90` means "and don't touch the memory" rather than "and
+/// put the memory back to stock" - the same rule the daemon applies to the
+/// request it receives.
+fn oc_set(command: &args::Command) -> Run {
+    let mut params = serde_json::Map::new();
+    if let Some(gpu) = command.option("gpu") {
+        params.insert("gpu".into(), json!(gpu));
+    }
+    if let Some(core) = command.number("core")? {
+        params.insert("coreOffsetMhz".into(), json!(core.round() as i64));
+    }
+    if let Some(memory) = command.number("memory")? {
+        params.insert("memOffsetMhz".into(), json!(memory.round() as i64));
+    }
+    if let Some(hold) = command.number("hold")? {
+        params.insert("holdSecs".into(), json!(hold.round().max(0.0) as u64));
+    }
+    if let Some(lock) = command.option("lock") {
+        params.insert("clockLock".into(), parse_clock_lock(lock)?);
+    }
+    if params.is_empty() {
+        return Err(Failure::Usage(
+            "oc set needs at least one of --core, --memory or --lock".into(),
+        ));
+    }
+
+    let reply = client::call("overclock", "apply", Value::Object(params))?;
+    if command.json {
+        print_json(&reply);
+        return Ok(());
+    }
+    print_oc(&reply);
+    // The daemon has already armed its timer; saying so is the difference
+    // between a CLI that applied an overclock and one that applied an
+    // overclock the user has 20 seconds to keep.
+    if let Some(pending) = reply.get("pending").filter(|p| !p.is_null()) {
+        println!(
+            "  run 'pyren-ctl oc confirm' within {:.0}s to keep this; \
+             otherwise the daemon undoes it",
+            pending.get("secondsLeft").and_then(Value::as_f64).unwrap_or(0.0)
+        );
+    }
+    Ok(())
+}
+
+/// `--lock 2000-2500`, or `--lock off` to hand the clocks back to the
+/// driver. A JSON `null` is what "off" is on the wire, and it is a
+/// different request from not passing `--lock` at all.
+fn parse_clock_lock(spec: &str) -> Result<Value, Failure> {
+    if matches!(spec, "off" | "none" | "auto") {
+        return Ok(Value::Null);
+    }
+    let (min, max) = spec
+        .split_once('-')
+        .ok_or_else(|| Failure::Usage(format!("--lock takes MIN-MAX or off, not '{spec}'")))?;
+    let parse = |value: &str, end: &str| {
+        value
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| Failure::Usage(format!("--lock's {end} is not a number: '{value}'")))
+    };
+    Ok(json!({ "minMhz": parse(min, "minimum")?, "maxMhz": parse(max, "maximum")? }))
+}
+
+fn print_oc(state: &Value) {
+    let empty = Vec::new();
+    let gpus = state.get("gpus").and_then(Value::as_array).unwrap_or(&empty);
+    if gpus.is_empty() {
+        row("gpus", "none found");
+    }
+    for gpu in gpus {
+        // The name first, then the sentence that says what can be done to
+        // it, because on a hybrid laptop the two cards answer differently
+        // and a single verdict for the machine would be wrong about one.
+        row("gpu", format!("{} ({})", text(gpu, "name"), text(gpu, "id")));
+        row("", text(gpu, "detail"));
+        let confirmed = gpu.get("confirmed").cloned().unwrap_or(Value::Null);
+        let core = confirmed.get("coreOffsetMhz").and_then(Value::as_i64).unwrap_or(0);
+        let memory = confirmed.get("memOffsetMhz").and_then(Value::as_i64).unwrap_or(0);
+        row("", format!("kept: core {core:+} MHz, memory {memory:+} MHz"));
+    }
+
+    let consent = state.get("consent").cloned().unwrap_or(Value::Null);
+    row("consent", yes_no(consent.get("accepted")));
+    if consent.get("accepted").and_then(Value::as_bool) != Some(true) {
+        println!("  {}", text(&consent, "text"));
+    }
+    row("restore", yes_no(state.get("restoreOnStart")));
+
+    if let Some(pending) = state.get("pending").filter(|p| !p.is_null()) {
+        row(
+            "pending",
+            format!(
+                "{} - undone in {:.0}s unless confirmed",
+                text(pending, "gpu"),
+                pending.get("secondsLeft").and_then(Value::as_f64).unwrap_or(0.0)
+            ),
+        );
+    }
+    if let Some(note) = state.get("note").and_then(Value::as_str) {
+        println!("  - {note}");
+    }
+    if let Some(error) = state.get("error").and_then(Value::as_str) {
+        println!("  ! {error}");
     }
 }
 

@@ -849,6 +849,186 @@ The daemon does **not** `modprobe` at startup. Probing is a question, and
 a question should not change the answer; the module is loaded only on a
 call that needs it, and only when running as root.
 
+## `overclock` module
+
+| method | params | result | status |
+|---|---|---|---|
+| `overclock.getState` | none | every GPU, what can be moved on it, and what is set | ✅ implemented, read-only |
+| `overclock.probe` | `{ "allowWrites"?: bool }` | a **fresh** look, replacing the startup one | ✅ implemented; writes only with `allowWrites` |
+| `overclock.setConsent` | `{ "accepted": bool }` | the state | ✅ implemented |
+| `overclock.apply` | `{ "gpu"?, "coreOffsetMhz"?, "memOffsetMhz"?, "clockLock"?, "holdSecs"? }` | the state, with `pending` armed | ✅ implemented; clock locks need root, offsets need Coolbits |
+| `overclock.confirm` | none | the state | ✅ implemented |
+| `overclock.cancel` | none | the state | ✅ implemented |
+| `overclock.reset` | `{ "gpu"? }` | the state | ✅ implemented |
+| `overclock.setRestoreOnStart` | `{ "enabled": bool }` | the state | ✅ implemented |
+
+This is the one module that can leave the envelope the firmware shipped,
+and the only one whose failure mode is not an error message: an offset
+that survives a benchmark can still hang a machine in a game, and what
+happens then is a frozen screen and lost work. So three things stand
+between a slider and a clock, and a client cannot skip any of them.
+
+### 1. Consent, in the daemon's words
+
+`getState.consent.text` is the warning. It is served by the daemon rather
+than written into the app on purpose — what somebody agreed to should not
+be something a client can reword — and `setConsent` records that it was
+accepted, with a version stamp so a future rewording stops counting.
+Until then `apply` refuses with `invalidParams`. `reset` never does:
+**there is no state of this module in which "put it back" is refused.**
+
+Withdrawing consent (`accepted: false`) is not a preference change; it
+puts every card this daemon has moved back to stock.
+
+### 2. A climb, not a write
+
+An apply is walked in steps — 15 MHz of core, 50 MHz of memory at a time —
+and each step is written, read back and re-queried before the next. That
+does **not** find a stable offset; only a workload can do that. What it
+buys is a bounded distance between "the card was answering" and "the card
+stopped", so a failure names the value that caused it and the card is put
+back to where it started rather than left at whichever step died.
+
+Nothing is ever asked for that the driver has not advertised: the ranges in
+`coreOffset` / `memOffset` / `clockLock` are read from the hardware, a
+request outside them is clamped, and the clamp is reported in `note`
+rather than applied silently.
+
+### 3. A revert timer, disarmed by hand
+
+`apply` arms `pending`, and the daemon undoes the change by itself when
+`secondsLeft` runs out. `confirm` keeps it; `cancel` undoes it early. Both
+paths do the *same* revert, because "the timer ran out" and "the user
+pressed undo" must not be two pieces of code that can disagree.
+
+The case this exists for is the one where **no further call arrives**: the
+desktop is gone, the app is gone, and the only thing still running is a
+root daemon with a thread and a deadline. A client that closes mid-
+countdown has not kept an overclock — it has arranged for one to be undone.
+
+That timer also spans reboots. The armed flag is persisted, so a daemon
+that starts and finds it still set knows the machine went away while
+overclocked; on such a boot `restoreOnStart` is ignored, nothing is
+written, and `unconfirmedAtStart` says so.
+
+### What each machine can actually do is probed
+
+| vendor | mechanism | needs | status |
+|---|---|---|---|
+| NVIDIA | `nvidia-settings` clock offsets | an X display whose screen has `Coolbits` | implemented |
+| NVIDIA | `nvidia-smi --lock-gpu-clocks` | root | implemented |
+| AMD | `pp_od_clk_voltage` (Overdrive) | `amdgpu.ppfeaturemask` | **detected, not driven** |
+| Intel | `gt_max_freq_mhz` | — | nothing to overclock: it is a ceiling, not an offset |
+
+Which of these a laptop has is decided by the driver version, the session
+and the X configuration far more than by the model of the card, so all of
+them are probed and none is looked up — the same rule as
+§"`controls` and `compatibility` are measured, not looked up".
+
+Two of the rows deserve their reasons in full:
+
+- **A clock lock is not an overclock.** `--lock-gpu-clocks` cannot ask for
+  a frequency the card was not shipped able to run. It is here because it
+  is the knob that decides how long the card is willing to *stay* there,
+  which is what somebody on this page is usually after — and on the laptop
+  this was written on it is the only mechanism that works at all.
+- **AMD Overdrive is detected and deliberately not driven**, for the same
+  reason `rgb` probes the per-key keyboard without driving it: there is no
+  AMD machine to test on, and a wrong write to `pp_od_clk_voltage` does not
+  fail with an error message. `detail` says so in words.
+
+### What was found on the development laptop
+
+Driver 610.57.04, RTX 5060 Laptop GPU, Wayland session with XWayland:
+
+- both offset attributes **read** fine, advertising -1000..1000 MHz for the
+  core and -2000..6000 for the memory transfer rate;
+- writing one back at its *current* value — a no-op assignment, and the
+  only way to tell a readable attribute from a settable one — is refused
+  with "The current user does not have permission for operation", which is
+  what a screen with no `Coolbits` says.
+
+So the offsets are visible and not settable here, and
+`overclock.probe --write` is what turns that from a guess into a sentence.
+When `offsetsWritable` comes back `false` the offset ranges are withdrawn
+from the state as well: a slider that can only ever fail is worse than no
+slider.
+
+### What this module will not do
+
+- **Raise the CPU's package power limits.** It belongs behind this same
+  consent (`dev/TODO.md`), and it is not here because the `power` module
+  owns those registers and re-applies them, clamped to stock, on every mode
+  change. Two owners on one register is a worse bug than a missing feature.
+- **Undervolt**, or set a fan curve of its own. More heat is the `fan`
+  module's problem, and it is already good at it.
+
+## `hotkey` module
+
+The laptop's own performance key — Fn+P on an OMEN — heard by the daemon.
+
+| method | params | result |
+|---|---|---|
+| `hotkey.getStatus` | none | what is bound, what is being watched, and why nothing is if nothing is |
+| `hotkey.learn` | `{ "timeoutMs"?: number, "bind"?: bool }` | `{ "press": { device, keycode, scancode, describe } \| null, "timedOut", "bound" }` |
+| `hotkey.setTriggers` | `{ "triggers": [{ "device"?, "keycode"?, "scancode"? }] }` | as `getStatus` |
+| `hotkey.setEnabled` | `{ "enabled": bool }` | as `getStatus` |
+| `hotkey.press` | none | `{ "fired": true }` — runs the action without the key |
+
+### Nothing is bound by default
+
+There is no table of "the OMEN key is keycode N" in this daemon. Which key
+a laptop sends, whether the kernel has a keycode for it at all, and which
+device it arrives on vary between machines of the *same model* — and a
+guessed table is precisely the mistake this project already made once with
+board ids (see "measured, not looked up", above). So the machine is asked:
+`hotkey.learn` opens a few seconds, the user presses their key, and
+whatever arrives is bound.
+
+`hotkey.learn` holds the connection open until a key arrives or the timeout
+expires. A timeout is **not** an error — `{ "press": null, "timedOut": true }`
+is the honest description of a laptop whose key never reaches Linux at all,
+which is a real hardware answer and not a failure of this call.
+
+### A key with no keycode is still a key
+
+Two shapes arrive from `/dev/input`:
+
+- A key the kernel has a keycode for: `EV_MSC/MSC_SCAN` then `EV_KEY`.
+- A key it does not: the scancode alone, and nothing else. On the test
+  laptop that is `atkbd: Unknown key pressed ... code 0xab`.
+
+The second is bindable here by its `scancode`, which means **no
+`setkeycodes` and no udev hwdb entry** — the daemon changes nothing about
+the system to hear the key, and because the compositor never sees such a
+key either, there is nothing for it to collide with.
+
+Its one cost is in `repeatGuardMs`: an unmapped key reports the *same* bare
+scancode when it goes down and when it comes up, with nothing to tell the
+two apart, so without a short coalescing window one press would advance two
+modes. It defaults to 300 ms.
+
+### `permissionDenied`, not `unsupported`
+
+Reading `/dev/input` needs root. An unprivileged daemon therefore reports
+`supported: true` — the keyboard is there — and refuses `learn` with
+`permissionDenied`, whose fix is the systemd unit. Reporting the feature as
+absent would hide the fix along with it.
+
+### What this module does not decide
+
+It does not know what a hotkey *does*. The daemon binary hands it an action
+at startup; deciding that the performance key cycles the power mode is
+coordination between two modules, and modules here never call each other.
+
+### Privacy
+
+This is a root process reading keyboards, so it is worth being explicit: a
+key that matches no trigger is compared and dropped on the spot — never
+stored, never logged, never sent anywhere. The one exception is a learn
+window the user opened deliberately, which lasts seconds and reports
+exactly one press: the one they pressed to answer the question.
+
 ## Adding a new module
 
 1. New crate under `daemon/crates/<name>`, depending on `pyren-core`,
