@@ -163,25 +163,38 @@ real backend decision before any daemon work:
 The module landed (see §"Done"). What remains needs hardware or root
 rather than design:
 
-- **No offset has ever been written, on any machine.** The development
-  laptop reads both NVIDIA offset attributes and refuses to be written to
-  them - its X screen has no `Coolbits`, and it is a Wayland session - so
-  the climb, the read-back and the revert have been exercised against
-  refusals and never against a card that says yes. Anyone with `Coolbits`
-  set: `pyren-ctl oc probe --write` first, then a small `oc set --core 15`.
+- **No offset has ever been written, on any machine, and on this one none
+  can be.** The two walls were found on the same afternoon and they are
+  not the same wall. *As the user*, who does get into their own X server,
+  both offset attributes read fine and a write comes back "the current
+  user does not have permission" - which is what a screen with no
+  `Coolbits` says, and root does not change it, because `Coolbits` is a
+  property of the **X screen** rather than of the client. *As root*, the
+  daemon does not even get that far: the server admits the uid that owns
+  it and the compositor starts `Xwayland` with no `-auth` file, so there
+  is no cookie for `PYREN_XAUTHORITY` to point at. A Wayland-only desktop
+  therefore has nowhere to put `Coolbits` and no Xorg screen to put it on:
+  **on this laptop the offsets are unreachable by design of the session**,
+  and the module says so in those words rather than pretending. What is
+  left to try, and needs different hardware or an Xorg session:
+  `pyren-ctl oc probe --write` first, then a small `oc set --core 15`.
 - ~~The clock lock has not been run as root.~~ **Done, and it works**:
   as root, 900-1200 MHz took the idle card from 180 MHz / P8 / 7.5 W to
   892 MHz / P5 / 9.9 W, and letting the confirmation lapse put it back on
   its own. The revert timer has now run against a real GPU, not only
   against refusals.
-- **A root daemon cannot reach the offsets on a Wayland desktop.** Not
-  `Coolbits` this time: the X server admits the uid that owns it, and the
-  compositor starts `Xwayland` with no `-auth` file, so there is no cookie
-  to point `PYREN_XAUTHORITY` at. Either the user runs
-  `xhost +si:localuser:root` in their session, or whatever sets the
-  offsets has to run inside it. Worth deciding *before* an offset is ever
-  written: it may be that the honest answer is "offsets need Xorg with
-  Coolbits", and the module already says so in words.
+- ~~A root daemon cannot reach the offsets on a Wayland desktop.~~
+  **Confirmed against the installed service**, and the reporting is fixed.
+  `xhost +si:localuser:root` from inside the session is the only way to
+  let the daemon in, and it is not installed here (`xorg-xhost`) - which
+  changes nothing, since `Coolbits` would refuse the write afterwards
+  anyway. Two things were wrong in how this was *reported* and both are
+  now right: the startup probe of a systemd service runs at boot, before
+  anybody has logged in, so it found the display manager's `:0` and called
+  it "our own session"; it now names whose display it is, says a desktop
+  was not running yet, and points at `overclock.probe`. The app asks for a
+  fresh probe when the page is opened, by somebody who is by definition
+  logged in.
 - **AMD Overdrive is detected and not driven.** `pp_od_clk_voltage` is a
   two-line write away and stays unwritten until there is an AMD machine to
   test on: a wrong value there does not fail with an error message. The
