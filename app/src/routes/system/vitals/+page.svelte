@@ -101,11 +101,14 @@
   {#if !advanced}
     <div class="grid">
       <!-- One card per GPU: a hybrid machine has two, and which of them is
-           working is exactly what this page is asked. -->
-      {#each telemetry.gpus as gpu (gpu.name)}
+           working is exactly what this page is asked. Keyed by position,
+           because `name` is a marketing string - a desktop with two
+           identical cards would key both the same, which aborts the render
+           of the whole page. The daemon's order is stable. -->
+      {#each telemetry.gpus as gpu, slot (slot)}
         <section class="card">
           <h2>{gpuHeading(gpu)}</h2>
-          <Gauge value={gpu.usagePercent} label={t("vitals.gpuUsage")} id="gpu-{gpu.name}" />
+          <Gauge value={gpu.usagePercent} label={t("vitals.gpuUsage")} id="gpu-{slot}" />
           <p class="chip-name" title={gpu.name}>{gpu.name}</p>
           <div class="foot">
             <span class="digital" style="color:{tempColor(gpu.tempC)}">
@@ -257,7 +260,7 @@
               <span>{t("vitals.package")}</span>
               <b style="color:{tempColor(telemetry.cpuTempC)}">{formatTemp(telemetry.cpuTempC)}</b>
             </dd>
-            {#each cpuCoreTemps as reading (reading.label)}
+            {#each cpuCoreTemps as reading (reading.chip + reading.label)}
               <dd class="row">
                 <span>{reading.label}</span>
                 <b style="color:{tempColor(reading.celsius)}">{formatTemp(reading.celsius)}</b>
@@ -278,7 +281,7 @@
         </div>
       </section>
 
-      {#each telemetry.gpus as gpu (gpu.name)}
+      {#each telemetry.gpus as gpu, slot (slot)}
         <section class="block">
           <h2 class="block-title"><Icon name="chevronDown" size={16} /> {gpuHeading(gpu)}</h2>
           <p class="model">{gpu.name}</p>
@@ -367,9 +370,13 @@
 </div>
 
 <style>
+  /* `.grid` paints the black stage, so this needs the full height for the
+     same reason the lighting page does: without it a short grid leaves the
+     tab area's grey showing below the black. */
   .vitals {
     display: flex;
     flex-direction: column;
+    min-height: 100%;
   }
 
   .toolbar {

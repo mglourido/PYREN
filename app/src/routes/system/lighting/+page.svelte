@@ -100,7 +100,10 @@
         <div class="presets">
           {#each presets as preset, i (i)}
             <button class="preset" disabled={off} onclick={() => applyPreset(preset)}>
-              {#each preset as color (color)}
+              <!-- Keyed by position, not by colour: a preset may repeat a
+                   colour (the white one is four identical swatches), and a
+                   duplicate key aborts the render of this whole page. -->
+              {#each preset as color, zone (zone)}
                 <span style="background:{color}"></span>
               {/each}
             </button>
@@ -112,9 +115,15 @@
 </div>
 
 <style>
+  /* `min-height` and not just `flex-direction`: the page is shorter than
+     the tab area, and without it `.stage`'s black stops at the last
+     control and the tab area's own grey fills the rest - the section
+     looks like it only half changed. Same reason as on the graphics,
+     network and keys pages, which paint a dark stage too. */
   .lighting {
     display: flex;
     flex-direction: column;
+    min-height: 100%;
   }
 
   .head {
