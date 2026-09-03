@@ -302,12 +302,11 @@ impl Nvidia {
             None => "with no cookie file to authenticate with".to_string(),
         };
         format!(
-            "could not open {} ({}, uid {}) {cookie}. A daemon running as root is not in \
-             anybody's session; point it at one with PYREN_X_DISPLAY and PYREN_XAUTHORITY, or \
-             set the offsets from a process that is already inside that session",
+            "could not open {} ({}) {cookie}. A daemon running as root is not in anybody's \
+             session; point it at one with PYREN_X_DISPLAY and PYREN_XAUTHORITY, or set the \
+             offsets from a process that is already inside that session",
             display.name,
-            if display.owner_uid == own_uid() { "our own session" } else { "somebody else's" },
-            display.owner_uid,
+            whose(display.owner_uid),
         )
     }
 
@@ -464,40 +463,77 @@ pub fn find_display() -> Option<XDisplay> {
         }
     }
 
-    // A daemon that *does* have a session (a developer's `cargo run`)
-    // should use it rather than guessing at somebody else's.
-    if let Ok(name) = std::env::var("DISPLAY") {
-        if !name.is_empty() {
-            return Some(XDisplay {
-                name,
-                xauthority: std::env::var_os("XAUTHORITY").map(PathBuf::from),
-                owner_uid: own_uid(),
-            });
-        }
-    }
+    let sockets = x11_sockets();
+    let env_display = std::env::var("DISPLAY").ok().filter(|name| !name.is_empty());
+    let (name, owner_uid) = pick_display(env_display.as_deref(), &sockets, own_uid())?;
 
-    let mut sockets: Vec<(String, u32)> = fs::read_dir(X11_SOCKETS)
-        .ok()?
+    // The cookie is looked up for whoever owns the display, not for
+    // whoever we are: the whole difficulty is that those are different.
+    let xauthority = if Some(name.as_str()) == env_display.as_deref() && owner_uid == own_uid() {
+        std::env::var_os("XAUTHORITY").map(PathBuf::from).or_else(|| find_xauthority(owner_uid))
+    } else {
+        find_xauthority(owner_uid)
+    };
+    Some(XDisplay { xauthority, name, owner_uid })
+}
+
+/// Which display to try, given what the environment says and what sockets
+/// exist. Pure, because the ordering is the whole decision and it is not
+/// something to find out by starting a daemon as root.
+///
+/// The order, and why:
+///
+/// 1. **A desktop session's socket** - one owned by somebody who is not
+///    root. That is where an NVIDIA X screen with `Coolbits` lives, and it
+///    is what a root daemon is looking for.
+/// 2. **`$DISPLAY`**, if we are that user ourselves. A developer running
+///    the daemon unprivileged inside their own session.
+/// 3. **`$DISPLAY`** otherwise, as a last guess.
+/// 4. Any socket at all, root's included.
+///
+/// `$DISPLAY` used to come first, and on the development laptop that was
+/// wrong in exactly the way that matters: the root daemon inherited
+/// `DISPLAY=:0` - the display manager's X server, owned by root - while
+/// the desktop it wanted was `:1`. An inherited `DISPLAY` in a process
+/// that belongs to no session is not a session; it is a leftover.
+pub fn pick_display(
+    env_display: Option<&str>,
+    sockets: &[(String, u32)],
+    our_uid: u32,
+) -> Option<(String, u32)> {
+    if let Some(session) = sockets.iter().find(|(_, uid)| *uid != 0) {
+        return Some(session.clone());
+    }
+    if let Some(name) = env_display {
+        let owner = sockets
+            .iter()
+            .find(|(socket, _)| socket == name)
+            .map(|(_, uid)| *uid)
+            .unwrap_or(our_uid);
+        return Some((name.to_string(), owner));
+    }
+    sockets.first().cloned()
+}
+
+/// The X sockets this machine has, as `(":1", owner uid)`, sorted.
+fn x11_sockets() -> Vec<(String, u32)> {
+    let Ok(entries) = fs::read_dir(X11_SOCKETS) else {
+        return Vec::new();
+    };
+    let mut sockets: Vec<(String, u32)> = entries
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
             // "X1" is a display; "X1_" is a lock file that is not one.
             let number = name.strip_prefix('X')?;
-            if !number.chars().all(|c| c.is_ascii_digit()) || number.is_empty() {
+            if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
                 return None;
             }
-            let uid = entry.metadata().ok()?.uid();
-            Some((format!(":{number}"), uid))
+            Some((format!(":{number}"), entry.metadata().ok()?.uid()))
         })
         .collect();
     sockets.sort();
-
-    // Root's own X server (uid 0, usually the display manager's greeter)
-    // is not where the user's desktop is, so a session belonging to
-    // somebody else wins when there is one.
-    let (name, owner_uid) =
-        sockets.iter().find(|(_, uid)| *uid != 0).or_else(|| sockets.first())?.clone();
-    Some(XDisplay { xauthority: find_xauthority(owner_uid), name, owner_uid })
+    sockets
 }
 
 /// Where that user's X cookie is likely to be, most-specific first. Every
@@ -538,6 +574,18 @@ fn home_of(uid: u32) -> Option<PathBuf> {
 /// Who this process is, read from `/proc/self` rather than through libc:
 /// this crate has no C dependency and one number is not a reason to gain
 /// one.
+/// Whose display this is, in words. Root's own X server is almost always
+/// the display manager's greeter rather than anybody's desktop, and saying
+/// "uid 0" alone has sent more than one person looking for their session in
+/// the wrong place.
+fn whose(owner_uid: u32) -> String {
+    match owner_uid {
+        0 => "owned by root, so probably the display manager rather than a desktop".to_string(),
+        uid if uid == own_uid() => format!("our own session, uid {uid}"),
+        uid => format!("the session of uid {uid}"),
+    }
+}
+
 fn own_uid() -> u32 {
     fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0)
 }
@@ -674,6 +722,42 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
         let e = nvidia_with(None).classify(first_error(REFUSED).unwrap(), REFUSED);
         assert!(matches!(e, NvidiaError::Refused(_)));
         assert!(e.to_string().contains("Coolbits"));
+    }
+
+    /// The bug this ordering exists for, as it happened: a root daemon
+    /// with `DISPLAY=:0` inherited from whatever started it, while the
+    /// desktop it wants is `:1`. The session wins over the leftover.
+    #[test]
+    fn a_desktop_session_beats_an_inherited_display() {
+        let sockets = vec![(":0".to_string(), 0), (":1".to_string(), 1000)];
+        assert_eq!(pick_display(Some(":0"), &sockets, 0), Some((":1".to_string(), 1000)));
+    }
+
+    /// A developer running the daemon unprivileged inside their own
+    /// session still lands on their own display - it is the session socket
+    /// too, so the first rule already covers them.
+    #[test]
+    fn an_unprivileged_run_lands_on_its_own_session() {
+        let sockets = vec![(":1".to_string(), 1000)];
+        assert_eq!(pick_display(Some(":1"), &sockets, 1000), Some((":1".to_string(), 1000)));
+    }
+
+    /// With no session socket to be found, `$DISPLAY` is still a better
+    /// guess than nothing - and than root's own greeter.
+    #[test]
+    fn an_inherited_display_is_used_when_there_is_no_session() {
+        let sockets = vec![(":0".to_string(), 0)];
+        assert_eq!(pick_display(Some(":7"), &sockets, 0), Some((":7".to_string(), 0)));
+        assert_eq!(pick_display(None, &sockets, 0), Some((":0".to_string(), 0)));
+        assert_eq!(pick_display(None, &[], 0), None);
+    }
+
+    /// Root's display is not "ours" in any useful sense, and calling it
+    /// that sent somebody looking for their session in the wrong place.
+    #[test]
+    fn a_root_owned_display_is_never_called_our_session() {
+        assert!(whose(0).contains("display manager"));
+        assert!(!whose(0).contains("our own"));
     }
 
     #[test]
