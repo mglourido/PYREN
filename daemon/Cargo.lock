@@ -75,11 +75,13 @@ version = "0.1.0"
 dependencies = [
  "pyren-core",
  "pyren-fan",
+ "pyren-hotkey",
  "pyren-installer",
  "pyren-overclock",
  "pyren-power",
  "pyren-rgb",
  "pyren-system",
+ "serde_json",
 ]
 
 [[package]]
@@ -91,6 +93,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "pyren-hotkey"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pyren-config",
+ "pyren-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

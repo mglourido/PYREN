@@ -86,6 +86,41 @@ finding is already confirmed (`FINDINGS.md`).
 
 ---
 
+### 1.4 Bind the real Fn+P and press it **[HP]**
+The whole path is built and tested end to end *except* the one step that
+needs fingers on the laptop: nothing has ever been bound to a real key.
+
+```sh
+sudo systemctl restart pyren-daemon    # a build with the hotkey module
+pyren-ctl hotkey learn                 # then press Fn+P
+pyren-ctl hotkey get                   # what it caught
+systemctl --user start pyren-osd       # then press Fn+P again
+```
+
+Done when `pyren-ctl hotkey get` shows a trigger and pressing the key puts
+the widget on screen. Three outcomes are worth telling apart, and the CLI
+already words them differently:
+
+- **A scancode with no keycode** — almost certainly `0xe02b`, see
+  `FINDINGS.md`. Expected, and the case the module was built around.
+- **A keycode**, probably on `HP WMI hotkeys`. Also fine, and it means the
+  press/release debounce is not doing any work.
+- **`No key arrived`** — the EC keeps Fn+P to itself and Linux never hears
+  it. Then the widget needs a different trigger: a compositor keybinding on
+  `pyren-osd` (launching a second copy shows it), or `pyren-ctl hotkey
+  press` from a Hyprland `bind`.
+
+### 1.5 Package `pyren-osd`
+Starting it is done: the app spawns it at launch, and Settings → Services
+has the "start at login" switch, which writes
+`~/.config/systemd/user/pyren-osd.service` pointing at whichever binary was
+found. What is left is *installing* it — nothing puts `pyren-osd` in
+`/usr/local/bin`, so on a machine without the build tree the app finds no
+binary and says so. `osd/pyren-osd.service` stays as the packaging
+reference for a system-wide install.
+
+---
+
 ## 2. Blocked on a decision or on hardware
 
 ### 2.1 Driver sources: vendor, submodule, or fetch?

@@ -8,6 +8,7 @@ members = [
     "crates/core",
     "crates/installer",
     "crates/fan",
+    "crates/hotkey",
     "crates/system",
     "crates/power",
     "crates/rgb",

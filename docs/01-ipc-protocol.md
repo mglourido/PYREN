@@ -110,10 +110,109 @@ without reading English.
 | method | params | result |
 |---|---|---|
 | `core.capabilities` | none | `[{ "id": string, "supported": bool }, ...]` — every registered module and whether its hardware was detected. Use this to decide which UI sections to show. |
+| `core.nextEvent` | `{ "since"?: number, "timeoutMs"?: number }` | `{ "seq", "events": [...], "missed" }` — see below. Does not answer until something happens or the timeout runs out. |
 
 Note that `system` always reports `supported: true` (any Linux machine can
 report its own vitals). Whether *OMEN hardware control* is possible is a
 different question, answered by `system.getInfo`'s `compatibility` field.
+
+### Events, and the one long poll that carries them
+
+Everything else in this protocol is a question a client asks. The hotkey is
+not: the user presses it, and the widget that draws the result has to hear
+about it in the tens of milliseconds a person notices — not on the next
+poll of `power.getState`.
+
+**The framing does not change.** A client still sends one request line and
+reads one response line; `core.nextEvent` simply does not answer until
+there is something to say. Nothing in §Transport is revisited, no existing
+client is affected, and a client that never calls it never notices.
+
+```json
+{ "id": 4, "module": "core", "method": "nextEvent", "params": { "since": 12, "timeoutMs": 25000 } }
+{ "id": 4, "result": { "seq": 14, "missed": 0, "events": [
+  { "seq": 13, "topic": "hotkey.pressed", "ageMs": 4,
+    "payload": { "action": "powerCycle", "mode": "balanced", "from": "eco",
+                 "askedFor": "balanced", "changed": true,
+                 "applied": ["power-profiles-daemon: balanced"], "failed": [] } },
+  { "seq": 14, "topic": "power.mode", "ageMs": 4,
+    "payload": { "mode": "balanced", "source": "hotkey" } }
+] } }
+```
+
+- `since` is the `seq` from the previous reply. **Omit it on the first
+  call**, which means "start from now": a client that has just connected
+  almost never wants the key presses of a minute ago, and the difference is
+  an OSD that stays quiet at login rather than flashing on startup.
+- `timeoutMs` defaults to 25 s and is capped at 60 s, so a client cannot
+  pin a daemon thread indefinitely. A poll that times out is a normal
+  reply with an empty `events` — not an error.
+- `seq` comes back whether or not anything did, so a client that polled
+  with a stale `since` catches up.
+- **`missed` is the honest half of a bounded buffer.** The daemon keeps 64
+  events; a client that fell further behind than that is told how many it
+  lost rather than handed a gap it cannot see. Non-zero means "re-read the
+  state", not "replay".
+- A daemon that restarted counts from zero again, so a `seq` *lower* than
+  the one held is a new daemon, not an error — adopt it.
+- **An unknown `topic` is not an error**, for the same reason an unknown
+  `error.kind` is not: a newer daemon may publish one this client has never
+  heard of, and ignoring it is the correct response.
+
+Topics so far:
+
+| topic | published when | payload |
+|---|---|---|
+| `hotkey.pressed` | the bound key was pressed (or `hotkey.press` was called) | `{ action: "show", device, mode }` — the mode in force, so the widget can draw it |
+| `power.mode` | the power mode actually moved, **whoever moved it** | `{ mode, source }` |
+
+`power.mode` is published for *every* change that took effect, not only the
+ones this daemon was asked for by a key. `source` says who asked:
+
+| `source` | who |
+|---|---|
+| `request` | a `power.setMode` — the app, `pyren-ctl`, the widget's own click |
+| `hotkey` | the laptop's performance key |
+| `auto` | the daemon's supervisor, on battery or under load |
+| `tuning` | a `power.setTuning` that re-applied the mode in force |
+| `osProfile` | a `power.setApplyToOsProfile` that re-applied it |
+
+A change that was *refused* publishes nothing here: the mode did not move,
+and a UI that redrew for it would be showing a mode the machine is not in.
+
+### The key shows; it does not change
+
+`hotkey.pressed` carries `action`, and a current daemon always sends
+`"show"`: the press puts the widget on screen with the mode in force
+highlighted and **changes nothing**. The user picks by clicking a mode in
+the widget, which is an ordinary `power.setMode` like any other.
+
+Pressing it again puts the widget away — the widget's own doing, not the
+daemon's, which publishes the same event either way. One key, both
+directions: the way to dismiss something you opened is the key you opened
+it with, rather than waiting out a timer. That only works because the
+daemon coalesces repeats first (`repeatGuardMs`): a bare vendor key sends
+the same scancode on press *and* release, and untreated that would open
+and close the widget on one physical press, leaving the key looking dead.
+
+This is a deliberate departure from the vendor's Fn+P, which steps to the
+next profile. The reason is that on this hardware the vendor key never
+reaches Linux at all, so the shortcut is one the *user chose* — and a
+chosen shortcut that moves the machine to the next profile every time it
+is pressed is a worse deal than one that opens a picker.
+
+Daemons before this sent `action: "powerCycle"` with the outcome of the
+step — `mode`, `from`, `askedFor`, `changed`, `applied`, `failed`. A
+client that wants to work against both should branch on `action`, treat
+an absent one as `powerCycle`, and read `changed: false` with `failed` as
+"the key worked, the machine refused". `power.cycle` still exists in the
+power module for whoever wants that behaviour back behind a setting.
+
+**A client is told even about its own changes.** Filtering those out would
+need the daemon to know which connection is which, and would be wrong the
+first time two windows were open. One extra `getState` is cheaper than
+that. Clients that must always be right ask `power.getState` when they
+reconnect anyway, since the machine can move while nobody is listening.
 
 ## `system` module
 
@@ -950,9 +1049,6 @@ Driver 610.57.04, RTX 5060 Laptop GPU, Wayland session with XWayland:
 
 So the offsets are visible and not settable here, and
 `overclock.probe --write` is what turns that from a guess into a sentence.
-When `offsetsWritable` comes back `false` the offset ranges are withdrawn
-from the state as well: a slider that can only ever fail is worse than no
-slider.
 
 Run **as root** - which is how the daemon runs in production - it fails one
 step earlier and for a different reason: a daemon started by systemd is in
@@ -993,10 +1089,38 @@ The laptop's own performance key — Fn+P on an OMEN — heard by the daemon.
 | method | params | result |
 |---|---|---|
 | `hotkey.getStatus` | none | what is bound, what is being watched, and why nothing is if nothing is |
-| `hotkey.learn` | `{ "timeoutMs"?: number, "bind"?: bool }` | `{ "press": { device, keycode, scancode, describe } \| null, "timedOut", "bound" }` |
-| `hotkey.setTriggers` | `{ "triggers": [{ "device"?, "keycode"?, "scancode"? }] }` | as `getStatus` |
+| `hotkey.learn` | `{ "timeoutMs"?: number, "bind"?: bool }` | `{ "press": { device, keycode, scancode, modifiers, describe, label } \| null, "timedOut", "bound" }` |
+| `hotkey.setTriggers` | `{ "triggers": [{ "device"?, "keycode"?, "scancode"?, "modifiers"? }] }` | as `getStatus` |
 | `hotkey.setEnabled` | `{ "enabled": bool }` | as `getStatus` |
 | `hotkey.press` | none | `{ "fired": true }` — runs the action without the key |
+
+`getStatus` also carries `label`: the bound shortcut written the way a
+person would, `"Ctrl+Alt+P"`, or `null` when nothing is bound. It is for
+showing, not for parsing — `triggers` is the machine-readable form.
+
+### A shortcut can be a combination
+
+`modifiers` is `{ ctrl, shift, alt, meta }`, all four booleans, and it is
+matched **exactly**: `Ctrl+P` does not fire on `Ctrl+Shift+P`. A shortcut
+that swallowed its own supersets would hijack whatever the user had bound
+there. Left and right are the same modifier — nobody means "the right
+Shift specifically" — and `KEY_RIGHTALT` (AltGr) counts as Alt.
+
+A modifier is never a shortcut on its own. `setTriggers` refuses one, and
+the watcher never reports one: a modifier going down updates what is held
+and produces no press. That is what makes learning a combination work at
+all — the modifier necessarily goes down first, so a learn window that
+took the first key to arrive would bind `Ctrl` every single time.
+
+Omitting `modifiers` means "none held", which is also how a config file
+written before this existed is read. That is the right reading of it: the
+vendor key such a file binds is pressed on its own.
+
+**Why the daemon and not the compositor.** A combination is exactly what a
+desktop keybinding could do, and this deliberately does not use one. The
+daemon hears `/dev/input` directly, so one shortcut works on Hyprland,
+GNOME, KDE and X11 alike, keeps working at the login screen before any
+session exists, and is configured in one place instead of per-desktop.
 
 ### Nothing is bound by default
 
@@ -1012,6 +1136,23 @@ whatever arrives is bound.
 expires. A timeout is **not** an error — `{ "press": null, "timedOut": true }`
 is the honest description of a laptop whose key never reaches Linux at all,
 which is a real hardware answer and not a failure of this call.
+
+### A button is not a key
+
+The watcher opens only devices that report at least one keycode below
+`BTN_MISC` (0x100), read from sysfs `capabilities/key`. A mouse and a
+touchpad report buttons and no keys at all, so neither is ever opened, and
+`setTriggers` refuses a `BTN_*` keycode besides.
+
+Both halves exist because of one accident. A learn window caught
+`BTN_TOOL_FINGER` (325) from the touchpad - the kernel's way of saying "a
+finger is resting here" - and bound the power-mode cycle to *touching the
+trackpad*, which then walked the machine through all four modes as fast as
+it could be touched. Nothing about that was a key press.
+
+The ranges are not a threshold: the kernel came back for more `KEY_*`
+codes above the first block of buttons, so `0x100..0x160` and
+`0x2c0..0x300` are buttons and everything else is a key.
 
 ### A key with no keycode is still a key
 
@@ -1041,7 +1182,7 @@ absent would hide the fix along with it.
 ### What this module does not decide
 
 It does not know what a hotkey *does*. The daemon binary hands it an action
-at startup; deciding that the performance key cycles the power mode is
+at startup; deciding that the shortcut shows the power modes is
 coordination between two modules, and modules here never call each other.
 
 ### Privacy

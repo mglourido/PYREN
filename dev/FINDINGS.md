@@ -310,6 +310,107 @@ The lesson worth keeping: **derive state from what was observed, not from
 what was constructed.** All three are the same mistake wearing different
 hats.
 
+## Fn+P: the key is probably a scancode the kernel has no name for
+
+`journalctl -k` on the test laptop, after somebody pressed something five
+times:
+
+```
+atkbd serio0: Unknown key pressed (translated set 2, code 0xab on isa0060/serio0).
+atkbd serio0: Use 'setkeycodes e02b <keycode>' to make it known.
+```
+
+Ten lines, one scancode, `0xab` (`e02b`), and **no other unmapped key on
+this machine**. Which physical key it is has not been confirmed yet — that
+needs somebody at the keyboard — but there is only one candidate.
+
+What matters for the daemon is that this shape is *reachable*. `atkbd`
+emits `EV_MSC/MSC_SCAN` for an unknown key even though it emits no
+`EV_KEY`, so the scancode arrives on `/dev/input/event3` and can be bound
+without `setkeycodes` and without a udev hwdb entry: **nothing about the
+system has to change for the daemon to hear it**. Better still, a key with
+no keycode is invisible to the compositor, so binding it here cannot
+collide with anything the user has bound in Hyprland.
+
+The cost is in the same fact. Press and release both emit the same bare
+scancode with nothing to tell them apart, so one physical press looks like
+two events; `hotkey.json`'s `repeatGuardMs` (300 ms) is what collapses
+them. Mapping the scancode to a real keycode with `EVIOCSKEYCODE` would fix
+that properly, and was rejected for now: it changes what every other
+process on the machine sees, to save a debounce.
+
+This is also why nothing is bound by default. The daemon learns the key
+from the machine (`pyren-ctl hotkey learn`) rather than carrying a table of
+keycodes per model — the board-list mistake, in a different costume.
+
+## The first `hotkey learn` bound the touchpad
+
+Worth writing down because the mistake was structural, not a typo. The
+first real learn window on the test laptop caught **keycode 325 on
+`SYNA32FF:00 06CB:CFC5 Touchpad`** - `BTN_TOOL_FINGER`, which the kernel
+emits when a finger comes to rest on the trackpad. It is an `EV_KEY` press
+by every measure the module was applying, so it was bound, and from then
+on every touch of the trackpad advanced the power mode. The daemon log is
+unambiguous:
+
+```
+hotkey: power mode Unlimited -> Eco
+hotkey: power mode Eco -> Balanced
+hotkey: power mode Balanced -> Performance
+```
+
+...four times in nine seconds, for as long as the trackpad was in use.
+
+The lesson is that "reports `EV_KEY`" is not the same question as "is a
+keyboard". Pointing devices report buttons through the same event type.
+The fix is in two layers, and the first one is the real one:
+
+1. The watcher opens a device only if `capabilities/key` has a bit set
+   below `BTN_MISC` (0x100). The touchpad's mask is `e520 10000 0 0 0 0` -
+   everything it can report is a button - so it is never opened, and its
+   events cannot reach a learn window at all. The `HP WMI hotkeys` device
+   passes, with its keys high in the keyboard range.
+2. `setTriggers` refuses a `BTN_*` keycode anyway, for a keyboard with
+   mouse buttons on it or a config file written by hand.
+
+`pyren-ctl hotkey learn` now also prints how to undo itself, because the
+device name it reports is how somebody notices they caught the wrong
+thing.
+
+## power-profiles-daemon cannot move this machine right now
+
+Worth knowing before reading a widget that says the mode did not change,
+because it is not the widget being wrong. `power.setMode` on the test
+laptop currently fails, with the whole reason in the reply:
+
+```
+power-profiles-daemon: ... Failed to activate CPU driver 'intel_pstate':
+Error writing '/sys/devices/system/cpu/cpufreq/policy11/energy_performance_preference':
+Device or resource busy (26)
+```
+
+The machine has **no `/sys/firmware/acpi/platform_profile`** (see the board
+8D2F section above — `hp-wmi` exposes no thermal-profile attribute here),
+so power-profiles-daemon is the only mechanism `power` has left. And it is
+being refused: `intel_pstate` is in active mode with the `performance`
+governor, and in that state the kernel makes
+`energy_performance_preference` read-only, so ppd's write returns `EBUSY`.
+
+`powerprofilesctl get` says `power-saver` while the governor says
+`performance`, which is what a half-applied profile looks like. What left
+the governor there is not established — `cpupower.service` is disabled and
+nothing else obvious is running. Setting it back to `powersave` should let
+ppd work again, and would be the thing to try before concluding that a
+power-mode change is broken in this project's code:
+
+```sh
+echo powersave | sudo tee /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
+```
+
+The daemon reports all of this rather than swallowing it: `changed: false`
+plus the `failed` list reaches the OSD, and the widget prints it under the
+four modes.
+
 ## Peripherals register as batteries
 
 `/sys/class/power_supply` includes wireless mice and keyboards. Without

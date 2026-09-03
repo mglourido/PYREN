@@ -5,8 +5,11 @@
 
 use std::sync::Arc;
 
-use pyren_core::{serve_unix_socket, Audience, Module, Registry};
+use serde_json::json;
+
+use pyren_core::{serve_unix_socket, Audience, EventBus, Module, Registry};
 use pyren_fan::FanModule;
+use pyren_hotkey::{HotkeyModule, KeyPress};
 use pyren_installer::{
     execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
 };
@@ -83,6 +86,56 @@ fn usage() -> ! {
     std::process::exit(0);
 }
 
+/// One press of the performance key: put the modes on screen, and change
+/// nothing.
+///
+/// The key used to step the mode itself, the way Fn+P does under Windows.
+/// It does not any more, and the reason is what the key is *for* here: on
+/// this hardware the vendor key never reaches Linux, so the shortcut is
+/// one the user chose, and a chosen shortcut that silently moves the
+/// machine to the next profile every time you glance at it is a worse
+/// deal than one that opens a picker. The widget already lets you click a
+/// mode, so nothing is lost - the choice simply becomes deliberate.
+///
+/// [`PowerModule::cycle`] is still there, tested, for whoever wants that
+/// behaviour back behind a setting.
+fn show_power_modes(power: &PowerModule, events: &EventBus, press: &KeyPress) {
+    let mode = power.mode();
+
+    // No `changed`, `applied` or `failed`: nothing was attempted, and a
+    // report of an action nobody took is what a widget would misread.
+    events.publish(
+        "hotkey.pressed",
+        json!({
+            "action": "show",
+            "device": press.device,
+            "mode": mode,
+        }),
+    );
+
+    println!("pyren-daemon: hotkey: showing the modes ({mode:?})");
+}
+
+/// What to print at startup about the performance key. Every branch names
+/// the next thing to do, because "hotkey: no" sends people to the issue
+/// tracker and "no key bound yet" sends them to `pyren-ctl hotkey learn`.
+fn hotkey_summary(hotkey: &HotkeyModule, watching: bool) -> String {
+    let status = match hotkey.call("getStatus", serde_json::Value::Null) {
+        Ok(status) => status,
+        Err(e) => return format!("unavailable: {e}"),
+    };
+    let detail = status["detail"].as_str().unwrap_or("unavailable").to_string();
+    if !watching {
+        return detail;
+    }
+    let bound = status["triggers"].as_array().is_some_and(|t| !t.is_empty());
+    if bound {
+        detail
+    } else {
+        format!("{detail} (pyren-ctl hotkey learn)")
+    }
+}
+
 fn main() {
     // Arguments are handled before anything is probed: a machine that
     // cannot be detected properly should still be able to install a unit.
@@ -119,6 +172,11 @@ fn main() {
         power_mode: power.is_supported(),
         lightbar: rgb.probe().lightbar.present,
     };
+
+    // Built here, wired to the power module further down: what a key does
+    // is coordination between two modules, and a module never calls
+    // another one directly.
+    let hotkey = HotkeyModule::new();
 
     let system = SystemModule::new(controls);
 
@@ -172,13 +230,31 @@ fn main() {
     }
 
     let mut registry = Registry::new();
+    let events = Arc::clone(registry.events());
+    // Everything that moves the power mode - the key, the app, the CLI,
+    // the supervisor - is announced on this, so an open UI never sits
+    // showing a mode the machine has already left.
+    power.publish_to(Arc::clone(&events));
     registry.register(Box::new(system));
-    registry.register(Box::new(power));
+    registry.register(Box::new(power.clone()));
     registry.register(Box::new(fan));
     registry.register(Box::new(rgb));
     registry.register(Box::new(overclock));
+    registry.register(Box::new(hotkey.clone()));
     registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);
+
+    // The shortcut, once somebody has taught the daemon which key it is.
+    // One event comes out of a press - `hotkey.pressed`, which the
+    // on-screen display waits on - and the machine is left alone: the
+    // press asks for the widget, and the mode changes only if the user
+    // then clicks one.
+    let watching = hotkey.watch(Arc::new({
+        let power = power.clone();
+        let events = Arc::clone(&events);
+        move |press: &KeyPress| show_power_modes(&power, &events, press)
+    }));
+    println!("  hotkey: {}", hotkey_summary(&hotkey, watching));
 
     for cap in registry.capabilities() {
         println!("  module '{}' supported={}", cap.id, cap.supported);
