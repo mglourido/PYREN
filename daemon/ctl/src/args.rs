@@ -59,19 +59,24 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     while i < args.len() {
         let arg = &args[i];
         if let Some(name) = arg.strip_prefix("--") {
-            seen_option = true;
             if name.is_empty() {
                 return Err("'--' on its own is not an option".to_string());
             }
-            // `--name=value` and `--name value` are the same thing.
-            if let Some((name, value)) = name.split_once('=') {
-                command.options.insert(name.to_string(), value.to_string());
-                i += 1;
-                continue;
-            }
+            // `--json` is the one option documented as coming *before* the
+            // command (`pyren-ctl [--json] <command>`), so it must not
+            // start the options: doing so put every following word into
+            // the positionals and left the path empty, which is how
+            // `pyren-ctl --json hotkey learn` came back "no command given".
             if name == "json" {
                 command.json = true;
                 command.options.insert("json".into(), String::new());
+                i += 1;
+                continue;
+            }
+            seen_option = true;
+            // `--name=value` and `--name value` are the same thing.
+            if let Some((name, value)) = name.split_once('=') {
+                command.options.insert(name.to_string(), value.to_string());
                 i += 1;
                 continue;
             }
@@ -129,6 +134,18 @@ mod tests {
     fn parse_str(line: &str) -> Command {
         let args: Vec<String> = line.split_whitespace().map(str::to_string).collect();
         parse(&args).expect("should parse")
+    }
+
+    /// `--json` is documented as coming before the command, and it used to
+    /// swallow it: everything after the flag became a positional and the
+    /// path came out empty, so `pyren-ctl --json hotkey learn` failed with
+    /// "no command given" while the same line without the flag worked.
+    #[test]
+    fn json_before_the_command_does_not_swallow_it() {
+        let command = parse_str("--json hotkey learn --seconds 30");
+        assert!(command.json);
+        assert_eq!(command.path, ["hotkey", "learn"]);
+        assert_eq!(command.option("seconds"), Some("30"));
     }
 
     #[test]

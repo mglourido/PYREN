@@ -73,6 +73,20 @@ LIGHTS
   rgb restore-on-start <on|off>
                                'set' and 'zones' also take --brightness 0-100
 
+HOTKEY
+  hotkey get                   which key is bound, and whether this daemon
+                               can hear a key at all
+  hotkey learn [--seconds N]   press the laptop's performance key when
+                               asked; whatever arrives is bound to it.
+                               Nothing is bound by default, because which
+                               key a laptop sends is not something that
+                               can be looked up
+  hotkey <on|off>              act on the bound key, or hear and ignore it
+  hotkey clear                 forget the bound key
+  hotkey press                 do what the key does, without the key -
+                               how the on-screen display is tested on a
+                               machine whose Fn+P never reaches Linux
+
 GPU
   oc get                       what can be tuned on each GPU, what is set,
                                and - where nothing can be - why not
@@ -91,6 +105,10 @@ GPU
   oc restore-on-start <on|off> re-apply the confirmed offsets at boot. Off
                                by default, and skipped after a boot that
                                followed an unconfirmed change
+
+EVENTS
+  events [--seconds N]         print what the daemon publishes as it
+                               happens: key presses, mode changes
 
 OPTIONS
   --json                       print the daemon's reply verbatim
@@ -307,6 +325,35 @@ fn run(command: &args::Command) -> Run {
             )
         }
 
+        ["hotkey", "get"] => {
+            show(command, client::call("hotkey", "getStatus", Value::Null)?, print_hotkey)
+        }
+        ["hotkey", "learn"] => hotkey_learn(command),
+        ["hotkey", "clear"] => show(
+            command,
+            client::call("hotkey", "setTriggers", json!({ "triggers": [] }))?,
+            print_hotkey,
+        ),
+        ["hotkey", "press"] => {
+            let reply = client::call("hotkey", "press", Value::Null)?;
+            if command.json {
+                print_json(&reply);
+            } else {
+                println!("pressed");
+            }
+            Ok(())
+        }
+        // Last of the hotkey arms: everything else here is a subcommand,
+        // and this one is a value.
+        ["hotkey", value] => {
+            let enabled = word_switch("hotkey", value)?;
+            show(
+                command,
+                client::call("hotkey", "setEnabled", json!({ "enabled": enabled }))?,
+                print_hotkey,
+            )
+        }
+
         ["oc", "get"] => show(command, client::call("overclock", "getState", Value::Null)?, print_oc),
         ["oc", "probe"] => {
             let allow_writes = command.options.contains_key("write");
@@ -346,6 +393,8 @@ fn run(command: &args::Command) -> Run {
                 print_oc,
             )
         }
+
+        ["events"] => events(command),
 
         [] => Err(Failure::Usage("no command given".into())),
         other => Err(Failure::Usage(format!("unknown command '{}'", other.join(" ")))),
@@ -435,6 +484,145 @@ fn word_switch(name: &str, value: &str) -> Result<bool, String> {
 
 /// Every line in the human-readable output is a label and a value, so
 /// they line up whatever the command was.
+/// `hotkey learn`: hold the socket open while the user presses their key.
+///
+/// The prompt is printed before the call, and flushed, because the daemon
+/// answers nothing at all until a key arrives - a silent terminal for ten
+/// seconds is indistinguishable from a hang.
+fn hotkey_learn(command: &args::Command) -> Run {
+    let seconds = command.number("seconds")?.unwrap_or(10.0).clamp(1.0, 30.0);
+
+    if !command.json {
+        println!("Press the key you want on the laptop - Fn+P on an OMEN.");
+        println!("Waiting {seconds:.0}s...");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    }
+
+    let reply = client::call(
+        "hotkey",
+        "learn",
+        json!({ "timeoutMs": (seconds * 1000.0) as u64, "bind": true }),
+    )?;
+
+    if command.json {
+        print_json(&reply);
+        return Ok(());
+    }
+
+    if reply.get("timedOut").and_then(Value::as_bool).unwrap_or(false) {
+        // Not an error, and the difference matters: a key that never
+        // arrives is what a laptop whose Fn+P is handled entirely inside
+        // the embedded controller looks like from here.
+        println!("No key arrived. Either none was pressed, or this laptop keeps");
+        println!("that key to itself and never tells Linux about it.");
+        return Ok(());
+    }
+
+    let press = reply.get("press").cloned().unwrap_or(Value::Null);
+    row("device", text(&press, "device"));
+    row("key", text(&press, "describe"));
+    row("bound", yes_no(reply.get("bound")));
+    // Whatever was pressed is now bound, and the device name above is how
+    // somebody notices they bound the wrong thing. Say the undo out loud
+    // rather than leaving it in --help: this once caught a touchpad, and
+    // every touch then cycled the power mode.
+    println!("\nNot the key you meant? 'pyren-ctl hotkey clear' unbinds it.");
+    Ok(())
+}
+
+/// `events`: the long poll, printed as it arrives.
+///
+/// Runs until interrupted, or until `--seconds` have passed with nothing
+/// left to wait for - which is what makes it usable in a script that wants
+/// to see whether a key press produces anything at all.
+fn events(command: &args::Command) -> Run {
+    let deadline = command
+        .number("seconds")?
+        .map(|s| std::time::Instant::now() + std::time::Duration::from_secs_f64(s.max(0.0)));
+    let mut since: Option<u64> = None;
+
+    loop {
+        let wait = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Ok(());
+                }
+                left.as_millis().min(25_000) as u64
+            }
+            None => 25_000,
+        };
+
+        let mut params = json!({ "timeoutMs": wait });
+        if let Some(since) = since {
+            params["since"] = json!(since);
+        }
+        let reply = client::call("core", "nextEvent", params)?;
+        since = reply.get("seq").and_then(Value::as_u64).or(since);
+
+        if command.json {
+            // One JSON object per event, so this pipes into jq line by
+            // line rather than producing one document at the end.
+            for event in reply.get("events").and_then(Value::as_array).into_iter().flatten() {
+                println!("{}", serde_json::to_string(event).unwrap_or_default());
+            }
+        } else {
+            for event in reply.get("events").and_then(Value::as_array).into_iter().flatten() {
+                println!(
+                    "{:<16} {}",
+                    text(event, "topic"),
+                    serde_json::to_string(event.get("payload").unwrap_or(&Value::Null))
+                        .unwrap_or_default()
+                );
+            }
+        }
+
+        let missed = reply.get("missed").and_then(Value::as_u64).unwrap_or(0);
+        if missed > 0 {
+            eprintln!("pyren-ctl: {missed} events were dropped before this caught up");
+        }
+    }
+}
+
+fn print_hotkey(status: &Value) {
+    // The first line is the one that answers "why does my key do nothing":
+    // not bound, not heard, or switched off - each with its own fix.
+    row("state", text(status, "detail"));
+
+    let triggers = status.get("triggers").and_then(Value::as_array).cloned().unwrap_or_default();
+    match triggers.first() {
+        None => row("key", "none bound (pyren-ctl hotkey learn)"),
+        Some(trigger) => {
+            let keycode = trigger.get("keycode").and_then(Value::as_u64);
+            let scancode = trigger.get("scancode").and_then(Value::as_u64);
+            let key = match (keycode, scancode) {
+                (Some(key), Some(scan)) => format!("keycode {key}, scancode 0x{scan:x}"),
+                (Some(key), None) => format!("keycode {key}"),
+                (None, Some(scan)) => format!("scancode 0x{scan:x} (no keycode assigned)"),
+                (None, None) => "-".to_string(),
+            };
+            // The shortcut as somebody would write it down, and the raw
+            // numbers underneath: the name is what a person recognises,
+            // and the numbers are what a bug report needs.
+            if let Some(label) = status.get("label").and_then(Value::as_str) {
+                row("shortcut", label);
+            }
+            row("key", key);
+            row("on", text(trigger, "device"));
+        }
+    }
+
+    row("enabled", yes_no(status.get("enabled")));
+    row("heard", yes_no(status.get("watching")));
+    if let Some(fired) = status.get("fired").and_then(Value::as_u64) {
+        row("presses", fired);
+    }
+    if let Some(error) = status.get("configSaveError").and_then(Value::as_str) {
+        row("not saved", error);
+    }
+}
+
 fn row(label: &str, value: impl std::fmt::Display) {
     println!("  {label:<10} {value}");
 }
@@ -889,9 +1077,13 @@ fn status(command: &args::Command) -> Run {
     let info = client::call("system", "getInfo", Value::Null)?;
     let power = power_state()?;
     let fan = client::call("fan", "getStatus", Value::Null)?;
+    // Optional on purpose: a daemon built before the hotkey module answers
+    // `unknownModule`, and one missing section must not take the screen
+    // down with it.
+    let hotkey = client::call("hotkey", "getStatus", Value::Null).ok();
 
     if command.json {
-        print_json(&json!({ "system": info, "power": power, "fan": fan }));
+        print_json(&json!({ "system": info, "power": power, "fan": fan, "hotkey": hotkey }));
         return Ok(());
     }
 
@@ -901,5 +1093,9 @@ fn status(command: &args::Command) -> Run {
     print_power(&power);
     println!("\nfans");
     print_fan(&fan);
+    if let Some(hotkey) = &hotkey {
+        println!("\nhotkey");
+        print_hotkey(hotkey);
+    }
     Ok(())
 }
