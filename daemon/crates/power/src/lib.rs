@@ -45,11 +45,11 @@ mod backend;
 mod limits;
 mod supply;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{Module, ModuleError, ModuleResult};
+use pyren_core::{EventBus, Module, ModuleError, ModuleResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -144,6 +144,33 @@ impl Default for PowerConfig {
     }
 }
 
+/// Where a mode change is announced, so that anything watching the daemon
+/// hears about it however it happened.
+///
+/// The mode is the one piece of this module's state that moves *without*
+/// the app asking: the performance key cycles it, the supervisor switches
+/// it, `pyren-ctl` sets it, and the widget clicks it. Every one of those
+/// used to leave an open app showing a mode the machine was no longer in
+/// until something else made it re-read.
+///
+/// It is a bus rather than a call into another module: this announces what
+/// happened and does not know or care who is listening, which is the one
+/// shape that does not turn into modules calling each other.
+///
+/// Empty until the daemon binary fills it in - `pyren-check` and the tests
+/// build a `PowerModule` with nobody listening, and publishing has to be a
+/// no-op there rather than a reason to require a bus.
+#[derive(Clone, Default)]
+pub struct Announcer(Arc<OnceLock<Arc<EventBus>>>);
+
+impl Announcer {
+    fn publish(&self, mode: PowerMode, source: &str) {
+        if let Some(bus) = self.0.get() {
+            bus.publish("power.mode", json!({ "mode": mode, "source": source }));
+        }
+    }
+}
+
 /// What one press of the performance key did.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,6 +213,7 @@ pub struct PowerModule {
     state: Arc<Mutex<State>>,
     store: ConfigStore,
     limits: limits::LimitPaths,
+    announce: Announcer,
 }
 
 impl PowerModule {
@@ -253,8 +281,20 @@ impl PowerModule {
             last_save_error: None,
         }));
 
-        spawn_supervisor(Arc::clone(&state), store.clone(), limit_paths.clone());
-        Self { state, store, limits: limit_paths }
+        let announce = Announcer::default();
+        spawn_supervisor(
+            Arc::clone(&state),
+            store.clone(),
+            limit_paths.clone(),
+            announce.clone(),
+        );
+        Self { state, store, limits: limit_paths, announce }
+    }
+
+    /// Hands the module the bus to announce mode changes on. Called once,
+    /// by the daemon binary, after the registry exists.
+    pub fn publish_to(&self, events: Arc<EventBus>) {
+        let _ = self.announce.0.set(events);
     }
 
     /// Path of the file this module reads and writes, for diagnostics.
@@ -280,11 +320,15 @@ impl PowerModule {
     pub fn cycle(&self) -> Cycled {
         let from = self.mode();
         let to = from.next();
-        let report = self.set_mode(to, true);
+        let report = self.set_mode(to, true, "hotkey");
         Cycled { from, to: self.mode(), asked_for: to, report }
     }
 
-    fn set_mode(&self, mode: PowerMode, manual: bool) -> ApplyReport {
+    /// `source` says who asked, and travels with the announcement: a UI
+    /// that made the change itself can tell it apart from one made behind
+    /// its back, which is the difference between a redundant re-read and a
+    /// necessary one.
+    fn set_mode(&self, mode: PowerMode, manual: bool, source: &str) -> ApplyReport {
         let report = {
             let state = lock(&self.state);
             apply_profile(mode, &state.config, &self.limits)
@@ -292,7 +336,8 @@ impl PowerModule {
         let mut state = lock(&self.state);
         // Only record the mode if something actually took effect; otherwise
         // the UI would show a mode the machine isn't in.
-        if !report.is_empty() {
+        let took_effect = !report.is_empty();
+        if took_effect {
             state.mode = mode;
             state.config.mode = Some(mode);
         }
@@ -301,6 +346,14 @@ impl PowerModule {
             state.switcher.reset();
         }
         persist(&self.store, &mut state);
+        drop(state);
+
+        // Announced only when the machine actually moved, and after the
+        // state is recorded: a listener's first reaction is to ask for the
+        // state, and it must not race with this.
+        if took_effect {
+            self.announce.publish(mode, source);
+        }
         report
     }
 
@@ -413,7 +466,7 @@ impl Module for PowerModule {
                         )
                     })?;
 
-                let report = self.set_mode(mode, true);
+                let report = self.set_mode(mode, true, "request");
                 if report.is_empty() {
                     // Every mechanism needs root; an unprivileged daemon
                     // failing here is the expected case in development, so
@@ -464,7 +517,7 @@ impl Module for PowerModule {
                 // Tuning the mode the machine is in should be audible
                 // straight away, not after the next mode switch.
                 if applies_now {
-                    self.set_mode(mode, true);
+                    self.set_mode(mode, true, "tuning");
                 }
                 Ok(self.state_json())
             }
@@ -482,7 +535,7 @@ impl Module for PowerModule {
                 // Re-apply so the answer takes effect now rather than at
                 // the next mode change - turning it on and seeing nothing
                 // happen would look broken.
-                self.set_mode(mode, true);
+                self.set_mode(mode, true, "osProfile");
                 Ok(self.state_json())
             }
 
@@ -511,7 +564,12 @@ impl Module for PowerModule {
 /// Runs on its own thread rather than being driven by IPC calls, because it
 /// has to keep working when nothing is connected - the whole point is that
 /// it manages the machine while the app is closed.
-fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore, paths: limits::LimitPaths) {
+fn spawn_supervisor(
+    state: Arc<Mutex<State>>,
+    store: ConfigStore,
+    paths: limits::LimitPaths,
+    announce: Announcer,
+) {
     std::thread::spawn(move || loop {
         let (interval, decision) = {
             let mut guard = lock(&state);
@@ -563,6 +621,12 @@ fn spawn_supervisor(state: Arc<Mutex<State>>, store: ConfigStore, paths: limits:
                     guard.config.mode = Some(mode);
                     persist(&store, &mut guard);
                 }
+                // The one mode change nobody asked for. An open app has no
+                // other way to learn about it, and this is the case where
+                // it is most likely to be sitting there showing the wrong
+                // one - the supervisor switches while the user watches.
+                drop(guard);
+                announce.publish(mode, "auto");
             } else {
                 guard.last_auto_switch = Some(format!("{mode:?} failed: {}", report.failed.join("; ")));
                 eprintln!(
@@ -756,6 +820,30 @@ mod tests {
         assert_eq!(PowerMode::parse("ECO"), Some(PowerMode::Eco));
         assert_eq!(PowerMode::parse("unlimited"), Some(PowerMode::Unlimited));
         assert_eq!(PowerMode::parse("turbo"), None);
+    }
+
+    /// The announcement is what keeps an open app in step with a mode
+    /// changed behind its back, so its shape is part of the contract.
+    #[test]
+    fn a_mode_change_is_announced_with_who_asked_for_it() {
+        let bus = Arc::new(EventBus::new());
+        let announce = Announcer::default();
+        announce.0.set(Arc::clone(&bus)).expect("a fresh announcer is empty");
+
+        announce.publish(PowerMode::Performance, "hotkey");
+
+        let batch = bus.read_since(0, Duration::from_millis(0));
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.events[0].topic, "power.mode");
+        assert_eq!(batch.events[0].payload["mode"], "performance");
+        assert_eq!(batch.events[0].payload["source"], "hotkey");
+    }
+
+    /// `pyren-check` and every test here build a module with nobody
+    /// listening. Publishing into that must be a no-op, not a panic.
+    #[test]
+    fn announcing_with_nobody_listening_does_nothing_at_all() {
+        Announcer::default().publish(PowerMode::Eco, "request");
     }
 
     /// The performance key steps through every mode and comes back round.

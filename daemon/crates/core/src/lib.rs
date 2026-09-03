@@ -6,12 +6,17 @@
 //! module id, using a small JSON-RPC-like protocol. See
 //! `docs/01-ipc-protocol.md` at the repo root for the wire format.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod acpi;
 pub mod client;
+pub mod events;
 mod socket;
+pub use events::{Batch, Event, EventBus};
 pub use socket::{serve_unix_socket, socket_group, Audience};
 
 /// What kind of failure this is, as it appears on the wire.
@@ -213,11 +218,24 @@ pub struct ModuleCapability {
 /// hardcoding a module list.
 pub struct Registry {
     modules: Vec<Box<dyn Module>>,
+    /// Published by the daemon binary, read by clients through
+    /// `core.nextEvent`. Lives on the registry rather than in a module
+    /// because it belongs to no single piece of hardware: the hotkey
+    /// watcher publishes to it and the power module's state changes show
+    /// up on it, and neither should have to know about the other.
+    events: Arc<EventBus>,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Self { modules: Vec::new() }
+        Self { modules: Vec::new(), events: Arc::new(EventBus::new()) }
+    }
+
+    /// The bus this registry serves. Clone the `Arc` into whatever
+    /// publishes - the hotkey watcher, the supervisor - before handing the
+    /// registry to [`serve_unix_socket`].
+    pub fn events(&self) -> &Arc<EventBus> {
+        &self.events
     }
 
     pub fn register(&mut self, module: Box<dyn Module>) {
@@ -255,12 +273,55 @@ impl Registry {
                 let caps = self.capabilities();
                 Response::ok(req.id, serde_json::to_value(caps).unwrap_or(Value::Null))
             }
+            "nextEvent" => self.next_event(req),
+
             other => Response::err(
                 req.id,
                 ErrorKind::UnknownMethod,
                 format!("unknown core method '{other}'"),
             ),
         }
+    }
+}
+
+impl Registry {
+    /// The long poll. Answers when something has been published since
+    /// `since`, or when `timeoutMs` runs out - whichever comes first.
+    ///
+    /// `since` omitted means "start from now": a client that has just
+    /// connected almost never wants the key presses of a minute ago, and
+    /// making it ask for them explicitly is the difference between an OSD
+    /// that stays quiet at login and one that flashes on startup.
+    fn next_event(&self, req: &Request) -> Response {
+        let since = match req.params.get("since") {
+            None | Some(Value::Null) => self.events.latest(),
+            Some(value) => match value.as_u64() {
+                Some(seq) => seq,
+                None => {
+                    return Response::err(
+                        req.id,
+                        ErrorKind::InvalidParams,
+                        "params.since must be the 'seq' from the previous reply",
+                    )
+                }
+            },
+        };
+
+        let timeout = match req.params.get("timeoutMs") {
+            None | Some(Value::Null) => events::DEFAULT_WAIT,
+            Some(value) => match value.as_u64() {
+                Some(ms) => Duration::from_millis(ms),
+                None => {
+                    return Response::err(
+                        req.id,
+                        ErrorKind::InvalidParams,
+                        "params.timeoutMs must be a number of milliseconds",
+                    )
+                }
+            },
+        };
+
+        Response::ok(req.id, self.events.read_since(since, timeout).to_json())
     }
 }
 
@@ -396,5 +457,45 @@ mod tests {
     #[test]
     fn a_kind_from_a_newer_daemon_is_not_an_error_here() {
         assert_eq!(ErrorKind::parse("somethingFromTheFuture"), None);
+    }
+
+    fn core_call(registry: &Registry, method: &str, params: Value) -> Value {
+        let response =
+            registry.dispatch(Request { id: 1, module: "core".into(), method: method.into(), params });
+        serde_json::to_value(response).expect("a response must serialise")
+    }
+
+    /// A client that has just connected must not be handed the key presses
+    /// that happened before it existed.
+    #[test]
+    fn a_first_poll_starts_from_now_rather_than_replaying_the_ring() {
+        let registry = Registry::new();
+        registry.events().publish("hotkey.pressed", serde_json::json!({ "action": "powerCycle" }));
+
+        let reply = core_call(&registry, "nextEvent", serde_json::json!({ "timeoutMs": 0 }));
+        assert_eq!(reply["result"]["events"].as_array().unwrap().len(), 0);
+        assert_eq!(reply["result"]["seq"], 1, "it still learns where the stream is");
+    }
+
+    #[test]
+    fn polling_with_a_sequence_returns_what_happened_after_it() {
+        let registry = Registry::new();
+        registry.events().publish("power.mode", serde_json::json!({ "mode": "eco" }));
+
+        let reply =
+            core_call(&registry, "nextEvent", serde_json::json!({ "since": 0, "timeoutMs": 0 }));
+        assert_eq!(reply["result"]["events"][0]["topic"], "power.mode");
+        assert_eq!(reply["result"]["events"][0]["payload"]["mode"], "eco");
+    }
+
+    /// `since` is a number the client copies from the previous reply; a
+    /// client that sends something else has a bug, and being told which
+    /// field is wrong is the whole reason `invalidParams` exists.
+    #[test]
+    fn a_malformed_since_is_a_caller_error_and_not_a_hang() {
+        let registry = Registry::new();
+        let reply = core_call(&registry, "nextEvent", serde_json::json!({ "since": "latest" }));
+        assert_eq!(reply["error"]["kind"], "invalidParams");
+        assert!(reply["error"]["message"].as_str().unwrap().contains("since"));
     }
 }
