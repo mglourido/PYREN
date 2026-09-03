@@ -5,13 +5,14 @@
 //! the wire format.
 
 mod admin;
+mod session;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
 use pyren_config::{ConfigStore, LoadOutcome};
 use serde_json::{json, Map, Value};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Config namespaces the frontend is allowed to read and write.
 ///
@@ -82,7 +83,14 @@ fn connect_daemon() -> Result<UnixStream, String> {
 /// Sends one JSON-RPC-ish request to pyren-daemon and returns its
 /// `result`, or an `Err` built from the connection failure or the
 /// daemon's own `error` field.
-fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, String> {
+/// One request, one response, with a refusal left as the daemon sent it.
+///
+/// Separate from [`call_daemon`] because a refusal is two different things
+/// depending on who is asking. A command forwards the message to the user
+/// and is done; the event watcher below has to branch on `kind`, because
+/// "this daemon has no event stream" is a reason to stop asking and
+/// everything else is a reason to try again.
+fn request_daemon(module: &str, method: &str, params: Value) -> Result<Value, String> {
     let stream = connect_daemon()?;
 
     let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
@@ -95,7 +103,11 @@ fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, Strin
     let mut response_line = String::new();
     reader.read_line(&mut response_line).map_err(|e| e.to_string())?;
 
-    let response: Value = serde_json::from_str(&response_line).map_err(|e| e.to_string())?;
+    serde_json::from_str(&response_line).map_err(|e| e.to_string())
+}
+
+fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, String> {
+    let response = request_daemon(module, method, params)?;
     if let Some(err) = response.get("error") {
         return Err(daemon_error(err));
     }
@@ -388,6 +400,163 @@ fn workaround_webkit_dmabuf() {
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
 }
 
+/// What is running in this session, and what starts at login.
+#[tauri::command]
+fn session_status() -> Value {
+    session::status()
+}
+
+/// Starts the widget now. The app does this at launch by itself; this is
+/// the button for the case where it was stopped by hand.
+#[tauri::command]
+fn session_start_osd() -> Result<Value, String> {
+    session::start_osd()?;
+    Ok(session::status())
+}
+
+/// Shows the widget without changing the power mode.
+#[tauri::command]
+fn session_show_osd() -> Result<Value, String> {
+    session::show_osd()?;
+    Ok(session::status())
+}
+
+/// Stops the widget now, and stops it coming back at login.
+///
+/// Both, because they are one idea to the person switching it off: a
+/// widget that vanishes and reappears at the next login has not been
+/// turned off, it has been dismissed.
+#[tauri::command]
+fn session_stop_osd() -> Result<Value, String> {
+    session::stop_osd()?;
+    Ok(session::status())
+}
+
+#[tauri::command]
+fn session_set_osd_at_login(enabled: bool) -> Result<Value, String> {
+    session::set_osd_at_login(enabled)
+}
+
+/// What key is bound, whether the daemon can hear one at all, and whether
+/// acting on it is switched on.
+#[tauri::command]
+fn hotkey_get_status() -> Result<Value, String> {
+    call_daemon("hotkey", "getStatus", Value::Null)
+}
+
+/// Opens a learn window and blocks until a key arrives or it times out.
+///
+/// Long-running on purpose: the reply *is* the key the user pressed, so
+/// the settings page shows "press a key now" for exactly as long as this
+/// call is outstanding.
+#[tauri::command]
+fn hotkey_learn(timeout_ms: Option<u64>) -> Result<Value, String> {
+    call_daemon("hotkey", "learn", json!({ "timeoutMs": timeout_ms, "bind": true }))
+}
+
+/// Forgets the bound key. The hotkey stays switched on, so the next
+/// `learn` binds without a second trip.
+#[tauri::command]
+fn hotkey_clear() -> Result<Value, String> {
+    call_daemon("hotkey", "setTriggers", json!({ "triggers": [] }))
+}
+
+#[tauri::command]
+fn hotkey_set_enabled(enabled: bool) -> Result<Value, String> {
+    call_daemon("hotkey", "setEnabled", json!({ "enabled": enabled }))
+}
+
+/// Does what the key does, without the key: the settings page's preview,
+/// and the only way to see the widget on a laptop whose Fn+P never
+/// reaches Linux.
+#[tauri::command]
+fn hotkey_press() -> Result<Value, String> {
+    call_daemon("hotkey", "press", Value::Null)
+}
+
+#[tauri::command]
+fn session_set_app_at_login(enabled: bool) -> Result<Value, String> {
+    session::set_app_at_login(enabled)
+}
+
+/// How long one `core.nextEvent` waits before the daemon answers with
+/// nothing. Long, because a poll that returns nothing costs a round trip
+/// and this is not a timer - the answer arrives when something happens.
+const EVENT_POLL_MS: u64 = 25_000;
+
+/// After the daemon goes away. Long enough not to spin on a socket that
+/// may be gone for the rest of the session.
+const EVENT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Forwards the daemon's event stream into the webview as `daemon-event`.
+///
+/// The app can change the power mode, and so can four other things: the
+/// laptop's own performance key, `pyren-ctl`, the on-screen display, and
+/// the daemon's own supervisor. Without this the window went on showing
+/// whichever mode it had last read - the page was not wrong when it was
+/// drawn, it just had no way to hear that the machine had moved.
+///
+/// One thread and one socket, held in a long poll. It is not a timer:
+/// asking every two seconds would cost the same round trips whether or not
+/// anything happened, and would still be up to two seconds late.
+fn watch_daemon_events(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut since: Option<u64> = None;
+
+        loop {
+            let mut params = json!({ "timeoutMs": EVENT_POLL_MS });
+            if let Some(seq) = since {
+                params["since"] = json!(seq);
+            }
+
+            let response = match request_daemon("core", "nextEvent", params) {
+                Ok(response) => response,
+                Err(_) => {
+                    // Unreachable. Not reported: the UI already says the
+                    // daemon is down, from the telemetry poll that runs
+                    // whether or not this thread exists.
+                    since = None;
+                    std::thread::sleep(EVENT_RETRY);
+                    continue;
+                }
+            };
+
+            if let Some(error) = response.get("error") {
+                // A daemon older than the event stream will answer this
+                // way forever, so stop asking. Everything else - busy,
+                // internal, a kind this build has never heard of - is
+                // worth another try in a moment.
+                if error.get("kind").and_then(Value::as_str) == Some("unknownMethod") {
+                    eprintln!(
+                        "pyren: this daemon has no event stream, so the window will not \
+                         follow mode changes made outside it"
+                    );
+                    return;
+                }
+                since = None;
+                std::thread::sleep(EVENT_RETRY);
+                continue;
+            }
+
+            let result = response.get("result").cloned().unwrap_or(Value::Null);
+            let seq = result.get("seq").and_then(Value::as_u64);
+            // A daemon that restarted counts from zero again, so a sequence
+            // lower than the one held is a new daemon rather than an error.
+            since = match (since, seq) {
+                (Some(previous), Some(seq)) if seq < previous => Some(seq),
+                (previous, seq) => seq.or(previous),
+            };
+
+            for event in result.get("events").and_then(Value::as_array).into_iter().flatten() {
+                // Emitted verbatim: which topics are worth reacting to is
+                // the frontend's business, and a topic this build has never
+                // heard of has to reach it rather than be filtered out here.
+                let _ = app.emit("daemon-event", event.clone());
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     workaround_webkit_dmabuf();
@@ -405,6 +574,13 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            watch_daemon_events(app.handle().clone());
+            // On a thread: it may shell out to systemctl, and nothing about
+            // starting the widget should hold up the window.
+            std::thread::spawn(session::ensure_running);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             fan_get_status,
             fan_diagnose,
@@ -433,6 +609,17 @@ pub fn run() {
             installer_apply,
             admin_status,
             admin_grant,
+            session_status,
+            session_start_osd,
+            session_show_osd,
+            session_stop_osd,
+            session_set_osd_at_login,
+            session_set_app_at_login,
+            hotkey_get_status,
+            hotkey_learn,
+            hotkey_clear,
+            hotkey_set_enabled,
+            hotkey_press,
             app_config_load,
             app_config_save
         ])

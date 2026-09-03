@@ -35,7 +35,13 @@
     void hardware.hydrate().then(() => hardware.syncFromDaemon());
     telemetry.start();
     void telemetry.loadSystemInfo();
-    return () => telemetry.stop();
+    // Started here rather than per-page: the mode can change while any
+    // page is open, and the sidebar and home dashboard show it too.
+    const stopWatching = hardware.watchDaemon();
+    return () => {
+      telemetry.stop();
+      stopWatching();
+    };
   });
 
   /** Debounced writes could otherwise be lost when the window closes. */

@@ -11,6 +11,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 /** False when the page is served by Vite in a normal browser, not Tauri. */
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -456,6 +457,59 @@ export type ApplyResult = { plan: InstallPlan; report: ExecutionReport };
 export class DaemonUnavailable extends Error {}
 
 /**
+ * One thing that happened to the daemon, forwarded by the Tauri shell.
+ *
+ * Mirrors `core.nextEvent`'s event shape in docs/01-ipc-protocol.md.
+ * `payload` is deliberately loose: an unknown `topic` has to reach the
+ * handler rather than be filtered out, because a newer daemon may publish
+ * one this build has never heard of.
+ */
+export type DaemonEvent = {
+  seq: number;
+  topic: string;
+  payload: Record<string, unknown>;
+  /** How long ago it happened, in milliseconds. */
+  ageMs: number;
+};
+
+/**
+ * Calls `handler` whenever the daemon publishes something, and returns the
+ * function that stops listening.
+ *
+ * This is how the window learns about changes it did not make: the
+ * laptop's performance key, the on-screen display, `pyren-ctl`, and the
+ * daemon's own auto-switch supervisor all move the machine without asking
+ * this app first.
+ *
+ * **A no-op outside Tauri.** The dev-server bridge is request/response
+ * only, so `vite dev` in a browser tab still shows correct data on every
+ * poll - it just does not react to a key press. Nothing else changes.
+ */
+export function onDaemonEvent(handler: (event: DaemonEvent) => void): () => void {
+  if (!inTauri) return () => {};
+
+  // Subscribing is async and callers unsubscribe synchronously (an
+  // `onMount` cleanup), so the unlisten is captured when it arrives and
+  // applied immediately if the caller has already gone.
+  let unlisten: (() => void) | null = null;
+  let stopped = false;
+
+  void listen<DaemonEvent>("daemon-event", (message) => handler(message.payload))
+    .then((stop) => {
+      if (stopped) stop();
+      else unlisten = stop;
+    })
+    .catch(() => {
+      /* No event stream: the page still polls, it just will not react. */
+    });
+
+  return () => {
+    stopped = true;
+    unlisten?.();
+  };
+}
+
+/**
  * The daemon method behind each Tauri command, so `vite dev` in a browser
  * can reach the daemon through the dev-server bridge instead of falling
  * back to synthetic numbers (see `dev-daemon-bridge.js`).
@@ -539,6 +593,65 @@ async function callViaDevBridge<T>(
   return reply.result as T;
 }
 
+/** Which modifiers a shortcut needs held. Matched exactly by the daemon. */
+export type HotkeyModifiers = {
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  meta: boolean;
+};
+
+/**
+ * One bound key. `keycode` and `scancode` are both optional and at least
+ * one is set: a vendor key the kernel has no keycode for — the OMEN
+ * performance key on the machines where it arrives at all — is bound by
+ * its scancode alone.
+ */
+export type HotkeyTrigger = {
+  /** Device name as the kernel reports it, e.g. `HP WMI hotkeys`. */
+  device: string | null;
+  keycode: number | null;
+  scancode: number | null;
+  modifiers: HotkeyModifiers;
+};
+
+export type HotkeyStatus = {
+  /** Whether a matched key does anything. The watcher runs either way, so
+   *  `learn` still works while this is off. */
+  enabled: boolean;
+  /** Whether the daemon can hear a key at all. False when it is not root. */
+  watching: boolean;
+  /** One sentence saying why nothing happens, when nothing does. */
+  detail: string;
+  devices: string[];
+  triggers: HotkeyTrigger[];
+  /** The shortcut written the way a person would: `Ctrl+Alt+P`. Null when
+   *  nothing is bound. */
+  label: string | null;
+  repeatGuardMs: number;
+  learning: boolean;
+  fired: number;
+  lastFiredAgoMs: number | null;
+  configPath: string;
+  configSaveError: string | null;
+};
+
+/** What `hotkey.learn` answers with. `timedOut` is the answer that matters
+ *  on a laptop whose key never reaches Linux: nothing was pressed, and
+ *  that is a result rather than a failure. */
+export type HotkeyLearned = {
+  press: {
+    device: string;
+    keycode: number | null;
+    scancode: number | null;
+    modifiers: HotkeyModifiers;
+    describe: string;
+    label: string;
+  } | null;
+  timedOut: boolean;
+  bound: boolean;
+};
+
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!inTauri) return callViaDevBridge<T>(command, args);
   try {
@@ -605,6 +718,16 @@ export const daemon = {
   installerPlan: (request: InstallerRequest) => call<InstallPlan>("installer_plan", { request }),
   /** A dry run unless the request carries `confirm: true`. */
   installerApply: (request: InstallerRequest) => call<ApplyResult>("installer_apply", { request }),
+  /** What key is bound, and whether the daemon can hear one at all. */
+  hotkeyStatus: () => call<HotkeyStatus>("hotkey_get_status"),
+  /** Opens a learn window and does not answer until a key arrives or the
+   *  window closes. Whatever arrives is bound. */
+  hotkeyLearn: (timeoutMs = 10_000) => call<HotkeyLearned>("hotkey_learn", { timeoutMs }),
+  /** Forgets the bound key without switching the hotkey off. */
+  hotkeyClear: () => call<HotkeyStatus>("hotkey_clear"),
+  setHotkeyEnabled: (enabled: boolean) => call<HotkeyStatus>("hotkey_set_enabled", { enabled }),
+  /** Does what the key does, without the key — the widget's preview. */
+  hotkeyPress: () => call<{ fired: boolean }>("hotkey_press"),
   setPowerTuning: (tuning: {
     mode?: PowerMode;
     pl1W?: number;

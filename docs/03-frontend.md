@@ -53,6 +53,18 @@ Three stores, deliberately separate:
     telemetry poll. A machine that refuses the mode the UI is showing
     corrects the UI, rather than leaving a button lit that nothing is
     honouring.
+  - **The mode can move without the app.** `watchDaemon()`, started once
+    in the root layout, subscribes to the daemon's event stream through the
+    Tauri shell (`core.nextEvent`, forwarded to the webview as
+    `daemon-event`). A `power.mode` event re-reads the state, so the page
+    follows the laptop's performance key, the on-screen display,
+    `pyren-ctl` and the daemon's own supervisor. Polling for this would
+    cost the same round trips whether or not anything happened, and would
+    still be up to one interval late.
+
+    It is a **no-op in a browser tab**: the dev bridge is request/response
+    only, so `vite dev` shows correct data on every poll and simply does
+    not react to a key press.
   - **Gate on capabilities, never on the mode.** `hardware.fan.capabilities`
     says whether this driver can be told a *speed* at all (board 8D2F can
     switch auto/max and nothing else), and `hardware.power.limits.available`

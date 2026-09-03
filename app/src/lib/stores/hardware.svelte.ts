@@ -11,6 +11,7 @@
 
 import {
   daemon,
+  onDaemonEvent,
   type ApplyReport,
   type AutoConfig,
   type FanStatus,
@@ -165,6 +166,27 @@ class HardwareStore {
       // already tells the user the daemon is unreachable.
       this.power = null;
     }
+  }
+
+  /**
+   * Follows the machine when something else moves it, and returns the
+   * function that stops following.
+   *
+   * The mode is not this app's to know: the performance key cycles it, the
+   * on-screen display sets it, `pyren-ctl` sets it, and the daemon's
+   * supervisor switches it on battery. Before this, the page went on
+   * showing whichever mode it had last read - it was not wrong when it was
+   * drawn, it simply had no way to hear that the machine had left.
+   *
+   * The re-read happens even for a change this app made itself. It costs
+   * one local socket call, and the alternative - guessing which
+   * announcements are our own - would be wrong the first time two windows
+   * were open.
+   */
+  watchDaemon(): () => void {
+    return onDaemonEvent((event) => {
+      if (event.topic === "power.mode") void this.syncFromDaemon();
+    });
   }
 
   async setPowerMode(mode: PowerMode) {
