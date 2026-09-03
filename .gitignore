@@ -12,3 +12,6 @@
 # Editors / OS
 .DS_Store
 *.swp
+
+# Claude Code, personal to this checkout
+.claude/settings.local.json
