@@ -28,7 +28,7 @@ daemon/     Rust workspace: pyren-daemon + pyren-ctl + pyren-check + module crat
 app/        Tauri app: SvelteKit frontend + src-tauri shell
 docs/       design plan + IPC protocol + development + frontend + RGB review
 dev/        working notes: what is left to do, and what was learned
-tools/      pyren-check.sh, the dependency-free fan self-test
+tools/      pyren-check.sh, the dependency-free compatibility check
 ```
 
 ## Status
@@ -68,16 +68,22 @@ tools/      pyren-check.sh, the dependency-free fan self-test
   each then refining towards Eco or Performance as conditions hold.
   Unlimited is never chosen for you.
 - `pyren-ctl`: a CLI over the same socket — `status`, `power set`,
-  `power tune --pl1 35W`, `fan curve 40:20,80:100`, and `--json` on any of
-  them. It exists mainly so a number someone measured on their own machine
+  `power tune --pl1 35W`, `fan curve 40:20,80:100`, `rgb probe`, and
+  `--json` on any of them. It exists mainly so a number someone measured on their own machine
   can be recorded without a slider.
-- Fan-control self-test: `fan.diagnose`, the app's Hardware check page, a
-  standalone `pyren-check` binary, and `tools/pyren-check.sh` — a
-  dependency-free shell version to copy onto a machine where building isn't
-  practical (kept in step by a parity test). Verifies what the running kernel
-  actually supports instead of installing a patched driver — manual fan
-  control is upstream in recent kernels, so on most machines there is
-  nothing to install.
+- Compatibility check: `pyren-check`, and `tools/pyren-check.sh` — a
+  dependency-free POSIX shell twin to copy onto a machine where building
+  isn't practical. Three sections and one verdict: **fans** (the same
+  self-test the app's Hardware check page runs as `fan.diagnose`),
+  **power** (what would drive the modes, the RAPL envelope, the turbo
+  switch) and **lighting** (both RGB paths, probed). The verdict is
+  `system.compatibility` — the same one the daemon prints at startup, from
+  the same probes, so the tool cannot disagree with the app about the
+  machine in front of it. A parity test runs both implementations against
+  shared fixtures and compares the verdict, `controls` and every check in
+  every section. It verifies what the running kernel actually supports
+  instead of installing a patched driver — manual fan control is upstream
+  in recent kernels, so on most machines there is nothing to install.
 - `installer` module: ports the driver/service installer as inspect → plan
   → apply, kept for boards the stock driver doesn't support and for the
   systemd unit. Detection and planning are verified; **the driver execution
@@ -97,14 +103,32 @@ tools/      pyren-check.sh, the dependency-free fan self-test
   - the number the curve's hysteresis wants and otherwise has to guess at -
   and needs only mode switching, so it runs on boards that cannot be given
   a percentage. The fan cleaner is not ported.
+- `rgb` module: the OMEN lighting, which is really *two unrelated things* —
+  per-key RGB over USB HID (`0d62:54bf`) and a 4-zone bottom light strip
+  over ACPI-WMI — that share no transport, no privileges and no detection.
+  **Which one a laptop has is not decided by its model name**, so both are
+  probed and `rgb.getCapabilities` reports what was found; there is no
+  board list here either. The lightbar is ported (`setZones`, `setStatic`,
+  `off`, and a `readZones` that really does ask the firmware) with its
+  144-byte payload unit-tested field by field, and three bugs in the source
+  project fixed rather than carried over. **It has never been run against a
+  light strip**: `/proc/acpi/call` needs the `acpi_call` kernel module,
+  which the test laptop does not have installed — so the module says which
+  of the three ways it is unavailable a machine is in, rather than
+  "no lighting". The per-key path is detected and deliberately not driven.
+  `/proc/acpi/call` is a single global interface with no locking, so every
+  use goes through one process-wide lock in `pyren-core` — shared, because
+  the fan cleaner will need it too.
 - App: a full OMEN Gaming Hub-style frontend — home dashboard, system vitals
   (basic + advanced views), performance control (power modes, fan
   toggle/curve, power limits), GPU overclocking, lighting, graphics
   switcher, network booster, key mapping, plus settings, drivers and help
   pages. Fan and power writes reach the daemon, and the pages hide what
   this machine's driver cannot do rather than offering controls that
-  silently fail. Lighting, GPU switching, network booster and key mapping
-  are still UI-only. Bilingual (en/es) with a drop-in translation system,
+  silently fail. GPU switching, network booster and key mapping are still
+  UI-only, and so is the lighting page — the `rgb` module exists but is not
+  wired to it, because a UI built on a backend nobody has confirmed against
+  hardware is a UI that lies convincingly. Bilingual (en/es) with a drop-in translation system,
   and it falls back to simulated data when the daemon isn't reachable, so
   the UI is usable without root.
 

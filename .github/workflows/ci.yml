@@ -30,8 +30,11 @@ jobs:
       # shell - which is the point of a POSIX sh script.
       - run: cargo test --workspace
         working-directory: daemon
-      # The CLI's help text is the only documentation most people will read.
+      # The CLIs' help text is the only documentation most people will
+      # read, and pyren-check's is what a stranger reads first.
       - run: cargo run -q -p pyren-ctl -- --help
+        working-directory: daemon
+      - run: cargo run -q -p pyren-check -- --help
         working-directory: daemon
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: daemon

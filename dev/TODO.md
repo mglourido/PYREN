@@ -58,35 +58,44 @@ doing **before** 1.1 rather than after: it is the number the installer's
 `cpuMaxRpm`/`gpuMaxRpm` patch wants, and measuring it with the stock driver
 means the patched one can be given a real value on its first build.
 
+### 1.3 Ask the firmware about the lightbar **[HP]**
+The `rgb` module is written (`daemon/crates/rgb`) and has **never been run
+against a light strip**, for one installable reason: `/proc/acpi/call` does
+not exist here because `acpi_call` is not installed. Everything that can be
+tested without it is — the 144-byte buffer the port builds, the replies it
+accepts, the probe on a machine with neither path — so this is a
+one-variable test like 1.1:
+
+```sh
+sudo pacman -S acpi_call                          # prebuilt for this kernel
+cd daemon && sudo -E cargo run -p pyren-daemon    # terminal 1
+cargo run -q -p pyren-ctl -- rgb probe            # terminal 2
+cargo run -q -p pyren-ctl -- rgb set '#ff9900'
+cargo run -q -p pyren-ctl -- rgb read             # did it understand the payload?
+```
+
+*Done when*: `rgb probe` says whether the firmware answered, and either
+answer is in `FINDINGS.md`. **"The firmware refused" is a result**, and the
+one that stops the next person re-deriving this — the payload constants are
+upstream's reverse engineering and nobody has confirmed them on any
+machine.
+
+The per-key path stays unported until a `0d62:54bf` turns up somewhere and
+the review's finding 1 can be settled on it; the `keys.json` half of that
+finding is already confirmed (`FINDINGS.md`).
+
 ---
 
 ## 2. Blocked on a decision or on hardware
 
-### 2.1 RGB module
-**Which port to write is now decided**: `lsusb` on the laptop finds no
-`0d62` device, so the per-key USB HID path has nothing to talk to and the
-4-zone ACPI lightbar is the only candidate (`FINDINGS.md` §"The test laptop
-has no per-key RGB keyboard"). Review and porting order are in
-`docs/04-rgb-porting-review.md`.
-
-Still blocked, but on something installable rather than on an unknown:
-`/proc/acpi/call` does not exist here because `acpi_call` isn't installed
-(`acpi_call-dkms` on Arch). Install it, then confirm the lightbar answers
-before writing the module — "no per-key device" is proven; "the 4-zone
-interface works on this machine" is not.
-
-When it is written: `/proc/acpi/call` needs a **cross-module** lock (the fan
-cleaner uses it too), so that belongs in `core` or a new shared crate, not
-inside the `rgb` module.
-
-### 2.2 Driver sources: vendor, submodule, or fetch?
+### 2.1 Driver sources: vendor, submodule, or fetch?
 Analysis in `FINDINGS.md`. Currently the installer looks for a checkout and
 reports a blocker when it finds none, which is honest but means the driver
 path only works for someone who already has the other repo. **Needs a call
 from the project owner**, and is low priority while fan control is upstream
 anyway.
 
-### 2.3 GPU switching, network booster, key mapping
+### 2.2 GPU switching, network booster, key mapping
 The UI for all three is complete and drives local state only. Each needs a
 real backend decision before any daemon work:
 
@@ -128,7 +137,9 @@ real backend decision before any daemon work:
   original also supports GPU, with a fallback to CPU when the GPU reads 0
   because it is asleep; `FanConfig` has no `referenceSensor` field yet.
 - **Fan cleaner** (reverse spin, `acpi_call`) — the protocol is documented
-  in the source project, and it's the one genuinely novel feature.
+  in the source project, and it's the one genuinely novel feature. The
+  `acpi_call` plumbing it needs already exists: `pyren_core::acpi`, with
+  the cross-module lock. Reach for that rather than opening the file.
 - **Per-process GPU usage** in the vitals table (the column exists and
   shows `--`).
 - **Packaging**: nothing exists. PKGBUILD first, given the audience.

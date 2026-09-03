@@ -182,12 +182,19 @@ GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 bun run tauri dev
 This is a known WebKitGTK/compositor interaction, not specific to this
 project's code — if it stops being needed on your setup, drop it.
 
-## Checking that fan control works on a machine
+## Checking what a machine can be told to do
 
-`pyren-check` runs the same self-test as the app's Hardware check page,
-as a standalone binary with no daemon, socket or GUI involved. It is the
-first thing to run on an unfamiliar laptop, and the thing to paste into a
-bug report.
+`pyren-check` is the compatibility check: a standalone binary, no daemon,
+socket or GUI involved. It is the first thing to run on an unfamiliar
+laptop, and the thing to paste into a bug report.
+
+Three sections, one verdict:
+
+| section | question |
+|---|---|
+| **fans** | the same self-test the app's Hardware check page runs (`fan.diagnose`), in detail |
+| **power** | what would drive the modes, whether there is a RAPL envelope, whether turbo can be switched |
+| **lighting** | both RGB paths — per-key USB and the 4-zone ACPI lightbar — probed, never guessed from the model name |
 
 ```sh
 cd daemon
@@ -196,9 +203,20 @@ sudo cargo run -p pyren-check -- --write   # also verify the PWM accepts writes
 cargo run -p pyren-check -- --json  # machine-readable
 ```
 
-Exit status is the verdict: `0` full control, `1` monitoring only, `2` no
-fan-control interface. `--write` rewrites the value already set and puts
-the previous mode back, so no fan changes speed.
+The last line is the verdict, and it is `system.compatibility` — the same
+one the daemon prints at startup and the app shows on its Hardware page,
+from the same probes. A tool that disagreed with the app about the machine
+in front of it would be worse than no tool.
+
+**Exit status is about fans**, because that is what scripts branch on: `0`
+full control, `1` monitoring only, `2` no fan-control interface. The
+verdict is wider than that — a machine with no fan control can still have
+power modes and a lightbar — so read the last line, not `$?`.
+
+`--write` rewrites the value already set and puts the previous mode back,
+so no fan changes speed. The lighting section issues one ACPI **read** (the
+same one the daemon uses at startup) and only when `/proc/acpi/call` is
+already there; it never loads a kernel module and never writes a colour.
 
 ### Running it without building the project
 
@@ -211,21 +229,39 @@ scp tools/pyren-check.sh laptop:
 ssh laptop './pyren-check.sh'          # or: sudo ./pyren-check.sh --write
 ```
 
-It performs the same checks in the same order, with the same verdicts and
-exit codes. `daemon/check/tests/parity.rs` runs both against the same
-fixtures and compares verdicts, exit status and per-check results, so the
-two cannot drift apart silently — that test caught two real divergences the
-first time it ran.
+It performs the same checks in the same order, with the same statuses,
+compatibility verdict and exit code. `daemon/check/tests/parity.rs` runs
+both against the same fixtures and compares the exit status, the verdict,
+`controls`, and every check in **all three** sections, so the two cannot
+drift apart silently — that test caught three real divergences the first
+times it ran.
 
-To exercise the checks without HP hardware, point it at a fixture:
+To exercise the checks without HP hardware, point them at fixtures. Three
+environment variables do this, and both implementations honour all three:
+
+| variable | stands in for |
+|---|---|
+| `PYREN_HWMON_DIR` | the `hp-wmi` hwmon node |
+| `PYREN_USB_DEVICES` | `/sys/bus/usb/devices`, for the per-key keyboard probe |
+| `PYREN_ACPI_CALL` | `/proc/acpi/call`, for the lightbar probe |
 
 ```sh
-mkdir -p /tmp/fake && cd /tmp/fake
+mkdir -p /tmp/fake/usb/1-2 && cd /tmp/fake
 echo hp > name; echo 2400 > fan1_input; echo 2550 > fan2_input
 echo 128 > pwm1; echo 2 > pwm1_enable
-PYREN_HWMON_DIR=/tmp/fake cargo run -p pyren-check -- --write
-PYREN_HWMON_DIR=/tmp/fake ~/pyren-linux/tools/pyren-check.sh --write
+echo 0d62 > usb/1-2/idVendor; echo 54bf > usb/1-2/idProduct
+PYREN_HWMON_DIR=/tmp/fake PYREN_USB_DEVICES=/tmp/fake/usb \
+  cargo run -p pyren-check -- --write
+PYREN_HWMON_DIR=/tmp/fake PYREN_USB_DEVICES=/tmp/fake/usb \
+  ~/pyren-linux/tools/pyren-check.sh --write
 ```
+
+`PYREN_ACPI_CALL` pointed at a plain file is how the lightbar path gets
+exercised on a machine with no `acpi_call`: the request is written, read
+straight back, and read back is not `PASS` — so both implementations
+report the firmware as having refused, and the file afterwards holds the
+exact bytes each one sent. Comparing that file between the two is the
+cheapest way to check they ask the firmware the same question.
 
 ## Checking the frontend
 

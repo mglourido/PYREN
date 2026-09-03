@@ -5,9 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pyren-core = { path = "../crates/core" }
 pyren-fan = { path = "../crates/fan" }
 pyren-system = { path = "../crates/system" }
-# Only for power_mode_available(): the verdict this prints must match the
-# daemon's, and power modes are half of it.
+# The verdict this prints must match the daemon's, so it is built from the
+# same probes the daemon's modules use rather than from a second copy of
+# the same questions.
 pyren-power = { path = "../crates/power" }
+pyren-rgb = { path = "../crates/rgb" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"

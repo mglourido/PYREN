@@ -21,7 +21,7 @@ the project's conversations are in Spanish.
 ```
 daemon/                 Rust workspace (the daemon and its two CLIs)
 ├── daemon/             pyren-daemon: loads modules, serves the socket
-├── check/              pyren-check: standalone fan self-test CLI
+├── check/              pyren-check: standalone compatibility check CLI
 ├── ctl/                pyren-ctl: shell client for a running daemon
 └── crates/
     ├── core/           Module trait, Registry, wire types, socket server + client
@@ -29,6 +29,7 @@ daemon/                 Rust workspace (the daemon and its two CLIs)
     ├── system/         machine identity + generic Linux monitoring
     ├── power/          power profiles + the auto-switch supervisor
     ├── fan/            fan status, the write path, the self-test
+    ├── rgb/            lighting: probes both paths, drives the 4-zone lightbar
     └── installer/      driver/service installer (inspect → plan → apply)
 app/                    Tauri app: SvelteKit frontend + src-tauri shell
 tools/pyren-check.sh     dependency-free shell twin of pyren-check
@@ -136,7 +137,7 @@ that move them are in the README's deployment section.
 ## Verifying a change
 
 ```sh
-cd daemon && cargo test && cargo clippy --all-targets   # 185 tests, 0 warnings
+cd daemon && cargo test && cargo clippy --all-targets   # 215 tests, 0 warnings
 cd app && bun run check && bun run build
 cd app/src-tauri && cargo check
 sh -n tools/pyren-check.sh

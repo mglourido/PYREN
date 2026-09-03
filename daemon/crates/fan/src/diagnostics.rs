@@ -51,7 +51,10 @@ pub struct Check {
 }
 
 impl Check {
-    fn new(id: &str, title: &str, status: CheckStatus, detail: impl Into<String>) -> Self {
+    /// Public because `pyren-check` builds the power and lighting sections
+    /// of its compatibility report out of the same shape - one check type,
+    /// one renderer, one JSON schema, rather than three that drift.
+    pub fn new(id: &str, title: &str, status: CheckStatus, detail: impl Into<String>) -> Self {
         Self {
             id: id.to_string(),
             title: title.to_string(),
@@ -61,7 +64,7 @@ impl Check {
         }
     }
 
-    fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
+    pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
         self.remedy = Some(remedy.into());
         self
     }
@@ -533,20 +536,19 @@ fn check_cpu_temp(path: Option<&Path>) -> Check {
     })
 }
 
+/// Two things need this now, not one: the dust-removal fan cleaner (not
+/// ported yet) and the RGB lightbar. Naming only the fan cleaner made a
+/// warning look optional to anyone who does not want it.
 fn check_acpi_call() -> Check {
-    if Path::new("/proc/acpi/call").exists() {
-        Check::new(
-            "acpi-call",
-            "acpi_call module (fan cleaner)",
-            CheckStatus::Pass,
-            "/proc/acpi/call is available",
-        )
+    const TITLE: &str = "acpi_call module";
+    if Path::new(&pyren_core::acpi::call_path()).exists() {
+        Check::new("acpi-call", TITLE, CheckStatus::Pass, "/proc/acpi/call is available")
     } else {
         Check::new(
             "acpi-call",
-            "acpi_call module (fan cleaner)",
+            TITLE,
             CheckStatus::Warn,
-            "/proc/acpi/call not found; only the dust-removal fan cleaner needs it",
+            "/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it",
         )
         .with_remedy("Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call (Fedora), then `modprobe acpi_call`.")
     }

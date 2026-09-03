@@ -169,6 +169,7 @@ on this machine, collected by the daemon at startup:
 | `fanMode` | `pwm1_enable` exists, so auto and max can be commanded |
 | `fanSpeed` | `pwm1` exists, so a specific speed can be commanded |
 | `powerMode` | some power mechanism answered — ACPI platform profile, power-profiles-daemon, or the CPU's energy-performance hint |
+| `lightbar` | the 4-zone light strip answered an ACPI read. Named for what was probed rather than "lighting": the per-key keyboard is a different device on a different bus, and a machine can have either, both or neither |
 
 `compatibility` is only their summary:
 
@@ -720,6 +721,133 @@ the hp-wmi reverse-bit encoding — see
 `docs/02-kernel-driver.md` in the `omen-fan-control` project (see
 `dev/README.md` for where that checkout is) for why raw values
 `>= 12800` get remapped.
+
+## `rgb` module
+
+| method | params | result | status |
+|---|---|---|---|
+| `rgb.getCapabilities` | none | a **fresh** probe of both hardware paths | ✅ implemented, read-only |
+| `rgb.getStatus` | none | the startup probe plus what this daemon last set | ✅ implemented, read-only |
+| `rgb.setZones` | `{ "zones": [c, c, c, c], "brightness"?: 0-100 }` | the status object | ✅ implemented, needs root, **never run against a light strip** |
+| `rgb.setStatic` | `{ "color": c, "brightness"?: 0-100 }` | the status object | ✅ implemented, needs root, ditto |
+| `rgb.off` | none | the status object | ✅ implemented, needs root, ditto |
+| `rgb.readZones` | none | `{ "zones": [c, c, c, c] }` | ✅ implemented, needs root, ditto |
+| `rgb.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
+
+A colour `c` goes **out** as `"#rrggbb"` and is accepted **in** as either
+that or `[r, g, b]`, so a script does not have to build a hex string to
+say 255,0,0. Components outside 0-255 are clamped rather than refused: a
+caller that sent 300 meant "as much red as there is", not "reject my whole
+request".
+
+`brightness` is a **percentage**, not a 0-255 level — that is what the
+protocol takes, and calling it brightness while meaning a level is how a
+UI ends up with a slider that does nothing above 40 %.
+
+### There are two unrelated hardware paths, and the model name does not say which
+
+The source project (`omen-rgb-linux`) drives two things that share no
+transport, no privilege model and no detection:
+
+| | Per-key RGB | 4-zone lightbar |
+|---|---|---|
+| Transport | USB HID, `hidapi` | ACPI-WMI via `/proc/acpi/call` |
+| Device | HP Gaming Keyboard II, `0d62:54bf` | `hp-wmi` + the `acpi_call` module |
+
+**Which one a given laptop has is not decided by its model name**, so both
+are probed and the answer is reported rather than looked up — the same
+rule as §"`controls` and `compatibility` are measured, not looked up". Only
+the lightbar is *driven*: on the one OMEN this project has run on, there
+is no `0d62` device on the bus at all. The full reasoning, and the three
+upstream bugs this port fixes rather than carries over, are in
+[`04-rgb-porting-review.md`](04-rgb-porting-review.md).
+
+`getCapabilities` answers:
+
+```json
+{
+  "perKey": {
+    "present": false,
+    "usbId": "0d62:54bf",
+    "ported": false,
+    "detail": "no HP Gaming Keyboard II on this machine"
+  },
+  "lightbar": {
+    "present": false,
+    "hpWmi": true,
+    "acpiCall": false,
+    "acpiCallInstalled": false,
+    "answered": null,
+    "detail": "hp-wmi is here but /proc/acpi/call is not, and the module is not installed either; install the acpi_call kernel module: ..."
+  },
+  "supported": false
+}
+```
+
+Three fields there are easy to conflate and must not be:
+
+- **`present` is a claim about hardware.** It is only ever true when the
+  firmware was asked and said yes.
+- **`answered: null` is not a refusal.** It means the question could not be
+  put — no `hp-wmi`, or no `/proc/acpi/call` — and a client that shows
+  "your machine has no lightbar" for that is telling the user something
+  nobody established.
+- **`acpiCall` and `acpiCallInstalled` are different problems.** Not
+  installed needs a package; installed-but-not-loaded needs a `modprobe`.
+  One message for both sends people to the wrong fix.
+
+`getCapabilities` re-probes on every call, unlike `is_supported`, which is
+the probe taken at startup. That is deliberate: installing `acpi_call` and
+asking again should be a complete workflow, not one that needs a daemon
+restart.
+
+### A missing `acpi_call` is `failed`, not `notCapable`
+
+The one error mapping worth stating, because `notCapable` is the kind a
+client is entitled to read as *"this machine will never do it, stop
+offering the control"*:
+
+| situation | kind |
+|---|---|
+| no `hp-wmi` on this machine | `unsupported` |
+| `/proc/acpi/call` missing | `failed`, with the package name in the message |
+| not root | `permissionDenied` |
+| the firmware was asked and refused | `notCapable` |
+
+A missing kernel module is one `pacman -S` away, and reporting it as a
+permanent hardware limit would hide a working light strip behind an
+install nobody was told to do.
+
+### `/proc/acpi/call` is one file, and the lock is not in this module
+
+`acpi_call` is a *single global interface*: a call is a write followed by
+a read of the same file, tied together by nothing. If a second process
+writes in between, we read its answer and it reads ours. A short-lived CLI
+gets away with that; a daemon with a control loop does not.
+
+So every use in this process goes through `pyren_core::acpi::call`, which
+holds one process-wide mutex across the write/read pair. It lives in
+`core` rather than in this module because **more than one module needs
+it**: the lightbar drives the light strip through it, and the fan cleaner
+(not ported) will drive reverse spin through it. Two modules serialising
+against two different mutexes would be two modules not serialising at all.
+
+The lock is per *process*, which is the scope that is ours. Another
+program on the machine using `acpi_call` at the same moment is outside it.
+
+### Nothing here has been confirmed against a light strip
+
+Every constant in the payload is upstream's reverse engineering, carried
+across and unit-tested for **shape** only — the header fields, where the
+four zones land, which replies count as success. The development laptop
+has no `acpi_call` installed, so the firmware's own answer is the one
+thing still untested. `rgb.getCapabilities` says in words which of the
+three ways it is unavailable a given machine is in, which is what makes
+that a hand-off rather than a mystery.
+
+The daemon does **not** `modprobe` at startup. Probing is a question, and
+a question should not change the answer; the module is loaded only on a
+call that needs it, and only when running as root.
 
 ## Adding a new module
 

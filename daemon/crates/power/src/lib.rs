@@ -68,6 +68,20 @@ pub enum PowerMode {
 }
 
 impl PowerMode {
+    /// Least to most, and the order the performance key steps through.
+    ///
+    /// The same order the app lists them in - a widget that highlights the
+    /// current one has to agree with the key that moves the highlight, so
+    /// there is one list and this is it.
+    pub const ALL: &'static [Self] =
+        &[Self::Eco, Self::Balanced, Self::Performance, Self::Unlimited];
+
+    /// The next mode round the loop, wrapping back to Eco.
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|m| *m == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
     fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "eco" => Some(Self::Eco),
@@ -130,6 +144,24 @@ impl Default for PowerConfig {
     }
 }
 
+/// What one press of the performance key did.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cycled {
+    pub from: PowerMode,
+    /// The mode the machine ended up in - the same as `asked_for` when the
+    /// change took, and unchanged from `from` when nothing did.
+    pub to: PowerMode,
+    pub asked_for: PowerMode,
+    pub report: ApplyReport,
+}
+
+impl Cycled {
+    pub fn changed(&self) -> bool {
+        !self.report.is_empty()
+    }
+}
+
 /// Shared between the IPC handlers and the supervisor thread.
 #[derive(Debug)]
 struct State {
@@ -145,6 +177,11 @@ struct State {
     last_save_error: Option<String>,
 }
 
+/// Cloning shares one module - the same state, the same supervisor thread
+/// and the same config file - so the daemon binary can hold on to a handle
+/// after registering it. Constructing a *second* one would start a second
+/// supervisor, which is why this is a clone and not a `new`.
+#[derive(Clone)]
 pub struct PowerModule {
     state: Arc<Mutex<State>>,
     store: ConfigStore,
@@ -225,6 +262,28 @@ impl PowerModule {
         self.store.path_for("power")
     }
 
+    /// The mode the machine is in.
+    pub fn mode(&self) -> PowerMode {
+        lock(&self.state).mode
+    }
+
+    /// Steps to the next mode, as the laptop's performance key does.
+    ///
+    /// Counts as a manual change - the supervisor stays out of the way
+    /// afterwards, exactly as it does when someone clicks a mode in the
+    /// app. A key press *is* the user choosing.
+    ///
+    /// The report is returned rather than logged because the caller has to
+    /// say what happened: on a machine with no mechanism at all nothing is
+    /// applied, the mode does not move, and a widget that had already
+    /// slid its highlight across would be lying.
+    pub fn cycle(&self) -> Cycled {
+        let from = self.mode();
+        let to = from.next();
+        let report = self.set_mode(to, true);
+        Cycled { from, to: self.mode(), asked_for: to, report }
+    }
+
     fn set_mode(&self, mode: PowerMode, manual: bool) -> ApplyReport {
         let report = {
             let state = lock(&self.state);
@@ -295,6 +354,36 @@ impl Default for PowerModule {
 /// power mode on its own. A question should not have side effects.
 pub fn power_mode_available() -> bool {
     !backend::read_state().available.is_empty()
+}
+
+/// What power surface this machine offers, for a compatibility report.
+///
+/// A narrow accessor rather than making `backend` and `limits` public:
+/// `pyren-check` needs to *describe* what is here, not drive it, and a
+/// reporting tool with write access to the internals is a tool that will
+/// eventually write.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PowerSurface {
+    /// Mechanisms that answered, e.g. `platform_profile`.
+    pub mechanisms: Vec<String>,
+    pub platform_profile: Option<String>,
+    pub platform_profile_choices: Vec<String>,
+    /// The firmware's package limits, empty when there is no RAPL zone.
+    pub limits: Limits,
+    pub has_turbo: bool,
+}
+
+pub fn surface() -> PowerSurface {
+    let state = backend::read_state();
+    let paths = limits::LimitPaths::discover();
+    PowerSurface {
+        mechanisms: state.available.iter().map(|m| m.to_string()).collect(),
+        platform_profile: state.platform_profile,
+        platform_profile_choices: state.platform_profile_choices,
+        limits: limits::read(&paths),
+        has_turbo: paths.has_turbo(),
+    }
 }
 
 impl Module for PowerModule {
@@ -667,6 +756,23 @@ mod tests {
         assert_eq!(PowerMode::parse("ECO"), Some(PowerMode::Eco));
         assert_eq!(PowerMode::parse("unlimited"), Some(PowerMode::Unlimited));
         assert_eq!(PowerMode::parse("turbo"), None);
+    }
+
+    /// The performance key steps through every mode and comes back round.
+    /// Unlimited is in the loop because a key press is the user choosing -
+    /// what the supervisor may not pick on its own is a different rule.
+    #[test]
+    fn the_modes_cycle_in_the_order_the_app_shows_them() {
+        assert_eq!(PowerMode::Eco.next(), PowerMode::Balanced);
+        assert_eq!(PowerMode::Balanced.next(), PowerMode::Performance);
+        assert_eq!(PowerMode::Performance.next(), PowerMode::Unlimited);
+        assert_eq!(PowerMode::Unlimited.next(), PowerMode::Eco);
+
+        let mut seen = vec![PowerMode::Eco];
+        while seen.len() < PowerMode::ALL.len() {
+            seen.push(seen[seen.len() - 1].next());
+        }
+        assert_eq!(seen, PowerMode::ALL, "every mode is reachable by pressing the key");
     }
 
     #[test]

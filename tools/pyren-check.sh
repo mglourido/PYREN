@@ -1,32 +1,46 @@
 #!/bin/sh
-# pyren-check.sh - verify that fan control works on this machine.
+# pyren-check.sh - what this machine can actually be told to do.
 #
 # Portable stand-in for `pyren-check` (daemon/check), for when building
 # the project isn't practical: copy this one file to the laptop and run it.
 # POSIX sh, no dependencies beyond coreutils.
 #
-# It performs the same checks, in the same order, with the same verdicts and
-# exit codes as the Rust version. `daemon/check/tests/parity.rs` compares
+# Three surfaces, one verdict: fans, power modes and lighting. It performs
+# the same checks, in the same order, with the same statuses, verdict and
+# exit code as the Rust version. `daemon/check/tests/parity.rs` compares
 # the two against fixtures so they cannot drift apart silently.
 #
 #   ./pyren-check.sh            read-only, safe on any machine
 #   sudo ./pyren-check.sh -w    also verify the PWM accepts writes
 #   ./pyren-check.sh --json     machine-readable, for bug reports
 #
-# Exit status: 0 full control, 1 monitoring only, 2 no interface.
+# Exit status is about *fans*, because that is what scripts branch on:
+# 0 full control, 1 monitoring only, 2 no interface. The compatibility
+# verdict is wider - a machine with no fan control can still have power
+# modes and a lightbar - so read the last line, not $?.
 
 set -u
 
 HP_WMI_DIR="/sys/devices/platform/hp-wmi"
+CPU_ROOT="/sys/devices/system/cpu"
+POWERCAP="/sys/class/powercap"
+# PYREN_ACPI_CALL and PYREN_USB_DEVICES point the lighting checks at
+# fixtures, the way PYREN_HWMON_DIR does for the fan ones. Same names as
+# the Rust version, so the parity test can drive both.
+ACPI_CALL="${PYREN_ACPI_CALL:-/proc/acpi/call}"
+USB_DEVICES="${PYREN_USB_DEVICES:-/sys/bus/usb/devices}"
 ALLOW_WRITES=0
 AS_JSON=0
 
 usage() {
 	cat <<'USAGE'
-pyren-check.sh - verify that fan control works on this machine
+pyren-check.sh - what this machine can actually be told to do
 
 USAGE:
     pyren-check.sh [OPTIONS]
+
+Checks three surfaces - fans, power modes and lighting - and prints one
+verdict: the same one the daemon prints at startup.
 
 OPTIONS:
     -w, --write   Also verify that the PWM channel accepts writes. Rewrites
@@ -35,10 +49,13 @@ OPTIONS:
     -j, --json    Print the report as JSON.
     -h, --help    Show this help.
 
-EXIT STATUS:
+EXIT STATUS is about fan control, which is what scripts branch on:
     0  fan control works
     1  fan speeds can be read but not set
     2  no HP fan-control interface on this machine
+
+The overall verdict is wider than that, so read the last line for the
+compatibility answer.
 USAGE
 }
 
@@ -61,14 +78,18 @@ done
 CHECKS="$(mktemp)" || exit 70
 trap 'rm -f "$CHECKS"' EXIT INT TERM
 
-# record <status> <id> <title> <detail> [remedy]
-# Fields are tab-separated, so details may contain spaces.
+# record <status> <id> <title> <detail> [remedy], filed under $SECTION.
+# Fields are tab-separated, so details may contain spaces. The section is a
+# variable rather than an argument so that adding two more sections did not
+# mean editing every existing call site.
+SECTION="fan"
 record() {
-	printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" >>"$CHECKS"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$SECTION" "$1" "$2" "$3" "$4" "${5:-}" >>"$CHECKS"
 }
 
+# Check ids are unique across sections, so a lookup needs no section.
 status_of() {
-	awk -F'\t' -v id="$1" '$2 == id { print $1; exit }' "$CHECKS"
+	awk -F'\t' -v id="$1" '$3 == id { print $2; exit }' "$CHECKS"
 }
 
 read_value() {
@@ -82,6 +103,32 @@ is_number() {
 	'' | *[!0-9]*) return 1 ;;
 	*) return 0 ;;
 	esac
+}
+
+# Microwatts as whole watts, the unit a person reads a power limit in.
+microwatts() {
+	if is_number "$1"; then
+		echo "$(($1 / 1000000)) W"
+	else
+		echo "-"
+	fi
+}
+
+# Whether an acpi_call reply is the firmware's "PASS". Mirrors
+# pyren_rgb::lightbar::is_success: the four bytes may come back as one hex
+# blob, as a {0x50, 0x41, ...} list, or as the letters themselves.
+is_acpi_pass() {
+	[ -n "$1" ] || return 1
+	upper="$(printf '%s' "$1" | tr 'a-f' 'A-F')"
+	case "$upper" in
+	*50415353* | *PASS*) return 0 ;;
+	esac
+	# {0x50, 0x41, 0x53, 0x53} -> 50415353
+	packed="$(printf '%s' "$upper" | tr -d '{}, \t' | sed 's/0X//g')"
+	case "$packed" in
+	50415353*) return 0 ;;
+	esac
+	return 1
 }
 
 # --- discovery ---------------------------------------------------------
@@ -294,12 +341,205 @@ else
 	fi
 fi
 
-if [ -e /proc/acpi/call ]; then
-	record pass acpi-call "acpi_call module (fan cleaner)" "/proc/acpi/call is available"
+# Two things need this now, not one: the RGB lightbar and the dust-removal
+# fan cleaner. Naming only the cleaner made the warning look optional to
+# anyone who does not want it.
+if [ -e "$ACPI_CALL" ]; then
+	record pass acpi-call "acpi_call module" "/proc/acpi/call is available"
 else
-	record warn acpi-call "acpi_call module (fan cleaner)" \
-		"/proc/acpi/call not found; only the dust-removal fan cleaner needs it" \
+	record warn acpi-call "acpi_call module" \
+		"/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it" \
 		"Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call (Fedora), then modprobe acpi_call."
+fi
+
+
+# --- power -------------------------------------------------------------
+
+SECTION="power"
+
+# Mechanisms, in the same order as pyren_power::backend::read_state, since
+# the report lists them in the order they were found.
+MECHANISMS=""
+add_mechanism() { MECHANISMS="${MECHANISMS:+$MECHANISMS, }$1"; }
+
+PLATFORM_PROFILE=""
+PLATFORM_PROFILE_CHOICES=""
+if [ -r /sys/firmware/acpi/platform_profile ]; then
+	PLATFORM_PROFILE="$(read_value /sys/firmware/acpi/platform_profile)"
+	add_mechanism platform_profile
+fi
+if [ -r /sys/firmware/acpi/platform_profile_choices ]; then
+	PLATFORM_PROFILE_CHOICES="$(read_value /sys/firmware/acpi/platform_profile_choices)"
+fi
+# Asking powerprofilesctl rather than looking for a unit file: what matters
+# is whether it answers, which is also what the daemon asks.
+if command -v powerprofilesctl >/dev/null 2>&1 &&
+	ppd="$(powerprofilesctl get 2>/dev/null)" && [ -n "$ppd" ]; then
+	add_mechanism power-profiles-daemon
+fi
+if [ -r "$CPU_ROOT/cpu0/cpufreq/energy_performance_preference" ]; then
+	add_mechanism energy_performance_preference
+fi
+
+if [ -z "$MECHANISMS" ]; then
+	record warn power-mechanisms "Power-mode mechanisms" \
+		"none - no ACPI platform profile, no power-profiles-daemon, no EPP hint" \
+		"This is normal on a desktop. On a laptop, power-profiles-daemon is the usual provider: install and enable it (systemctl enable --now power-profiles-daemon)."
+elif [ -n "$PLATFORM_PROFILE" ] && [ -n "$PLATFORM_PROFILE_CHOICES" ]; then
+	record pass power-mechanisms "Power-mode mechanisms" \
+		"$MECHANISMS (platform profile $PLATFORM_PROFILE, choices: $(printf '%s' "$PLATFORM_PROFILE_CHOICES" | tr ' ' ',' | sed 's/,/, /g'))"
+else
+	record pass power-mechanisms "Power-mode mechanisms" "$MECHANISMS"
+fi
+
+# The package RAPL zone. The mmio interface addresses the same package, so
+# one is enough; the lowest-numbered package zone wins, as in the daemon.
+RAPL_ZONE=""
+for zone in "$POWERCAP"/intel-rapl:*; do
+	[ -d "$zone" ] || continue
+	case "${zone##*/}" in *mmio*) continue ;; esac
+	[ -r "$zone/name" ] || continue
+	case "$(read_value "$zone/name")" in
+	package-*)
+		RAPL_ZONE="$zone"
+		break
+		;;
+	esac
+done
+
+# Constraints 0/1/2 are PL1/PL2/PL4, as in pyren_power::limits::read. PL4
+# is not printed - nothing here sets it - but it counts towards "is there
+# an envelope at all", or a machine exposing only PL4 would disagree with
+# the Rust version about whether it has one.
+PL1_UW=""
+PL2_UW=""
+PL4_UW=""
+if [ -n "$RAPL_ZONE" ]; then
+	PL1_UW="$(read_value "$RAPL_ZONE/constraint_0_power_limit_uw" 2>/dev/null || echo '')"
+	PL2_UW="$(read_value "$RAPL_ZONE/constraint_1_power_limit_uw" 2>/dev/null || echo '')"
+	PL4_UW="$(read_value "$RAPL_ZONE/constraint_2_power_limit_uw" 2>/dev/null || echo '')"
+fi
+if [ -z "$PL1_UW" ] && [ -z "$PL2_UW" ] && [ -z "$PL4_UW" ]; then
+	record warn power-envelope "Package power envelope" \
+		"no RAPL package zone, so PL1/PL2 cannot be read or set"
+else
+	record pass power-envelope "Package power envelope" \
+		"PL1 $(microwatts "$PL1_UW"), PL2 $(microwatts "$PL2_UW")"
+fi
+
+if [ -e "$CPU_ROOT/intel_pstate/no_turbo" ] || [ -e "$CPU_ROOT/cpufreq/boost" ]; then
+	record pass power-turbo "Turbo / boost switch" \
+		"exposed, so turbo can be switched per mode"
+	HAS_TURBO=1
+else
+	record warn power-turbo "Turbo / boost switch" "not exposed; modes leave turbo alone"
+	HAS_TURBO=0
+fi
+
+if [ -z "$MECHANISMS" ]; then
+	POWER_SUMMARY="No power-mode mechanism answered, so the modes would have nothing to drive. The envelope, if there is one, can still be set directly."
+else
+	POWER_SUMMARY="Power modes are available through $MECHANISMS."
+fi
+
+# --- lighting ----------------------------------------------------------
+
+SECTION="lighting"
+
+# Both paths are reported whatever this machine has: per-key RGB over USB
+# HID and a 4-zone lightbar over ACPI share nothing, and which one a laptop
+# has is not decided by its model name - so one "no lighting" line would
+# answer the question for neither.
+
+PER_KEY_ID="0d62:54bf"
+PER_KEY=0
+for device in "$USB_DEVICES"/*; do
+	[ -r "$device/idVendor" ] && [ -r "$device/idProduct" ] || continue
+	[ "$(read_value "$device/idVendor")" = "0d62" ] || continue
+	[ "$(read_value "$device/idProduct")" = "54bf" ] || continue
+	PER_KEY=1
+	break
+done
+
+if [ "$PER_KEY" -eq 1 ]; then
+	record warn lighting-per-key "Per-key RGB keyboard" \
+		"$PER_KEY_ID is attached, but this build does not drive it" \
+		"The per-key path is deliberately unported until the key map's backspace entry can be checked on real hardware; see docs/04-rgb-porting-review.md."
+else
+	record skip lighting-per-key "Per-key RGB keyboard" "no $PER_KEY_ID on this machine"
+fi
+
+# The ACPI read this issues, byte for byte: a 16-byte header
+# ("SECU", command 0x20008, type 4, size 128) and 128 zero payload bytes,
+# which is zone 0. Kept in step with pyren_rgb::lightbar::read_request(0)
+# by daemon/check/tests/parity.rs.
+LIGHTBAR_GET="b53454355080002000400000080000000$(printf '%0256d' 0)"
+
+ACPI_CALL_INSTALLED=0
+if [ -e "$ACPI_CALL" ]; then
+	ACPI_CALL_INSTALLED=1
+elif command -v modinfo >/dev/null 2>&1 && modinfo -n acpi_call >/dev/null 2>&1; then
+	ACPI_CALL_INSTALLED=1
+fi
+
+# ANSWERED: 1 the firmware said PASS, 0 it refused, "" it was never asked.
+# The third is not the second: reporting "no lightbar" for a question that
+# could not be put would be claiming something nobody established - and the
+# commonest reason it could not be put is that this is not root, which is a
+# fix rather than a verdict on the hardware.
+ANSWERED=""
+UNREACHABLE=0
+LIGHTBAR=0
+if [ -d "$HP_WMI_DIR" ] && [ -e "$ACPI_CALL" ]; then
+	# stderr is redirected for the whole group, not per command: a failed
+	# *redirection* is reported by the shell before the command's own
+	# 2>/dev/null would apply, so a non-root run would print a raw
+	# "Permission denied" over this tool's output.
+	if reply="$(
+		{
+			printf '%s' "\\_SB.WMID.WMAA 0 3 $LIGHTBAR_GET" >"$ACPI_CALL" &&
+				tr -d '\000' <"$ACPI_CALL"
+		} 2>/dev/null
+	)"; then
+		# The call went through, so whatever came back is an answer.
+		ANSWERED=0
+		if is_acpi_pass "$reply"; then
+			ANSWERED=1
+			LIGHTBAR=1
+		fi
+	else
+		UNREACHABLE=1
+	fi
+fi
+
+if [ "$ANSWERED" = "1" ]; then
+	record pass lighting-lightbar "4-zone lightbar" "the firmware answered a lightbar read"
+elif [ "$ANSWERED" = "0" ]; then
+	record warn lighting-lightbar "4-zone lightbar" \
+		"the firmware was asked and refused, so there is no light strip here"
+elif [ "$UNREACHABLE" -eq 1 ]; then
+	record skip lighting-lightbar "4-zone lightbar" \
+		"/proc/acpi/call could not be used, so the firmware was not asked" \
+		"Writing /proc/acpi/call needs root; re-run this as root."
+elif [ ! -d "$HP_WMI_DIR" ]; then
+	record skip lighting-lightbar "4-zone lightbar" \
+		"no hp-wmi interface, so there is nothing to ask"
+elif [ "$ACPI_CALL_INSTALLED" -eq 1 ]; then
+	record warn lighting-lightbar "4-zone lightbar" \
+		"acpi_call is installed but not loaded, so the firmware was not asked" \
+		"modprobe acpi_call, then run this again."
+else
+	record warn lighting-lightbar "4-zone lightbar" \
+		"/proc/acpi/call is missing, so the firmware was not asked" \
+		"install the acpi_call kernel module: 'sudo pacman -S acpi_call-dkms' on Arch, 'sudo apt install acpi_call-dkms' on Debian/Ubuntu, 'sudo dnf install akmod-acpi_call' on Fedora"
+fi
+
+if [ "$LIGHTBAR" -eq 1 ]; then
+	LIGHTING_SUMMARY="The 4-zone lightbar answered and can be driven."
+elif [ "$PER_KEY" -eq 1 ]; then
+	LIGHTING_SUMMARY="A per-key RGB keyboard is attached; this build does not drive it."
+else
+	LIGHTING_SUMMARY="No lighting this project can drive was found. See the lightbar check for whether that was established or merely not asked."
 fi
 
 # --- verdict -----------------------------------------------------------
@@ -357,30 +597,56 @@ else
 	EXIT_CODE=2
 fi
 
+# --- compatibility -----------------------------------------------------
+
+# The machine gets one verdict, and this is it. Mirrors
+# pyren_system::identity::classify: derived from what was observed, never
+# from a board id. A second verdict per section is how a tool ends up
+# disagreeing with itself in the same output.
+CTRL_FAN_MODE=0
+CTRL_FAN_SPEED=0
+[ -n "$PWM_ENABLE" ] && [ -e "$PWM_ENABLE" ] && CTRL_FAN_MODE=1
+[ -n "$PWM" ] && [ -e "$PWM" ] && CTRL_FAN_SPEED=1
+CTRL_POWER_MODE=0
+[ -n "$MECHANISMS" ] && CTRL_POWER_MODE=1
+CTRL_LIGHTBAR="$LIGHTBAR"
+
+WORKS=""
+add_works() { WORKS="${WORKS:+$WORKS, }$1"; }
+if [ "$CTRL_FAN_SPEED" -eq 1 ]; then
+	add_works "fan speed"
+elif [ "$CTRL_FAN_MODE" -eq 1 ]; then
+	# Worth spelling out: it is the common case on a board the driver has
+	# no entry for, and "fans" alone would overpromise.
+	add_works "fan mode (auto/max only)"
+fi
+[ "$CTRL_POWER_MODE" -eq 1 ] && add_works "power modes"
+[ "$CTRL_LIGHTBAR" -eq 1 ] && add_works "lightbar colour"
+
+if [ -n "$WORKS" ]; then
+	COMPATIBILITY="controllable"
+	COMPAT_REASON="this machine accepts: $WORKS"
+elif [ "$HAS_HP_WMI" -eq 1 ]; then
+	COMPATIBILITY="monitoringOnly"
+	COMPAT_REASON="the hp-wmi interface is present but nothing here accepted control; fan speeds and temperatures can still be read"
+else
+	COMPATIBILITY="unsupported"
+	COMPAT_REASON="no hp-wmi interface and no power-mode mechanism; monitoring works, hardware control does not"
+fi
+
 # --- output ------------------------------------------------------------
 
 json_escape() {
 	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
-if [ "$AS_JSON" -eq 1 ]; then
-	# Same top-level shape as `pyren-check --json`, so either can be
-	# pasted into a bug report and read the same way.
-	printf '{\n  "system": {"vendor": "%s", "model": "%s", "boardName": "%s", "kernel": "%s"},\n' \
-		"$(json_escape "$(read_value /sys/class/dmi/id/sys_vendor 2>/dev/null || echo '')")" \
-		"$(json_escape "$(read_value /sys/class/dmi/id/product_name 2>/dev/null || echo '')")" \
-		"$(json_escape "$(read_value /sys/class/dmi/id/board_name 2>/dev/null || echo '')")" \
-		"$(json_escape "$(uname -r)")"
-	printf '  "fan": {\n    "verdict": "%s",\n    "summary": "%s",\n' "$VERDICT" "$(json_escape "$SUMMARY")"
-	if [ -n "$NOTICE" ]; then
-		printf '    "driverNotice": "%s",\n' "$(json_escape "$NOTICE")"
-	else
-		printf '    "driverNotice": null,\n'
-	fi
-	printf '    "wroteToHardware": %s,\n    "checks": [\n' \
-		"$([ "$WRITE_TESTED" -eq 1 ] && echo true || echo false)"
+# Emits the checks of one section as a JSON array, indented to sit inside
+# an object. One function for all three sections, so they cannot drift into
+# three shapes.
+json_checks() {
 	first=1
-	while IFS="$(printf '\t')" read -r status id title detail remedy; do
+	while IFS="$(printf '\t')" read -r section status id title detail remedy; do
+		[ "$section" = "$1" ] || continue
 		[ "$first" -eq 1 ] || printf ',\n'
 		first=0
 		printf '      {"id": "%s", "title": "%s", "status": "%s", "detail": "%s", "remedy": ' \
@@ -391,7 +657,46 @@ if [ "$AS_JSON" -eq 1 ]; then
 			printf 'null}'
 		fi
 	done <"$CHECKS"
-	printf '\n    ]\n  }\n}\n'
+	[ "$first" -eq 1 ] || printf '\n'
+}
+
+json_bool() {
+	[ "$1" -eq 1 ] && printf 'true' || printf 'false'
+}
+
+if [ "$AS_JSON" -eq 1 ]; then
+	# Same top-level shape as `pyren-check --json`, so either can be
+	# pasted into a bug report and read the same way.
+	printf '{\n  "system": {\n'
+	printf '    "vendor": "%s", "model": "%s", "boardName": "%s", "kernel": "%s",\n' \
+		"$(json_escape "$(read_value /sys/class/dmi/id/sys_vendor 2>/dev/null || echo '')")" \
+		"$(json_escape "$(read_value /sys/class/dmi/id/product_name 2>/dev/null || echo '')")" \
+		"$(json_escape "$(read_value /sys/class/dmi/id/board_name 2>/dev/null || echo '')")" \
+		"$(json_escape "$(uname -r)")"
+	printf '    "compatibility": "%s",\n    "reason": "%s",\n' \
+		"$COMPATIBILITY" "$(json_escape "$COMPAT_REASON")"
+	printf '    "controls": {"fanMode": %s, "fanSpeed": %s, "powerMode": %s, "lightbar": %s}\n  },\n' \
+		"$(json_bool "$CTRL_FAN_MODE")" "$(json_bool "$CTRL_FAN_SPEED")" \
+		"$(json_bool "$CTRL_POWER_MODE")" "$(json_bool "$CTRL_LIGHTBAR")"
+
+	printf '  "fan": {\n    "verdict": "%s",\n    "summary": "%s",\n' "$VERDICT" "$(json_escape "$SUMMARY")"
+	if [ -n "$NOTICE" ]; then
+		printf '    "driverNotice": "%s",\n' "$(json_escape "$NOTICE")"
+	else
+		printf '    "driverNotice": null,\n'
+	fi
+	printf '    "wroteToHardware": %s,\n    "checks": [\n' \
+		"$([ "$WRITE_TESTED" -eq 1 ] && echo true || echo false)"
+	json_checks fan
+	printf '    ]\n  },\n'
+
+	printf '  "power": {\n    "summary": "%s",\n    "checks": [\n' "$(json_escape "$POWER_SUMMARY")"
+	json_checks power
+	printf '    ]\n  },\n'
+
+	printf '  "lighting": {\n    "summary": "%s",\n    "checks": [\n' "$(json_escape "$LIGHTING_SUMMARY")"
+	json_checks lighting
+	printf '    ]\n  }\n}\n'
 	exit "$EXIT_CODE"
 fi
 
@@ -399,35 +704,53 @@ echo "pyren-check"
 echo
 echo "  machine  $(read_value /sys/class/dmi/id/sys_vendor 2>/dev/null || echo unknown) $(read_value /sys/class/dmi/id/product_name 2>/dev/null || echo '') (board $(read_value /sys/class/dmi/id/board_name 2>/dev/null || echo '?'))"
 echo "  kernel   $(uname -r)"
-echo
 
-passed=0
-failed=0
-while IFS="$(printf '\t')" read -r status id title detail remedy; do
-	case "$status" in
-	pass)
-		marker="[ ok ]"
-		passed=$((passed + 1))
-		;;
-	fail)
-		marker="[FAIL]"
-		failed=$((failed + 1))
-		;;
-	warn) marker="[warn]" ;;
-	*) marker="[skip]" ;;
+# print_section <name>; sets $passed / $failed for the caller.
+print_section() {
+	passed=0
+	failed=0
+	echo
+	# "fans" reads better as a heading than the section id does.
+	case "$1" in
+	fan) echo "fans" ;;
+	*) echo "$1" ;;
 	esac
-	printf '  %s  %-28s %s\n' "$marker" "$title" "$detail"
-	[ -n "$remedy" ] && printf '        %s\n' "$remedy" | fold -s -w 68 | sed '2,$s/^/        /'
-done <"$CHECKS"
+	while IFS="$(printf '\t')" read -r section status id title detail remedy; do
+		[ "$section" = "$1" ] || continue
+		case "$status" in
+		pass)
+			marker="[ ok ]"
+			passed=$((passed + 1))
+			;;
+		fail)
+			marker="[FAIL]"
+			failed=$((failed + 1))
+			;;
+		warn) marker="[warn]" ;;
+		*) marker="[skip]" ;;
+		esac
+		printf '  %s  %-28s %s\n' "$marker" "$title" "$detail"
+		[ -n "$remedy" ] && printf '        %s\n' "$remedy" | fold -s -w 68 | sed '2,$s/^/        /'
+	done <"$CHECKS"
+}
 
-echo
+print_section fan
 echo "  $passed passed, $failed failed"
-echo
-echo "  $VERDICT_TEXT"
 printf '%s\n' "$SUMMARY" | fold -s -w 72 | sed 's/^/  /'
 if [ -n "$NOTICE" ]; then
-	echo
 	printf '%s\n' "$NOTICE" | fold -s -w 72 | sed 's/^/  ! /'
 fi
+
+print_section power
+printf '%s\n' "$POWER_SUMMARY" | fold -s -w 72 | sed 's/^/  /'
+
+print_section lighting
+printf '%s\n' "$LIGHTING_SUMMARY" | fold -s -w 72 | sed 's/^/  /'
+
+# The one line this whole tool exists to print, so it goes last and says
+# what it is rather than being another summary among four.
+echo
+echo "compatibility"
+printf '%s\n' "$COMPAT_REASON" | fold -s -w 72 | sed 's/^/  /'
 
 exit "$EXIT_CODE"

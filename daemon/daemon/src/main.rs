@@ -11,6 +11,7 @@ use pyren_installer::{
     execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
 };
 use pyren_power::PowerModule;
+use pyren_rgb::RgbModule;
 use pyren_system::{Compatibility, Controls, SystemModule};
 
 /// Production (systemd, running as root) should set `PYREN_SOCKET` to
@@ -101,10 +102,16 @@ fn main() {
     // about a machine whose fans cannot be set. Probe, then report.
     let fan = FanModule::new();
     let power = PowerModule::new();
+    // The lighting probe belongs here rather than beside the registry: two
+    // unrelated hardware paths, and which one a laptop has is not decided
+    // by its model name, so the lightbar is one of the things `controls`
+    // has to have been told about before the verdict is computed.
+    let rgb = RgbModule::new();
     let controls = Controls {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
         power_mode: power.is_supported(),
+        lightbar: rgb.probe().lightbar.present,
     };
 
     let system = SystemModule::new(controls);
@@ -141,10 +148,19 @@ fn main() {
         );
     }
 
+    // Saying which lighting was found - and, when none was, which of the
+    // three reasons applies - is the difference between "no lighting page"
+    // and "no lighting page because acpi_call is not installed".
+    println!("  lights: {}", rgb.probe().lightbar.detail);
+    if rgb.probe().per_key.present {
+        println!("  note:   {}", rgb.probe().per_key.detail);
+    }
+
     let mut registry = Registry::new();
     registry.register(Box::new(system));
     registry.register(Box::new(power));
     registry.register(Box::new(fan));
+    registry.register(Box::new(rgb));
     registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);
 

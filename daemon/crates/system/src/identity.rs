@@ -27,11 +27,16 @@ pub struct Controls {
     pub fan_speed: bool,
     /// Some power-mode mechanism answered (platform profile, PPD, EPP).
     pub power_mode: bool,
+    /// The 4-zone lightbar answered an ACPI read. Named for the thing that
+    /// was probed rather than "lighting": the per-key keyboard is a
+    /// different device on a different bus, and a machine can have either,
+    /// both or neither.
+    pub lightbar: bool,
 }
 
 impl Controls {
     fn any(&self) -> bool {
-        self.fan_mode || self.fan_speed || self.power_mode
+        self.fan_mode || self.fan_speed || self.power_mode || self.lightbar
     }
 }
 
@@ -211,6 +216,9 @@ fn classify(controls: Controls, hp_wmi: bool) -> (Compatibility, String) {
     if controls.power_mode {
         works.push("power modes");
     }
+    if controls.lightbar {
+        works.push("lightbar colour");
+    }
 
     (Compatibility::Controllable, format!("this machine accepts: {}", works.join(", ")))
 }
@@ -370,7 +378,7 @@ mod tests {
     /// What 8D2F actually is once the fan module has reported in.
     #[test]
     fn fan_mode_without_fan_speed_says_so_rather_than_promising_fans() {
-        let controls = Controls { fan_mode: true, fan_speed: false, power_mode: false };
+        let controls = Controls { fan_mode: true, fan_speed: false, ..Controls::default() };
         let (compat, reason) = classify(controls, true);
 
         assert_eq!(compat, Compatibility::Controllable);
@@ -379,7 +387,7 @@ mod tests {
 
     #[test]
     fn a_controllable_machine_lists_what_works() {
-        let controls = Controls { fan_mode: true, fan_speed: true, power_mode: true };
+        let controls = Controls { fan_mode: true, fan_speed: true, power_mode: true, lightbar: false };
         let (compat, reason) = classify(controls, true);
 
         assert_eq!(compat, Compatibility::Controllable);
@@ -391,8 +399,20 @@ mod tests {
     /// observed, not what the vendor string says.
     #[test]
     fn power_modes_alone_are_enough_to_be_controllable() {
-        let controls = Controls { fan_mode: false, fan_speed: false, power_mode: true };
+        let controls = Controls { power_mode: true, ..Controls::default() };
         assert_eq!(classify(controls, false).0, Compatibility::Controllable);
+    }
+
+    /// A machine whose only controllable thing is its light strip is still
+    /// a machine this project can drive, and saying "monitoring only" about
+    /// it would be the board-list mistake in a new costume.
+    #[test]
+    fn a_lightbar_alone_is_enough_to_be_controllable() {
+        let controls = Controls { lightbar: true, ..Controls::default() };
+        let (compat, reason) = classify(controls, true);
+
+        assert_eq!(compat, Compatibility::Controllable);
+        assert!(reason.contains("lightbar"), "got: {reason}");
     }
 
     #[test]

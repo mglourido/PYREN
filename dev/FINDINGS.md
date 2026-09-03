@@ -214,8 +214,65 @@ to here and should not be ported first.
 
 That leaves the 4-zone lightbar path over `/proc/acpi/call`, which cannot
 be *tested* until the `acpi_call` module is installed (`acpi_call-dkms` on
-Arch). Until then "no per-key device" is proven and "the 4-zone interface
-answers" is not.
+Arch; this machine's repositories also carry a prebuilt `acpi_call` for the
+CachyOS kernel). Until then "no per-key device" is proven and "the 4-zone
+interface answers" is not.
+
+That path **is now ported** (`daemon/crates/rgb`, 2026-09-03) with its
+buffer layout unit-tested and its firmware answer still unasked; the three
+commands that ask it are at the end of
+[`docs/04-rgb-porting-review.md`](../docs/04-rgb-porting-review.md).
+
+## The RGB source on the USB stick is gone
+
+Found on 2026-09-03, on the way to porting it. Every Python file in
+`/run/media/paraguayo33/SAMSUNG USB/omen-rgb-linux-main/` is **zero bytes**,
+all five of them stamped `sep 2 13:07`:
+
+```
+src/__init__.py  src/cli.py  src/driver.py  src/gui.py  src/lightbar.py
+scripts/omen_cli.py  scripts/omen_gui.py          all 0 bytes
+```
+
+Everything else on the stick survived at its original `jul 24` timestamp —
+`README.md`, `data/keys.json`, `examples/rainbow.py`, `setup.py`, the
+licence. So this is a truncation of exactly the `.py` files that carry the
+protocol, not a failing stick.
+
+`docs/04-rgb-porting-review.md` was written from those files and says the
+lightbar payload layout "is already documented in `lightbar.py`", which
+was true when it was written and is not true of the copy on the stick.
+**The port was written from upstream `main` instead**
+(`raw.githubusercontent.com/arfelious/omen-rgb-linux/main/src/lightbar.py`),
+which matches every quotation in the review — the `lstrip("b0x")`, the
+two-branch `_detect_acpi_path`, the `struct.pack("<4sIII", b"SECU", …)`
+header — so the review's findings are findings about the code that was
+actually ported.
+
+Two things follow. The stick is not a source of truth and should not be
+cited as one again; and this is the second time the project has been
+bitten by depending on an unpinned copy of somebody else's repository (the
+first is §"The driver source is not vendored, on purpose", where the copy
+on disk turned out to be an unidentifiable `main`). The conclusion there —
+pin a release and the sha256 of each extracted file — applies here too, if
+the per-key path is ever ported.
+
+## `keys.json` really does contradict `set_all()`
+
+The one half of the RGB review's first finding that could be settled
+without the keyboard, read straight out of the surviving `data/keys.json`
+on 2026-09-03:
+
+- `backspace` is `{"offset": 60, "width": 8}`, so it covers indices 60–67,
+  which includes the 62 and 63 that `set_all()` zeroes as "hardware
+  alignment bytes".
+- Indices 0, 1, 124 and 125 are assigned to no key, so the alignment
+  theory holds for two of the three chunks.
+- 100 keys, highest assigned index 181, in a 186-byte buffer.
+
+So the contradiction is real and exactly where the review put it. Which of
+the two is wrong still needs the hardware, and the per-key path is not
+ported until it is settled — see the review's step 3.
 
 ## The RGB project has two unrelated hardware paths
 

@@ -65,6 +65,10 @@ export type Controls = {
   /** A specific fan speed, i.e. manual and curve. */
   fanSpeed: boolean;
   powerMode: boolean;
+  /** The 4-zone lightbar answered an ACPI read. Named for what was probed
+   *  rather than "lighting": the per-key keyboard is a different device on
+   *  a different bus, and a machine can have either, both or neither. */
+  lightbar: boolean;
 };
 
 export type SystemInfo = {

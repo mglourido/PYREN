@@ -62,6 +62,17 @@ FANS
                                mode it found. Loud, and the only way to
                                give the curve's hysteresis a real ceiling
 
+LIGHTS
+  rgb probe                    which of the two lighting paths this
+                               machine has, and if neither, why
+  rgb get                      the probe plus what this daemon last set
+  rgb read                     ask the firmware what the four zones are
+  rgb set <colour>             all four zones, e.g. rgb set '#ff9900'
+  rgb zones <c,c,c,c>          one colour per zone
+  rgb off
+  rgb restore-on-start <on|off>
+                               'set' and 'zones' also take --brightness 0-100
+
 OPTIONS
   --json                       print the daemon's reply verbatim
   -h, --help
@@ -244,6 +255,39 @@ fn run(command: &args::Command) -> Run {
             )
         }
 
+        ["rgb", "probe"] => {
+            show(command, client::call("rgb", "getCapabilities", Value::Null)?, print_rgb_probe)
+        }
+        ["rgb", "get"] => show(command, client::call("rgb", "getStatus", Value::Null)?, print_rgb),
+        ["rgb", "read"] => show(command, client::call("rgb", "readZones", Value::Null)?, print_zones),
+        ["rgb", "off"] => show(command, client::call("rgb", "off", Value::Null)?, print_rgb),
+        ["rgb", "set", colour] => {
+            let mut params = json!({ "color": colour });
+            add_brightness(command, &mut params)?;
+            show(command, client::call("rgb", "setStatic", params)?, print_rgb)
+        }
+        ["rgb", "zones", spec] => {
+            let zones: Vec<&str> = spec.split(',').map(str::trim).filter(|z| !z.is_empty()).collect();
+            if zones.is_empty() {
+                return Err(Failure::Usage(
+                    "rgb zones takes up to four comma-separated colours, e.g. \
+                     '#f00,#0f0,#00f,#ff0'"
+                        .into(),
+                ));
+            }
+            let mut params = json!({ "zones": zones });
+            add_brightness(command, &mut params)?;
+            show(command, client::call("rgb", "setZones", params)?, print_rgb)
+        }
+        ["rgb", "restore-on-start", value] => {
+            let enabled = word_switch("restore-on-start", value)?;
+            show(
+                command,
+                client::call("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))?,
+                print_rgb,
+            )
+        }
+
         [] => Err(Failure::Usage("no command given".into())),
         other => Err(Failure::Usage(format!("unknown command '{}'", other.join(" ")))),
     }
@@ -306,6 +350,18 @@ fn power_auto(command: &args::Command, value: &str) -> Run {
 
     client::call("power", "setAutoConfig", config)?;
     show(command, power_state()?, print_power)
+}
+
+fn add_brightness(command: &args::Command, params: &mut Value) -> Result<(), Failure> {
+    if let Some(percent) = command.number("brightness")? {
+        if !(0.0..=100.0).contains(&percent) {
+            return Err(Failure::Usage(format!(
+                "--brightness is a percentage between 0 and 100, not {percent}"
+            )));
+        }
+        params["brightness"] = json!(percent.round() as i64);
+    }
+    Ok(())
 }
 
 fn word_switch(name: &str, value: &str) -> Result<bool, String> {
@@ -606,6 +662,56 @@ fn print_diagnosis(diagnosis: &Value) {
     }
     if let Some(notice) = diagnosis.get("driverNotice").and_then(Value::as_str) {
         println!("\n  {notice}");
+    }
+}
+
+fn print_rgb_probe(probe: &Value) {
+    let lightbar = probe.get("lightbar").cloned().unwrap_or(Value::Null);
+    let per_key = probe.get("perKey").cloned().unwrap_or(Value::Null);
+
+    // Both paths, always, even when neither is here: which one a machine
+    // has is the question this command exists to answer, and a single
+    // "no lighting" line answers it for neither.
+    row(
+        "lightbar",
+        format!(
+            "{} - {}",
+            yes_no(lightbar.get("present")),
+            text(&lightbar, "detail")
+        ),
+    );
+    row(
+        "per-key",
+        format!("{} - {}", yes_no(per_key.get("present")), text(&per_key, "detail")),
+    );
+}
+
+fn print_rgb(status: &Value) {
+    if let Some(caps) = status.get("capabilities") {
+        print_rgb_probe(caps);
+    }
+    print_zones(status);
+    row("brightness", format!("{}%", status.get("brightness").and_then(Value::as_i64).unwrap_or(0)));
+    row(
+        "set by",
+        match status.get("owned").and_then(Value::as_bool) {
+            Some(true) => "this daemon",
+            _ => "nothing yet - these are the stored colours, not the hardware's",
+        },
+    );
+    if let Some(error) = status.get("error").and_then(Value::as_str) {
+        println!("  ! {error}");
+    }
+}
+
+fn print_zones(value: &Value) {
+    let zones = value
+        .get("zones")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    if !zones.is_empty() {
+        row("zones", zones);
     }
 }
 

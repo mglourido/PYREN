@@ -33,9 +33,12 @@ dependencies = [
 name = "pyren-check"
 version = "0.1.0"
 dependencies = [
+ "pyren-core",
  "pyren-fan",
  "pyren-power",
+ "pyren-rgb",
  "pyren-system",
+ "serde",
  "serde_json",
 ]
 
@@ -74,6 +77,7 @@ dependencies = [
  "pyren-fan",
  "pyren-installer",
  "pyren-power",
+ "pyren-rgb",
  "pyren-system",
 ]
 
@@ -106,6 +110,17 @@ dependencies = [
  "pyren-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "pyren-rgb"
+version = "0.1.0"
+dependencies = [
+ "pyren-config",
+ "pyren-core",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

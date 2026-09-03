@@ -1,9 +1,19 @@
-//! `pyren-check` - standalone fan-control verifier.
+//! `pyren-check` - standalone compatibility verifier.
 //!
-//! Runs the same self-test as the app's `fan.diagnose`, but as a small
-//! binary that needs no daemon, no socket and no GUI. That matters because
-//! this is the thing you want to run *first* on an unfamiliar laptop, and
-//! the thing to paste into a bug report.
+//! Answers, on an unfamiliar laptop and without a daemon, a socket or a
+//! GUI: **what can this machine actually be told to do?** Three surfaces,
+//! one verdict.
+//!
+//! - **Fans** - the self-test the app runs as `fan.diagnose`, in detail.
+//! - **Power** - what would drive the modes, and whether there is an
+//!   envelope to move.
+//! - **Lighting** - the two unrelated RGB paths, probed rather than
+//!   guessed from the model name.
+//!
+//! The verdict at the end is `system.compatibility`, the same one the
+//! daemon prints at startup and the app shows on its Hardware page,
+//! derived from the same probes. Somebody pasting this output into a bug
+//! report must not then be told something different by the app.
 //!
 //! ```text
 //! pyren-check              # read-only, safe anywhere
@@ -11,19 +21,24 @@
 //! pyren-check --json       # machine-readable, for bug reports
 //! ```
 
+mod compat;
+
 use std::process::ExitCode;
 
 use pyren_fan::{
-    diagnostics::{CheckStatus, Verdict},
+    diagnostics::{Check, CheckStatus, Verdict},
     FanModule,
 };
 use pyren_system::{Controls, SystemIdentity};
 
 const HELP: &str = "\
-pyren-check - verify that fan control works on this machine
+pyren-check - what this machine can actually be told to do
 
 USAGE:
     pyren-check [OPTIONS]
+
+Checks three surfaces - fans, power modes and lighting - and prints one
+verdict: the same one the daemon prints at startup.
 
 OPTIONS:
     --write    Also verify that the PWM channel accepts writes. Rewrites the
@@ -32,10 +47,14 @@ OPTIONS:
     --json     Print the full report as JSON.
     -h, --help Show this help.
 
-EXIT STATUS:
+EXIT STATUS is about fan control, which is what scripts branch on:
     0  fan control works
     1  fan speeds can be read but not set
     2  no HP fan-control interface on this machine
+
+The overall verdict is wider than that - a machine with no fan control can
+still have power modes and a lightbar - so read the last line, not $?, for
+the compatibility answer.
 ";
 
 fn main() -> ExitCode {
@@ -53,22 +72,33 @@ fn main() -> ExitCode {
     let allow_writes = args.iter().any(|a| a == "--write");
     let json = args.iter().any(|a| a == "--json");
 
-    // Same verdict the daemon prints, from the same probes - someone
-    // pasting this output into a bug report should not then be told
-    // something different by the app.
+    // Every surface is probed before anything is classified, because the
+    // verdict is a *summary of what was found* and nothing else. This is
+    // the same order the daemon uses in `main.rs`, for the same reason.
     let fan = FanModule::inspector();
+    let power = pyren_power::surface();
+    let lighting = pyren_rgb::probe::probe();
+
     let identity = SystemIdentity::detect(Controls {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
-        power_mode: pyren_power::power_mode_available(),
+        power_mode: !power.mechanisms.is_empty(),
+        lightbar: lighting.lightbar.present,
     });
     let diagnosis = fan.diagnose(allow_writes);
+    let power_section = compat::power(&power);
+    let lighting_section = compat::lighting(&lighting);
 
     if json {
-        let report = serde_json::json!({ "system": identity, "fan": diagnosis });
+        let report = serde_json::json!({
+            "system": identity,
+            "fan": diagnosis,
+            "power": power_section,
+            "lighting": lighting_section,
+        });
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
     } else {
-        print_report(&identity, &diagnosis, allow_writes);
+        print_report(&identity, &diagnosis, &power_section, &lighting_section, allow_writes);
     }
 
     match diagnosis.verdict {
@@ -81,6 +111,8 @@ fn main() -> ExitCode {
 fn print_report(
     identity: &SystemIdentity,
     diagnosis: &pyren_fan::diagnostics::Diagnosis,
+    power: &compat::Section,
+    lighting: &compat::Section,
     allow_writes: bool,
 ) {
     println!("pyren-check\n");
@@ -88,33 +120,52 @@ fn print_report(
     if let Some(kernel) = &identity.kernel {
         println!("  kernel   {kernel}");
     }
-    println!();
 
+    println!("\nfans");
     for check in &diagnosis.checks {
-        println!("  {}  {:<28} {}", marker(check.status), check.title, check.detail);
-        if let Some(remedy) = &check.remedy {
-            for line in wrap(remedy, 68) {
-                println!("        {line}");
-            }
-        }
+        print_check(check);
     }
-
-    println!();
     println!("  {} passed, {} failed", diagnosis.passed(), diagnosis.failed());
-    println!();
     for line in wrap(&diagnosis.summary, 72) {
         println!("  {line}");
     }
-
     if let Some(notice) = &diagnosis.driver_notice {
-        println!();
         for line in wrap(notice, 72) {
             println!("  ! {line}");
         }
     }
 
+    print_section("power", power);
+    print_section("lighting", lighting);
+
+    // The one line this whole tool exists to print, so it goes last and
+    // says what it is rather than being another summary among four.
+    println!("\ncompatibility");
+    for line in wrap(&identity.reason, 72) {
+        println!("  {line}");
+    }
+
     if !allow_writes && diagnosis.verdict == Verdict::FullControl {
         println!("\n  Re-run with --write (as root) to confirm the hardware accepts writes.");
+    }
+}
+
+fn print_section(title: &str, section: &compat::Section) {
+    println!("\n{title}");
+    for check in &section.checks {
+        print_check(check);
+    }
+    for line in wrap(&section.summary, 72) {
+        println!("  {line}");
+    }
+}
+
+fn print_check(check: &Check) {
+    println!("  {}  {:<28} {}", marker(check.status), check.title, check.detail);
+    if let Some(remedy) = &check.remedy {
+        for line in wrap(remedy, 68) {
+            println!("        {line}");
+        }
     }
 }
 

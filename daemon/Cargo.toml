@@ -10,6 +10,7 @@ members = [
     "crates/fan",
     "crates/system",
     "crates/power",
+    "crates/rgb",
 ]
 
 [workspace.package]
