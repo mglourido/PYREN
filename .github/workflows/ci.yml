@@ -71,6 +71,33 @@ jobs:
       - run: cargo check --all-targets
         working-directory: app/src-tauri
 
+  osd:
+    name: osd (test + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Its own workspace, and the reason for that is this list: the daemon
+      # is a system service and must keep building on a machine with no GUI
+      # libraries at all.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-4-dev libgtk4-layer-shell-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: osd
+      # The tests include the two that keep the widget's icons and its
+      # mode names identical to the app's, by reading the app's own files.
+      - run: cargo test
+        working-directory: osd
+      - run: cargo run -q -- --help
+        working-directory: osd
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: osd
+
   shell:
     name: pyren-check.sh (syntax)
     runs-on: ubuntu-latest

@@ -26,6 +26,7 @@ thinks the machine can do.
 ```
 daemon/     Rust workspace: pyren-daemon + pyren-ctl + pyren-check + module crates
 app/        Tauri app: SvelteKit frontend + src-tauri shell
+osd/        pyren-osd: the widget the performance key puts on screen
 docs/       design plan + IPC protocol + development + frontend + RGB review
 dev/        working notes: what is left to do, and what was learned
 tools/      pyren-check.sh, the dependency-free compatibility check
@@ -161,6 +162,18 @@ tools/      pyren-check.sh, the dependency-free compatibility check
   at all, and it says so with the reason (see `dev/FINDINGS.md`).
   **The one step never run is binding a real key**, which needs fingers on
   the laptop; everything up to it is covered by tests.
+- Starting up: **nothing has to be launched by hand.** The three processes
+  are split by what they need, and each is started by whatever is in a
+  position to start it — `pyren-daemon` by systemd at boot (as root, so the
+  fan curve and the performance key work before anyone logs in), the
+  `pyren-osd` widget by the app when it opens (it draws on somebody's
+  screen, so it belongs in their session and costs no privilege), and
+  optionally both at login without opening the app at all. Settings →
+  Services says what is running and offers the two login switches; neither
+  writes outside `~/.config`. Starting the *daemon* from the app is
+  deliberately not automatic: it would mean a password prompt on every
+  launch, and a daemon that is already running is the better answer — when
+  it is not, the hardware check page has the one-time fix.
 - App: a full OMEN Gaming Hub-style frontend — home dashboard, system vitals
   (basic + advanced views), performance control (power modes, fan
   toggle/curve, power limits), GPU overclocking (wired to the daemon,

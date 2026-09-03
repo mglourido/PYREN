@@ -1,0 +1,27 @@
+# The widget the performance key puts on screen, as a user service.
+#
+#   systemctl --user enable --now pyren-osd.service
+#
+# A *user* unit, not a system one: it draws on somebody's screen, so it has
+# to run as them and inside their graphical session. The half that needs
+# root - hearing the key at all - is pyren-daemon's, and the two only ever
+# meet over the socket.
+
+[Unit]
+Description=Pyren on-screen display for the performance key
+Documentation=https://github.com/paraguayo33/pyren
+# Started when the session's graphics are up. Without this it can race the
+# compositor and find no Wayland display to connect to.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pyren-osd
+# It sits in a poll on the daemon's socket for most of its life; if it
+# falls over, coming back is always the right answer.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,6 +1,7 @@
 # Rust
 /daemon/target/
 /app/src-tauri/target/
+/osd/target/
 
 # Node / frontend
 /app/node_modules/

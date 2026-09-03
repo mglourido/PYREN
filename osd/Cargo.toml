@@ -1,0 +1,23 @@
+[package]
+name = "pyren-osd"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "The on-screen display for the laptop's performance key"
+
+# Its own workspace on purpose. The daemon must keep building on a machine
+# with no GUI libraries at all - it is a system service - and a GTK
+# dependency in that workspace would make `cargo test` there need GTK 4 and
+# gtk4-layer-shell installed.
+[workspace]
+
+[dependencies]
+async-channel = "2"
+# v4_12 for CssProvider::load_from_string; GTK 4.12 is from 2023 and every
+# distribution that ships a Wayland compositor has it.
+gtk4 = { version = "0.11", features = ["v4_12"] }
+gtk4-layer-shell = "0.8"
+# The wire format has one implementation per side; this is the same client
+# pyren-ctl uses, by path rather than copied.
+pyren-core = { path = "../daemon/crates/core" }
+serde_json = "1"
