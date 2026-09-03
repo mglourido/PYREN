@@ -297,6 +297,19 @@ impl Nvidia {
         let Some(display) = &self.display else {
             return format!("no socket in {X11_SOCKETS}");
         };
+        // The case that looks permanent and is not: a daemon started by
+        // systemd probes at boot, when the only X server on the machine is
+        // the display manager's and nobody has logged in yet. Saying so is
+        // the difference between "this machine cannot" and "ask again".
+        if display.owner_uid == 0 {
+            return format!(
+                "could not open {} ({}). No desktop session was running when this was asked - \
+                 a daemon started at boot looks before anybody has logged in - so ask again \
+                 with overclock.probe now that one is up",
+                display.name,
+                whose(display.owner_uid),
+            );
+        }
         let cookie = match &display.xauthority {
             Some(path) => format!("with {}", path.display()),
             None => "with no cookie file to authenticate with".to_string(),
@@ -750,6 +763,22 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
         assert_eq!(pick_display(Some(":7"), &sockets, 0), Some((":7".to_string(), 0)));
         assert_eq!(pick_display(None, &sockets, 0), Some((":0".to_string(), 0)));
         assert_eq!(pick_display(None, &[], 0), None);
+    }
+
+    /// A daemon started by systemd probes before anybody has logged in, so
+    /// the only X server it can find is the display manager's. That is a
+    /// "come back later", not a verdict on the machine, and the reply has
+    /// to say which of the two it is.
+    #[test]
+    fn a_probe_taken_before_anyone_logged_in_says_to_ask_again() {
+        let nvidia = nvidia_with(Some(XDisplay {
+            name: ":0".into(),
+            xauthority: None,
+            owner_uid: 0,
+        }));
+        let message = nvidia.classify("The control display is undefined".into(), "").to_string();
+        assert!(message.contains("overclock.probe"), "{message}");
+        assert!(message.contains("No desktop session was running"));
     }
 
     /// Root's display is not "ours" in any useful sense, and calling it

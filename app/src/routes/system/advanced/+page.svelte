@@ -128,7 +128,12 @@
     );
 
   onMount(() => {
-    void run(() => daemon.overclockState());
+    // A *fresh* probe rather than the state, once, on the way in. The
+    // daemon's startup probe is taken when systemd starts it - at boot,
+    // before anybody has logged in - and on a laptop whose GPU offsets go
+    // through an X server that is what "no display" is recorded from. The
+    // page is opened by somebody who is, by definition, logged in.
+    void run(() => daemon.overclockProbe());
 
     // While something is waiting to be confirmed the countdown is the whole
     // interface, so it is re-read from the daemon rather than trusted to a
