@@ -33,6 +33,20 @@
 //!   and [`Nvidia::probe_writable`] is how that difference is found out
 //!   rather than guessed at.
 //!
+//! And **as root it fails one step earlier**, which is the more useful of
+//! the two findings: a daemon started by systemd is in nobody's session, so
+//! the X server answers "Authorization required" before `Coolbits` ever
+//! comes up. On a Wayland desktop there is not even a cookie to hand it -
+//! Hyprland starts `Xwayland` with no `-auth` file at all - so the fix is
+//! the user's (`xhost +si:localuser:root`) or the operator's
+//! (`PYREN_X_DISPLAY`, `PYREN_XAUTHORITY`), and this module says which.
+//!
+//! The **clock lock has been run**, as root, on that same laptop: 900-1200
+//! MHz took the idle card from 180 MHz / P8 / 7.5 W to 892 MHz / P5 /
+//! 9.9 W, and letting the confirmation lapse put it back. Of the two
+//! mechanisms here, the one that needs no X server is the one proven
+//! against hardware.
+//!
 //! That is why the offset path is written to be *possible* and reported as
 //! unavailable here, in the same spirit as the lightbar in `pyren-rgb`: the
 //! code is ready for the machine that has it, and says plainly which of the
@@ -66,8 +80,9 @@ pub enum NvidiaError {
     NotInstalled(&'static str),
     /// `nvidia-settings` speaks to an X server, and a daemon started by
     /// systemd is not in anybody's session. Its own kind because the fix is
-    /// neither "install something" nor "become root".
-    #[error("no X display could be found for nvidia-settings ({0})")]
+    /// neither "install something" nor "become root" - running as root is
+    /// in fact how a daemon *gets* into this state.
+    #[error("nvidia-settings has no X display to talk to: {0}")]
     NoDisplay(String),
     /// The tool ran and the driver said no. The message is the driver's.
     #[error("{0}")]
@@ -227,6 +242,75 @@ impl Nvidia {
         Ok(command)
     }
 
+    /// Turns what the driver said into what it means.
+    ///
+    /// Three refusals are worth translating, and all three were met on the
+    /// development laptop in one afternoon:
+    ///
+    /// - *"the current user does not have permission"* - a missing
+    ///   `Coolbits`, not a missing `sudo`: root does not fix it;
+    /// - *"Authorization required, but no authorization protocol
+    ///   specified"* - the display exists and would not let this process
+    ///   in, which is the normal answer to a **root** daemon knocking on a
+    ///   desktop session's X server;
+    /// - *"the control display is undefined"* - nvidia-settings found no
+    ///   display it could open at all, which is also what the one above
+    ///   turns into once it gives up.
+    ///
+    /// The middle one is only visible in the raw output, because
+    /// nvidia-settings prints it without the `ERROR:` prefix - so the whole
+    /// text is searched and not only the line [`first_error`] picked.
+    fn classify(&self, message: String, output: &str) -> NvidiaError {
+        if output.to_lowercase().contains("authorization required") {
+            return NvidiaError::NoDisplay(self.refused_hint());
+        }
+        if message.to_lowercase().contains("control display") {
+            return NvidiaError::NoDisplay(self.display_hint());
+        }
+        NvidiaError::Refused(explain(message))
+    }
+
+    /// The X server said no. Names the fix that actually exists, which is
+    /// on the *user's* side rather than in this daemon.
+    ///
+    /// A compositor like Hyprland starts `Xwayland` with no `-auth` file at
+    /// all - it hands it sockets it has already opened - so there is no
+    /// cookie anywhere for a root daemon to be pointed at, and the server
+    /// falls back to admitting the uid that owns it. `PYREN_XAUTHORITY`
+    /// cannot help with a cookie that does not exist; one line typed inside
+    /// the session can.
+    fn refused_hint(&self) -> String {
+        let display = self.display.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "?".into());
+        format!(
+            "the X server at {display} refused this process. It admits the user that owns it, \
+             and a daemon running as root is not that user - so either that user lets us in \
+             from inside their session (xhost +si:localuser:root), or PYREN_X_DISPLAY and \
+             PYREN_XAUTHORITY point us at a display we may open. There may be no cookie file \
+             to point at: a Wayland compositor's Xwayland is often started without one"
+        )
+    }
+
+    /// Which display was tried, whose it is, and what to do about it. The
+    /// case where nvidia-settings found nothing it could open at all, as
+    /// opposed to [`Self::refused_hint`], where it found one that said no.
+    fn display_hint(&self) -> String {
+        let Some(display) = &self.display else {
+            return format!("no socket in {X11_SOCKETS}");
+        };
+        let cookie = match &display.xauthority {
+            Some(path) => format!("with {}", path.display()),
+            None => "with no cookie file to authenticate with".to_string(),
+        };
+        format!(
+            "could not open {} ({}, uid {}) {cookie}. A daemon running as root is not in \
+             anybody's session; point it at one with PYREN_X_DISPLAY and PYREN_XAUTHORITY, or \
+             set the offsets from a process that is already inside that session",
+            display.name,
+            if display.owner_uid == own_uid() { "our own session" } else { "somebody else's" },
+            display.owner_uid,
+        )
+    }
+
     fn read_attribute(
         &self,
         index: u32,
@@ -242,11 +326,12 @@ impl Nvidia {
         // nvidia-settings exits 0 even when it prints only an error, so the
         // status says nothing and the text is what has to be read.
         let text = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         parse_attribute(&text, attribute).ok_or_else(|| {
             let detail = first_error(&text)
-                .or_else(|| first_error(&String::from_utf8_lossy(&output.stderr)))
+                .or_else(|| first_error(&stderr))
                 .unwrap_or_else(|| format!("nvidia-settings printed no value for {attribute}"));
-            NvidiaError::Refused(detail)
+            self.classify(detail, &format!("{text}\n{stderr}"))
         })
     }
 
@@ -259,9 +344,10 @@ impl Nvidia {
             .map_err(|e| NvidiaError::Unreadable { what: "nvidia-settings", detail: e.to_string() })?;
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
-        match first_error(&text).or_else(|| first_error(&String::from_utf8_lossy(&output.stderr))) {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        match first_error(&text).or_else(|| first_error(&stderr)) {
             None => Ok(()),
-            Some(message) => Err(NvidiaError::Refused(explain(message))),
+            Some(message) => Err(self.classify(message, &format!("{text}\n{stderr}"))),
         }
     }
 }
@@ -363,6 +449,21 @@ fn first_error(text: &str) -> Option<String> {
 /// nature, which is why every failure it produces is reported as
 /// [`NvidiaError::NoDisplay`] and never as "this machine cannot overclock".
 pub fn find_display() -> Option<XDisplay> {
+    // Told, rather than guessed. The escape hatch for what guessing cannot
+    // solve - a root daemon that has to reach one particular session, whose
+    // cookie is somewhere no convention puts it - and what a systemd unit
+    // should set on a machine where the offsets actually work.
+    if let Some(name) = std::env::var_os("PYREN_X_DISPLAY") {
+        let name = name.to_string_lossy().to_string();
+        if !name.is_empty() {
+            return Some(XDisplay {
+                name,
+                xauthority: std::env::var_os("PYREN_XAUTHORITY").map(PathBuf::from),
+                owner_uid: own_uid(),
+            });
+        }
+    }
+
     // A daemon that *does* have a session (a developer's `cargo run`)
     // should use it rather than guessing at somebody else's.
     if let Ok(name) = std::env::var("DISPLAY") {
@@ -522,6 +623,57 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
         assert!(explained.contains("Coolbits"));
         assert!(explained.contains("root does not"));
         assert_eq!(explain("no such attribute".to_string()), "no such attribute");
+    }
+
+    fn nvidia_with(display: Option<XDisplay>) -> Nvidia {
+        Nvidia { smi: false, settings: false, display }
+    }
+
+    /// What a root daemon really gets on a Wayland desktop: the server
+    /// admits the uid that owns it and nobody else, and there is no cookie
+    /// file anywhere to be pointed at. The reply has to say so, because the
+    /// fix is a line typed *inside the session*, not a setting here.
+    #[test]
+    fn an_x_server_refusing_root_names_the_fix_that_exists() {
+        let nvidia = nvidia_with(Some(XDisplay {
+            name: ":1".into(),
+            xauthority: None,
+            owner_uid: 1000,
+        }));
+        let e = nvidia.classify(
+            "The control display is undefined".into(),
+            "Authorization required, but no authorization protocol specified\n\nERROR: The control display is undefined",
+        );
+        assert!(matches!(e, NvidiaError::NoDisplay(_)));
+        let message = e.to_string();
+        assert!(message.contains("xhost +si:localuser:root"), "{message}");
+        assert!(message.contains(":1"));
+    }
+
+    /// The other way it fails: nothing to open at all. Names the display it
+    /// tried, whose session that is, and the two variables that override it.
+    #[test]
+    fn a_display_that_could_not_be_opened_is_reported_as_having_no_display() {
+        let nvidia = nvidia_with(Some(XDisplay {
+            name: ":1".into(),
+            xauthority: None,
+            owner_uid: 1000,
+        }));
+        let e = nvidia.classify("The control display is undefined".into(), "");
+        assert!(matches!(e, NvidiaError::NoDisplay(_)));
+        let message = e.to_string();
+        assert!(message.contains(":1") && message.contains("1000"));
+        assert!(message.contains("PYREN_X_DISPLAY"));
+        assert!(message.contains("no cookie file"), "the missing cookie is half the diagnosis");
+    }
+
+    /// ...and a refusal that is about neither keeps its own explanation, so
+    /// Coolbits and the X server are never mistaken for one another.
+    #[test]
+    fn a_coolbits_refusal_is_not_turned_into_a_display_problem() {
+        let e = nvidia_with(None).classify(first_error(REFUSED).unwrap(), REFUSED);
+        assert!(matches!(e, NvidiaError::Refused(_)));
+        assert!(e.to_string().contains("Coolbits"));
     }
 
     #[test]

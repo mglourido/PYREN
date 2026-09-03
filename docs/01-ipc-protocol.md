@@ -954,6 +954,29 @@ When `offsetsWritable` comes back `false` the offset ranges are withdrawn
 from the state as well: a slider that can only ever fail is worse than no
 slider.
 
+Run **as root** - which is how the daemon runs in production - it fails one
+step earlier and for a different reason: a daemon started by systemd is in
+nobody's session, so the X server answers *"Authorization required"* before
+`Coolbits` ever comes up. On a Wayland desktop there is not even a cookie to
+hand it, because the compositor starts `Xwayland` with no `-auth` file at
+all (Hyprland: `Xwayland :1 -rootless -core -listenfd … -wm …`) and the
+server falls back to admitting the uid that owns it. So the offsets are
+reachable by *that user's* processes and by nothing else, and the module
+says which of the three refusals it got rather than passing the driver's
+wording through. The fixes it names are the two that exist: the user
+allowing us in from inside their session (`xhost +si:localuser:root`), or
+the operator pointing the daemon at a display it may open, with
+`PYREN_X_DISPLAY` and `PYREN_XAUTHORITY`.
+
+**The clock lock, in contrast, is proven against the hardware.** As root,
+900-1200 MHz took the idle card from 180 MHz / P8 / 7.5 W to 892 MHz / P5 /
+9.9 W, `getState` reported the pending change, and letting the confirmation
+lapse put the card back at 180 MHz / P8 by itself - the revert timer doing
+exactly what it exists for, on a real GPU.
+When `offsetsWritable` comes back `false` the offset ranges are withdrawn
+from the state as well: a slider that can only ever fail is worse than no
+slider.
+
 ### What this module will not do
 
 - **Raise the CPU's package power limits.** It belongs behind this same

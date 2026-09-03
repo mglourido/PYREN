@@ -169,11 +169,19 @@ rather than design:
   the climb, the read-back and the revert have been exercised against
   refusals and never against a card that says yes. Anyone with `Coolbits`
   set: `pyren-ctl oc probe --write` first, then a small `oc set --core 15`.
-- **The clock lock has not been run as root.** `nvidia-smi
-  --lock-gpu-clocks` needs it and the development daemon runs
-  unprivileged, so what is proven today is that it refuses correctly with
-  `permissionDenied`. It is the one mechanism this laptop *can* do, so it
-  is the first thing to try once the systemd unit is installed.
+- ~~The clock lock has not been run as root.~~ **Done, and it works**:
+  as root, 900-1200 MHz took the idle card from 180 MHz / P8 / 7.5 W to
+  892 MHz / P5 / 9.9 W, and letting the confirmation lapse put it back on
+  its own. The revert timer has now run against a real GPU, not only
+  against refusals.
+- **A root daemon cannot reach the offsets on a Wayland desktop.** Not
+  `Coolbits` this time: the X server admits the uid that owns it, and the
+  compositor starts `Xwayland` with no `-auth` file, so there is no cookie
+  to point `PYREN_XAUTHORITY` at. Either the user runs
+  `xhost +si:localuser:root` in their session, or whatever sets the
+  offsets has to run inside it. Worth deciding *before* an offset is ever
+  written: it may be that the honest answer is "offsets need Xorg with
+  Coolbits", and the module already says so in words.
 - **AMD Overdrive is detected and not driven.** `pp_od_clk_voltage` is a
   two-line write away and stays unwritten until there is an AMD machine to
   test on: a wrong value there does not fail with an error message. The
