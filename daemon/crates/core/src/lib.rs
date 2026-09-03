@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod acpi;
 pub mod client;
 mod socket;
 pub use socket::{serve_unix_socket, socket_group, Audience};
