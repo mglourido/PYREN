@@ -16,6 +16,53 @@
     appmenu-gtk-module gtk3 libappindicator-gtk3 librsvg
   ```
   Other distros: <https://tauri.app/start/prerequisites/#linux>.
+- GTK 4 and gtk4-layer-shell, required to compile `osd/` — and *only*
+  `osd/`, which is why it is a separate workspace. Arch/CachyOS:
+  ```sh
+  sudo pacman -S --needed gtk4 gtk4-layer-shell
+  ```
+  Debian/Ubuntu: `libgtk-4-dev libgtk4-layer-shell-dev`.
+
+## 0. All three at once
+
+Pyren is three programs with three lifetimes, and the sections below run
+them one at a time. In day-to-day work you usually want all of them, on
+the code you just wrote:
+
+```sh
+cd app
+bun run dev:all      # builds daemon + widget, restarts them, runs the app
+bun run dev:deps     # the same without the app, for a 'tauri dev' already up
+```
+
+That is `tools/dev-all.sh`. It asks for `sudo` once, to restart the
+daemon's service, and for nothing else.
+
+**Why it needs to exist.** `bun run tauri dev` builds the frontend and
+`app/src-tauri`, and *nothing else*. The daemon and the widget are
+separate cargo workspaces — deliberately, so the daemon keeps building on
+a machine with no GUI libraries at all — so neither is rebuilt by the
+app's dev loop. Worse, the daemon is not a child of the app: systemd
+starts it from a fixed path, so even a rebuilt binary changes nothing
+until the service restarts.
+
+The result is a silent failure rather than an error. You change the
+daemon, restart the app, and watch the old daemon answer exactly as it
+did before, with nothing anywhere saying why. What is safe to assume:
+
+| you changed | `tauri dev` rebuilds it | to see it |
+|---|---|---|
+| frontend (`app/src`) | yes | it reloads on save |
+| `app/src-tauri` | yes | restart `tauri dev` |
+| `daemon/` | **no** | `cargo build`, then `sudo systemctl restart pyren-daemon` |
+| `osd/` | **no** | `cargo build`, then stop `pyren-osd` (the app respawns it) |
+
+To check by hand whether what is *running* is what you last built:
+
+```sh
+systemctl show pyren-daemon -p ExecMainStartTimestamp   # started when?
+ls -l --time-style=+%T daemon/target/debug/pyren-daemon # built when?
+```
 
 ## 1. Run the daemon
 
@@ -129,6 +176,10 @@ opens the app window. First build compiles ~490 crates (WebKitGTK/GTK
 bindings etc.) and takes a minute or two; rebuilds after that are fast
 (only `app/src-tauri` needs recompiling).
 
+That last parenthesis is also the trap: `app/src-tauri` is the *only*
+Rust it recompiles. A change in `daemon/` or `osd/` is not part of this
+loop at all — see "All three at once" above, or `bun run dev:all`.
+
 ### Finding the app's processes
 
 The Rust shell runs as `pyren` (`mainBinaryName`, so `cargo run` and a
@@ -181,6 +232,60 @@ GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 bun run tauri dev
 
 This is a known WebKitGTK/compositor interaction, not specific to this
 project's code — if it stops being needed on your setup, drop it.
+
+## 3. Run the on-screen display
+
+**The app starts it for you.** It looks for the widget beside its own
+binary, in `PATH`, and - because that is the case that matters here - at
+`osd/target/<profile>/pyren-osd` in this tree, then spawns it unless a
+`pyren-osd` of yours is already running. So `cargo build` in `osd/` once
+and it comes up with the app from then on.
+
+To run it by hand instead:
+
+```sh
+cd osd
+cargo run -- --show     # --show draws it once, so you can see it without a key
+```
+
+Then teach the daemon which key is yours and press it:
+
+```sh
+pyren-ctl hotkey learn      # press Fn+P while it waits
+pyren-ctl hotkey get        # what it caught, and whether it is being heard
+```
+
+`hotkey learn` needs a daemon that can read `/dev/input`, which means a
+root one — `cargo run -p pyren-daemon` as yourself will answer
+`permissionDenied`, correctly. What still works unprivileged is everything
+downstream of the key:
+
+```sh
+pyren-ctl hotkey press      # run the action as though the key were pressed
+pyren-ctl events            # watch what the daemon publishes, as it happens
+```
+
+`hotkey press` is the one to develop the widget against: it goes through
+the same action, publishes the same events, and needs no hardware. Two
+things worth knowing while working on the widget:
+
+- **It is a layer-shell surface**, so it will not show up in
+  `hyprctl clients`. `hyprctl layers` is where it is, under the namespace
+  `pyren-osd`, on the `overlay` level.
+- **A second launch does not start a second process.** It activates the
+  running one, which shows the widget — which also makes `pyren-osd` a
+  reasonable thing to put on a compositor keybinding. Note that this path
+  only ever *shows*; it is the shortcut (a `hotkey.pressed` event) that
+  toggles, so `hotkey press` twice opens and then closes the widget while
+  launching `pyren-osd` twice shows it twice.
+
+To develop against a daemon of your own without disturbing the installed
+one, give both a socket and a config directory of their own:
+
+```sh
+PYREN_SOCKET=/tmp/pyren-dev.sock PYREN_CONFIG_DIR=/tmp/pyren-dev cargo run -p pyren-daemon
+PYREN_SOCKET=/tmp/pyren-dev.sock cargo run          # in osd/
+```
 
 ## Checking what a machine can be told to do
 
