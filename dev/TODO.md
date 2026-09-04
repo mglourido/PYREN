@@ -260,9 +260,26 @@ real.
 - **Reinstall the driver with the measured fan ceiling.** §1.1 put a real
   number on this chassis — 5200 rpm, both fans — and the driver was
   installed before it existed, so it is still running on whatever ceiling
-  the firmware volunteers. `--cpu-max-rpm 5200 --gpu-max-rpm 5200` on a
-  reinstall would pin the measured one. Nothing is visibly wrong without
-  it, which is why this is here and not in §1.
+  the firmware volunteers. Nothing is visibly wrong without it, which is
+  why this is here and not in §1.
+
+  **Checked, 2026-09-04: the installer already does this, no code needed.**
+  `installer::Autodetected::detect` (`autodetect.rs::calibrated_max_rpm`)
+  reads `fan1MaxRpm`/`fan2MaxRpm` straight out of `fan.json` on every call,
+  and an `auto` `installer.apply` (`lib.rs`: `max_rpm.cpu =
+  max_rpm.cpu.or(detected.cpu_max_rpm)`) falls back to that reading
+  whenever the request itself leaves `cpuMaxRpm`/`gpuMaxRpm` unset — which
+  is exactly what `DriverWizard.svelte`'s automatic mode sends. The plan
+  already treats a reinstall over an already-patched driver as ordinary,
+  not a special case: it inserts `dkms-remove-old` first when DKMS shows
+  the module registered, then rebuilds and reinstalls — no manual
+  uninstall step for a person or a script to remember.
+
+  So this item is *only* an action left to take, on purpose: reinstalling
+  a live kernel module that this machine's fan control depends on right
+  now, deliberately deferred rather than run in the same pass that
+  confirmed the mechanism. Running it in automatic mode is what pins 5200
+  into the driver; `fan.json` already holds it from §1.1's calibration.
 - **Packaging**: `tools/install.sh` covers the binaries and the widget's
   user unit, which is what §1.4 needed; a PKGBUILD is still the right next
   step, given the audience. It would also settle where the *daemon's*
