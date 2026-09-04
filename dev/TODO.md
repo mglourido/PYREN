@@ -220,10 +220,18 @@ get`/`gpu set`, and the app wired end to end — Tauri commands, `daemon.ts`,
 `hardware.svelte.ts` (`syncFromDaemon` now reads the real mode at startup;
 `setGpuMode` writes it and surfaces a refusal instead of pretending the
 write landed). `gpu.getStatus` confirmed on hardware, reading back
-`hybrid`. **`gpu.setMode` has not been run** — it changes the session's
-card and needs a logout or reboot, so it is one to try deliberately with
-`pyren-ctl gpu set <mode>` rather than something this pass should have
-fired blind.
+`hybrid`.
+
+**`gpu.setMode` confirmed on hardware, 2026-09-04.** `pyren-ctl gpu set
+discrete` wrote `1` to `gpu_mux_mode` (was `0`), and `gpu.getStatus` read
+`discrete` straight back — the write path and the read-your-own-write
+round trip both work. Put back to `hybrid` immediately afterward rather
+than left pending: the mode only takes effect at the next logout or
+reboot, and a laptop that quietly boots into a different GPU than the one
+it had is a worse surprise than an untested code path. Nobody has yet
+sat through the logout/reboot that actually swaps the driving card — that
+is the one thing left to try, deliberately, when discrete is wanted for
+real.
 
 ---
 

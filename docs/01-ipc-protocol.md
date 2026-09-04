@@ -1437,9 +1437,13 @@ Which GPU is driving the screen — iGPU only, hybrid, or the discrete card
 | `gpu.setMode` | `{ "mode": "integrated" \| "hybrid" \| "discrete" \| "optimus" }` | as `getStatus` |
 
 Confirmed on hardware, 2026-09-04: `gpu.getStatus` reads `hybrid` off the
-development machine's `gpu_mux_mode`. `setMode` has not — it changes the
-session's card and needs a logout or reboot to take effect, so it is one
-to run deliberately, from `pyren-ctl gpu set`, not from an automated pass.
+development machine's `gpu_mux_mode`, and `gpu.setMode discrete` wrote `1`
+to the same file and read `discrete` straight back — put back to `hybrid`
+immediately afterward, since the switch only takes effect at the next
+logout or reboot and nobody had asked for discrete to actually stick.
+Nobody has yet sat through that logout/reboot to confirm the driving card
+itself changes; that is the one thing left to try deliberately, with
+`pyren-ctl gpu set`, when discrete is wanted for real.
 
 ### Why this is not a `supergfxctl` wrapper
 
