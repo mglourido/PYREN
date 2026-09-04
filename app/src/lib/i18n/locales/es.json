@@ -59,7 +59,7 @@
     "graphicsSwitcher": "Alternador de gráficos",
     "graphicsSwitcherDesc": "Elige qué GPU usa tu sistema para ahorrar batería o maximizar el rendimiento.",
     "networkBooster": "Intensificador de red",
-    "networkBoosterDesc": "Controla el tráfico de red doméstica para priorizar tu juego.",
+    "networkBoosterDesc": "Activa una cola inteligente para mantener tu conexión estable bajo carga.",
     "autoEco": "Cambiar automáticamente al modo Eco",
     "autoEcoHint": "Al desconectar la corriente pasa a Equilibrado; si la máquina sigue inactiva, o la batería baja, sigue hasta Eco.",
     "autoPerformance": "Cambiar automáticamente al modo de Rendimiento",
@@ -284,21 +284,20 @@
   },
   "network": {
     "mode": "Modo",
-    "descOff": "Supervisa el consumo de ancho de banda de tu red en todas las aplicaciones que se están ejecutando.",
-    "descAuto": "Prioriza automáticamente la aplicación de primer plano como ALTA y todas las otras aplicaciones como BAJA. Para establecer la prioridad de las aplicaciones manualmente, selecciona PERSONALIZADO.",
-    "descCustom": "Ajusta los niveles de prioridad de cada aplicación manualmente o bloquea el acceso de las aplicaciones a la red. El valor predeterminado de las aplicaciones es MEDIO.",
+    "descOff": "Supervisa tu consumo total de ancho de banda. No se aplica ningún cambio de cola a tu interfaz de red.",
+    "descAuto": "Activa una cola inteligente en tu interfaz de red principal, para que el tráfico sensible a la latencia -juegos, llamadas, navegación- siga respondiendo bien mientras otra cosa satura la conexión.",
     "totalBandwidth": "Consumo de ancho de banda total",
-    "search": "Buscar",
-    "appName": "Nombre de la aplicación",
-    "download": "Descargar",
-    "upload": "Cargar",
-    "priority": "Prioridad",
-    "block": "Bloquear",
-    "high": "Alta",
-    "medium": "Media",
-    "low": "Baja",
-    "doubleForce": "Forzado doble",
-    "doubleForceHint": "Aplica las reglas de prioridad también a las conexiones ya establecidas."
+    "interface": "Interfaz",
+    "activeQueuing": "Cola activa",
+    "noInterface": "No se encontró ninguna interfaz de red con ruta predeterminada.",
+    "perAppUnavailable": "La priorización por aplicación no está disponible: pyren no rastrea qué aplicación es dueña de cada paquete, solo los totales de arriba.",
+    "err": {
+      "modeRequired": "falta params.mode: 'off' o 'auto'",
+      "modeUnknown": "'{mode}' no es un modo de red",
+      "noInterface": "no se encontró ninguna interfaz de red con ruta predeterminada",
+      "needsRoot": "cambiar la cola en {interface} necesita permisos de administrador",
+      "qdiscRefused": "este kernel rechazó la cola inteligente: {detail}"
+    }
   },
   "keys": {
     "selectKey": "Selecciona una tecla para empezar:",

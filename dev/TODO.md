@@ -140,14 +140,40 @@ rather than the caller's. It now drops back through `SUDO_USER`.
 ## 2. Blocked on a decision or on hardware
 
 ### 2.1 Network booster, key mapping
-The UI for both is complete and drives local state only. Each needs a real
-backend decision before any daemon work:
+- **Key mapping**: still local state only. Needs a real backend decision -
+  `keyd`, `udev` hwdb, or an evdev-level remapper - which affects whether
+  the daemon needs to hold an input device open.
 
-- **Network booster**: per-process traffic accounting plus `tc`/`nftables`
-  rules. This is the largest of the two by far, and arguably the least
-  valuable — consider dropping the page rather than building it.
-- **Key mapping**: `keyd`, `udev` hwdb, or an evdev-level remapper. Affects
-  whether the daemon needs to hold an input device open.
+**Network booster decided and built (the honest half), 2026-09-04.**
+Per-process traffic accounting plus per-PID `tc`/`nftables` rules — what
+the original mock table needed — stays undone: it needs cgroups,
+`nftables` socket matching or eBPF to attribute a packet to a process at
+all, none of which this daemon has, and it was already flagged here as the
+larger and less valuable half. That table (priority dropdown, block
+button, "double force") is now gone from the page rather than left
+pointing at nothing.
+
+What *is* real: one system-wide knob. `off` deletes the default-route
+interface's root qdisc; `auto` hands it `cake`, falling back to
+`fq_codel` on a kernel with no `sch_cake` — both fair-queue by flow, so a
+big transfer does not drown out a game or a call sharing the same link,
+with no per-process bookkeeping needed. Built: `daemon/crates/network`
+(`network.getStatus`/`network.setMode`, see `docs/01-ipc-protocol.md`
+§"`network` module"), registered in the daemon and in `system`'s
+`Controls`, `pyren-ctl network get`/`network set`, and the app wired end
+to end — Tauri commands, `daemon.ts`, `hardware.svelte.ts`, and the
+`system/network` page rebuilt around it (mode toggle, total bandwidth,
+the interface/active-qdisc read-out, and a plain note that per-app
+prioritisation is not available instead of a table with nothing behind
+it). Confirmed on hardware, 2026-09-04: `network get` correctly finds `wlan0` as
+the default-route interface and reads back its live qdisc (`noqueue`);
+`network set auto` unprivileged correctly refuses with `permissionDenied`
+naming the interface. As root: `network set auto` switched `wlan0` to
+`cake` directly (this kernel has `sch_cake`, so the `fq_codel` fallback
+was not exercised) — `tc qdisc show dev wlan0` confirms it took
+(`qdisc cake 8001: root ...`) — and `network set off` reverted it cleanly
+to `noqueue`, the interface's own default. Nothing left running or changed
+afterward.
 
 **GPU switching decided and built, 2026-09-04.** Not `supergfxctl` — the
 driver this project already patches and installs for fan control

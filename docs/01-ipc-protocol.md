@@ -1474,6 +1474,32 @@ write the firmware refuses comes back `EOPNOTSUPP`, which `setMode`
 reports as `notCapable` naming the mode, rather than as a bare I/O
 failure.
 
+## `network` module
+
+System-wide smart queuing on the default-route interface — **not**
+per-application traffic control. See `daemon/crates/network/src/lib.rs` for
+why the app's per-process priority/block table has nothing behind it: it
+needs per-process traffic accounting (cgroups/nftables/eBPF) this project
+does not implement, flagged as the larger and less valuable half of
+`dev/TODO.md` §2.1.
+
+| method | params | result |
+|---|---|---|
+| `network.getStatus` | none | `{ "supported": bool, "interface": string \| null, "mode": "off" \| "auto", "activeQdisc": string \| null }` |
+| `network.setMode` | `{ "mode": "off" \| "auto" }` | as `getStatus` |
+
+`off` deletes the interface's root qdisc, handing it back to the kernel's
+own default. `auto` replaces it with `cake`, falling back to `fq_codel` on
+a kernel with no `sch_cake`; both fair-queue by flow, which is what keeps a
+game or a call responsive while something else saturates the link, with no
+need to know which process owns which packet.
+
+`mode` is this daemon's own memory of the last `setMode` call, not a read
+of the interface — `fq_codel` is already several distributions' own
+`net.core.default_qdisc`, so seeing it active proves nothing about who set
+it. It resets to `off` on daemon restart. `activeQdisc` is the separate,
+honest read of `tc qdisc show` — ours or not.
+
 ## `overclock` module
 
 | method | params | result | status |

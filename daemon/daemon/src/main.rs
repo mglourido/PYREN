@@ -15,6 +15,7 @@ use pyren_hotkey::{HotkeyModule, KeyPress};
 use pyren_installer::{
     execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
 };
+use pyren_network::NetworkModule;
 use pyren_overclock::OverclockModule;
 use pyren_power::PowerModule;
 use pyren_rgb::RgbModule;
@@ -174,12 +175,14 @@ fn main() {
     // be said about it.
     let overclock = OverclockModule::new();
     let gpu = GpuModule::new();
+    let network = NetworkModule::new();
     let controls = Controls {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
         power_mode: power.is_supported(),
         lightbar: rgb.probe().lighting.present,
         gpu_mux: gpu.is_supported(),
+        network_qos: network.is_supported(),
     };
 
     // Built here, wired to the power module further down: what a key does
@@ -258,6 +261,7 @@ fn main() {
     registry.register(Box::new(rgb));
     registry.register(Box::new(overclock));
     registry.register(Box::new(gpu));
+    registry.register(Box::new(network));
     registry.register(Box::new(hotkey.clone()));
     registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);

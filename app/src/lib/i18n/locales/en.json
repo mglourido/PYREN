@@ -59,7 +59,7 @@
     "graphicsSwitcher": "Graphics switcher",
     "graphicsSwitcherDesc": "Choose which GPU your system uses to save battery or maximise performance.",
     "networkBooster": "Network booster",
-    "networkBoosterDesc": "Control home network traffic to prioritise your game.",
+    "networkBoosterDesc": "Turn on smart queuing to keep your connection responsive under load.",
     "autoEco": "Switch to Eco mode automatically",
     "autoEcoHint": "Unplugging drops to Balanced; a machine that stays idle, or whose battery gets low, goes on to Eco.",
     "autoPerformance": "Switch to Performance mode automatically",
@@ -284,21 +284,20 @@
   },
   "network": {
     "mode": "Mode",
-    "descOff": "Monitors your network bandwidth usage across every running application.",
-    "descAuto": "Automatically prioritises the foreground application as HIGH and every other application as LOW. Select Custom to set priorities manually.",
-    "descCustom": "Manually adjust each application's priority level or block its network access. The default value is Medium.",
+    "descOff": "Monitors your total bandwidth usage. No queuing changes are made to your network interface.",
+    "descAuto": "Enables smart queuing on your main network interface, so responsive traffic - games, calls, browsing - stays snappy while something else is using the connection heavily.",
     "totalBandwidth": "Total bandwidth usage",
-    "search": "Search",
-    "appName": "Application name",
-    "download": "Download",
-    "upload": "Upload",
-    "priority": "Priority",
-    "block": "Block",
-    "high": "High",
-    "medium": "Medium",
-    "low": "Low",
-    "doubleForce": "Double force",
-    "doubleForceHint": "Applies the priority rules to already-established connections too."
+    "interface": "Interface",
+    "activeQueuing": "Active queuing",
+    "noInterface": "No default-route network interface was found.",
+    "perAppUnavailable": "Per-application prioritisation isn't available: pyren doesn't track which app owns which packet, only the totals above.",
+    "err": {
+      "modeRequired": "params.mode is required: 'off' or 'auto'",
+      "modeUnknown": "'{mode}' is not a network mode",
+      "noInterface": "no default-route network interface found",
+      "needsRoot": "changing the qdisc on {interface} needs root",
+      "qdiscRefused": "this kernel refused smart queuing: {detail}"
+    }
   },
   "keys": {
     "selectKey": "Select a key to get started:",

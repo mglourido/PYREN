@@ -1,0 +1,10 @@
+[package]
+name = "pyren-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pyren-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

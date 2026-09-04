@@ -209,6 +209,25 @@ export type GpuStatus = {
   raw: number | null;
 };
 
+/**
+ * `network.getStatus` - see `docs/01-ipc-protocol.md` §"`network` module".
+ * System-wide smart queuing only; there is no per-application field here
+ * because the daemon has no per-process traffic data to report.
+ */
+export type NetworkStatus = {
+  /** False when `tc` is missing or no default-route interface was found. */
+  supported: boolean;
+  /** The interface `mode` acts on, e.g. `"wlan0"`. */
+  interface: string | null;
+  /** The daemon's own memory of the last `setMode` call - resets to
+   *  `"off"` on restart, it is not a read of the interface (see the
+   *  daemon module doc for why `fq_codel` alone proves nothing). */
+  mode: "off" | "auto";
+  /** What `tc qdisc show` reports right now, ours or the kernel's own
+   *  default - `null` when `interface` is `null` or the read failed. */
+  activeQdisc: string | null;
+};
+
 export type RgbStatus = {
   /** The probe taken at daemon startup. `rgbCapabilities()` re-asks. */
   capabilities: RgbProbe;
@@ -907,6 +926,8 @@ const DAEMON_ROUTES: Record<
   rgb_get_capabilities: { module: "rgb", method: "getCapabilities" },
   gpu_get_status: { module: "gpu", method: "getStatus" },
   gpu_set_mode: { module: "gpu", method: "setMode" },
+  network_get_status: { module: "network", method: "getStatus" },
+  network_set_mode: { module: "network", method: "setMode" },
   rgb_set_static: { module: "rgb", method: "setStatic" },
   rgb_set_zones: { module: "rgb", method: "setZones" },
   rgb_off: { module: "rgb", method: "off" },
@@ -1132,6 +1153,12 @@ export const daemon = {
    *  daemon does not do that itself, and neither does this call. */
   setGpuMode: (mode: "integrated" | "hybrid" | "discrete" | "optimus") =>
     call<GpuStatus>("gpu_set_mode", { mode }),
+  /** The default-route interface, this daemon's remembered mode, and the
+   *  qdisc actually active right now. */
+  networkStatus: () => call<NetworkStatus>("network_get_status"),
+  /** `off` deletes the root qdisc; `auto` hands the interface `cake` (or
+   *  `fq_codel` as a fallback) - system-wide, not per-application. */
+  setNetworkMode: (mode: "off" | "auto") => call<NetworkStatus>("network_set_mode", { mode }),
   /** The lightbar: the startup probe plus what this daemon last set. */
   rgbStatus: () => call<RgbStatus>("rgb_get_status"),
   /** Re-probes both lighting paths. Costs an ACPI round trip, so it is

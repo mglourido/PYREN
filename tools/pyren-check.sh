@@ -818,11 +818,11 @@ if [ "$AS_JSON" -eq 1 ]; then
 		"$(json_escape "$(uname -r)")"
 	printf '    "compatibility": "%s",\n    "reason": "%s",\n' \
 		"$COMPATIBILITY" "$(json_escape "$COMPAT_REASON")"
-	# gpuMux is always false here: GPU MUX switching is pyren-daemon's own
-	# module (see docs/01-ipc-protocol.md), and this script - like
-	# pyren-check itself - never probes it, same as it already leaves out
-	# overclock and hotkey.
-	printf '    "controls": {"fanMode": %s, "fanSpeed": %s, "powerMode": %s, "lightbar": %s, "gpuMux": false}\n  },\n' \
+	# gpuMux and networkQos are always false here: GPU MUX switching and
+	# network QoS are pyren-daemon's own modules (see
+	# docs/01-ipc-protocol.md), and this script - like pyren-check itself -
+	# never probes them, same as it already leaves out overclock and hotkey.
+	printf '    "controls": {"fanMode": %s, "fanSpeed": %s, "powerMode": %s, "lightbar": %s, "gpuMux": false, "networkQos": false}\n  },\n' \
 		"$(json_bool "$CTRL_FAN_MODE")" "$(json_bool "$CTRL_FAN_SPEED")" \
 		"$(json_bool "$CTRL_POWER_MODE")" "$(json_bool "$CTRL_LIGHTBAR")"
 

@@ -111,6 +111,14 @@ GPU
                                switch, and log out or reboot for it to
                                take effect - the firmware does not do that
                                itself
+  network get                   the default-route interface, this daemon's
+                               remembered mode, and the qdisc actually
+                               active right now
+  network set <off|auto>       off deletes the root qdisc; auto hands the
+                               interface cake, or fq_codel on a kernel with
+                               no sch_cake - system-wide, not per-app (see
+                               dev/TODO.md §2.1 for why there is no
+                               per-process priority here)
   oc get                       what can be tuned on each GPU, what is set,
                                and - where nothing can be - why not
   oc probe [--write]           ask the machine again. --write finds out
@@ -405,6 +413,13 @@ fn run(command: &args::Command) -> Run {
         ["gpu", "get"] => show(command, client::call("gpu", "getStatus", Value::Null)?, print_gpu),
         ["gpu", "set", mode] => {
             show(command, client::call("gpu", "setMode", json!({ "mode": mode }))?, print_gpu)
+        }
+
+        ["network", "get"] => {
+            show(command, client::call("network", "getStatus", Value::Null)?, print_network)
+        }
+        ["network", "set", mode] => {
+            show(command, client::call("network", "setMode", json!({ "mode": mode }))?, print_network)
         }
 
         ["hotkey", "get"] => {
@@ -1301,6 +1316,19 @@ fn print_gpu(status: &Value) {
     row(
         "mode",
         status.get("mode").and_then(Value::as_str).unwrap_or("unknown - firmware answered a mode this build does not recognise"),
+    );
+}
+
+fn print_network(status: &Value) {
+    if status.get("supported").and_then(Value::as_bool) != Some(true) {
+        println!("  no default-route interface found (or 'tc' is not on PATH)");
+        return;
+    }
+    row("interface", text(status, "interface"));
+    row("mode", text(status, "mode"));
+    row(
+        "active qdisc",
+        status.get("activeQdisc").and_then(Value::as_str).unwrap_or("unknown"),
     );
 }
 

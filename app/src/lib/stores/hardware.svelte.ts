@@ -17,6 +17,7 @@ import {
   type AutoConfig,
   type FanReferenceSensor,
   type FanStatus,
+  type NetworkStatus,
   type PowerConfigReply,
   type PowerState,
 } from "$lib/api/daemon";
@@ -38,7 +39,7 @@ function percentToPwm(percent: number): number {
 export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
 export type FanMode = "auto" | "max" | "manual" | "curve";
 export type GpuMode = "integrated" | "hybrid" | "discrete";
-export type NetworkMode = "off" | "auto" | "custom";
+export type NetworkMode = "off" | "auto";
 
 /** One point of the temperature -> fan speed curve. */
 export type CurvePoint = { tempC: number; percent: number };
@@ -127,6 +128,9 @@ class HardwareStore {
   powerReadAt = $state(0);
   /** Live fan state from the daemon; null while it is unreachable. */
   fan = $state<FanStatus | null>(null);
+  /** Live network-QoS state from the daemon; null while it is unreachable
+   *  or `network` has no default-route interface to act on. */
+  network = $state<NetworkStatus | null>(null);
 
   private disk = new DiskBacked<HardwareState>("ui", defaults);
   private fanPushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -189,6 +193,17 @@ class HardwareStore {
       }
     } catch {
       // No GPU MUX switch reachable: leave the persisted choice alone.
+    }
+
+    // Same pattern as the GPU MUX read above: a daemon with no default
+    // route to act on, or one too old to have this module, must not stop
+    // the power read from taking effect.
+    try {
+      const network = await daemon.networkStatus();
+      this.network = network;
+      this.state = { ...this.state, networkMode: network.mode };
+    } catch {
+      this.network = null;
     }
   }
 
@@ -373,6 +388,23 @@ class HardwareStore {
     this.set("gpuMode", mode);
     try {
       await daemon.setGpuMode(mode);
+      this.lastError = null;
+    } catch (e) {
+      this.lastError = errorText(e);
+    }
+  }
+
+  /**
+   * Switches network smart queuing on or off. Set locally first, same as
+   * `setGpuMode` - a refusal (no `tc`, no default-route interface, or a
+   * kernel with neither `cake` nor `fq_codel`) surfaces through
+   * `lastError` rather than reverting the toggle: `syncFromDaemon` is what
+   * corrects it against reality on the next read.
+   */
+  async setNetworkMode(mode: NetworkMode) {
+    this.set("networkMode", mode);
+    try {
+      this.network = await daemon.setNetworkMode(mode);
       this.lastError = null;
     } catch (e) {
       this.lastError = errorText(e);

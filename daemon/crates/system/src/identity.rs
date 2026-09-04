@@ -36,11 +36,19 @@ pub struct Controls {
     /// `/sys/devices/platform/hp-wmi/gpu_mux_mode` answered a read - the
     /// patched driver's own GPU MUX switch, not `supergfxctl`.
     pub gpu_mux: bool,
+    /// `tc` is on `PATH` and a default-route interface was found - the
+    /// network module can hand it a smart-queuing qdisc.
+    pub network_qos: bool,
 }
 
 impl Controls {
     fn any(&self) -> bool {
-        self.fan_mode || self.fan_speed || self.power_mode || self.lightbar || self.gpu_mux
+        self.fan_mode
+            || self.fan_speed
+            || self.power_mode
+            || self.lightbar
+            || self.gpu_mux
+            || self.network_qos
     }
 }
 
@@ -411,7 +419,14 @@ mod tests {
     #[test]
     fn a_controllable_machine_lists_what_works() {
         let controls =
-            Controls { fan_mode: true, fan_speed: true, power_mode: true, lightbar: false, gpu_mux: false };
+            Controls {
+                fan_mode: true,
+                fan_speed: true,
+                power_mode: true,
+                lightbar: false,
+                gpu_mux: false,
+                network_qos: false,
+            };
         let (compat, reason) = classify(controls, true);
 
         assert_eq!(compat, Compatibility::Controllable);

@@ -275,6 +275,18 @@ fn gpu_set_mode(mode: String) -> Result<Value, String> {
     call_daemon("gpu", "setMode", json!({ "mode": mode }))
 }
 
+/// System-wide smart queuing only - see `docs/01-ipc-protocol.md`
+/// §"`network` module" for why there is no per-application field here.
+#[tauri::command]
+fn network_get_status() -> Result<Value, String> {
+    call_daemon("network", "getStatus", Value::Null)
+}
+
+#[tauri::command]
+fn network_set_mode(mode: String) -> Result<Value, String> {
+    call_daemon("network", "setMode", json!({ "mode": mode }))
+}
+
 /// A **fresh** probe, unlike the one in `getStatus`. This is what makes
 /// "install acpi_call, then ask again" a complete workflow without
 /// restarting the daemon, so the page calls it after an install.
@@ -751,6 +763,8 @@ pub fn run() {
             rgb_get_status,
             gpu_get_status,
             gpu_set_mode,
+            network_get_status,
+            network_set_mode,
             rgb_get_capabilities,
             rgb_set_static,
             rgb_set_zones,
