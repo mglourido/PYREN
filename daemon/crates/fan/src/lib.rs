@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{log_info, log_warn};
 use pyren_core::{acpi, msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -261,12 +262,12 @@ impl FanModule {
         let loaded = store.load::<FanConfig>("fan");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                println!("pyren-daemon: fan config loaded from {}", store.path_for("fan").display());
+                log_info!("fan config loaded from {}", store.path_for("fan").display());
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
-                eprintln!(
-                    "pyren-daemon: fan config was unreadable ({reason}); using defaults{}",
+                log_warn!(
+                    "fan config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -274,8 +275,8 @@ impl FanModule {
                 );
             }
             LoadOutcome::TooNew { found } => {
-                eprintln!(
-                    "pyren-daemon: fan config is version {found}, newer than this build \
+                log_warn!(
+                    "fan config is version {found}, newer than this build \
                      understands; using defaults and leaving the file alone"
                 );
             }
@@ -344,8 +345,8 @@ impl FanModule {
             return;
         }
 
-        println!(
-            "pyren-daemon: the fans are spinning in reverse and no cycle was started here; \
+        log_info!(
+            "the fans are spinning in reverse and no cycle was started here; \
              ending it and handing them back"
         );
 
@@ -362,7 +363,7 @@ impl FanModule {
             let generation = cleaner::probe().generation.unwrap_or(cleaner::Generation::Modern);
             let result = cleaner::emergency_stop(generation);
             if let Err(e) = &result {
-                eprintln!("pyren-daemon: could not end the interrupted cleaning cycle: {e}");
+                log_warn!("could not end the interrupted cleaning cycle: {e}");
             }
             module.finish_cycle(result);
         });
@@ -1227,7 +1228,7 @@ fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("fan", &state.config) {
         Ok(()) => state.last_save_error = None,
         Err(e) => {
-            eprintln!("pyren-daemon: could not save fan config: {e}");
+            log_warn!("could not save fan config: {e}");
             state.last_save_error = Some(e.to_string());
         }
     }

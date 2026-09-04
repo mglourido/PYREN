@@ -49,6 +49,7 @@
 use std::sync::{Arc, Mutex};
 
 use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{log_info, log_warn};
 use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -153,12 +154,12 @@ impl RgbModule {
         let loaded = store.load::<RgbConfig>("rgb");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                println!("pyren-daemon: rgb config loaded from {}", store.path_for("rgb").display());
+                log_info!("rgb config loaded from {}", store.path_for("rgb").display());
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
-                eprintln!(
-                    "pyren-daemon: rgb config was unreadable ({reason}); using defaults{}",
+                log_warn!(
+                    "rgb config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -166,8 +167,8 @@ impl RgbModule {
                 );
             }
             LoadOutcome::TooNew { found } => {
-                eprintln!(
-                    "pyren-daemon: rgb config is version {found}, newer than this build \
+                log_warn!(
+                    "rgb config is version {found}, newer than this build \
                      understands; using defaults and leaving the file alone"
                 );
             }
@@ -198,12 +199,12 @@ impl RgbModule {
             match chosen {
                 Some(dialect) => {
                     if let Err(e) = dialect.write_colors(&zones, brightness) {
-                        eprintln!("pyren-daemon: could not restore the lights: {e}");
+                        log_warn!("could not restore the lights: {e}");
                         lock(&module.state).last_error = Some(dialect_msg(&e));
                     }
                 }
-                None => eprintln!(
-                    "pyren-daemon: not restoring the lights: no lighting dialect answered"
+                None => log_warn!(
+                    "not restoring the lights: no lighting dialect answered"
                 ),
             }
         }
@@ -509,7 +510,7 @@ fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("rgb", &state.config) {
         Ok(()) => state.last_save_error = None,
         Err(e) => {
-            eprintln!("pyren-daemon: could not save rgb config: {e}");
+            log_warn!("could not save rgb config: {e}");
             state.last_save_error = Some(e.to_string());
         }
     }

@@ -49,6 +49,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{log_info, log_warn};
 use pyren_core::{msg, ErrorKind, EventBus, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -231,12 +232,12 @@ impl PowerModule {
         let loaded = store.load::<PowerConfig>("power");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                println!("pyren-daemon: power config loaded from {}", store.path_for("power").display());
+                log_info!("power config loaded from {}", store.path_for("power").display());
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
-                eprintln!(
-                    "pyren-daemon: power config was unreadable ({reason}); using defaults{}",
+                log_warn!(
+                    "power config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -244,8 +245,8 @@ impl PowerModule {
                 );
             }
             LoadOutcome::TooNew { found } => {
-                eprintln!(
-                    "pyren-daemon: power config is version {found}, newer than this \
+                log_warn!(
+                    "power config is version {found}, newer than this \
                      build understands; using defaults and leaving the file alone"
                 );
             }
@@ -266,12 +267,12 @@ impl PowerModule {
             if let Some(saved) = config.mode {
                 let report = apply_profile(saved, &config, &limit_paths);
                 if report.is_empty() {
-                    eprintln!(
-                        "pyren-daemon: could not restore power mode {saved:?}: {}",
+                    log_warn!(
+                        "could not restore power mode {saved:?}: {}",
                         report.failed.join("; ")
                     );
                 } else {
-                    println!("pyren-daemon: restored power mode {saved:?}");
+                    log_info!("restored power mode {saved:?}");
                     mode = saved;
                 }
             }
@@ -645,7 +646,7 @@ fn spawn_supervisor(
             let mut guard = lock(&state);
             if !report.is_empty() {
                 guard.mode = mode;
-                println!("pyren-daemon: power auto-switch -> {mode:?} ({})", decision.reason);
+                log_info!("power auto-switch -> {mode:?} ({})", decision.reason);
                 guard.last_auto_switch = Some(decision.reason);
                 // Only worth a disk write when the mode is meant to survive
                 // a reboot; otherwise the supervisor would rewrite the file
@@ -666,8 +667,8 @@ fn spawn_supervisor(
                     { "mode" => format!("{mode:?}"), "failed" => report.failed.join("; ") },
                     "{mode} failed: {failed}"
                 ));
-                eprintln!(
-                    "pyren-daemon: power auto-switch to {mode:?} failed: {}",
+                log_warn!(
+                    "power auto-switch to {mode:?} failed: {}",
                     report.failed.join("; ")
                 );
             }
@@ -745,7 +746,7 @@ fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("power", &state.config) {
         Ok(()) => state.last_save_error = None,
         Err(e) => {
-            eprintln!("pyren-daemon: could not save power config: {e}");
+            log_warn!("could not save power config: {e}");
             state.last_save_error = Some(e.to_string());
         }
     }

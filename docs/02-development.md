@@ -76,6 +76,16 @@ fallback — see `daemon/daemon/src/main.rs`). Set `PYREN_SOCKET` to
 override. Leave this running in its own terminal; the app can't do
 anything useful without it.
 
+`PYREN_LOG` sets how much it says — `off`, `error`, `warn`, `info` (the
+default) or `debug`. It filters *logging* only: the startup report and
+`--check` are output somebody asked for, and are printed whatever the
+level says, so `PYREN_LOG=warn` under systemd leaves the journal with the
+report and the things that went wrong.
+
+```sh
+PYREN_LOG=debug cargo run -p pyren-daemon
+```
+
 The socket is created `0660`. Run unprivileged, that means "you and nobody
 else", which is what you want for development — the app runs as the same
 user. Run it under `sudo` and the daemon will say

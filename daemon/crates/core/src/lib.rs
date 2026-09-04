@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 pub mod acpi;
 pub mod client;
 pub mod events;
+pub mod log;
 pub mod msg;
 pub mod sensors;
 mod socket;

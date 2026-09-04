@@ -13,6 +13,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::log_warn;
 use crate::{Registry, Request, Response};
 
 /// Group whose members may talk to the daemon. Overridable with
@@ -162,7 +163,7 @@ pub fn serve_unix_socket(
         let registry = Arc::clone(&registry);
         std::thread::spawn(move || {
             if let Err(e) = handle_connection(stream, &registry) {
-                eprintln!("pyren-daemon: connection error: {e}");
+                log_warn!("connection error: {e}");
             }
         });
     }
