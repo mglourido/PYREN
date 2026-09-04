@@ -596,6 +596,8 @@ mod tests {
 
     #[test]
     fn capabilities_report_both_paths_whether_or_not_either_is_here() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let reply = module().call("getCapabilities", Value::Null).expect("probing cannot fail");
         assert!(reply.get("perKey").is_some(), "both paths are reported, not just the driven one");
         assert!(reply.get("lighting").is_some());
@@ -610,6 +612,8 @@ mod tests {
     /// `/proc/acpi/call`, so that a typo cannot become a hardware write.
     #[test]
     fn malformed_colours_are_refused_as_invalid_params() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let module = module();
         for (method, params) in [
             ("setZones", json!({})),
@@ -631,6 +635,8 @@ mod tests {
 
     #[test]
     fn an_unknown_method_is_its_own_kind() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let error = module().call("rainbow", Value::Null).unwrap_err();
         assert_eq!(error.kind(), pyren_core::ErrorKind::UnknownMethod);
     }
@@ -664,6 +670,8 @@ mod tests {
     /// describe the same machine.
     #[test]
     fn a_status_read_does_not_describe_the_machine_as_it_was_at_startup() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let module = module();
         let fresh = module.call("getCapabilities", Value::Null).expect("probing cannot fail");
         let status = module.call("getStatus", Value::Null).expect("status cannot fail");
@@ -674,6 +682,8 @@ mod tests {
     /// the fan module follows about the fans.
     #[test]
     fn a_fresh_module_does_not_claim_to_own_the_lights() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let status = module().status();
         assert_eq!(status["owned"], false);
         assert_eq!(status["restoreOnStart"], false);

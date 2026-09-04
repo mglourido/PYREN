@@ -1377,20 +1377,43 @@ pub(crate) mod testenv {
         // needs the redirection.
         _guard: MutexGuard<'static, ()>,
         previous: Option<std::ffi::OsString>,
+        redirected: bool,
     }
 
     /// Points `acpi_call` at a path that cannot exist, for as long as the
     /// returned guard lives. `dir` is the test's own temp directory, so
     /// two tests never share the name.
     pub(crate) fn without_acpi_call(dir: &Path) -> NoAcpiCall {
-        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = std::env::var_os("PYREN_ACPI_CALL");
+        let mut env = real();
         std::env::set_var("PYREN_ACPI_CALL", dir.join("definitely-not-here"));
-        NoAcpiCall { _guard: guard, previous }
+        env.redirected = true;
+        env
+    }
+
+    /// Takes the lock without changing anything.
+    ///
+    /// Every test that *reads* the interface needs this, not only the ones
+    /// that redirect it. Two reasons, and the second is the one that bit:
+    /// a test reading the real machine while another has the variable
+    /// pointed at a missing file gets the wrong answer, and `setenv`
+    /// racing a `getenv` on another thread is a data race in the C library
+    /// underneath - which is why setting an environment variable is
+    /// `unsafe` in the 2024 edition. Serialising both sides is what makes
+    /// the redirection sound rather than usually-fine.
+    pub(crate) fn real() -> NoAcpiCall {
+        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        NoAcpiCall {
+            _guard: guard,
+            previous: std::env::var_os("PYREN_ACPI_CALL"),
+            redirected: false,
+        }
     }
 
     impl Drop for NoAcpiCall {
         fn drop(&mut self) {
+            if !self.redirected {
+                return;
+            }
             match self.previous.take() {
                 Some(previous) => std::env::set_var("PYREN_ACPI_CALL", previous),
                 None => std::env::remove_var("PYREN_ACPI_CALL"),
@@ -1482,6 +1505,8 @@ mod tests {
 
     #[test]
     fn setting_the_curve_can_change_the_sensor_and_refuses_a_word_it_does_not_know() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let module = module("sensor");
         let curve = json!([{ "tempC": 40.0, "percent": 20.0 }]);
 
@@ -1565,6 +1590,8 @@ mod tests {
     /// the config file waiting for the next start.
     #[test]
     fn a_stored_cleaner_duration_is_clamped_on_the_way_in() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let module = module("config");
         let status = module
             .call("setCleanerConfig", json!({ "seconds": 6000, "speed": 99 }))
@@ -1587,6 +1614,8 @@ mod tests {
 
     #[test]
     fn a_fan_status_says_whether_the_fans_are_the_cleaners() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let module = module("owns");
         assert_eq!(module.status()["cleaning"], json!(false));
         lock(&module.state).cleaning = Cleaning::Running(cleaner::Cycle {
