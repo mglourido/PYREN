@@ -10,13 +10,20 @@
 //! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete" }` | the new status |
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `fan.calibrate` | `{ "seconds"?: 10-120 }` | what full speed measured, see [`calibration`] |
+//! | `fan.cleanerStatus` | `{ "refresh"?: bool }` | what the fan cleaner can do here, see [`cleaner`] |
+//! | `fan.startCleaning` | `{ "speed"?: 10-39, "seconds"?: 5-60, "force"?: bool }` | the cleaner status |
+//! | `fan.stopCleaning` | none | the cleaner status |
 //!
 //! What a given machine will accept is not the same everywhere, and the
 //! difference is not cosmetic - see [`control`] for the `pwm1` /
 //! `pwm1_enable` split. `getStatus` reports it as `capabilities` so the UI
 //! can hide a slider that would do nothing.
 //!
-//! Not ported yet: the fan cleaner.
+//! The fan cleaner ([`cleaner`]) lives here rather than in a module of its
+//! own for one reason: it and the control loop drive the same fans. A
+//! cycle has to be able to stop the loop writing `pwm1` underneath it, and
+//! putting the two in different modules would mean one calling the other -
+//! which this project's modules never do.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,11 +31,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
+use pyren_core::{acpi, msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod calibration;
+pub mod cleaner;
 // Private because its functions take the crate-private `FanPaths`; the
 // types callers need are re-exported below.
 mod control;
@@ -36,6 +44,7 @@ pub mod curve;
 pub mod diagnostics;
 
 pub use calibration::Calibration;
+pub use cleaner::Cycle;
 pub use control::{Capabilities, FanMode};
 pub use curve::{CurvePoint, Interpolation};
 
@@ -88,6 +97,13 @@ pub struct FanConfig {
     /// they have asked for anything, is not a decision this should make on
     /// its own.
     pub restore_mode_on_start: bool,
+    /// How long a fan-cleaning cycle runs, in seconds. Remembered because
+    /// it is a preference, not a parameter of one run.
+    pub cleaner_duration_secs: u64,
+    /// The reverse speed to command, in hundreds of RPM. `None` - the
+    /// default - uses whatever the firmware has configured for itself,
+    /// which is the number the vendor's own tool would send.
+    pub cleaner_speed: Option<u8>,
 }
 
 impl Default for FanConfig {
@@ -102,6 +118,44 @@ impl Default for FanConfig {
             fan1_max_rpm: None,
             fan2_max_rpm: None,
             restore_mode_on_start: false,
+            cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
+            cleaner_speed: None,
+        }
+    }
+}
+
+/// Where a fan-cleaning cycle is, from this module's point of view.
+///
+/// A bool would not do: **the two transitional states are the ones that
+/// matter.** Starting means the blades are being braked and nothing is
+/// reversed yet; stopping means the ramp down is underway and the fans are
+/// still backwards. A caller that reads either as "idle" would offer a
+/// second cycle in the middle of the first, and the control loop would
+/// take the fans back mid-ramp.
+#[derive(Debug, Clone, Default)]
+enum Cleaning {
+    #[default]
+    Idle,
+    Starting,
+    Running(cleaner::Cycle),
+    Stopping,
+}
+
+impl Cleaning {
+    fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    /// Whether the fans are the cleaner's rather than the control loop's.
+    /// True through both transitions, which is the point.
+    fn holds_the_fans(&self) -> bool {
+        !self.is_idle()
+    }
+
+    fn cycle(&self) -> Option<&cleaner::Cycle> {
+        match self {
+            Self::Running(cycle) => Some(cycle),
+            _ => None,
         }
     }
 }
@@ -126,6 +180,17 @@ struct State {
     /// them back mid-measurement - it would drop them out of max and the
     /// run would measure the ramp back down.
     calibrating: bool,
+    /// Where a fan-cleaning cycle is. Like `calibrating`, this stops the
+    /// control loop writing - see [`Cleaning`].
+    cleaning: Cleaning,
+    /// The last answer the firmware gave about the cleaner. Cached because
+    /// asking costs two ACPI calls and the answer is a property of the
+    /// machine, not of the moment; `cleanerStatus { refresh: true }` and
+    /// every `startCleaning` re-ask.
+    cleaner_probe: Option<cleaner::Probe>,
+    /// Why the last cycle failed, kept for the status read - a start that
+    /// failed in a background ramp has nobody left to return an error to.
+    last_cleaner_error: Option<Msg>,
     last_target_pwm: Option<u8>,
     last_control_error: Option<Msg>,
     last_save_error: Option<String>,
@@ -195,16 +260,68 @@ impl FanModule {
             owned: restoring,
             hysteresis: curve::Hysteresis::new(),
             calibrating: false,
+            cleaning: Cleaning::Idle,
+            cleaner_probe: None,
+            last_cleaner_error: None,
             last_target_pwm: None,
             last_control_error: None,
             last_save_error: None,
         }));
 
         let module = Self { paths, caps, store, state };
+        module.recover_interrupted_cycle();
         if caps.switch_mode {
             module.spawn_control_loop();
         }
         module
+    }
+
+    /// Fans found spinning **backwards** at startup, by a daemon that did
+    /// not put them there.
+    ///
+    /// This is the one place the module touches the hardware without being
+    /// asked, and it is a deliberate exception to "the daemon does not
+    /// touch the fans until asked" (`dev/TODO.md`). The rule is about not
+    /// imposing a remembered setting on a machine at boot. Reverse spin is
+    /// not a setting: it is cooling switched off, by a cycle that was
+    /// supposed to end thirty seconds after it began and whose daemon died
+    /// first. Leaving it for whenever somebody next opens the app is not a
+    /// plan, it is a thermal event with a UI.
+    ///
+    /// Narrow on purpose. It runs only when the tachometers themselves say
+    /// reverse - the driver's own bit, not a config file this process
+    /// wrote - and only when `acpi_call` is *already* loaded, because
+    /// loading a kernel module at startup to undo something that might not
+    /// be ours is exactly the change this project does not make.
+    fn recover_interrupted_cycle(&self) {
+        let (_, reversed) =
+            read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
+        if !reversed || !acpi::is_loaded() {
+            return;
+        }
+
+        println!(
+            "pyren-daemon: the fans are spinning in reverse and no cycle was started here; \
+             ending it and handing them back"
+        );
+
+        // On a thread: the ramp down takes seconds, and nothing about
+        // serving the socket should wait for it.
+        let module = FanModule {
+            paths: self.paths.clone(),
+            caps: self.caps,
+            store: self.store.clone(),
+            state: Arc::clone(&self.state),
+        };
+        std::thread::spawn(move || {
+            lock(&module.state).cleaning = Cleaning::Stopping;
+            let generation = cleaner::probe().generation.unwrap_or(cleaner::Generation::Modern);
+            let result = cleaner::emergency_stop(generation);
+            if let Err(e) = &result {
+                eprintln!("pyren-daemon: could not end the interrupted cleaning cycle: {e}");
+            }
+            module.finish_cycle(result);
+        });
     }
 
     /// A module for tools that only want to *look*: no config is read or
@@ -226,6 +343,9 @@ impl FanModule {
                 owned: false,
                 hysteresis: curve::Hysteresis::new(),
                 calibrating: false,
+                cleaning: Cleaning::Idle,
+                cleaner_probe: None,
+                last_cleaner_error: None,
                 last_target_pwm: None,
                 last_control_error: None,
                 last_save_error: None,
@@ -272,6 +392,9 @@ impl FanModule {
             "fan1MaxRpm": state.config.fan1_max_rpm,
             "fan2MaxRpm": state.config.fan2_max_rpm,
             "calibrating": state.calibrating,
+            // Enough for a caller that only wants to know the fans are not
+            // its to command; `cleanerStatus` is the detail.
+            "cleaning": state.cleaning.holds_the_fans(),
             "error": state.last_control_error,
             "saved": state.last_save_error.is_none(),
             "saveError": state.last_save_error,
@@ -428,6 +551,272 @@ impl FanModule {
         Ok(self.status())
     }
 
+    // --- the fan cleaner -----------------------------------------------
+
+    /// What the cleaner can do here, and what it is doing right now.
+    ///
+    /// `refresh` re-asks the firmware; without it a cached answer is
+    /// reused, because two ACPI calls per poll would put the app's status
+    /// loop on the same file the lightbar writes through.
+    ///
+    /// Reading the status also **enforces the timeout**. That is not a
+    /// side effect worth hiding: a cycle whose watchdog thread died would
+    /// otherwise run until the daemon did, and this is the cheapest place
+    /// left to notice.
+    fn cleaner_status(&self, refresh: bool) -> Value {
+        self.stop_if_expired();
+
+        // Probed outside the lock, always: it is file I/O against an
+        // interface the lightbar also writes, and holding the state lock
+        // across it would block `getStatus` behind it.
+        let need_probe = refresh || lock(&self.state).cleaner_probe.is_none();
+        let probe = if need_probe {
+            let probe = cleaner::probe();
+            lock(&self.state).cleaner_probe = Some(probe.clone());
+            probe
+        } else {
+            // Cloned out of the guard first, so the fallback - which does
+            // file I/O - cannot end up running while the lock is held.
+            let cached = lock(&self.state).cleaner_probe.clone();
+            match cached {
+                Some(probe) => probe,
+                // Unreachable while `need_probe` is what decides this, and
+                // cheap enough not to be worth an unwrap that could.
+                None => cleaner::probe(),
+            }
+        };
+
+        let state = lock(&self.state);
+        let cycle = state.cleaning.cycle();
+        let (_, is_reverse) =
+            read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
+
+        json!({
+            "supported": probe.supported,
+            "generation": probe.generation.map(cleaner::Generation::as_str),
+            "capabilities": probe.capabilities,
+            "answered": probe.answered,
+            "unreachable": probe.unreachable,
+            "acpiCallLoaded": probe.acpi_call_loaded,
+            "acpiCallInstalled": probe.acpi_call_installed,
+            "detail": probe.detail,
+            "running": cycle.is_some(),
+            // True through both transitions. A client shows a spinner and
+            // offers neither button while this is set.
+            "transitioning": matches!(state.cleaning, Cleaning::Starting | Cleaning::Stopping),
+            "secondsRemaining": cycle.map(|c| c.remaining().as_secs()),
+            "secondsTotal": cycle.map(|c| c.duration.as_secs()),
+            "speed": cycle.map(|c| c.cpu_speed),
+            // What the *hardware* says, which is the one reading that does
+            // not depend on this daemon having been the one to start it.
+            "fansReversed": is_reverse,
+            "durationSecs": state.config.cleaner_duration_secs,
+            "configuredSpeed": state.config.cleaner_speed,
+            "maxStartTempC": cleaner::MAX_START_TEMP_C,
+            "cpuTempC": self.paths.cpu_temp.as_deref().and_then(read_millideg_c),
+            "error": state.last_cleaner_error,
+        })
+    }
+
+    /// Starts a cycle and arms the watchdog that ends it.
+    ///
+    /// Blocks only for the braking step (a few seconds); the cycle itself
+    /// runs in the background, so the caller gets a status back with a
+    /// countdown rather than a connection held open for half a minute.
+    fn start_cleaning(&self, speed: Option<u8>, seconds: Option<u64>, force: bool) -> ModuleResult {
+        {
+            let mut state = lock(&self.state);
+            if !state.cleaning.is_idle() {
+                return Err(cleaner_error(cleaner::CleanerError::Busy));
+            }
+            if state.calibrating {
+                return Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!(
+                        "fan.err.calibrating",
+                        "a calibration run is already in progress"
+                    ),
+                ));
+            }
+            // Claimed before the lock is dropped, so a second caller in
+            // the braking window is refused rather than joining in.
+            state.cleaning = Cleaning::Starting;
+            state.last_cleaner_error = None;
+        }
+
+        let outcome = self.begin_cycle(speed, seconds, force);
+
+        match outcome {
+            Ok(cycle) => {
+                let id = cycle.id;
+                let wait = cycle.remaining();
+                let generation = cycle.generation;
+                lock(&self.state).cleaning = Cleaning::Running(cycle);
+                self.arm_watchdog(id, wait, generation);
+                Ok(self.cleaner_status(false))
+            }
+            Err(e) => {
+                let mut state = lock(&self.state);
+                state.cleaning = Cleaning::Idle;
+                state.last_cleaner_error = Some(e.to_msg());
+                drop(state);
+                Err(cleaner_error(e))
+            }
+        }
+    }
+
+    /// The part that talks to the firmware, with the state already claimed.
+    fn begin_cycle(
+        &self,
+        speed: Option<u8>,
+        seconds: Option<u64>,
+        force: bool,
+    ) -> Result<cleaner::Cycle, cleaner::CleanerError> {
+        let mut probe = cleaner::probe();
+
+        if probe.unreachable.is_some() {
+            // The interface could not be written. `ensure_loaded` both
+            // tries the `modprobe` - which the probe deliberately does not,
+            // being a question - and names which of the two reasons it was:
+            // "install a package" or "run as root" are different errors
+            // with different fixes.
+            acpi::ensure_loaded()?;
+            // Loading it changes the answer, so the answer is asked for
+            // again rather than the stale "could not ask" being read as
+            // "this machine cannot".
+            probe = cleaner::probe();
+        }
+        lock(&self.state).cleaner_probe = Some(probe.clone());
+        // `force` exists because none of the capability decoding in
+        // `cleaner` has been confirmed against real firmware: a machine
+        // that has the feature and answers a query this build reads wrongly
+        // would otherwise have no way to try it. It skips the refusal, not
+        // the temperature guard.
+        if !probe.supported && !force {
+            return Err(cleaner::CleanerError::NotCapable);
+        }
+
+        let (duration, speed) = {
+            let state = lock(&self.state);
+            let secs = seconds.unwrap_or(state.config.cleaner_duration_secs);
+            (Duration::from_secs(secs), speed.or(state.config.cleaner_speed))
+        };
+
+        let request = cleaner::Request {
+            speed,
+            duration,
+            temp_c: self.paths.cpu_temp.as_deref().and_then(read_millideg_c),
+        };
+
+        let fan1 = self.paths.fan1_input.clone();
+        let fan2 = self.paths.fan2_input.clone();
+        cleaner::start(&probe, &request, || {
+            let (rpm1, _) = parse_hwmon_rpm(read_raw_rpm(fan1.as_deref()));
+            let (rpm2, _) = parse_hwmon_rpm(read_raw_rpm(fan2.as_deref()));
+            (rpm1, rpm2)
+        })
+    }
+
+    /// Ends the cycle now, ramps the fans back down out of reverse and
+    /// puts the mode that was in force back.
+    ///
+    /// Idempotent: stopping when nothing is running is not an error, it is
+    /// the state the caller asked for. That matters because the button
+    /// that calls this is the one somebody reaches for when they are not
+    /// sure what is happening.
+    fn stop_cleaning(&self) -> ModuleResult {
+        // The decision is made under the lock and acted on outside it:
+        // the ramp down takes seconds, and holding the state lock across
+        // it would block `getStatus` for the whole cycle.
+        let generation = {
+            let mut state = lock(&self.state);
+            match std::mem::take(&mut state.cleaning) {
+                Cleaning::Running(cycle) => {
+                    state.cleaning = Cleaning::Stopping;
+                    Some(cycle.generation)
+                }
+                // Somebody else owns the sequence. Putting a second ramp
+                // down the same ACPI file would interleave two sets of
+                // speed commands.
+                transitional @ (Cleaning::Starting | Cleaning::Stopping) => {
+                    state.cleaning = transitional;
+                    return Err(cleaner_error(cleaner::CleanerError::Busy));
+                }
+                Cleaning::Idle => None,
+            }
+        };
+
+        if let Some(generation) = generation {
+            let result = cleaner::stop(generation);
+            self.finish_cycle(result);
+        }
+        Ok(self.cleaner_status(false))
+    }
+
+    /// Puts the module back to idle after a stop, whichever way it went,
+    /// and hands the fans back to whatever mode was in force.
+    fn finish_cycle(&self, result: Result<(), cleaner::CleanerError>) {
+        {
+            let mut state = lock(&self.state);
+            state.cleaning = Cleaning::Idle;
+            state.last_cleaner_error = result.as_ref().err().map(cleaner::CleanerError::to_msg);
+            // The fans were moved out from under the hysteresis by
+            // something that does not speak PWM at all, so what it last
+            // wrote says nothing about where they are.
+            state.hysteresis.reset();
+        }
+        // Re-asserts the configured mode now rather than up to a TICK
+        // later. Only does anything when this daemon owns the fans.
+        let _ = self.tick_once();
+    }
+
+    /// The timer that ends a cycle. One thread per cycle, tagged with its
+    /// id so a watchdog left over from a cycle somebody stopped by hand
+    /// cannot end the next one.
+    fn arm_watchdog(&self, id: u64, wait: Duration, generation: cleaner::Generation) {
+        let state = Arc::clone(&self.state);
+        let paths = self.paths.clone();
+        let caps = self.caps;
+        let store = self.store.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(wait);
+
+            {
+                let mut guard = lock(&state);
+                match guard.cleaning.cycle() {
+                    Some(cycle) if cycle.id == id => guard.cleaning = Cleaning::Stopping,
+                    // Already stopped, or this is a later cycle. Either
+                    // way it is not ours to end.
+                    _ => return,
+                }
+            }
+
+            let result = cleaner::stop(generation);
+            let module = FanModule { paths, caps, store, state };
+            module.finish_cycle(result);
+        });
+    }
+
+    /// The second of the three places the timeout is enforced (see the
+    /// [`cleaner`] module docs). Called from every status read and every
+    /// control tick, so a cycle outlives its watchdog by a tick at most.
+    fn stop_if_expired(&self) {
+        let generation = {
+            let mut state = lock(&self.state);
+            match state.cleaning.cycle() {
+                Some(cycle) if cycle.expired() => {
+                    let generation = cycle.generation;
+                    state.cleaning = Cleaning::Stopping;
+                    generation
+                }
+                _ => return,
+            }
+        };
+        let result = cleaner::stop(generation);
+        self.finish_cycle(result);
+    }
+
     /// One pass of the control loop. Also used by `setMode`/`setCurve` so a
     /// call takes effect immediately rather than up to [`TICK`] later.
     fn tick_once(&self) -> Result<(), ModuleError> {
@@ -439,6 +828,12 @@ impl FanModule {
         let mut state = lock(&self.state);
         if state.calibrating {
             // Somebody else is driving, on purpose. See `State::calibrating`.
+            return Ok(());
+        }
+        if state.cleaning.holds_the_fans() {
+            // A cleaning cycle owns the fans, and it is not driving them
+            // through `pwm1` at all - writing a speed here would fight the
+            // firmware override mid-cycle. See `Cleaning`.
             return Ok(());
         }
         if !state.owned {
@@ -525,6 +920,10 @@ impl FanModule {
         std::thread::spawn(move || {
             let worker = FanModule { paths, caps, store, state };
             loop {
+                // The third enforcement point for a cycle's timeout, so
+                // that a cleaner left running by a lost watchdog is ended
+                // by the loop that is running anyway.
+                worker.stop_if_expired();
                 // A transient sysfs failure must not take the loop down;
                 // the error is already recorded in the state for getStatus.
                 let _ = worker.tick_once();
@@ -621,6 +1020,55 @@ impl Module for FanModule {
                 self.calibrate(seconds)
             }
 
+            "cleanerStatus" => {
+                let refresh = params.get("refresh").and_then(Value::as_bool).unwrap_or(false);
+                Ok(self.cleaner_status(refresh))
+            }
+
+            "startCleaning" => {
+                // Both are optional and both are clamped rather than
+                // refused: a number outside the range is a slider that
+                // went too far, not a caller that misunderstood the API.
+                let speed = params
+                    .get("speed")
+                    .and_then(Value::as_u64)
+                    .map(|v| v.clamp(cleaner::MIN_SPEED as u64, cleaner::MAX_SPEED as u64) as u8);
+                let seconds = params.get("seconds").and_then(Value::as_u64).map(|v| {
+                    v.clamp(cleaner::MIN_DURATION_SECS, cleaner::MAX_DURATION_SECS)
+                });
+                let force = params.get("force").and_then(Value::as_bool).unwrap_or(false);
+                self.start_cleaning(speed, seconds, force)
+            }
+
+            "stopCleaning" => self.stop_cleaning(),
+
+            "setCleanerConfig" => {
+                let mut state = lock(&self.state);
+                if let Some(secs) = params.get("seconds").and_then(Value::as_u64) {
+                    state.config.cleaner_duration_secs =
+                        secs.clamp(cleaner::MIN_DURATION_SECS, cleaner::MAX_DURATION_SECS);
+                }
+                // `null` is a value here, not an omission: it is how a
+                // client goes back to the firmware's own speeds.
+                match params.get("speed") {
+                    None => {}
+                    Some(Value::Null) => state.config.cleaner_speed = None,
+                    Some(v) => {
+                        let speed = v.as_u64().ok_or_else(|| {
+                            ModuleError::InvalidParams(
+                                "params.speed must be a number or null".into(),
+                            )
+                        })?;
+                        state.config.cleaner_speed = Some(
+                            speed.clamp(cleaner::MIN_SPEED as u64, cleaner::MAX_SPEED as u64) as u8,
+                        );
+                    }
+                }
+                persist(&self.store, &mut state);
+                drop(state);
+                Ok(self.cleaner_status(false))
+            }
+
             other => Err(ModuleError::UnknownMethod(other.to_string())),
         }
     }
@@ -638,6 +1086,28 @@ fn control_error(e: control::ControlError) -> ModuleError {
         control::ControlError::Unsupported(_, _) => ErrorKind::NotCapable,
         control::ControlError::PermissionDenied(_, _) => ErrorKind::PermissionDenied,
         control::ControlError::Io(_, _) => ErrorKind::Io,
+    };
+    ModuleError::localised(kind, e.to_msg())
+}
+
+/// Cleaner failures, translated for the socket.
+///
+/// `notCapable` against `failed` is the distinction that matters here, and
+/// it is the one `docs/01-ipc-protocol.md` singles out for `acpi_call`: a
+/// missing kernel module is **not** a verdict on the hardware, so it stays
+/// `failed` (it names a package to install) while a firmware that answered
+/// and said no is `notCapable`.
+fn cleaner_error(e: cleaner::CleanerError) -> ModuleError {
+    use cleaner::CleanerError as E;
+    let kind = match &e {
+        E::Acpi(acpi::AcpiError::PermissionDenied) => ErrorKind::PermissionDenied,
+        E::Acpi(_) => ErrorKind::Failed,
+        E::NotCapable => ErrorKind::NotCapable,
+        E::Busy => ErrorKind::Busy,
+        // Not `invalidParams`: the caller asked for something reasonable
+        // and the machine is in no state for it *right now*.
+        E::TooHot(_) => ErrorKind::Failed,
+        E::Refused(_) => ErrorKind::Failed,
     };
     ModuleError::localised(kind, e.to_msg())
 }
@@ -779,4 +1249,126 @@ fn read_fan_rpm(fan1: Option<&Path>, fan2: Option<&Path>) -> (i64, bool) {
     let (rpm1, rev1) = parse_hwmon_rpm(read_raw_rpm(fan1));
     let (rpm2, rev2) = parse_hwmon_rpm(read_raw_rpm(fan2));
     (rpm1.max(rpm2), rev1 || rev2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A module with no hardware behind it, which is what CI has, and a
+    /// config store in a temp directory - `inspector()` would reach for
+    /// the real one, and a test that saves a setting into the developer's
+    /// home is a test that changes their machine.
+    fn module(tag: &str) -> FanModule {
+        let root = std::env::temp_dir()
+            .join(format!("pyren-fan-cfg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut module = FanModule::inspector();
+        module.store = ConfigStore::at(root);
+        module
+    }
+
+    /// Every one of these has to be answerable without `acpi_call`,
+    /// because that is the machine most people run this on - and a status
+    /// call that failed there would take the whole page down with it.
+    #[test]
+    fn the_cleaner_status_answers_on_a_machine_with_no_acpi_call() {
+        let dir = std::env::temp_dir().join(format!("pyren-fan-cleaner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PYREN_ACPI_CALL", dir.join("nothing-here"));
+
+        let module = module("status");
+        let status = module.cleaner_status(true);
+        assert_eq!(status["supported"], json!(false));
+        assert_eq!(status["running"], json!(false));
+        assert_eq!(status["acpiCallLoaded"], json!(false));
+        assert!(status["unreachable"].is_object(), "it says why, and the sentence is translatable");
+        // Reported even when nothing can be driven: the page shows the
+        // limit next to the temperature, so the two arrive together.
+        assert_eq!(status["maxStartTempC"], json!(cleaner::MAX_START_TEMP_C));
+
+        // Nothing to stop is the state the caller asked for, not an error.
+        assert!(module.stop_cleaning().is_ok());
+
+        std::env::remove_var("PYREN_ACPI_CALL");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The refusal a machine without the kernel module gets. It must not
+    /// be `notCapable`: that would tell someone their laptop cannot do
+    /// this when what it needs is a package.
+    #[test]
+    fn a_missing_acpi_call_is_a_failure_with_a_remedy_not_a_verdict() {
+        let dir = std::env::temp_dir().join(format!("pyren-fan-start-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PYREN_ACPI_CALL", dir.join("nothing-here"));
+
+        let module = module("start");
+        let error = module.start_cleaning(None, None, false).expect_err("nothing to talk to");
+        assert_ne!(
+            error.kind(),
+            ErrorKind::NotCapable,
+            "a package to install is not a verdict on the hardware"
+        );
+        assert!(error.as_msg().contains("acpi_call"), "the message names the module: {}", error.as_msg());
+
+        // A failed start leaves nothing claimed - the next attempt must
+        // not be refused as busy by the one that never began.
+        assert!(lock(&module.state).cleaning.is_idle());
+
+        std::env::remove_var("PYREN_ACPI_CALL");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Both transitional states hold the fans. This is the invariant the
+    /// control loop reads, and getting it wrong means `pwm1` writes
+    /// landing in the middle of a reverse ramp.
+    #[test]
+    fn the_control_loop_stands_off_through_both_transitions() {
+        for state in [Cleaning::Starting, Cleaning::Stopping] {
+            assert!(state.holds_the_fans(), "{state:?} must stop the control loop writing");
+            assert!(state.cycle().is_none(), "{state:?} is not a running cycle");
+        }
+        assert!(!Cleaning::Idle.holds_the_fans());
+    }
+
+    /// The duration is a stored preference, and it is clamped where it is
+    /// stored rather than where it is used - so a bad value cannot sit in
+    /// the config file waiting for the next start.
+    #[test]
+    fn a_stored_cleaner_duration_is_clamped_on_the_way_in() {
+        let module = module("config");
+        let status = module
+            .call("setCleanerConfig", json!({ "seconds": 6000, "speed": 99 }))
+            .expect("setting the config never touches hardware");
+        assert_eq!(status["durationSecs"], json!(cleaner::MAX_DURATION_SECS));
+        assert_eq!(status["configuredSpeed"], json!(cleaner::MAX_SPEED));
+
+        // Null is how a client goes back to the firmware's own speeds,
+        // and it has to be distinguishable from "did not say".
+        let status = module
+            .call("setCleanerConfig", json!({ "speed": Value::Null }))
+            .expect("null is a value here");
+        assert_eq!(status["configuredSpeed"], json!(null));
+        assert_eq!(
+            status["durationSecs"],
+            json!(cleaner::MAX_DURATION_SECS),
+            "an omitted field is left alone rather than reset"
+        );
+    }
+
+    #[test]
+    fn a_fan_status_says_whether_the_fans_are_the_cleaners() {
+        let module = module("owns");
+        assert_eq!(module.status()["cleaning"], json!(false));
+        lock(&module.state).cleaning = Cleaning::Running(cleaner::Cycle {
+            generation: cleaner::Generation::Modern,
+            started: Instant::now(),
+            duration: Duration::from_secs(30),
+            id: 1,
+            cpu_speed: 37,
+            gpu_speed: 39,
+        });
+        assert_eq!(module.status()["cleaning"], json!(true));
+    }
 }

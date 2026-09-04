@@ -131,6 +131,25 @@ is_acpi_pass() {
 	return 1
 }
 
+# An acpi_call reply as one lowercase hex string. Mirrors
+# pyren_core::acpi::parse_bytes: a {0x50, 0x41, ...} list and a bare blob
+# both collapse to the same digits, and a leading "0x" or "b" is dropped
+# once rather than character by character.
+acpi_hex() {
+	printf '%s' "$1" |
+		tr -d '\000{}, \t\n' |
+		tr 'A-F' 'a-f' |
+		sed -e 's/0x//g' -e 's/^b//'
+}
+
+# Byte N (zero-based) of such a string, as a decimal number. Empty when the
+# reply is too short to have one, which every caller checks for.
+hex_byte() {
+	byte="$(printf '%s' "$1" | cut -c "$((${2} * 2 + 1))-$((${2} * 2 + 2))")"
+	[ "${#byte}" -eq 2 ] || return 0
+	printf '%d' "0x${byte}" 2>/dev/null || true
+}
+
 # --- discovery ---------------------------------------------------------
 
 # PYREN_HWMON_DIR points the checks at a fixture, matching the Rust
@@ -367,6 +386,87 @@ else
 	record warn acpi-call "acpi_call module" \
 		"/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it" \
 		"Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call (Fedora), then modprobe acpi_call."
+fi
+
+# The dust-removal fan cleaner. Two capability *queries* - command type 44
+# asks, 46 sets - so this commands nothing; it is the same class of
+# question the lightbar read below puts. Kept in step with
+# pyren_fan::cleaner::probe by daemon/check/tests/parity.rs.
+#
+# ("SECU", command 0x20008, type 44, size 128) + 128 zero bytes, and the
+# 4-byte legacy buffer ("SECU", command 1, type 44, size 4) + 4 zeros.
+CLEANER_MODERN_GET="b53454355080002002c00000080000000$(printf '%0256d' 0)"
+CLEANER_LEGACY_GET="b53454355010000002c00000004000000$(printf '%08d' 0)"
+
+# 1 the firmware answered yes, 0 it was asked and said no, "" never asked.
+CLEANER=""
+CLEANER_DETAIL=""
+if [ -e "$ACPI_CALL" ]; then
+	CLEANER_UNREACHABLE=0
+	CLEANER=0
+
+	# Modern ("CleanCreek"): byte 8 of the data past the 8-byte reply
+	# header is the capability bitmask - bit 0 the CPU fan, bit 1 the GPU
+	# fan, bit 2 a third. So byte 16 of the whole reply.
+	if reply="$(
+		{
+			printf '%s' "\\_SB.WMID.WMAA 0 3 $CLEANER_MODERN_GET" >"$ACPI_CALL" &&
+				tr -d '\000' <"$ACPI_CALL"
+		} 2>/dev/null
+	)"; then
+		hex="$(acpi_hex "$reply")"
+		code="$(hex_byte "$hex" 4)"
+		mask="$(hex_byte "$hex" 16)"
+		if [ -n "$mask" ] && [ "${code:-1}" -eq 0 ] && [ "$mask" -ne 0 ]; then
+			CLEANER=1
+			CLEANER_DETAIL="the firmware answered: reverse spin is available"
+		fi
+	else
+		CLEANER_UNREACHABLE=1
+	fi
+
+	# Legacy: bit 5 of the first data byte, i.e. byte 8 of the reply.
+	if [ "$CLEANER" -eq 0 ] && [ "$CLEANER_UNREACHABLE" -eq 0 ]; then
+		if reply="$(
+			{
+				printf '%s' "\\_SB.WMID.WMAA 0 2 $CLEANER_LEGACY_GET" >"$ACPI_CALL" &&
+					tr -d '\000' <"$ACPI_CALL"
+			} 2>/dev/null
+		)"; then
+			hex="$(acpi_hex "$reply")"
+			code="$(hex_byte "$hex" 4)"
+			flags="$(hex_byte "$hex" 8)"
+			if [ -n "$flags" ] && [ "${code:-1}" -eq 0 ] && [ $((flags & 32)) -ne 0 ]; then
+				CLEANER=1
+				CLEANER_DETAIL="the firmware answered: the older single-speed fan cleaner is available"
+			fi
+		else
+			CLEANER_UNREACHABLE=1
+		fi
+	fi
+
+	if [ "$CLEANER_UNREACHABLE" -eq 1 ]; then
+		CLEANER=""
+	fi
+fi
+
+if [ "$CLEANER" = "1" ]; then
+	record pass fan-cleaner "Fan cleaner (reverse spin)" "$CLEANER_DETAIL"
+elif [ "$CLEANER" = "0" ]; then
+	record warn fan-cleaner "Fan cleaner (reverse spin)" \
+		"the firmware was asked and has no fan cleaner on this machine"
+elif [ -e "$ACPI_CALL" ]; then
+	record skip fan-cleaner "Fan cleaner (reverse spin)" \
+		"writing /proc/acpi/call needs root" \
+		"The firmware is asked over /proc/acpi/call, which needs the acpi_call module loaded and root to write. With both, run this again."
+elif command -v modinfo >/dev/null 2>&1 && modinfo -n acpi_call >/dev/null 2>&1; then
+	record skip fan-cleaner "Fan cleaner (reverse spin)" \
+		"acpi_call is installed but not loaded, so the firmware was not asked" \
+		"The firmware is asked over /proc/acpi/call, which needs the acpi_call module loaded and root to write. With both, run this again."
+else
+	record skip fan-cleaner "Fan cleaner (reverse spin)" \
+		"/proc/acpi/call is missing, so the firmware was not asked" \
+		"The firmware is asked over /proc/acpi/call, which needs the acpi_call module loaded and root to write. With both, run this again."
 fi
 
 

@@ -54,6 +54,14 @@ pub enum Grant {
     InstallService,
     /// Enable and start an already-installed unit.
     EnableService,
+    /// Load `acpi_call` now, and arrange for it to be loaded at boot.
+    ///
+    /// Not the same shape as the others: it is a kernel module rather
+    /// than a service or a group. It is here because the fan cleaner and
+    /// the RGB lightbar both need it and both fail with the same
+    /// "permission denied" the rest of this panel exists to explain -
+    /// which sends people to the wrong fix.
+    LoadAcpiCall,
 }
 
 impl Grant {
@@ -62,6 +70,7 @@ impl Grant {
             "joinGroup" => Ok(Self::JoinGroup),
             "installService" => Ok(Self::InstallService),
             "enableService" => Ok(Self::EnableService),
+            "loadAcpiCall" => Ok(Self::LoadAcpiCall),
             other => Err(format!("unknown admin action '{other}'")),
         }
     }
@@ -97,6 +106,11 @@ pub fn status(socket_path: &str) -> Value {
         // The fix is applied but the session predates it: nothing else will
         // work until the user logs out, and no button can do it for them.
         "needsRelogin": in_group_database && !session_has_group,
+        // Loaded is the only state the feature works in; installed but
+        // unloaded is one `modprobe` away, and neither is one `pacman`
+        // away. Three states, because the remedy differs for each.
+        "acpiCallLoaded": Path::new("/proc/acpi/call").exists(),
+        "acpiCallInstalled": Path::new("/proc/acpi/call").exists() || modinfo_finds_acpi_call(),
         "canElevate": which("pkexec"),
         "daemonBinary": daemon_binary(),
         "user": username(),
@@ -105,6 +119,18 @@ pub fn status(socket_path: &str) -> Value {
 
 /// Runs one fix under `pkexec`. Returns what ran and what it said, so a
 /// failure is something the user can read rather than a silent no-op.
+/// Whether `acpi_call` is built for this kernel but not loaded. Asked with
+/// `modinfo`, which does not load anything - the same question
+/// `pyren_core::acpi::is_module_installed` puts, from the app's side of
+/// the socket, because this panel has to work when the daemon does not.
+fn modinfo_finds_acpi_call() -> bool {
+    Command::new("modinfo")
+        .args(["-n", "acpi_call"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
 pub fn grant(action: &str) -> Result<Value, String> {
     if !which("pkexec") {
         return Err("pkexec is not installed; this needs a polkit agent".to_string());
@@ -131,6 +157,19 @@ pub fn grant(action: &str) -> Result<Value, String> {
         }
         Grant::EnableService => Command::new("pkexec")
             .args(["systemctl", "enable", "--now", SERVICE])
+            .output(),
+        // `modprobe` alone lasts until the next reboot, and a feature that
+        // works today and not tomorrow is worse than one that never did -
+        // so the modules-load.d drop-in goes down with it. Both are fixed
+        // strings; nothing from the webview reaches this shell.
+        Grant::LoadAcpiCall => Command::new("pkexec")
+            .args([
+                "/bin/sh",
+                "-c",
+                "modprobe acpi_call && \
+                 mkdir -p /etc/modules-load.d && \
+                 printf 'acpi_call\\n' > /etc/modules-load.d/pyren-acpi-call.conf",
+            ])
             .output(),
     };
 

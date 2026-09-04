@@ -106,8 +106,11 @@ smoothing window, `restoreModeOnStart`). The original Python project's
 persistent/volatile split — a second copy under `/run` for settings that
 should not survive a reboot — was **not** carried over: it exists there to
 let a shutdown hook hand state to the next boot, and nothing here has
-needed that. Revisit it if the fan cleaner lands, which is the feature that
-wanted it.
+needed that. The fan cleaner has since landed and still did not need it:
+its state is a running cycle rather than a setting, and a cycle that does
+not survive its own daemon is a cycle that must not survive a reboot
+either — the daemon ends one it finds still running instead of resuming
+it.
 
 A `core.json` for cross-cutting settings (enabled modules, log level) still
 doesn't exist, because nothing has needed one yet.
@@ -115,7 +118,7 @@ doesn't exist, because nothing has needed one yet.
 ## Roadmap
 
 1. ~~Daemon skeleton + IPC socket + Tauri shell round-trip~~ — done: `fan.getStatus` and `core.capabilities` work end-to-end.
-2. Port the rest of the `fan` module — done except the fan cleaner:
+2. ~~Port the rest of the `fan` module~~ — done, the fan cleaner included:
    config persistence, the `setMode`/`setCurve` write path, the hysteresis
    loop (a background thread inside the daemon, replacing the Python
    `serve` loop), and calibration — `fan.calibrate` runs the fans at max,
@@ -131,7 +134,12 @@ doesn't exist, because nothing has needed one yet.
    lighting, graphics switcher, network booster, key mapping, settings,
    drivers, help). See `docs/03-frontend.md`. The UI's *write* paths call
    the daemon; the fan ones now do something, the rest still do not.
-4. Fan-cleaner protocol (`docs/04-fan-control-logic.md` §"Fan cleaner protocol" in the source repo) — the ACPI-call sequence, once basic curve control is solid.
+4. ~~Fan-cleaner protocol~~ (`docs/04-fan-control-logic.md` §"Fan cleaner
+   protocol" in the source repo) — done: the ACPI-call sequence, both
+   firmware generations, the braking and ramp-down steps, and the three
+   independent enforcements of the cycle timeout. See
+   `01-ipc-protocol.md` §"The fan cleaner" for the wire shape and for what
+   remains untested (the firmware's own answer).
 5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary
    generalizes to a differently-shaped hardware surface — reviewed, not
    started. Which of the two unrelated paths to port **is now settled**:

@@ -184,6 +184,49 @@ fn fan_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("fan", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
 
+/// The fan cleaner. `refresh` re-asks the firmware what it can do, which
+/// costs two ACPI calls - the polling status read leaves it off.
+#[tauri::command]
+fn fan_cleaner_status(refresh: bool) -> Result<Value, String> {
+    call_daemon("fan", "cleanerStatus", json!({ "refresh": refresh }))
+}
+
+/// Starts a cycle. Blocks for a few seconds while the blades are braked,
+/// then returns with a countdown running; the daemon ends it on its own.
+#[tauri::command]
+fn fan_start_cleaning(
+    speed: Option<u8>,
+    seconds: Option<u64>,
+    force: Option<bool>,
+) -> Result<Value, String> {
+    call_daemon(
+        "fan",
+        "startCleaning",
+        json!({ "speed": speed, "seconds": seconds, "force": force.unwrap_or(false) }),
+    )
+}
+
+#[tauri::command]
+fn fan_stop_cleaning() -> Result<Value, String> {
+    call_daemon("fan", "stopCleaning", Value::Null)
+}
+
+/// The remembered duration and speed, which are a preference rather than
+/// a parameter of one run.
+#[tauri::command]
+fn fan_set_cleaner_config(seconds: Option<u64>, speed: Option<Value>) -> Result<Value, String> {
+    let mut params = serde_json::Map::new();
+    if let Some(seconds) = seconds {
+        params.insert("seconds".into(), json!(seconds));
+    }
+    // `null` here means "back to the firmware's own speed", so it has to
+    // reach the daemon as a value rather than be dropped as absent.
+    if let Some(speed) = speed {
+        params.insert("speed".into(), speed);
+    }
+    call_daemon("fan", "setCleanerConfig", Value::Object(params))
+}
+
 #[tauri::command]
 fn power_set_apply_to_os_profile(enabled: bool) -> Result<Value, String> {
     call_daemon("power", "setApplyToOsProfile", json!({ "enabled": enabled }))
@@ -599,6 +642,10 @@ pub fn run() {
             fan_set_mode,
             fan_set_curve,
             fan_set_restore_on_start,
+            fan_cleaner_status,
+            fan_start_cleaning,
+            fan_stop_cleaning,
+            fan_set_cleaner_config,
             core_capabilities,
             system_get_info,
             system_get_metrics,

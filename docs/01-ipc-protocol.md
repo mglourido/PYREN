@@ -813,6 +813,10 @@ which is why `stage-source` comes before `patch-source` in every plan.
 | `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete" }` | the status object | ✅ implemented |
 | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
 | `fan.calibrate` | `{ "seconds"?: 10-120 }` | the calibration report below | ✅ implemented, needs root, **blocks and spins the fans** |
+| `fan.cleanerStatus` | `{ "refresh"?: bool }` | the cleaner status below | ✅ implemented, read-only (`refresh` puts two ACPI *queries*) |
+| `fan.startCleaning` | `{ "speed"?: 10-39, "seconds"?: 5-60, "force"?: bool }` | the cleaner status | ✅ implemented, needs root and `acpi_call`, **reverses the fans** |
+| `fan.stopCleaning` | none | the cleaner status | ✅ implemented, idempotent |
+| `fan.setCleanerConfig` | `{ "seconds"?: 5-60, "speed"?: 10-39 \| null }` | the cleaner status | ✅ implemented |
 
 Every write returns the same status object `getStatus` does, so a caller
 never has to follow a write with a read:
@@ -831,6 +835,7 @@ never has to follow a write with a read:
   "curve": [{ "tempC": 40, "percent": 20 }],
   "interpolation": "smooth",
   "restoreModeOnStart": false,
+  "cleaning": false,
   "fanMaxRpm": null,
   "fan1MaxRpm": null,
   "fan2MaxRpm": null,
@@ -935,6 +940,136 @@ speed means reaching it. The method name is the consent.
 
 `pyren-ctl fan calibrate [--seconds N]` is the same thing from a shell.
 
+### The fan cleaner
+
+Dust removal by spinning the fans **backwards**, ported from the original's
+`_cleaner.py`. It is the one feature in this project that bypasses the
+kernel driver entirely: HP's `SECU` buffer protocol over `/proc/acpi/call`,
+the same dialect `rgb` speaks to the lightbar, through the same
+cross-module lock (`pyren_core::acpi`).
+
+```json
+{
+  "supported": true,
+  "generation": "modern",
+  "capabilities": { "cpu": true, "gpu": true, "fan3": false,
+                    "cpuSpeed": 37, "gpuSpeed": 39, "fan3Speed": 0 },
+  "answered": true,
+  "unreachable": null,
+  "acpiCallLoaded": true,
+  "acpiCallInstalled": true,
+  "detail": { "key": "fan.cleaner.probe.modern", "params": { "fans": "the CPU fan and the GPU fan" }, "text": "…" },
+  "running": true,
+  "transitioning": false,
+  "secondsRemaining": 22,
+  "secondsTotal": 30,
+  "speed": 37,
+  "fansReversed": true,
+  "durationSecs": 30,
+  "configuredSpeed": null,
+  "maxStartTempC": 70,
+  "cpuTempC": 41,
+  "error": null
+}
+```
+
+**Reverse spin is cooling switched off, not turned down.** Everything below
+follows from that, and a client that reproduces none of the rest should at
+least reproduce this: for as long as a cycle runs the machine has no
+working fans.
+
+- **The timeout is enforced three times over**, on purpose: a watchdog
+  thread armed when the cycle starts, `Cycle::expired` on every status
+  read, and the fan control loop's own tick. Any one of them ending a
+  cycle is enough, and none of them is trusted to be the one that does.
+- **`startCleaning` blocks only for the braking step** — a few seconds
+  while the blades are brought to a stop, because reversing a fan that is
+  still turning forwards is a mechanical step, not protocol ceremony. It
+  returns with the countdown running; the cycle itself is not held open on
+  the connection.
+- **The clock starts when reverse spin begins**, not when the call
+  arrives. Braking is setup, and charging it against a 30-second cycle
+  would make a cycle shorter on the machines whose fans take longest to
+  stop.
+- **A cycle found still running at daemon startup is ended.** This is the
+  one place the fan module touches hardware without being asked, and it is
+  a deliberate exception to *the daemon does not touch the fans until
+  asked* — that rule is about not imposing a remembered setting at boot,
+  and reverse spin is not a setting. It runs only when the tachometers
+  themselves report reverse (the driver's own bit, not a file this daemon
+  wrote) and only when `acpi_call` is *already* loaded.
+- **Stopping is a ramp, not a switch**: the reverse speed is stepped down
+  by 5 with the direction bit still set, and only then is the override
+  released. `stopCleaning` is idempotent — stopping when nothing runs is
+  the state the caller asked for, not an error, because it is the button
+  somebody reaches for when they are not sure what is happening.
+
+Two guards refuse a start, and both are `failed` rather than
+`invalidParams`: the caller asked for something reasonable and the machine
+is in no state for it *now*. Above `maxStartTempC` (70 °C) a cycle would
+remove the cooling a machine is currently using; a second cycle while one
+is in flight is `busy`.
+
+#### `transitioning` is not `running`
+
+`running` is a cycle with a countdown. `transitioning` is the braking at
+the start or the ramp at the end — the fans are the cleaner's, and they
+are reversed or about to be, but there is no number to show. **A client
+that reads `transitioning` as idle offers a second cycle in the middle of
+the first**, and the control loop takes the fans back mid-ramp. Both
+states mean *the fans are not yours*.
+
+#### Three reasons to be unavailable, and only one is the hardware
+
+The same distinction the lightbar probe makes, and for the same reason:
+**failing to ask is not being told no.**
+
+- `supported: false`, `answered: true` — the firmware was asked and this
+  machine has no fan cleaner. Most models do not. A fact, no remedy.
+- `supported: false`, `unreachable` set — the question could not be put:
+  no `acpi_call`, or a daemon without root. `unreachable` carries the
+  sentence saying which, and both have fixes.
+- `acpiCallInstalled` without `acpiCallLoaded` is the state between
+  installing the package and the next `modprobe`, told apart because the
+  remedy differs.
+
+A refusal to *start* follows the same rule, which is why a missing
+`acpi_call` is `failed` (it names a package) and never `notCapable` (which
+would tell someone their laptop cannot do this).
+
+`force: true` skips only the `notCapable` refusal — not the temperature
+guard. It exists because none of the capability decoding has been
+confirmed against real firmware (see below), so a machine that has the
+feature and answers a query this build reads wrongly would otherwise have
+no way to try it.
+
+#### Two firmware generations
+
+`modern` ("CleanCreek") is a 128-byte buffer with a per-fan speed in
+hundreds of RPM and bit 7 meaning reverse; speeds are commanded, so the
+cycle can be braked, engaged and ramped. `legacy` is a 4-byte control
+buffer with one toggle bit — on or off, no speed and no ramp. Which one a
+machine has is probed, never guessed from the model.
+
+`speed`/`configuredSpeed` are in hundreds of RPM (37 → ~3700 rpm), which is
+the unit the firmware itself uses. `null` means *use whatever the firmware
+has configured for itself*, which is what the vendor's tool would send —
+distinct from "unset", so `setCleanerConfig` treats an explicit `null` as a
+value and an absent field as "leave it alone".
+
+#### Nothing here has been confirmed against hardware
+
+The `(command, command_type)` pairs are reverse-engineered upstream and
+**untested against real firmware by this project** — the development
+laptop has no `acpi_call` (`dev/FINDINGS.md`). What can be tested without
+it is: the buffers built, the replies parsed, the capability decoding, the
+guards, and that command type 44 (ask) never becomes 46 (set). Those are
+tested, in `cleaner.rs` and in the parity test, so the only untested thing
+left is the firmware's own answer.
+
+`pyren-ctl fan cleaner`, `fan clean` and `fan clean-stop` are the same
+three calls from a shell.
+
 ### `fan.diagnose`
 
 The fan-control self-test. This is the project's answer to "is the driver
@@ -968,8 +1103,8 @@ is the kernel's own words, quoted verbatim, so it carries no `key`.
 Checks cover the hp-wmi platform device, the hwmon node, both fan inputs
 (decoding the reverse-spin encoding rather than reporting a 15200 "rpm"),
 `pwm1`, `pwm1_enable` and what its value means, the ACPI platform profile,
-the CPU temperature sensor and `acpi_call`. Each carries a `remedy` when
-there is something to do about it.
+the CPU temperature sensor, `acpi_call` and the fan cleaner. Each carries
+a `remedy` when there is something to do about it.
 
 **Every check is read-only unless `allowWrites` is set.** That one check
 writes the value that is *already* set - so no fan changes speed - and
@@ -1105,8 +1240,10 @@ So every use in this process goes through `pyren_core::acpi::call`, which
 holds one process-wide mutex across the write/read pair. It lives in
 `core` rather than in this module because **more than one module needs
 it**: the lightbar drives the light strip through it, and the fan cleaner
-(not ported) will drive reverse spin through it. Two modules serialising
-against two different mutexes would be two modules not serialising at all.
+drives reverse spin through it. Two modules serialising against two
+different mutexes would be two modules not serialising at all. They also
+speak the same `SECU` buffer protocol, so `acpi::wmi_request` builds the
+argument and `acpi::parse_bytes` reads the reply for both.
 
 The lock is per *process*, which is the scope that is ours. Another
 program on the machine using `acpi_call` at the same moment is outside it.

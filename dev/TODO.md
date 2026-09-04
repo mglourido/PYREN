@@ -132,10 +132,13 @@ real backend decision before any daemon work:
 - **A second reference sensor.** The curve follows the CPU only. The
   original also supports GPU, with a fallback to CPU when the GPU reads 0
   because it is asleep; `FanConfig` has no `referenceSensor` field yet.
-- **Fan cleaner** (reverse spin, `acpi_call`) — the protocol is documented
-  in the source project, and it's the one genuinely novel feature. The
-  `acpi_call` plumbing it needs already exists: `pyren_core::acpi`, with
-  the cross-module lock. Reach for that rather than opening the file.
+- **Confirming the fan cleaner against firmware that has it.** The feature
+  is ported and the app has a page for it, but no machine here answers the
+  capability query — so what byte 8 of the modern reply really means, and
+  whether the legacy toggle is the right bit, are still upstream's word.
+  `fan.startCleaning { "force": true }` exists for exactly this: it skips
+  the "no fan cleaner here" refusal so a machine that has the feature can
+  be tried against a build that decodes its answer wrongly.
 - **Per-process GPU usage** in the vitals table (the column exists and
   shows `--`).
 - **Packaging**: nothing exists. PKGBUILD first, given the audience.

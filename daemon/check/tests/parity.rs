@@ -230,3 +230,39 @@ fn the_shell_script_asks_the_firmware_the_same_question() {
         "zone 0 is an all-zero payload; if that changed, so must the script"
     );
 }
+
+/// The same problem for the fan cleaner, twice over - and worse, because
+/// one of the two numbers in these headers is the difference between
+/// *asking* the firmware what it can do and *telling* it to reverse the
+/// fans. A script that drifted to command type 46 here would spin a
+/// laptop's fans backwards as part of a read-only compatibility check.
+#[test]
+fn the_shell_script_asks_the_firmware_the_same_fan_cleaner_question() {
+    let script = std::fs::read_to_string(script_path()).expect("the script should be readable");
+
+    // The header is what is compared, for the same reason as above: the
+    // script pads the payload with `printf` rather than spelling out
+    // hundreds of zeroes, so only the fixed part is literal in both.
+    for (name, request) in [
+        ("modern", pyren_fan::cleaner::modern_query_request()),
+        ("legacy", pyren_fan::cleaner::legacy_query_request()),
+    ] {
+        let header = &request[..33];
+        assert!(
+            script.contains(header),
+            "tools/pyren-check.sh no longer sends the {name} fan-cleaner query header {header}"
+        );
+        assert!(
+            request[33..].bytes().all(|b| b == b'0'),
+            "a capability query is an all-zero payload; if that changed, so must the script"
+        );
+    }
+
+    // Command type 46 is the write. It has no business in a tool whose
+    // whole contract is that it changes nothing.
+    let write_header = &pyren_fan::cleaner::modern_write_header();
+    assert!(
+        !script.contains(write_header),
+        "tools/pyren-check.sh must never build a fan-cleaner *write* buffer ({write_header})"
+    );
+}

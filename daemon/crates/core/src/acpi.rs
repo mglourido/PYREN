@@ -9,10 +9,15 @@
 //! So every use of the file in this process goes through [`call`], which
 //! holds [`GATE`] across the write/read pair. This lives in `core` rather
 //! than in a module because more than one module needs it: the RGB
-//! lightbar drives the light strip through it, and the fan cleaner (not
-//! ported yet) drives reverse spin through it. Two modules serialising
-//! against two different mutexes would be two modules not serialising at
-//! all.
+//! lightbar drives the light strip through it, and the fan cleaner drives
+//! reverse spin through it. Two modules serialising against two different
+//! mutexes would be two modules not serialising at all.
+//!
+//! The two also speak the *same* dialect over it - HP's `SECU` buffer
+//! protocol - so [`wmi_request`] builds the argument and [`parse_bytes`]
+//! reads the reply for both. They lived in the lightbar until the cleaner
+//! needed them, and a second copy of a hex parser is a second copy of its
+//! bugs.
 //!
 //! The lock is per *process*, which is the scope that is ours to control.
 //! Another program on the machine using `acpi_call` at the same moment is
@@ -152,6 +157,113 @@ pub fn call(method: &str, args: &str) -> Result<String, AcpiError> {
     // acpi_call terminates its reply with a NUL, which `trim` does not
     // remove and `str::parse` chokes on.
     Ok(response.trim_matches(|c: char| c == '\0' || c.is_whitespace()).to_string())
+}
+
+/// HP's WMI buffer protocol, as the hex argument `acpi_call` takes.
+///
+/// One 16-byte little-endian header - the ASCII signature `SECU`, the
+/// command, the command type and the payload size - followed by the
+/// payload itself, zero-padded or truncated to `size`. Both the lightbar
+/// and the fan cleaner send exactly this; only the numbers differ.
+///
+/// The whole thing is prefixed `b`, which is how `acpi_call` is told the
+/// argument is a buffer rather than an integer.
+pub fn wmi_request(command: u32, command_type: u32, size: usize, payload: &[u8]) -> String {
+    let mut buffer = Vec::with_capacity(HEADER_LEN + size);
+    buffer.extend_from_slice(SIGNATURE);
+    buffer.extend_from_slice(&command.to_le_bytes());
+    buffer.extend_from_slice(&command_type.to_le_bytes());
+    buffer.extend_from_slice(&(size as u32).to_le_bytes());
+
+    buffer.extend_from_slice(&payload[..payload.len().min(size)]);
+    buffer.resize(HEADER_LEN + size, 0);
+
+    let mut hex = String::with_capacity(1 + buffer.len() * 2);
+    hex.push('b');
+    for byte in &buffer {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+/// The ASCII signature every one of these buffers starts with. It is the
+/// driver's own `bios_args.signature` (`0x55434553`) written as letters.
+pub const SIGNATURE: &[u8; 4] = b"SECU";
+
+/// The header [`wmi_request`] writes before the payload.
+pub const HEADER_LEN: usize = 16;
+
+/// The bytes behind an `acpi_call` reply.
+///
+/// Three shapes turn up depending on the kernel and the `acpi_call`
+/// version, and all three are accepted: a bare hex blob, a
+/// `{0x50, 0x41, ...}` list, and the same list without spaces.
+///
+/// **The prefix is stripped once, on purpose.** Upstream (both projects
+/// this was ported from) uses `lstrip("b0x")`, and `str.lstrip` takes a
+/// *character set* rather than a prefix: `'0xb0b0aa'.lstrip('b0x')` is
+/// `'aa'`, three bytes of real data gone, and any reply whose first byte
+/// is zero loses that byte too.
+pub fn parse_bytes(response: &str) -> Option<Vec<u8>> {
+    let text = response.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    // A `{0x50, 0x41, ...}` list. Every token has to fit in a byte, or
+    // this is not a list of bytes - it is one long blob that happens to
+    // start `0x`, and the branch below is the one that reads it.
+    let tokens = hex_tokens(text);
+    if !tokens.is_empty() {
+        let parsed: Option<Vec<u8>> =
+            tokens.iter().map(|t| u8::from_str_radix(t, 16).ok()).collect();
+        if let Some(bytes) = parsed {
+            return Some(bytes);
+        }
+    }
+
+    let blob = text.trim_matches(|c| c == '{' || c == '}').trim();
+    let blob = blob.strip_prefix("0x").or_else(|| blob.strip_prefix('b')).unwrap_or(blob);
+    let blob: String = blob.chars().filter(|c| !c.is_whitespace() && *c != '\0').collect();
+    from_hex(&blob)
+}
+
+/// Every `0x…` run in the text, as its hex digits. Mirrors upstream's
+/// `re.findall(r'0x[0-9a-fA-F]+', res)` without pulling in a regex crate
+/// for one pattern.
+fn hex_tokens(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i + 1 < chars.len() {
+        if chars[i] == '0' && (chars[i + 1] == 'x' || chars[i + 1] == 'X') {
+            let start = i + 2;
+            let mut end = start;
+            while end < chars.len() && chars[end].is_ascii_hexdigit() {
+                end += 1;
+            }
+            if end > start {
+                tokens.push(chars[start..end].iter().collect());
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    tokens
+}
+
+fn from_hex(text: &str) -> Option<Vec<u8>> {
+    if text.is_empty() || !text.len().is_multiple_of(2) || !text.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let bytes: Vec<u8> = text
+        .as_bytes()
+        .chunks(2)
+        .filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect();
+    (bytes.len() == text.len() / 2).then_some(bytes)
 }
 
 fn map_open_error(e: std::io::Error) -> AcpiError {

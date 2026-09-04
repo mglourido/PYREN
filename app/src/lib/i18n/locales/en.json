@@ -19,7 +19,8 @@
     "lighting": "Lighting",
     "graphics": "Graphics switcher",
     "network": "Network booster",
-    "keys": "Key mapping"
+    "keys": "Key mapping",
+    "cleaning": "Fan cleaning"
   },
   "common": {
     "on": "On",
@@ -39,7 +40,9 @@
     "loading": "Loading...",
     "learnMore": "Learn more",
     "notSupported": "Not supported on this machine",
-    "comingSoon": "Coming soon"
+    "comingSoon": "Coming soon",
+    "yes": "Yes",
+    "no": "No"
   },
   "home": {
     "title": "Gaming performance toolkit",
@@ -61,7 +64,9 @@
     "autoEcoHint": "Unplugging drops to Balanced; a machine that stays idle, or whose battery gets low, goes on to Eco.",
     "autoPerformance": "Switch to Performance mode automatically",
     "autoPerformanceHint": "Plugging in steps up to Performance; an idle machine on mains comes back down to Balanced. Unlimited is never chosen for you.",
-    "new": "NEW"
+    "new": "NEW",
+    "fanCleaning": "Fan cleaning",
+    "fanCleaningDesc": "Spin the fans backwards for a few seconds to shake dust out of the vents."
   },
   "vitals": {
     "mode": "Mode",
@@ -173,6 +178,46 @@
     "restoreOnStartHint": "Off by default. A bad offset restored at boot can stop the machine reaching a desktop, so this is never assumed - and it is skipped anyway after a boot that followed a change nobody confirmed.",
     "backToStock": "Back to stock",
     "unconfirmedAtStart": "The last change to a GPU was never confirmed, so nothing was restored on this boot and the cards are at the clocks the firmware shipped."
+  },
+  "cleaning": {
+    "title": "Fan cleaning",
+    "lead": "Spins the fans backwards for a few seconds so that dust drawn into the vents is pushed back out. The same thing the OMEN Gaming Hub does under Windows, driven through the firmware rather than the fan driver.",
+    "warningTitle": "The fans stop cooling while this runs",
+    "warningBody": "A cycle reverses the fans, so nothing is being cooled until it ends. It stops on its own after the time set below, and it will not start at all above {limit}. Close anything demanding first, and expect it to be loud.",
+    "readyTitle": "Ready when you are",
+    "start": "Start cleaning",
+    "starting": "Starting...",
+    "stop": "Stop now",
+    "running": "Cleaning",
+    "runningHint": "The fans are running backwards. This ends on its own; the button below ends it now and ramps them back to the mode they were in.",
+    "transitioning": "Working",
+    "transitioningHint": "The blades are being brought to a stop, or ramped back down out of reverse. Neither is instant, and interrupting it is what the ramp exists to avoid.",
+    "notAsked": "The firmware was not asked, so nothing is known about this machine's fan cleaner yet. That is a missing kernel module or a daemon without root - not a verdict on your laptop. The Hardware check page has both fixes.",
+    "notCapable": "The firmware was asked and this machine has no fan cleaner. Most models do not.",
+    "tooHot": "The CPU is at {temp}, above the {limit} a cycle will start below. Let it cool and try again.",
+    "settings": "Settings",
+    "duration": "How long",
+    "durationHint": "How long the fans stay reversed. The vendor's own tool uses 30 seconds, and the daemon enforces this three separate ways so a cycle cannot outlive it.",
+    "customSpeed": "Choose the speed",
+    "customSpeedHint": "Off means the speed your firmware has configured for itself, which is what the OMEN Gaming Hub would send. On lets you set it - lower is quieter and gentler, higher shifts more dust.",
+    "speedFirmware": "Using the firmware's own speed",
+    "speedChosen": "Using the speed set below",
+    "speed": "Reverse speed",
+    "hardware": "What the firmware said",
+    "factGeneration": "Fan-cleaner protocol",
+    "factFans": "Fans that can be reversed",
+    "factAcpi": "acpi_call module",
+    "factReversed": "Fans reversed right now",
+    "fanCpu": "CPU",
+    "fanGpu": "GPU",
+    "fanThird": "third fan",
+    "acpiLoaded": "loaded",
+    "acpiNotLoaded": "installed, not loaded",
+    "acpiMissing": "not installed",
+    "generation": {
+      "modern": "modern (CleanCreek)",
+      "legacy": "legacy"
+    }
   },
   "lighting": {
     "mode": "Mode",
@@ -462,6 +507,10 @@
         "ok": "/proc/acpi/call is available",
         "absent": "/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it",
         "remedy": "Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call (Fedora), then `modprobe acpi_call`."
+      },
+      "fan-cleaner": {
+        "title": "Fan cleaner (reverse spin)",
+        "remedyAsk": "The firmware is asked over {path}, which needs the acpi_call module loaded and root to write. With both, run this again."
       }
     },
     "remedy": "What to do",
@@ -500,6 +549,21 @@
       "curveNoPoints": "params.curve must have at least one point",
       "curvePointNotFinite": "curve point ({temp}, {percent}) is not a finite number",
       "calibrating": "a calibration run is already in progress"
+    },
+    "cleaner": {
+      "err": {
+        "refused": "the firmware refused the fan-cleaner call (it answered: {answer})",
+        "notCapable": "this machine's firmware has no fan cleaner",
+        "busy": "a fan-cleaning cycle is already in progress",
+        "tooHot": "{temp} °C is too hot to reverse the fans (the limit is {limit} °C)"
+      },
+      "probe": {
+        "modern": "the firmware answered: reverse spin is available on {fans}",
+        "legacy": "the firmware answered: the older single-speed fan cleaner is available",
+        "refused": "the firmware was asked and has no fan cleaner on this machine",
+        "notLoaded": "acpi_call is installed but not loaded, so the firmware was not asked",
+        "noAcpiCall": "/proc/acpi/call is missing, so the firmware was not asked; {hint}"
+      }
     }
   },
   "hotkey": {
@@ -733,7 +797,11 @@
     "rootOk": "Running as root, so every reading is available.",
     "rootNo": "Running unprivileged. Readings that need root — integrated-GPU utilisation — are unavailable. Install the service above to fix this permanently.",
     "rootShadowed": "A privileged service is installed and running, but the app is connected to a different, unprivileged daemon on {path}. Stop that one — and if the group row above asks you to log out, do that first, since the service's socket is only reachable with the group.",
-    "rootUnknown": "Unknown until the daemon can be reached."
+    "rootUnknown": "Unknown until the daemon can be reached.",
+    "acpiCall": "acpi_call kernel module",
+    "acpiCallOk": "/proc/acpi/call is available, so the fan cleaner and the lightbar can reach the firmware.",
+    "acpiCallNotLoaded": "installed but not loaded. Loading it also arranges for it to load at boot.",
+    "acpiCallMissing": "not built for this kernel. Install acpi_call-dkms (Arch), acpi-call-dkms (Debian/Ubuntu) or akmod-acpi_call (Fedora), then come back here."
   },
   "overclock": {
     "clamp": {

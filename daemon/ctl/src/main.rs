@@ -61,6 +61,13 @@ FANS
                                speed is on this machine, then put back the
                                mode it found. Loud, and the only way to
                                give the curve's hysteresis a real ceiling
+  fan cleaner                  what the dust-removal fan cleaner can do here
+  fan clean [--speed 10-39] [--seconds 5-60] [--force]
+                               spin the fans backwards to shake dust out.
+                               Ends on its own; 'fan clean-stop' ends it
+                               early. Loud, and the machine has no working
+                               cooling while it runs
+  fan clean-stop               end a cleaning cycle now
 
 LIGHTS
   rgb probe                    which of the two lighting paths this
@@ -283,6 +290,29 @@ fn run(command: &args::Command) -> Run {
             };
             show(command, client::call("fan", "calibrate", params)?, print_calibration)
         }
+        ["fan", "cleaner"] => show(
+            command,
+            client::call("fan", "cleanerStatus", json!({ "refresh": true }))?,
+            print_cleaner,
+        ),
+        ["fan", "clean"] => {
+            let mut params = serde_json::Map::new();
+            if let Some(speed) = command.number("speed")? {
+                params.insert("speed".into(), json!(speed.round().max(0.0) as u64));
+            }
+            if let Some(seconds) = command.number("seconds")? {
+                params.insert("seconds".into(), json!(seconds.round().max(0.0) as u64));
+            }
+            if command.options.contains_key("force") {
+                params.insert("force".into(), json!(true));
+            }
+            show(command, client::call("fan", "startCleaning", Value::Object(params))?, print_cleaner)
+        }
+        ["fan", "clean-stop"] => show(
+            command,
+            client::call("fan", "stopCleaning", Value::Null)?,
+            print_cleaner,
+        ),
         ["fan", "diagnose"] => {
             let allow_writes = command.options.contains_key("write");
             show(
@@ -873,6 +903,59 @@ fn print_fan(status: &Value) {
     }
 }
 
+/// The fan cleaner, in the two states worth telling apart at a terminal:
+/// a cycle running with a countdown, and a machine being told what it can
+/// or cannot do.
+fn print_cleaner(status: &Value) {
+    let flag = |key: &str| status.get(key).and_then(Value::as_bool).unwrap_or(false);
+
+    if flag("running") {
+        let left = status.get("secondsRemaining").and_then(Value::as_u64).unwrap_or(0);
+        let total = status.get("secondsTotal").and_then(Value::as_u64).unwrap_or(0);
+        row("cleaning", format!("{left}s left of {total}s - 'fan clean-stop' ends it now"));
+    } else if flag("transitioning") {
+        row("cleaning", "in progress - the fans are being braked or ramped back");
+    } else {
+        row("cleaning", "not running");
+    }
+
+    row(
+        "cleaner",
+        match (flag("supported"), status.get("generation").and_then(Value::as_str)) {
+            (true, Some(generation)) => format!("available ({generation})"),
+            (true, None) => "available".to_string(),
+            (false, _) => "not available".to_string(),
+        },
+    );
+    println!("  {}", text(status, "detail"));
+
+    // The guard people hit, and the reading it is compared against, on one
+    // line - a refusal that names neither is a refusal nobody can act on.
+    if let Some(temp) = status.get("cpuTempC").and_then(Value::as_i64) {
+        let limit = status.get("maxStartTempC").and_then(Value::as_i64).unwrap_or(0);
+        row("cpu", format!("{temp} °C (a cycle will not start above {limit} °C)"));
+    }
+    row(
+        "settings",
+        format!(
+            "{}s at {}",
+            status.get("durationSecs").and_then(Value::as_u64).unwrap_or(0),
+            match status.get("configuredSpeed").and_then(Value::as_u64) {
+                Some(speed) => format!("{}00 rpm", speed),
+                None => "the firmware's own speed".to_string(),
+            }
+        ),
+    );
+    // The hardware's own answer, which is the one that does not depend on
+    // this daemon having been the one to start anything.
+    if flag("fansReversed") {
+        row("fans", "spinning in reverse right now");
+    }
+    if let Some(error) = msg_line(status, "error") {
+        println!("  ! {error}");
+    }
+}
+
 fn print_calibration(result: &Value) {
     row("verdict", text(result, "verdict"));
     println!("  {}", text(result, "detail"));
@@ -919,7 +1002,9 @@ fn print_diagnosis(diagnosis: &Value) {
         println!(
             "  [{:^6}] {:28} {}",
             text(check, "status"),
-            text(check, "label"),
+            // "title", not "label": the field has never been called that,
+            // so every check printed its name as "-".
+            text(check, "title"),
             text(check, "detail")
         );
     }

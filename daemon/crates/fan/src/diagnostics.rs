@@ -189,6 +189,7 @@ pub(crate) fn diagnose(paths: &FanPaths, allow_writes: bool) -> Diagnosis {
     checks.push(check_platform_profile());
     checks.push(check_cpu_temp(paths.cpu_temp.as_deref()));
     checks.push(check_acpi_call());
+    checks.push(check_fan_cleaner());
 
     // The verdict follows the *check results*, never the mere presence of a
     // path. Discovery fills in every path as soon as an hwmon directory
@@ -836,6 +837,39 @@ fn check_acpi_call() -> Check {
     }
 }
 
+/// Whether this machine's firmware has the dust-removal fan cleaner.
+///
+/// Read-only, like everything else here: it puts the two capability
+/// *queries* to the firmware - the same class of question the lighting
+/// section's lightbar read is - and commands nothing. It never loads the
+/// kernel module either, so on a machine without `acpi_call` this is a
+/// skip and the check above it says what to install.
+///
+/// The three outcomes are deliberately not two. "Asked and told no" is a
+/// fact about the hardware with no remedy; "could not ask" is a missing
+/// package or a missing `sudo`, and reporting it as the first sends
+/// someone looking for a different laptop.
+fn check_fan_cleaner() -> Check {
+    let title = || msg!("diagnostics.checks.fan-cleaner.title", "Fan cleaner (reverse spin)");
+    let probe = crate::cleaner::probe();
+
+    if let Some(why) = probe.unreachable {
+        return Check::new("fan-cleaner", title(), CheckStatus::Skip, why).with_remedy(msg!(
+            "diagnostics.checks.fan-cleaner.remedyAsk",
+            { "path" => pyren_core::acpi::CALL_PATH },
+            "The firmware is asked over {path}, which needs the acpi_call module loaded \
+             and root to write. With both, run this again."
+        ));
+    }
+
+    match probe.generation {
+        Some(_) => Check::new("fan-cleaner", title(), CheckStatus::Pass, probe.detail),
+        // A refusal, and most machines give one. Not a fault, so not a
+        // failure - and nothing to suggest, so no remedy.
+        None => Check::new("fan-cleaner", title(), CheckStatus::Warn, probe.detail),
+    }
+}
+
 /// Path set built from an explicit directory, so the checks can be pointed
 /// at a fixture instead of the real machine.
 #[cfg(test)]
@@ -853,6 +887,26 @@ fn paths_for_testing(hwmon_dir: PathBuf, cpu_temp: Option<PathBuf>) -> FanPaths 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same distinction the lighting section makes, for the same
+    /// reason: on a machine with no `acpi_call` the firmware was never
+    /// asked, and reporting that as "no fan cleaner here" is claiming
+    /// something nobody established - over a missing package.
+    #[test]
+    fn a_fan_cleaner_that_was_never_asked_about_is_not_reported_as_absent() {
+        let dir = std::env::temp_dir().join(format!("pyren-diag-cleaner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("PYREN_ACPI_CALL", dir.join("nothing-here"));
+
+        let check = check_fan_cleaner();
+        assert_eq!(check.id, "fan-cleaner");
+        assert_eq!(check.status, CheckStatus::Skip, "not asked is not a verdict");
+        assert!(check.remedy.is_some(), "not being able to ask comes with a way to ask");
+        assert!(!check.detail.contains("has no fan cleaner"));
+
+        std::env::remove_var("PYREN_ACPI_CALL");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The two lines this machine actually produced after the patched
     /// driver was installed. Neither is a fault, and the checker used to

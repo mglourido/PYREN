@@ -115,6 +115,13 @@
       </article>
 
       <article class="card">
+        <a class="feature" href="/system/cleaning">
+          <Icon name="broom" size={17} />{t("home.fanCleaning")}
+        </a>
+        <p class="desc">{t("home.fanCleaningDesc")}</p>
+      </article>
+
+      <article class="card">
         <a class="feature" href="/system/graphics">
           <Icon name="monitor" size={17} />{t("home.graphicsSwitcher")}
         </a>

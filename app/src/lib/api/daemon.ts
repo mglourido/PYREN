@@ -45,12 +45,69 @@ export type FanStatus = {
   curve: FanCurvePoint[];
   interpolation: "smooth" | "discrete";
   restoreModeOnStart: boolean;
+  /** Whether a cleaning cycle owns the fans - through both transitions,
+   *  not only while they are actually reversed. `fanCleanerStatus` is the
+   *  detail; this is here so any page can grey out a fan control. */
+  cleaning: boolean;
   fanMaxRpm: number | null;
   /** Last failure from the control loop, e.g. a write that needed root.
    *  Translatable - render with `tm()`. */
   error: Msg | null;
   saved: boolean;
   saveError: string | null;
+};
+
+/** Which fans this machine's firmware will spin backwards, and how fast
+ *  it has them configured (in hundreds of RPM). */
+export type FanCleanerCapabilities = {
+  cpu: boolean;
+  gpu: boolean;
+  fan3: boolean;
+  cpuSpeed: number;
+  gpuSpeed: number;
+  fan3Speed: number;
+};
+
+/**
+ * The fan cleaner: dust removal by spinning the fans backwards.
+ *
+ * Three of these fields exist to keep one distinction visible, and it is
+ * the same one the lightbar probe makes: **not being able to ask is not
+ * being told no.** `supported` false with `answered` true is a machine
+ * that has no fan cleaner; `supported` false with `unreachable` set is a
+ * missing kernel module or a missing root, and showing the first sentence
+ * for the second sends someone shopping for a laptop.
+ */
+export type FanCleanerStatus = {
+  supported: boolean;
+  generation: "modern" | "legacy" | null;
+  capabilities: FanCleanerCapabilities;
+  /** The firmware answered, whichever way. */
+  answered: boolean;
+  /** Set when the question could not be put. Translatable - `tm()`. */
+  unreachable: Msg | null;
+  acpiCallLoaded: boolean;
+  acpiCallInstalled: boolean;
+  /** One sentence covering whichever of the above applies. Translatable. */
+  detail: Msg;
+  running: boolean;
+  /** Braking or ramping back down: the fans are the cleaner's, and
+   *  neither button should be offered. */
+  transitioning: boolean;
+  secondsRemaining: number | null;
+  secondsTotal: number | null;
+  /** The speed the running cycle was started at, in hundreds of RPM. */
+  speed: number | null;
+  /** What the tachometers say right now, which does not depend on this
+   *  daemon having been the one to start anything. */
+  fansReversed: boolean;
+  durationSecs: number;
+  /** null means "use whatever the firmware has configured for itself". */
+  configuredSpeed: number | null;
+  maxStartTempC: number;
+  cpuTempC: number | null;
+  /** Why the last cycle failed. Translatable - render with `tm()`. */
+  error: Msg | null;
 };
 
 export type ModuleCapability = { id: string; supported: boolean };
@@ -689,6 +746,10 @@ const DAEMON_ROUTES: Record<
   fan_set_mode: { module: "fan", method: "setMode" },
   fan_set_curve: { module: "fan", method: "setCurve" },
   fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
+  fan_cleaner_status: { module: "fan", method: "cleanerStatus" },
+  fan_start_cleaning: { module: "fan", method: "startCleaning" },
+  fan_stop_cleaning: { module: "fan", method: "stopCleaning" },
+  fan_set_cleaner_config: { module: "fan", method: "setCleanerConfig" },
   power_get_state: { module: "power", method: "getState" },
   power_set_mode: { module: "power", method: "setMode" },
   power_set_auto_config: { module: "power", method: "setAutoConfig", params: (a) => a.config },
@@ -855,6 +916,28 @@ export const daemon = {
     call<FanStatus>("fan_set_curve", { curve, interpolation }),
   setFanRestoreOnStart: (enabled: boolean) =>
     call<FanStatus>("fan_set_restore_on_start", { enabled }),
+  /** `refresh` re-asks the firmware what it can do (two ACPI calls); the
+   *  polling read leaves it off and uses the daemon's cached answer. */
+  fanCleanerStatus: (refresh = false) =>
+    call<FanCleanerStatus>("fan_cleaner_status", { refresh }),
+  /** Blocks for a few seconds while the blades are braked, then returns
+   *  with the countdown running. The daemon ends the cycle on its own.
+   *  `force` skips the "this machine has no fan cleaner" refusal, for
+   *  firmware whose capability reply this build reads wrongly. */
+  startFanCleaning: (options: { speed?: number; seconds?: number; force?: boolean } = {}) =>
+    call<FanCleanerStatus>("fan_start_cleaning", {
+      speed: options.speed ?? null,
+      seconds: options.seconds ?? null,
+      force: options.force ?? false,
+    }),
+  stopFanCleaning: () => call<FanCleanerStatus>("fan_stop_cleaning"),
+  /** The remembered duration and speed. `speed: null` goes back to the
+   *  firmware's own, which is not the same as leaving it unset. */
+  setFanCleanerConfig: (config: { seconds?: number; speed?: number | null }) =>
+    call<FanCleanerStatus>("fan_set_cleaner_config", {
+      seconds: config.seconds ?? null,
+      speed: config.speed === undefined ? undefined : config.speed,
+    }),
   powerState: () => call<PowerState>("power_get_state"),
   setPowerMode: (mode: PowerMode) => call<ApplyReport>("power_set_mode", { mode }),
   setAutoConfig: (config: AutoConfig) =>

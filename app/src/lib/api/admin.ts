@@ -28,6 +28,12 @@ export type AdminStatus = {
   sessionHasGroup: boolean;
   /** Member on paper only: nothing works until the user logs back in. */
   needsRelogin: boolean;
+  /** `/proc/acpi/call` is there, which is the only state in which the
+   *  fan cleaner and the RGB lightbar work at all. */
+  acpiCallLoaded: boolean;
+  /** Built for this kernel, whether or not it is loaded. Told apart
+   *  because one is a `modprobe` and the other is a package. */
+  acpiCallInstalled: boolean;
   /** Whether a polkit agent is available to authenticate a fix. */
   canElevate: boolean;
   /** The pyren-daemon binary, needed to install the service. Null when it
@@ -37,7 +43,7 @@ export type AdminStatus = {
 };
 
 /** The fixes `admin_grant` accepts. Must match `Grant` in admin.rs. */
-export type AdminAction = "joinGroup" | "installService" | "enableService";
+export type AdminAction = "joinGroup" | "installService" | "enableService" | "loadAcpiCall";
 
 export type GrantResult = {
   applied: boolean;

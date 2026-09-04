@@ -19,7 +19,8 @@
     "lighting": "Iluminación",
     "graphics": "Alternador de gráficos",
     "network": "Intensificador de red",
-    "keys": "Asignación de teclas"
+    "keys": "Asignación de teclas",
+    "cleaning": "Limpieza de ventiladores"
   },
   "common": {
     "on": "Activado",
@@ -39,7 +40,9 @@
     "loading": "Cargando...",
     "learnMore": "Más información",
     "notSupported": "No compatible con este equipo",
-    "comingSoon": "Próximamente"
+    "comingSoon": "Próximamente",
+    "yes": "Sí",
+    "no": "No"
   },
   "home": {
     "title": "Kit de herramientas para rendimiento de juegos",
@@ -61,7 +64,9 @@
     "autoEcoHint": "Al desconectar la corriente pasa a Equilibrado; si la máquina sigue inactiva, o la batería baja, sigue hasta Eco.",
     "autoPerformance": "Cambiar automáticamente al modo de Rendimiento",
     "autoPerformanceHint": "Al conectar la corriente sube a Rendimiento; si la máquina está inactiva vuelve a Equilibrado. Sin límites nunca se elige por ti.",
-    "new": "NUEVA"
+    "new": "NUEVA",
+    "fanCleaning": "Limpieza de ventiladores",
+    "fanCleaningDesc": "Gira los ventiladores al revés unos segundos para expulsar el polvo de las rejillas."
   },
   "vitals": {
     "mode": "Modo",
@@ -173,6 +178,46 @@
     "restoreOnStartHint": "Desactivado por defecto. Un desplazamiento malo restaurado al arrancar puede impedir que la máquina llegue al escritorio, así que nunca se da por supuesto; y de todas formas se omite tras un arranque posterior a un cambio que nadie confirmó.",
     "backToStock": "Volver a los valores de fábrica",
     "unconfirmedAtStart": "El último cambio en una GPU no se confirmó nunca, así que en este arranque no se restauró nada y las tarjetas están con los relojes de fábrica."
+  },
+  "cleaning": {
+    "title": "Limpieza de ventiladores",
+    "lead": "Gira los ventiladores al revés durante unos segundos para expulsar el polvo que entró por las rejillas. Es lo mismo que hace el OMEN Gaming Hub en Windows, hablando con el firmware en lugar de con el controlador de ventiladores.",
+    "warningTitle": "Mientras dura, los ventiladores no refrigeran",
+    "warningBody": "Un ciclo invierte los ventiladores, así que no se refrigera nada hasta que termina. Se detiene solo pasado el tiempo configurado abajo, y no empieza siquiera por encima de {limit}. Cierra antes lo que exija potencia, y cuenta con que hará ruido.",
+    "readyTitle": "Listo cuando quieras",
+    "start": "Iniciar limpieza",
+    "starting": "Iniciando...",
+    "stop": "Detener ahora",
+    "running": "Limpiando",
+    "runningHint": "Los ventiladores giran al revés. Esto termina solo; el botón de abajo lo termina ya y los devuelve al modo en el que estaban.",
+    "transitioning": "En marcha",
+    "transitioningHint": "Se están frenando las aspas, o bajando de vuelta desde el giro inverso. Ninguna de las dos cosas es instantánea, y evitar interrumpirlas es justo para lo que existe la rampa.",
+    "notAsked": "No se ha preguntado al firmware, así que aún no se sabe nada de la limpieza de ventiladores de este equipo. Eso es un módulo de kernel que falta o un demonio sin root, no un veredicto sobre tu portátil. La página de Comprobación tiene ambas soluciones.",
+    "notCapable": "Se preguntó al firmware y este equipo no tiene limpieza de ventiladores. La mayoría de modelos no la tienen.",
+    "tooHot": "La CPU está a {temp}, por encima de los {limit} por debajo de los cuales arranca un ciclo. Deja que se enfríe e inténtalo de nuevo.",
+    "settings": "Ajustes",
+    "duration": "Cuánto dura",
+    "durationHint": "Cuánto tiempo siguen invertidos los ventiladores. La herramienta del fabricante usa 30 segundos, y el demonio lo hace cumplir por tres vías distintas para que un ciclo no pueda durar más.",
+    "customSpeed": "Elegir la velocidad",
+    "customSpeedHint": "Desactivado usa la velocidad que el firmware tiene configurada, que es la que enviaría el OMEN Gaming Hub. Activado te deja fijarla: más baja es más silenciosa y suave, más alta mueve más polvo.",
+    "speedFirmware": "Usando la velocidad del propio firmware",
+    "speedChosen": "Usando la velocidad de abajo",
+    "speed": "Velocidad inversa",
+    "hardware": "Lo que dijo el firmware",
+    "factGeneration": "Protocolo de limpieza",
+    "factFans": "Ventiladores que pueden invertirse",
+    "factAcpi": "Módulo acpi_call",
+    "factReversed": "Ventiladores invertidos ahora mismo",
+    "fanCpu": "CPU",
+    "fanGpu": "GPU",
+    "fanThird": "tercer ventilador",
+    "acpiLoaded": "cargado",
+    "acpiNotLoaded": "instalado, sin cargar",
+    "acpiMissing": "no instalado",
+    "generation": {
+      "modern": "moderno (CleanCreek)",
+      "legacy": "antiguo"
+    }
   },
   "lighting": {
     "mode": "Modo",
@@ -462,6 +507,10 @@
         "ok": "/proc/acpi/call está disponible",
         "absent": "/proc/acpi/call no encontrado; la barra RGB y el limpiador de ventilador lo necesitan",
         "remedy": "Instala acpi_call-dkms (Arch), acpi-call-dkms (Debian) o akmod-acpi_call (Fedora), luego `modprobe acpi_call`."
+      },
+      "fan-cleaner": {
+        "title": "Limpieza de ventiladores (giro inverso)",
+        "remedyAsk": "Se pregunta al firmware a través de {path}, lo que necesita el módulo acpi_call cargado y root para escribir. Con ambas cosas, vuelve a ejecutarlo."
       }
     },
     "remedy": "Qué hacer",
@@ -500,6 +549,21 @@
       "curveNoPoints": "params.curve debe tener al menos un punto",
       "curvePointNotFinite": "el punto de curva ({temp}, {percent}) no es un número finito",
       "calibrating": "ya hay una calibración en curso"
+    },
+    "cleaner": {
+      "err": {
+        "refused": "el firmware rechazó la llamada de limpieza de ventiladores (respondió: {answer})",
+        "notCapable": "el firmware de este equipo no tiene limpieza de ventiladores",
+        "busy": "ya hay un ciclo de limpieza en curso",
+        "tooHot": "{temp} °C es demasiado para invertir los ventiladores (el límite son {limit} °C)"
+      },
+      "probe": {
+        "modern": "el firmware respondió: el giro inverso está disponible en {fans}",
+        "legacy": "el firmware respondió: está disponible la limpieza antigua, de una sola velocidad",
+        "refused": "se preguntó al firmware y este equipo no tiene limpieza de ventiladores",
+        "notLoaded": "acpi_call está instalado pero no cargado, así que no se preguntó al firmware",
+        "noAcpiCall": "falta /proc/acpi/call, así que no se preguntó al firmware; {hint}"
+      }
     }
   },
   "hotkey": {
@@ -733,7 +797,11 @@
     "rootOk": "Corriendo como root, así que todas las lecturas están disponibles.",
     "rootNo": "Corriendo sin privilegios. Las lecturas que necesitan root — la utilización de la GPU integrada — no están disponibles. Instala el servicio de arriba para arreglarlo de forma permanente.",
     "rootShadowed": "Hay un servicio con privilegios instalado y en marcha, pero la app está conectada a otro daemon sin privilegios en {path}. Para ese otro — y si la fila del grupo de arriba te pide cerrar sesión, hazlo antes, porque al socket del servicio solo se llega con el grupo.",
-    "rootUnknown": "Se sabrá cuando se pueda alcanzar el daemon."
+    "rootUnknown": "Se sabrá cuando se pueda alcanzar el daemon.",
+    "acpiCall": "Módulo de kernel acpi_call",
+    "acpiCallOk": "/proc/acpi/call está disponible, así que la limpieza de ventiladores y la barra de luz pueden hablar con el firmware.",
+    "acpiCallNotLoaded": "instalado pero no cargado. Al cargarlo también se deja preparado para que se cargue al arrancar.",
+    "acpiCallMissing": "no está compilado para este kernel. Instala acpi_call-dkms (Arch), acpi-call-dkms (Debian/Ubuntu) o akmod-acpi_call (Fedora) y vuelve aquí."
   },
   "overclock": {
     "clamp": {

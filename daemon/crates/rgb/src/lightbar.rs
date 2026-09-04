@@ -61,7 +61,6 @@ pub const ZONES: usize = 4;
 /// pretending to be.
 const METHOD: &str = "\\_SB.WMID.WMAA";
 
-const SIGNATURE: &[u8; 4] = b"SECU";
 const PAYLOAD_LEN: usize = 128;
 const COMMAND_WRITE: u32 = 0x0002_0009;
 const COMMAND_READ: u32 = 0x0002_0008;
@@ -131,7 +130,7 @@ pub fn write_request(colors: &[Rgb], brightness: u8) -> String {
         payload[at + 2] = color.b;
     }
 
-    encode(&header(COMMAND_WRITE, TYPE_WRITE), &payload)
+    acpi::wmi_request(COMMAND_WRITE, TYPE_WRITE, PAYLOAD_LEN, &payload)
 }
 
 /// The buffer for reading one zone back. Zone index goes in the first
@@ -139,27 +138,9 @@ pub fn write_request(colors: &[Rgb], brightness: u8) -> String {
 pub fn read_request(zone: usize) -> String {
     let mut payload = [0u8; PAYLOAD_LEN];
     payload[0] = zone as u8;
-    encode(&header(COMMAND_READ, TYPE_READ), &payload)
+    acpi::wmi_request(COMMAND_READ, TYPE_READ, PAYLOAD_LEN, &payload)
 }
 
-fn header(command: u32, command_type: u32) -> [u8; 16] {
-    let mut header = [0u8; 16];
-    header[0..4].copy_from_slice(SIGNATURE);
-    header[4..8].copy_from_slice(&command.to_le_bytes());
-    header[8..12].copy_from_slice(&command_type.to_le_bytes());
-    header[12..16].copy_from_slice(&(PAYLOAD_LEN as u32).to_le_bytes());
-    header
-}
-
-/// `acpi_call` takes a buffer argument as `b` followed by plain hex.
-fn encode(header: &[u8; 16], payload: &[u8; PAYLOAD_LEN]) -> String {
-    let mut hex = String::with_capacity(1 + (16 + PAYLOAD_LEN) * 2);
-    hex.push('b');
-    for byte in header.iter().chain(payload.iter()) {
-        hex.push_str(&format!("{byte:02x}"));
-    }
-    hex
-}
 
 /// Whether a reply means the firmware did the thing.
 ///
@@ -179,71 +160,13 @@ pub fn is_success(response: &str) -> bool {
 
 /// The bytes behind an `acpi_call` reply.
 ///
-/// **Finding 2 of the review lands here.** Upstream strips the prefix with
-/// `clean_res.lstrip("b0x")`, and `str.lstrip` takes a *character set*, not
-/// a prefix: `'0xb0b0aa'.lstrip('b0x')` is `'aa'`, three bytes of real data
-/// gone, and any reply whose first byte is zero loses that byte too. This
-/// strips the prefix once, which is what was meant.
-pub fn parse_bytes(response: &str) -> Option<Vec<u8>> {
-    let text = response.trim();
-    if text.is_empty() {
-        return None;
-    }
-
-    // A `{0x50, 0x41, ...}` list. Every token has to fit in a byte, or
-    // this is not a list of bytes - it is one long blob that happens to
-    // start `0x`, and the branch below is the one that reads it.
-    let tokens = hex_tokens(text);
-    if !tokens.is_empty() {
-        let parsed: Option<Vec<u8>> =
-            tokens.iter().map(|t| u8::from_str_radix(t, 16).ok()).collect();
-        if let Some(bytes) = parsed {
-            return Some(bytes);
-        }
-    }
-
-    let blob = text.trim_matches(|c| c == '{' || c == '}').trim();
-    let blob = blob.strip_prefix("0x").or_else(|| blob.strip_prefix('b')).unwrap_or(blob);
-    let blob: String = blob.chars().filter(|c| !c.is_whitespace()).collect();
-    from_hex(&blob)
-}
-
-/// Every `0x…` run in the text, as its hex digits. Mirrors upstream's
-/// `re.findall(r'0x[0-9a-fA-F]+', res)` without pulling in a regex crate
-/// for one pattern.
-fn hex_tokens(text: &str) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut tokens = Vec::new();
-    let mut i = 0;
-    while i + 1 < chars.len() {
-        if chars[i] == '0' && (chars[i + 1] == 'x' || chars[i + 1] == 'X') {
-            let start = i + 2;
-            let mut end = start;
-            while end < chars.len() && chars[end].is_ascii_hexdigit() {
-                end += 1;
-            }
-            if end > start {
-                tokens.push(chars[start..end].iter().collect());
-                i = end;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    tokens
-}
-
-fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if text.is_empty() || !text.len().is_multiple_of(2) || !text.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let bytes: Vec<u8> = text
-        .as_bytes()
-        .chunks(2)
-        .filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
-        .collect();
-    (bytes.len() == text.len() / 2).then_some(bytes)
-}
+/// **Finding 2 of the review landed here** - upstream's
+/// `clean_res.lstrip("b0x")` takes a character set rather than a prefix and
+/// eats real data bytes - and then moved: the fan cleaner speaks the same
+/// protocol, so the parser is [`acpi::parse_bytes`] and there is one copy
+/// of it. Re-exported because this module's callers and tests read replies
+/// through the lightbar.
+pub use acpi::parse_bytes;
 
 /// The RGB triple in a single-zone read reply: four bytes past `PASS`,
 /// then three bytes of colour.
@@ -339,8 +262,8 @@ mod tests {
     use super::*;
 
     fn bytes_of(request: &str) -> Vec<u8> {
-        from_hex(request.strip_prefix('b').expect("acpi_call buffers start with b"))
-            .expect("the request must be plain hex")
+        assert!(request.starts_with('b'), "acpi_call buffers start with b");
+        parse_bytes(request).expect("the request must be plain hex")
     }
 
     /// The header is the part no test on hardware could isolate: if it is

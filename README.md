@@ -106,7 +106,16 @@ tools/      pyren-check.sh, the dependency-free fan self-test
   back). `fan.calibrate` measures what full speed actually is on a machine
   - the number the curve's hysteresis wants and otherwise has to guess at -
   and needs only mode switching, so it runs on boards that cannot be given
-  a percentage. The fan cleaner is not ported.
+  a percentage. The **fan cleaner** is ported (`fan.cleanerStatus`,
+  `startCleaning`, `stopCleaning`): dust removal by spinning the fans
+  backwards, over `/proc/acpi/call` rather than the kernel driver, in both
+  the modern ("CleanCreek") and legacy firmware dialects. Reverse spin is
+  cooling switched *off* for as long as it runs, so the timeout is enforced
+  three separate ways, a cycle found still running at daemon startup is
+  ended, and every failure path ramps the fans back down rather than
+  releasing them abruptly. **It has never been run against firmware that
+  has the feature** — same reason as the lightbar below — so what is tested
+  is the buffers, the replies, the capability decoding and the guards.
 - `rgb` module: the OMEN lighting, which is really *two unrelated things* —
   per-key RGB over USB HID (`0d62:54bf`) and a 4-zone bottom light strip
   over ACPI-WMI — that share no transport, no privileges and no detection.
@@ -121,13 +130,14 @@ tools/      pyren-check.sh, the dependency-free fan self-test
   of the three ways it is unavailable a machine is in, rather than
   "no lighting". The per-key path is detected and deliberately not driven.
   `/proc/acpi/call` is a single global interface with no locking, so every
-  use goes through one process-wide lock in `pyren-core` — shared, because
-  the fan cleaner will need it too.
+  use goes through one process-wide lock in `pyren-core` — shared with the
+  fan cleaner, which speaks the same `SECU` buffer protocol through the
+  same file.
 - App: a full OMEN Gaming Hub-style frontend — home dashboard, system vitals
   (basic + advanced views), performance control (power modes, fan
-  toggle/curve, power limits), GPU overclocking, lighting, graphics
-  switcher, network booster, key mapping, plus settings, drivers and help
-  pages. Fan and power writes reach the daemon, and the pages hide what
+  toggle/curve, power limits), GPU overclocking, fan cleaning, lighting,
+  graphics switcher, network booster, key mapping, plus settings, drivers
+  and help pages. Fan and power writes reach the daemon, and the pages hide what
   this machine's driver cannot do rather than offering controls that
   silently fail. GPU switching, network booster and key mapping are still
   UI-only, and so is the lighting page — the `rgb` module exists but is not

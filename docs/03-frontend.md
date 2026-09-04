@@ -28,7 +28,7 @@ app/src/
     ├── +layout.svelte       chrome + global notices, starts telemetry polling
     ├── +page.svelte         home ("gaming performance toolkit")
     ├── system/              the device tabs (vitals, performance, advanced,
-    │                        lighting, graphics, network, keys)
+    │                        cleaning, lighting, graphics, network, keys)
     ├── settings/  drivers/  help/
 ```
 

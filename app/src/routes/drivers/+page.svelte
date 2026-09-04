@@ -151,6 +151,24 @@
               : t("admin.perfNotRoot"),
       },
       {
+        // The one row here that is not about privilege at all, and it
+        // earns its place for that reason: a missing kernel module fails
+        // with the same "permission denied" as everything else on this
+        // page, which sends people to the wrong fix entirely.
+        id: "acpiCall",
+        ok: p.acpiCallLoaded,
+        title: t("admin.acpiCall"),
+        detail: p.acpiCallLoaded
+          ? t("admin.acpiCallOk")
+          : p.acpiCallInstalled
+            ? t("admin.acpiCallNotLoaded")
+            : t("admin.acpiCallMissing"),
+        // Only offered when there is a module to load. Where it is not
+        // installed the fix is a package, which is not this button's job
+        // and is named in the detail instead.
+        action: !p.acpiCallLoaded && p.acpiCallInstalled ? "loadAcpiCall" : undefined,
+      },
+      {
         id: "root",
         ok: daemonPrivileges?.root ?? false,
         title: t("admin.rootTitle"),
