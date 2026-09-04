@@ -138,7 +138,6 @@
     "fanSpeedUnavailable": "El controlador de esta máquina puede alternar los ventiladores entre automático y máximo, pero no fijar una velocidad: expone pwm1_enable y no pwm1. Ejecuta la comprobación de hardware para ver los detalles.",
     "turbo": "Turbo boost",
     "turboHint": "Permite que la CPU suba por encima de su frecuencia base. Desactivarlo es lo que más reduce el ruido de los ventiladores y el gasto de batería.",
-    "limitsApplyTo": "Estos límites son del perfil {mode}.",
     "smartBoost": "Aumento de rendimiento inteligente",
     "maxBatteryDrain": "Drenaje máximo de batería",
     "chassisTempLimit": "Temperatura límite del chasis",
@@ -159,7 +158,10 @@
     "curveSensorHint": "Con qué temperatura se lee la curva. La GPU suele ser lo primero que se calienta en un juego; mientras la tarjeta está dormida, la curva sigue a la CPU.",
     "sensorCpu": "CPU",
     "sensorGpu": "GPU",
-    "curveSensorAsleep": "La tarjeta gráfica no está informando de nada ahora mismo, así que la curva está siguiendo a la CPU."
+    "curveSensorAsleep": "La tarjeta gráfica no está informando de nada ahora mismo, así que la curva está siguiendo a la CPU.",
+    "limitsBelongTo": "Ajustando el perfil:",
+    "limitsApplyNow": "Es el modo en el que está la máquina, así que los cambios se aplican al momento.",
+    "limitsApplyLater": "La máquina no está en {mode} ahora mismo, así que esto se aplicará cuando cambie a ese modo."
   },
   "advanced": {
     "gpuOverclocking": "Overclocking de la GPU",

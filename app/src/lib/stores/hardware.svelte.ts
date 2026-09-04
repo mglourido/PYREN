@@ -350,9 +350,16 @@ class HardwareStore {
    * controls - these are sliders, and each change is a socket round trip
    * that re-applies the profile to the CPU.
    */
-  setPowerTuning(tuning: { pl1W?: number; pl2W?: number; turbo?: boolean }) {
-    if (tuning.pl1W !== undefined) this.set("pl1", Math.round(tuning.pl1W));
-    if (tuning.pl2W !== undefined) this.set("pl2", Math.round(tuning.pl2W));
+  setPowerTuning(tuning: { mode?: PowerMode; pl1W?: number; pl2W?: number; turbo?: boolean }) {
+    // The local mirror is only ever the *current* mode's envelope - it is
+    // what the rest of the UI reads for "the watts right now". Tuning a
+    // mode the machine is not in changes a stored profile and nothing
+    // else, so copying it here would show numbers nothing is applying.
+    const forCurrentMode = tuning.mode === undefined || tuning.mode === this.state.powerMode;
+    if (forCurrentMode) {
+      if (tuning.pl1W !== undefined) this.set("pl1", Math.round(tuning.pl1W));
+      if (tuning.pl2W !== undefined) this.set("pl2", Math.round(tuning.pl2W));
+    }
     if (this.powerTuningTimer !== null) clearTimeout(this.powerTuningTimer);
     this.powerTuningTimer = setTimeout(() => {
       this.powerTuningTimer = null;

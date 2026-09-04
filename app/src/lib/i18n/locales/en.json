@@ -138,7 +138,6 @@
     "fanSpeedUnavailable": "This machine's driver can switch the fans between automatic and maximum, but cannot set a speed: it exposes pwm1_enable and no pwm1. Run the hardware check for the details.",
     "turbo": "Turbo boost",
     "turboHint": "Lets the CPU burst above its base frequency. Turning it off is the single biggest thing you can do for fan noise and battery life.",
-    "limitsApplyTo": "These limits belong to the {mode} profile.",
     "smartBoost": "Smart performance boost",
     "maxBatteryDrain": "Maximum battery drain",
     "chassisTempLimit": "Chassis temperature limit",
@@ -159,7 +158,10 @@
     "curveSensorHint": "Which temperature the curve is read at. The GPU is usually what heats up first under a game; while the card is asleep the curve follows the CPU instead.",
     "sensorCpu": "CPU",
     "sensorGpu": "GPU",
-    "curveSensorAsleep": "The graphics card is reporting nothing right now, so the curve is following the CPU."
+    "curveSensorAsleep": "The graphics card is reporting nothing right now, so the curve is following the CPU.",
+    "limitsBelongTo": "Tuning the profile:",
+    "limitsApplyNow": "This is the mode the machine is in, so changes take effect straight away.",
+    "limitsApplyLater": "The machine is not in {mode} right now, so these take effect when it next switches to it."
   },
   "advanced": {
     "gpuOverclocking": "GPU overclocking",
