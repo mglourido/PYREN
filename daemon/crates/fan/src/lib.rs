@@ -1251,6 +1251,53 @@ fn read_fan_rpm(fan1: Option<&Path>, fan2: Option<&Path>) -> (i64, bool) {
     (rpm1.max(rpm2), rev1 || rev2)
 }
 
+/// Test-only redirection of `PYREN_ACPI_CALL`.
+///
+/// The variable is process-global and every test binary runs its tests in
+/// parallel threads, so four tests each setting it and then *removing* it
+/// were unsetting it under one another. That was invisible for as long as
+/// the development machine had no `/proc/acpi/call`: the fallback the
+/// removal exposed was a path that did not exist either, which is what
+/// those tests wanted anyway. On a machine where `acpi_call` is loaded the
+/// same race reaches the real firmware interface and the assertions
+/// invert. Holding one lock for the whole of each such test, and putting
+/// the variable back to whatever it was rather than deleting it, makes the
+/// redirection mean the same thing on both machines.
+#[cfg(test)]
+pub(crate) mod testenv {
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) struct NoAcpiCall {
+        // Poisoning is not interesting here - a test that panicked while
+        // holding the lock has already failed, and the next test still
+        // needs the redirection.
+        _guard: MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    /// Points `acpi_call` at a path that cannot exist, for as long as the
+    /// returned guard lives. `dir` is the test's own temp directory, so
+    /// two tests never share the name.
+    pub(crate) fn without_acpi_call(dir: &Path) -> NoAcpiCall {
+        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("PYREN_ACPI_CALL");
+        std::env::set_var("PYREN_ACPI_CALL", dir.join("definitely-not-here"));
+        NoAcpiCall { _guard: guard, previous }
+    }
+
+    impl Drop for NoAcpiCall {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(previous) => std::env::set_var("PYREN_ACPI_CALL", previous),
+                None => std::env::remove_var("PYREN_ACPI_CALL"),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1275,7 +1322,7 @@ mod tests {
     fn the_cleaner_status_answers_on_a_machine_with_no_acpi_call() {
         let dir = std::env::temp_dir().join(format!("pyren-fan-cleaner-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PYREN_ACPI_CALL", dir.join("nothing-here"));
+        let _no_acpi = crate::testenv::without_acpi_call(&dir);
 
         let module = module("status");
         let status = module.cleaner_status(true);
@@ -1290,7 +1337,6 @@ mod tests {
         // Nothing to stop is the state the caller asked for, not an error.
         assert!(module.stop_cleaning().is_ok());
 
-        std::env::remove_var("PYREN_ACPI_CALL");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1301,7 +1347,7 @@ mod tests {
     fn a_missing_acpi_call_is_a_failure_with_a_remedy_not_a_verdict() {
         let dir = std::env::temp_dir().join(format!("pyren-fan-start-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PYREN_ACPI_CALL", dir.join("nothing-here"));
+        let _no_acpi = crate::testenv::without_acpi_call(&dir);
 
         let module = module("start");
         let error = module.start_cleaning(None, None, false).expect_err("nothing to talk to");
@@ -1316,7 +1362,6 @@ mod tests {
         // not be refused as busy by the one that never began.
         assert!(lock(&module.state).cleaning.is_idle());
 
-        std::env::remove_var("PYREN_ACPI_CALL");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

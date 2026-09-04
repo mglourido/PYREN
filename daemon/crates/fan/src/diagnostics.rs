@@ -896,7 +896,7 @@ mod tests {
     fn a_fan_cleaner_that_was_never_asked_about_is_not_reported_as_absent() {
         let dir = std::env::temp_dir().join(format!("pyren-diag-cleaner-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PYREN_ACPI_CALL", dir.join("nothing-here"));
+        let _no_acpi = crate::testenv::without_acpi_call(&dir);
 
         let check = check_fan_cleaner();
         assert_eq!(check.id, "fan-cleaner");
@@ -904,7 +904,6 @@ mod tests {
         assert!(check.remedy.is_some(), "not being able to ask comes with a way to ask");
         assert!(!check.detail.contains("has no fan cleaner"));
 
-        std::env::remove_var("PYREN_ACPI_CALL");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
