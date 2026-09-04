@@ -50,6 +50,13 @@ fn run(program: &str, args: &[&str], hwmon: &Path) -> Run {
         // Without this they would read the developer's real USB bus, which
         // is not a fixture and differs from CI's.
         .env("PYREN_USB_DEVICES", hwmon.join("usb"))
+        // And the same for the two lighting interfaces. Left unset, both
+        // sides read the developer's real machine - where the answer
+        // depends on whether acpi_call happens to be loaded and whether
+        // the test runner happens to be root, neither of which is a
+        // fixture and neither of which CI reproduces.
+        .env("PYREN_ACPI_CALL", hwmon.join("acpi-call"))
+        .env("PYREN_RGB_ZONES_DIR", hwmon.join("rgb_zones"))
         .output()
         .unwrap_or_else(|e| panic!("running {program}: {e}"));
 

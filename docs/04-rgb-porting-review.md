@@ -11,7 +11,11 @@ answers the review's central question — see "Suggested porting order" at
 the end. The source is not in this repository; the copy on the USB stick
 (`/run/media/paraguayo33/SAMSUNG USB/omen-rgb-linux-main/`) has been
 **truncated to zero bytes** and is no longer readable — see
-`dev/FINDINGS.md` §"The RGB source on the USB stick is gone".
+`dev/FINDINGS.md` §"The RGB source on the USB stick is gone". Re-confirmed
+2026-09-04: `src/driver.py`, `src/lightbar.py`, `src/cli.py` and
+`src/gui.py` are all 0 bytes. `data/keys.json` (5,975 bytes) and the README
+survive, which is why step 3 below can still cite the key map but not the
+HID report layout.
 
 ## What has been done since (2026-09-03)
 
@@ -29,9 +33,32 @@ on purpose.
 | 5. root, and a udev rule would be better | Not applicable yet: only the lightbar is driven, and that needs root whatever the udev rules say. Still true for the per-key path when it lands. |
 | 6. behaviour worth keeping | Kept where it applies. The lightbar's `readZones` really does ask the firmware, unlike the keyboard's write-only buffer, and the module docs say so out loud so the two are not read as the same question. |
 
+**2026-09-04, and it changes the shape of this document:** the port was
+one dialect, and there are at least three. `omen-rgb-linux`'s protocol -
+WMI command `0x20009`, command type 11 - has since been *corroborated* by
+`OmenLinux/omen-rgb-keyboard`, whose header names it
+`HPWMI_SET_LIGHTBAR_COLORS = 11`, so the review's reading of it was right.
+But the same header, and the 2023 `hp-wmi` four-zone patch before it, name
+a **different** operation for the four-zone keyboard - types 2/3, with the
+zone colours at byte 25 rather than byte 7 - and some kernels publish the
+zones as plain sysfs files needing no `acpi_call` at all. All three are now
+implemented as *dialects* (`daemon/crates/rgb/src/dialect.rs`), all three
+are probed with a read, and the first that answers is used, with a setting
+to pin one by hand. See [`01-ipc-protocol.md`](01-ipc-protocol.md)
+§"There is no single OMEN lighting protocol".
+
+Since 2026-09-04 the app drives it too: the lighting page
+(`app/src/routes/system/lighting`) reads and writes the `rgb` module
+through seven new Tauri commands rather than the local mock it used to be.
+Two things it deliberately does *not* do — offer breathing/wave effects
+(the protocol carries colours and a brightness, and nothing else), and
+present the per-key keyboard as something these controls reach.
+
 **Still not done, and it is the only thing left:** none of this has been
 run against a light strip. `/proc/acpi/call` does not exist on the
-development laptop because `acpi_call` is not installed. Everything that
+development laptop — but as of 2026-09-04 `acpi_call` *is* installed there
+(DKMS, built for `linux-cachyos`) and merely unloaded, so what stands
+between this and an answer is one `modprobe`. Everything that
 can be tested without it is (the buffer the port builds, the replies it
 accepts, the probe on a machine that has neither path), so the untested
 remainder is exactly one thing: the firmware's own answer.
@@ -186,8 +213,9 @@ has nothing to talk to on this machine, so:
 
    So what remains is unchanged in substance and smaller in size: install
    `acpi_call` and see whether the firmware says `PASS`.
-3. ⏸ **Not done, on purpose.** Port the per-key path only if a `0d62:54bf`
-   device turns up on some other machine, and settle finding 1 first — the
+3. ⏸ **Not done, on purpose — and now also not possible from the stick.**
+   Port the per-key path only if a `0d62:54bf` device turns up on some
+   other machine, and settle finding 1 first — the
    key map is the whole value of that path and it should not be ported with
    a known inconsistency in it. Finding 1's `keys.json` half is now
    confirmed; the `set_all()` half needs the keyboard.
@@ -205,7 +233,7 @@ CachyOS kernel and the source `acpi_call-dkms`, whose build the installed
 `linux-cachyos-headers` satisfies:
 
 ```sh
-sudo pacman -S acpi_call        # or acpi_call-dkms
+sudo pacman -S acpi_call        # or acpi_call-dkms — already installed here
 sudo modprobe acpi_call         # the daemon will also do this on demand
 ls /proc/acpi/call              # it exists now
 

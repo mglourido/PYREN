@@ -220,16 +220,46 @@
     }
   },
   "lighting": {
+    "title": "Lighting",
+    "lead": "The four-zone light strip along the front edge, driven through the firmware over ACPI. Colours and a brightness are all the protocol carries, so there are no breathing or wave effects here - a switch that did nothing would be worse than no switch.",
     "mode": "Mode",
-    "static": "Static",
-    "breathing": "Breathing",
-    "wave": "Wave",
+    "static": "One colour",
+    "zones": "Per zone",
     "off": "Off",
     "brightness": "Brightness",
-    "selectZone": "Select a zone to assign a colour",
+    "colour": "Colour",
+    "colourHint": "Applied when you close the picker.",
+    "selectZone": "Click a zone in the strip above to aim the colour picker at it.",
+    "staticHint": "All four zones take the same colour. Switch to “Per zone” to set them apart.",
     "zone": "Zone {n}",
     "allZones": "All zones",
-    "presets": "Presets"
+    "presets": "Presets",
+    "hardware": "Hardware",
+    "restoreOnStart": "Restore on start",
+    "restoreOnStartHint": "Off by default: turning a machine's lights on at boot because they were on last week is your decision, not the daemon's. On, the daemon re-sends these colours when it starts.",
+    "readBack": "What the firmware says",
+    "readBackHint": "Asks the firmware for the four zone colours - four ACPI round trips, so it is a button rather than a poll. It is also the only check that the payload was understood rather than merely accepted.",
+    "read": "Read zones",
+    "probe": "Detection",
+    "reprobe": "Probe again",
+    "owned": "These colours were set by this daemon.",
+    "notOwned": "Nothing has been written yet, so the strip is showing whatever the firmware chose.",
+    "perKeyPresent": "An HP Gaming Keyboard II (per-key RGB) is attached. It is a different device on a different bus, and this build does not drive it - these controls are the light strip only.",
+    "notSaved": "The colours were sent but could not be saved, so they will not come back on a restart: {error}",
+    "noWmi": "This machine has no hp-wmi interface, so there is nothing to ask about a light strip.",
+    "refused": "The firmware was asked in all three protocols and refused each one, so this machine has no lighting these protocols reach.",
+    "notInstalled": "The acpi_call kernel module is not installed, so the firmware cannot be asked. This is not a verdict on your laptop: install the package for your distribution, then use “Probe again”.",
+    "notLoaded": "acpi_call is installed but not loaded. “sudo modprobe acpi_call”, then “Probe again”.",
+    "unreachable": "/proc/acpi/call is here but could not be used, so the firmware was never asked. This is almost always a daemon without root rather than anything about the hardware.",
+    "protocol": "Protocol",
+    "protocolLead": "There is no single OMEN lighting protocol. Three unrelated ways of talking to these lights exist, and which one a laptop speaks is not decided by its model name — so all three are tried and the first that answers is used.",
+    "dialect": "Which protocol",
+    "dialectHint": "Automatic uses the first protocol that answers a read. Pick one by hand when the automatic choice is wrong: a pinned protocol is used whether or not it answered, because you can see the lights and this app can only ask.",
+    "autoUsing": "Automatic — using {dialect}",
+    "autoNothing": "Automatic — nothing answered",
+    "noAnswer": "no answer",
+    "wrongDialect": "Your firmware has a lighting command, and none of the three protocols this build knows is the one it wants. That is a machine with lights this app cannot speak to yet, not a machine without them — pinning a protocol by hand below is the next thing to try.",
+    "zoneFourUnreadable": "Zone 4 always reads back black on this protocol. The colour sent to it is real — the lights show it — but acpi_call cuts the firmware's reply short one byte before zone 4 begins, so it cannot be read back. Installing a kernel driver that publishes the zones as files removes the limit."
   },
   "graphics": {
     "title": "Select a GPU mode",
@@ -402,14 +432,19 @@
     "io": "{path}: {error}"
   },
   "rgb": {
-    "lightbar": {
-      "refused": "the firmware refused the lightbar call (it answered: {answer})",
-      "unreadable": "the firmware answered {answer}, which is not a lightbar reply"
+    "dialect": {
+      "refused": "the firmware refused this lighting protocol (it answered: {answer})",
+      "returnCode": "the firmware returned code {code}: {meaning}",
+      "unreadable": "the firmware answered {answer}, which is not a colour reply",
+      "needsRoot": "writing the kernel's zone files needs root",
+      "io": "{error}"
     },
     "err": {
       "zonesRequired": "params.zones is required: four colours, '#rrggbb' or [r, g, b]",
       "zonesCount": "params.zones takes 1 to {max} colours, not {got}",
-      "colorRequired": "params.color is required: '#rrggbb' or [r, g, b]"
+      "colorRequired": "params.color is required: '#rrggbb' or [r, g, b]",
+      "dialectRequired": "params.dialect is required: 'auto', or one of the ids in getCapabilities",
+      "dialectUnknown": "there is no lighting dialect called {got}"
     }
   },
   "diagnostics": {

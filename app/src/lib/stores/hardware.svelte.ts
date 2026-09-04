@@ -37,7 +37,6 @@ function percentToPwm(percent: number): number {
 export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
 export type FanMode = "auto" | "max" | "manual" | "curve";
 export type GpuMode = "integrated" | "hybrid" | "discrete";
-export type LightingMode = "static" | "breathing" | "wave" | "off";
 export type NetworkMode = "off" | "auto" | "custom";
 
 /** One point of the temperature -> fan speed curve. */
@@ -61,9 +60,6 @@ export type HardwareState = {
   gpuCoreOffset: number;
   gpuMemOffset: number;
   gpuMode: GpuMode;
-  lightingMode: LightingMode;
-  brightness: number;
-  zoneColors: string[];
   networkMode: NetworkMode;
 };
 
@@ -104,9 +100,6 @@ function defaults(): HardwareState {
     gpuCoreOffset: 0,
     gpuMemOffset: 0,
     gpuMode: "hybrid",
-    lightingMode: "static",
-    brightness: 100,
-    zoneColors: ["#e5178c", "#f2374b", "#ff8a00", "#7b2ff7"],
     networkMode: "off",
   };
 }

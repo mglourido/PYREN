@@ -1,4 +1,16 @@
-//! The 4-zone OMEN light strip, over ACPI-WMI.
+//! The light strip, over ACPI-WMI: **one of three dialects**, and the
+//! first one this project shipped. Which of the three a machine speaks is
+//! decided by [`crate::dialect`], not here.
+//!
+//! Since this was written, the command type it sends has been identified
+//! in a second, independent source: `OmenLinux/omen-rgb-keyboard`'s header
+//! names `HPWMI_SET_LIGHTBAR_COLORS = 11` under the same `0x20009`
+//! lighting command, which is exactly what upstream's reverse engineering
+//! arrived at. That corroborates the **write**. Nothing corroborates the
+//! *read* below - `0x20008` command type 4 is upstream's alone, and no
+//! published driver reads the strip at all - which is why this dialect can
+//! fail to probe on a machine whose strip it could still drive. That is
+//! the case the manual override exists for.
 //!
 //! Ported from `src/lightbar.py` in `omen-rgb-linux`
 //! (arfelious, GPL-3.0). The review that preceded this port is
@@ -44,23 +56,20 @@
 //! tested below, so that when someone does install `acpi_call-dkms` the
 //! only untested thing left is the firmware's own answer.
 
-use pyren_core::{acpi, msg, Msg};
+use pyren_core::acpi;
+
+use crate::dialect::DialectError;
 
 use crate::color::Rgb;
 
-/// The lightbar has four zones. Not a configurable number: the payload's
-/// zone-count byte and its 12 bytes of colour are what the firmware reads.
-pub const ZONES: usize = 4;
+use crate::ZONES;
 
 /// Finding 3 of the review: upstream's `_detect_acpi_path` has two
 /// branches that return the same string, so it reads as a probe and is a
-/// constant. It is a constant here, plainly.
+/// constant. It is a constant here, plainly - and it has since moved to
+/// [`acpi::WMI_METHOD`], because all three dialects and the fan cleaner
+/// call the same one.
 ///
-/// If a machine ever turns up needing a different path, this becomes a
-/// probe with branches that differ - which is the thing the dead code was
-/// pretending to be.
-const METHOD: &str = "\\_SB.WMID.WMAA";
-
 const PAYLOAD_LEN: usize = 128;
 const COMMAND_WRITE: u32 = 0x0002_0009;
 const COMMAND_READ: u32 = 0x0002_0008;
@@ -70,40 +79,6 @@ const TYPE_READ: u32 = 0x04;
 /// The success sentinel, `PASS`, as the firmware returns it.
 const PASS: &[u8; 4] = b"PASS";
 
-#[derive(Debug, thiserror::Error)]
-pub enum LightbarError {
-    #[error(transparent)]
-    Acpi(#[from] acpi::AcpiError),
-    /// The call went through and the firmware said no. On a machine with
-    /// no light strip this is the normal answer, which is why it is what
-    /// [`is_present`] tests.
-    #[error("the firmware refused the lightbar call (it answered: {0})")]
-    Refused(String),
-    /// It said `PASS` and then the bytes made no sense.
-    #[error("the firmware answered {0}, which is not a lightbar reply")]
-    Unreadable(String),
-}
-
-impl LightbarError {
-    /// The sentence a client should show, translatable. The firmware's own
-    /// answer bytes are passed through as a param, not translated.
-    pub fn to_msg(&self) -> Msg {
-        match self {
-            Self::Acpi(e) => e.to_msg(),
-            Self::Refused(answer) => msg!(
-                "rgb.lightbar.refused",
-                { "answer" => answer.clone() },
-                "the firmware refused the lightbar call (it answered: {answer})"
-            ),
-            Self::Unreadable(answer) => msg!(
-                "rgb.lightbar.unreadable",
-                { "answer" => answer.clone() },
-                "the firmware answered {answer}, which is not a lightbar reply"
-            ),
-        }
-    }
-}
-
 /// Brightness is a percentage in this protocol, not a 0-255 level.
 pub fn clamp_brightness(value: i64) -> u8 {
     value.clamp(0, 100) as u8
@@ -111,6 +86,11 @@ pub fn clamp_brightness(value: i64) -> u8 {
 
 /// The 144-byte buffer for a write, as the hex argument `acpi_call` takes.
 pub fn write_request(colors: &[Rgb], brightness: u8) -> String {
+    acpi::wmi_request(COMMAND_WRITE, TYPE_WRITE, PAYLOAD_LEN, &payload_for(colors, brightness))
+}
+
+/// The 128 payload bytes of a write.
+pub fn payload_for(colors: &[Rgb], brightness: u8) -> [u8; PAYLOAD_LEN] {
     let mut payload = [0u8; PAYLOAD_LEN];
     payload[0] = 0; // target device: the lightbar
     payload[1] = 0; // mode: static
@@ -130,7 +110,7 @@ pub fn write_request(colors: &[Rgb], brightness: u8) -> String {
         payload[at + 2] = color.b;
     }
 
-    acpi::wmi_request(COMMAND_WRITE, TYPE_WRITE, PAYLOAD_LEN, &payload)
+    payload
 }
 
 /// The buffer for reading one zone back. Zone index goes in the first
@@ -182,75 +162,50 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 // --- the hardware ------------------------------------------------------
 
-/// Sends one write. Goes through [`acpi::call`], which holds the
+/// Sends one write. Goes through [`acpi::wmi_call`], which holds the
 /// cross-module lock over the write/read pair - **finding 4 of the
 /// review**, and the reason that lock is in `core` rather than here.
-pub fn set_colors(colors: &[Rgb], brightness: u8) -> Result<(), LightbarError> {
-    acpi::ensure_loaded()?;
-    let reply = acpi::call(METHOD, &format!("0 3 {}", write_request(colors, brightness)))?;
+///
+/// Brightness is a real field in this dialect's payload, so it goes to the
+/// firmware rather than being scaled into the colours the way the other
+/// two dialects have to do it.
+pub fn write_colors(colors: &[Rgb], brightness: u8) -> Result<(), DialectError> {
+    let reply = acpi::wmi_call(
+        COMMAND_WRITE,
+        TYPE_WRITE,
+        &payload_for(colors, brightness),
+        PAYLOAD_LEN,
+        PAYLOAD_LEN,
+    )?;
     if is_success(&reply) {
         Ok(())
     } else {
-        Err(LightbarError::Refused(reply))
+        Err(DialectError::Refused(reply.trim().to_string()))
     }
 }
 
-/// Reads the four zones back out of the firmware.
+/// Reads the four zones back out of the firmware, one call per zone.
 ///
 /// Unlike the per-key keyboard - whose HID lighting interface is
 /// write-only, so its `get_colors` returns the driver's own buffer - this
 /// really does ask the hardware. Worth saying out loud, because the two
 /// paths having the same method name on the same module would otherwise
 /// imply they answer the same question.
-pub fn read_colors() -> Result<Vec<Rgb>, LightbarError> {
-    acpi::ensure_loaded()?;
+pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
     let mut colors = Vec::with_capacity(ZONES);
     for zone in 0..ZONES {
-        let reply = acpi::call(METHOD, &format!("0 3 {}", read_request(zone)))?;
+        let mut payload = [0u8; PAYLOAD_LEN];
+        payload[0] = zone as u8;
+        let reply =
+            acpi::wmi_call(COMMAND_READ, TYPE_READ, &payload, PAYLOAD_LEN, PAYLOAD_LEN)?;
         if !is_success(&reply) {
-            return Err(LightbarError::Refused(reply));
+            return Err(DialectError::Refused(reply.trim().to_string()));
         }
-        let bytes = parse_bytes(&reply).ok_or_else(|| LightbarError::Unreadable(reply.clone()))?;
-        colors.push(zone_color(&bytes).ok_or(LightbarError::Unreadable(reply))?);
+        let bytes = acpi::parse_bytes(&reply)
+            .ok_or_else(|| DialectError::Unreadable(reply.clone()))?;
+        colors.push(zone_color(&bytes).ok_or(DialectError::Unreadable(reply))?);
     }
     Ok(colors)
-}
-
-/// What came back from putting the question to the firmware.
-///
-/// The third variant is the one that earns this being an enum rather than
-/// a bool: **failing to ask is not being told no.** An unprivileged
-/// process cannot write `/proc/acpi/call` at all, and reporting that as
-/// "this machine has no light strip" would be a permanent-sounding verdict
-/// on a machine that simply was not asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Answer {
-    /// It said `PASS`.
-    Pass,
-    /// The call completed and it said something else. On a machine with no
-    /// light strip this is the normal answer.
-    Refused,
-    /// The call could not be made. Carries why.
-    Unreachable(String),
-}
-
-/// Asks the firmware whether there is a lightbar here.
-///
-/// A *read* is what asks: it polls the current state without overwriting
-/// it, so probing for a lightbar never changes one. Needs `acpi_call`
-/// present already - probing does not load kernel modules, see
-/// [`acpi::ensure_loaded`].
-pub fn ask() -> Answer {
-    match acpi::call(METHOD, &format!("0 3 {}", read_request(0))) {
-        Ok(reply) if is_success(&reply) => Answer::Pass,
-        Ok(_) => Answer::Refused,
-        Err(e) => Answer::Unreachable(e.to_string()),
-    }
-}
-
-/// Whether this machine has a light strip that answers.
-pub fn is_present() -> bool {
-    hp_wmi_present() && acpi::is_loaded() && ask() == Answer::Pass
 }
 
 pub fn hp_wmi_present() -> bool {

@@ -1134,12 +1134,13 @@ the hp-wmi reverse-bit encoding — see
 | method | params | result | status |
 |---|---|---|---|
 | `rgb.getCapabilities` | none | a **fresh** probe of both hardware paths | ✅ implemented, read-only |
-| `rgb.getStatus` | none | the startup probe plus what this daemon last set | ✅ implemented, read-only |
+| `rgb.getStatus` | none | the probe (re-taken only if an interface changed) plus what this daemon last set | ✅ implemented, read-only |
 | `rgb.setZones` | `{ "zones": [c, c, c, c], "brightness"?: 0-100 }` | the status object | ✅ implemented, needs root, **never run against a light strip** |
 | `rgb.setStatic` | `{ "color": c, "brightness"?: 0-100 }` | the status object | ✅ implemented, needs root, ditto |
 | `rgb.off` | none | the status object | ✅ implemented, needs root, ditto |
 | `rgb.readZones` | none | `{ "zones": [c, c, c, c] }` | ✅ implemented, needs root, ditto |
 | `rgb.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
+| `rgb.setDialect` | `{ "dialect": "auto" \| id }` | the status object | ✅ implemented |
 
 A colour `c` goes **out** as `"#rrggbb"` and is accepted **in** as either
 that or `[r, g, b]`, so a script does not have to build a hex string to
@@ -1155,23 +1156,63 @@ including the shared `acpi.*` keys when the cause is a missing `acpi_call`.
 protocol takes, and calling it brightness while meaning a level is how a
 UI ends up with a slider that does nothing above 40 %.
 
-### There are two unrelated hardware paths, and the model name does not say which
+### There is no single OMEN lighting protocol
 
-The source project (`omen-rgb-linux`) drives two things that share no
-transport, no privilege model and no detection:
+Three unrelated ways of talking to these lights exist, they share nothing
+but the vendor, and **which one a laptop speaks is not decided by its model
+name** — the same rule as §"`controls` and `compatibility` are measured,
+not looked up". So all three are implemented, all three are probed, and the
+first that answers is used.
 
-| | Per-key RGB | 4-zone lightbar |
+| id | how | needs | where it comes from |
+|---|---|---|---|
+| `kernelZones` | `/sys/devices/platform/hp-wmi/rgb_zones/zone00…03`, one `RRGGBB` each | a kernel that publishes them | the in-tree and out-of-tree `hp-wmi` four-zone support |
+| `fourZone` | WMI command `0x20009`, command types 2 (`COLOR_GET`) / 3 (`COLOR_SET`); zones at byte 25 of a 128-byte state buffer | `acpi_call`, root | the 2023 `hp-wmi` four-zone patch and `OmenLinux/omen-rgb-keyboard` (2025), read independently and in agreement |
+| `lightbar` | WMI command `0x20009`, command type 11 (`SET_LIGHTBAR_COLORS`); brightness at byte 3, zones at byte 7 | `acpi_call`, root | `omen-rgb-linux`, the port this module started as |
+
+They are tried in that order and the order is not arbitrary: `kernelZones`
+cannot send the firmware a command it did not expect, so wherever it exists
+it is the right answer.
+
+**Probing is reading.** A dialect is *available* when a **read** through it
+answered. Nothing probes by writing: a probe that changes the lights is not
+a probe, and on a machine that speaks a different dialect it would be a
+write of unknown meaning.
+
+That is exactly why `rgb.setDialect` exists. Auto can only ever pick a
+dialect this build can *read*; the person at the keyboard can see whether
+the lights actually changed. A pinned dialect is therefore used **whether
+or not it probed**, and `getStatus` reports the choice and the resolution
+separately:
+
+```json
+{ "dialect": "auto", "activeDialect": "fourZone" }
+```
+
+`dialect` is what was asked for (`"auto"` or an id); `activeDialect` is
+what that resolved to, and `null` when nothing answered.
+
+**A brightness slider means the same thing on all three.** Only `lightbar`
+has a brightness field in its payload; the other two have none, and their
+reference drivers scale the colours in software instead. So does this
+module (`pyren_rgb::scale`), which is why brightness is a percentage
+everywhere rather than a control that works on one dialect and silently
+does nothing on another.
+
+### Two unrelated *devices*, on top of that
+
+Underneath the three dialects there are still two unrelated pieces of
+hardware, and only one of them is driven:
+
+| | Per-key RGB | The four zones |
 |---|---|---|
-| Transport | USB HID, `hidapi` | ACPI-WMI via `/proc/acpi/call` |
-| Device | HP Gaming Keyboard II, `0d62:54bf` | `hp-wmi` + the `acpi_call` module |
+| Transport | USB HID, `hidapi` | ACPI-WMI, or the kernel's sysfs files |
+| Device | HP Gaming Keyboard II, `0d62:54bf` | `hp-wmi` (+ the `acpi_call` module for the WMI dialects) |
 
-**Which one a given laptop has is not decided by its model name**, so both
-are probed and the answer is reported rather than looked up — the same
-rule as §"`controls` and `compatibility` are measured, not looked up". Only
-the lightbar is *driven*: on the one OMEN this project has run on, there
-is no `0d62` device on the bus at all. The full reasoning, and the three
-upstream bugs this port fixes rather than carries over, are in
-[`04-rgb-porting-review.md`](04-rgb-porting-review.md).
+Both are probed; only the second is driven. On the one OMEN this project
+has run on there is no `0d62` device on the bus at all. The full reasoning,
+and the three upstream bugs this port fixes rather than carries over, are
+in [`04-rgb-porting-review.md`](04-rgb-porting-review.md).
 
 `getCapabilities` answers:
 
@@ -1183,34 +1224,79 @@ upstream bugs this port fixes rather than carries over, are in
     "ported": false,
     "detail": "no HP Gaming Keyboard II on this machine"
   },
-  "lightbar": {
+  "lighting": {
     "present": false,
     "hpWmi": true,
-    "acpiCall": false,
-    "acpiCallInstalled": false,
-    "answered": null,
-    "detail": "hp-wmi is here but /proc/acpi/call is not, and the module is not installed either; install the acpi_call kernel module: ..."
+    "acpiCall": true,
+    "acpiCallInstalled": true,
+    "commandAnswers": false,
+    "unreachable": null,
+    "dialects": [
+      { "id": "kernelZones", "transport": "the kernel's rgb_zones files",
+        "available": false, "asked": false,
+        "detail": "this kernel does not publish rgb_zones for hp-wmi" },
+      { "id": "fourZone", "transport": "WMI 0x20009, command types 2/3",
+        "available": false, "asked": true,
+        "detail": "the firmware refused (it answered: )" },
+      { "id": "lightbar", "transport": "WMI 0x20009, command type 11",
+        "available": false, "asked": true,
+        "detail": "the firmware refused (it answered: )" }
+    ],
+    "detail": "the firmware was asked in every dialect this build knows and refused each one"
   },
   "supported": false
 }
 ```
 
-Three fields there are easy to conflate and must not be:
+Four fields there are easy to conflate and must not be:
 
-- **`present` is a claim about hardware.** It is only ever true when the
-  firmware was asked and said yes.
-- **`answered: null` is not a refusal.** It means the question could not be
-  put — no `hp-wmi`, or no `/proc/acpi/call` — and a client that shows
-  "your machine has no lightbar" for that is telling the user something
-  nobody established.
+- **`present` is a claim about hardware.** It is only ever true when some
+  dialect was asked and answered.
+- **`asked: false` is not a refusal.** It means the question could not be
+  put — no kernel files, no `hp-wmi`, no `/proc/acpi/call`, or a daemon
+  that is not root — and a client that shows "your machine has no lighting"
+  for that is telling the user something nobody established.
 - **`acpiCall` and `acpiCallInstalled` are different problems.** Not
   installed needs a package; installed-but-not-loaded needs a `modprobe`.
-  One message for both sends people to the wrong fix.
+- **`commandAnswers`** is whether the firmware's lighting command
+  (`0x20009`) answered a plain read *at all*, independent of any dialect.
+  `true` with no available dialect is the interesting machine: it has
+  lighting and none of the three operations this build knows is the one it
+  wants. That is a machine to pin a dialect on by hand, not a machine
+  without lights.
 
 `getCapabilities` re-probes on every call, unlike `is_supported`, which is
 the probe taken at startup. That is deliberate: installing `acpi_call` and
 asking again should be a complete workflow, not one that needs a daemon
 restart.
+
+`getStatus.capabilities` does **not** ask the firmware on every read — a
+status read is a poll, and a poll must not cost an ACPI round trip on the
+file the fan cleaner writes through. What it does do is re-take the probe
+when the *interface* facts have changed, all of which are a `stat`: whether
+`hp-wmi` is there, whether `/proc/acpi/call` is there, and whether the
+module is installed. That is precisely what moves while the daemon runs,
+and freezing it at startup produced a real wrong sentence — `rgb get` went
+on reporting "acpi_call is not installed" on a machine where it had been
+installed since the daemon booted.
+
+### Two things confirmed on hardware, both of them warnings
+
+**`PASS` is not evidence that a dialect works.** On the OMEN this project
+runs on, `lightbar` answers `PASS` to reads and writes, reports all four
+zones black, and changes nothing; `fourZone` on the same machine returns
+the keyboard's real colours and drives them. So a client must never present
+"the firmware accepted it" as "it worked", and auto-selection puts
+`fourZone` ahead of `lightbar` for exactly this reason.
+
+**`acpi_call` truncates the reply.** It renders a buffer answer as the text
+`{0x50, 0x41, …}` into a fixed result buffer of a few hundred bytes, so a
+128-byte answer arrives as its first ~34. Zones 0-2 fit; zone 3 starts at
+byte 34 and does not, so `readZones` reports it black however it was set.
+The colour written to it is real. A short reply is read for what it
+contains rather than failed outright — failing would send auto-selection to
+the dialect that answers `PASS` and does nothing. `kernelZones` has no such
+limit, which is the argument for preferring it.
 
 ### A missing `acpi_call` is `failed`, not `notCapable`
 
@@ -1223,11 +1309,27 @@ offering the control"*:
 | no `hp-wmi` on this machine | `unsupported` |
 | `/proc/acpi/call` missing | `failed`, with the package name in the message |
 | not root | `permissionDenied` |
-| the firmware was asked and refused | `notCapable` |
+| the firmware was asked and refused *this dialect* | `notCapable` |
 
 A missing kernel module is one `pacman -S` away, and reporting it as a
 permanent hardware limit would hide a working light strip behind an
 install nobody was told to do.
+
+### `/proc/acpi/call` cannot be read with `read_to_string`
+
+Worth stating in the protocol document because it is a property of the
+interface rather than of this code. `/proc/acpi/call` reports a size of
+zero, like most of procfs, so `fs::read_to_string` has no hint to size its
+buffer with and opens by probing with a very small one — and this interface
+answers a small read with **nothing at all** rather than with the first few
+bytes. The result is an empty string for a call the firmware answered.
+
+That failure is silent and it lies: an empty reply is not `PASS`, so it is
+reported as the firmware refusing, and a refusal reads as a verdict on the
+machine. It is what made every lighting dialect and the fan cleaner report
+"this machine cannot do it" on a machine that can. `pyren_core::acpi` reads
+with one explicit large read; the reasoning is in a comment there, and
+`dev/FINDINGS.md` has the measurements.
 
 ### `/proc/acpi/call` is one file, and the lock is not in this module
 

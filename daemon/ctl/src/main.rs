@@ -70,13 +70,17 @@ FANS
   fan clean-stop               end a cleaning cycle now
 
 LIGHTS
-  rgb probe                    which of the two lighting paths this
-                               machine has, and if neither, why
+  rgb probe                    which ways of talking to the lights this
+                               machine answers, and where none do, why
   rgb get                      the probe plus what this daemon last set
   rgb read                     ask the firmware what the four zones are
   rgb set <colour>             all four zones, e.g. rgb set '#ff9900'
   rgb zones <c,c,c,c>          one colour per zone
   rgb off
+  rgb brightness <0-100>       keeps the colours, changes the level
+  rgb dialect                  which ways of talking to the lights
+                               this machine answers
+  rgb dialect <auto|id>        pin one by hand, e.g. rgb dialect fourZone
   rgb restore-on-start <on|off>
                                'set' and 'zones' also take --brightness 0-100
 
@@ -346,6 +350,34 @@ fn run(command: &args::Command) -> Run {
             add_brightness(command, &mut params)?;
             show(command, client::call("rgb", "setZones", params)?, print_rgb)
         }
+        // Without this there is no way back from `rgb off`, which leaves
+        // the brightness at 0 - and every later `rgb set` then writes a
+        // colour that is scaled to black.
+        //
+        // Two calls rather than a `setBrightness` method: brightness is
+        // not a thing the daemon holds apart from the colours, and adding
+        // a method that only re-sends them would be a third way to say
+        // what `setZones` already says.
+        ["rgb", "brightness", value] => {
+            let percent: i64 = value.trim_end_matches('%').parse().map_err(|_| {
+                Failure::Usage(format!("rgb brightness takes 0-100, not '{value}'"))
+            })?;
+            let status = client::call("rgb", "getStatus", Value::Null)?;
+            let zones = status.get("zones").cloned().unwrap_or(Value::Null);
+            show(
+                command,
+                client::call("rgb", "setZones", json!({ "zones": zones, "brightness": percent }))?,
+                print_rgb,
+            )
+        }
+        ["rgb", "dialect"] => {
+            show(command, client::call("rgb", "getCapabilities", Value::Null)?, print_rgb_probe)
+        }
+        ["rgb", "dialect", id] => show(
+            command,
+            client::call("rgb", "setDialect", json!({ "dialect": id }))?,
+            print_rgb,
+        ),
         ["rgb", "restore-on-start", value] => {
             let enabled = word_switch("restore-on-start", value)?;
             show(
@@ -1124,20 +1156,31 @@ fn print_oc(state: &Value) {
 }
 
 fn print_rgb_probe(probe: &Value) {
-    let lightbar = probe.get("lightbar").cloned().unwrap_or(Value::Null);
+    let lighting = probe.get("lighting").cloned().unwrap_or(Value::Null);
     let per_key = probe.get("perKey").cloned().unwrap_or(Value::Null);
 
     // Both paths, always, even when neither is here: which one a machine
     // has is the question this command exists to answer, and a single
     // "no lighting" line answers it for neither.
-    row(
-        "lightbar",
-        format!(
-            "{} - {}",
-            yes_no(lightbar.get("present")),
-            text(&lightbar, "detail")
-        ),
-    );
+    row("lighting", format!("{} - {}", yes_no(lighting.get("present")), text(&lighting, "detail")));
+
+    // One line per dialect, because "no lighting" is three different
+    // findings with three different next steps, and the manual override
+    // needs the ids spelled out somewhere.
+    if let Some(dialects) = lighting.get("dialects").and_then(Value::as_array) {
+        for dialect in dialects {
+            let mark = match dialect.get("available").and_then(Value::as_bool) {
+                Some(true) => "yes",
+                _ if dialect.get("asked").and_then(Value::as_bool) == Some(true) => "no",
+                _ => "not asked",
+            };
+            println!(
+                "    {:<12} {mark} - {}",
+                text(dialect, "id"),
+                text(dialect, "detail")
+            );
+        }
+    }
     row(
         "per-key",
         format!("{} - {}", yes_no(per_key.get("present")), text(&per_key, "detail")),
@@ -1150,6 +1193,15 @@ fn print_rgb(status: &Value) {
     }
     print_zones(status);
     row("brightness", format!("{}%", status.get("brightness").and_then(Value::as_i64).unwrap_or(0)));
+    row(
+        "dialect",
+        match (status.get("dialect").and_then(Value::as_str), status.get("activeDialect").and_then(Value::as_str)) {
+            (Some("auto"), Some(active)) => format!("{active} (chosen automatically)"),
+            (Some("auto"), None) => "auto - and nothing answered".to_string(),
+            (Some(pinned), _) => format!("{pinned} (pinned by hand)"),
+            _ => "unknown".to_string(),
+        },
+    );
     row(
         "set by",
         match status.get("owned").and_then(Value::as_bool) {

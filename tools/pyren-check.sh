@@ -586,11 +586,20 @@ else
 	record skip lighting-per-key "Per-key RGB keyboard" "no $PER_KEY_ID on this machine"
 fi
 
-# The ACPI read this issues, byte for byte: a 16-byte header
-# ("SECU", command 0x20008, type 4, size 128) and 128 zero payload bytes,
-# which is zone 0. Kept in step with pyren_rgb::lightbar::read_request(0)
-# by daemon/check/tests/parity.rs.
+# There is no single OMEN lighting protocol: three unrelated ways of
+# talking to these lights exist, and which one a laptop speaks is not
+# decided by its model name. All three are probed with a *read*, in the
+# order the daemon tries them, and each gets its own check - because "no
+# lighting" is three different findings with three different next steps.
+#
+# The two WMI buffers below are byte for byte what the daemon sends, and
+# daemon/check/tests/parity.rs is what keeps them that way.
+#   fourZone: header ("SECU", command 0x20009, type 2, size 128) + 128 zeros
+#   lightbar: header ("SECU", command 0x20008, type 4, size 128) + 128 zeros
+FOURZONE_GET="b53454355090002000200000080000000$(printf '%0256d' 0)"
 LIGHTBAR_GET="b53454355080002000400000080000000$(printf '%0256d' 0)"
+
+RGB_ZONES_DIR="${PYREN_RGB_ZONES_DIR:-/sys/devices/platform/hp-wmi/rgb_zones}"
 
 ACPI_CALL_INSTALLED=0
 if [ -e "$ACPI_CALL" ]; then
@@ -599,64 +608,77 @@ elif command -v modinfo >/dev/null 2>&1 && modinfo -n acpi_call >/dev/null 2>&1;
 	ACPI_CALL_INSTALLED=1
 fi
 
-# ANSWERED: 1 the firmware said PASS, 0 it refused, "" it was never asked.
-# The third is not the second: reporting "no lightbar" for a question that
-# could not be put would be claiming something nobody established - and the
-# commonest reason it could not be put is that this is not root, which is a
-# fix rather than a verdict on the hardware.
-ANSWERED=""
-UNREACHABLE=0
-LIGHTBAR=0
-if [ -d "$HP_WMI_DIR" ] && [ -e "$ACPI_CALL" ]; then
+# Why a WMI dialect could not even be asked, or "" when it could. Shared by
+# both of them, because they need the same two things.
+wmi_skip_reason() {
+	if [ ! -d "$HP_WMI_DIR" ]; then
+		echo "no hp-wmi interface on this machine"
+	elif [ ! -e "$ACPI_CALL" ]; then
+		echo "/proc/acpi/call is not there, so the firmware cannot be asked"
+	fi
+}
+
+DRIVEN=""
+
+# The kernel's own files, first: it is the only dialect that cannot send
+# the firmware a command it did not expect, so wherever it exists it is the
+# right answer.
+if [ -e "$RGB_ZONES_DIR/zone00" ] && head -c 6 "$RGB_ZONES_DIR/zone00" >/dev/null 2>&1; then
+	record pass lighting-kernelZones "Lighting dialect: kernelZones" \
+		"answered a read of all four zones"
+	DRIVEN="${DRIVEN:-kernelZones}"
+else
+	record skip lighting-kernelZones "Lighting dialect: kernelZones" \
+		"this kernel does not publish rgb_zones for hp-wmi"
+fi
+
+# One WMI dialect: probe it with its own read and record the result.
+# $1 id, $2 the buffer to send.
+probe_wmi_dialect() {
+	_id="$1"
+	_buffer="$2"
+	_skip="$(wmi_skip_reason)"
+	if [ -n "$_skip" ]; then
+		record skip "lighting-$_id" "Lighting dialect: $_id" "$_skip"
+		return
+	fi
 	# stderr is redirected for the whole group, not per command: a failed
 	# *redirection* is reported by the shell before the command's own
 	# 2>/dev/null would apply, so a non-root run would print a raw
 	# "Permission denied" over this tool's output.
-	if reply="$(
+	if _reply="$(
 		{
-			printf '%s' "\\_SB.WMID.WMAA 0 3 $LIGHTBAR_GET" >"$ACPI_CALL" &&
+			printf '%s' "\\_SB.WMID.WMAA 0 3 $_buffer" >"$ACPI_CALL" &&
 				tr -d '\000' <"$ACPI_CALL"
 		} 2>/dev/null
 	)"; then
-		# The call went through, so whatever came back is an answer.
-		ANSWERED=0
-		if is_acpi_pass "$reply"; then
-			ANSWERED=1
-			LIGHTBAR=1
+		if is_acpi_pass "$_reply"; then
+			record pass "lighting-$_id" "Lighting dialect: $_id" \
+				"answered a read of all four zones"
+			DRIVEN="${DRIVEN:-$_id}"
+		else
+			record warn "lighting-$_id" "Lighting dialect: $_id" \
+				"the firmware refused (it answered: $_reply)" \
+				"This is one of several ways of talking to these lights; the others are checked separately. 'pyren-ctl rgb dialect <id>' forces one by hand."
 		fi
 	else
-		UNREACHABLE=1
+		# The interface is there and the call failed anyway - an
+		# unprivileged run. Not a refusal: the fix is sudo.
+		record skip "lighting-$_id" "Lighting dialect: $_id" \
+			"writing /proc/acpi/call needs root, so the firmware was not asked" \
+			"Writing /proc/acpi/call needs root; re-run this as root."
 	fi
-fi
+}
 
-if [ "$ANSWERED" = "1" ]; then
-	record pass lighting-lightbar "4-zone lightbar" "the firmware answered a lightbar read"
-elif [ "$ANSWERED" = "0" ]; then
-	record warn lighting-lightbar "4-zone lightbar" \
-		"the firmware was asked and refused, so there is no light strip here"
-elif [ "$UNREACHABLE" -eq 1 ]; then
-	record skip lighting-lightbar "4-zone lightbar" \
-		"/proc/acpi/call could not be used, so the firmware was not asked" \
-		"Writing /proc/acpi/call needs root; re-run this as root."
-elif [ ! -d "$HP_WMI_DIR" ]; then
-	record skip lighting-lightbar "4-zone lightbar" \
-		"no hp-wmi interface, so there is nothing to ask"
-elif [ "$ACPI_CALL_INSTALLED" -eq 1 ]; then
-	record warn lighting-lightbar "4-zone lightbar" \
-		"acpi_call is installed but not loaded, so the firmware was not asked" \
-		"modprobe acpi_call, then run this again."
-else
-	record warn lighting-lightbar "4-zone lightbar" \
-		"/proc/acpi/call is missing, so the firmware was not asked" \
-		"install the acpi_call kernel module: 'sudo pacman -S acpi_call-dkms' on Arch, 'sudo apt install acpi_call-dkms' on Debian/Ubuntu, 'sudo dnf install akmod-acpi_call' on Fedora"
-fi
+probe_wmi_dialect fourZone "$FOURZONE_GET"
+probe_wmi_dialect lightbar "$LIGHTBAR_GET"
 
-if [ "$LIGHTBAR" -eq 1 ]; then
-	LIGHTING_SUMMARY="The 4-zone lightbar answered and can be driven."
+if [ -n "$DRIVEN" ]; then
+	LIGHTING_SUMMARY="The lights answered on '$DRIVEN' and can be driven."
 elif [ "$PER_KEY" -eq 1 ]; then
 	LIGHTING_SUMMARY="A per-key RGB keyboard is attached; this build does not drive it."
 else
-	LIGHTING_SUMMARY="No lighting this project can drive was found. See the lightbar check for whether that was established or merely not asked."
+	LIGHTING_SUMMARY="No lighting this project can drive was found. See the per-dialect checks for whether that was established or merely not asked."
 fi
 
 # --- verdict -----------------------------------------------------------
@@ -726,7 +748,11 @@ CTRL_FAN_SPEED=0
 [ -n "$PWM" ] && [ -e "$PWM" ] && CTRL_FAN_SPEED=1
 CTRL_POWER_MODE=0
 [ -n "$MECHANISMS" ] && CTRL_POWER_MODE=1
-CTRL_LIGHTBAR="$LIGHTBAR"
+# Any dialect answering counts, which is what the daemon reports too. The
+# wire field is still called `lightbar`; the thing it means is "the lights
+# answered somewhere".
+CTRL_LIGHTBAR=0
+[ -n "$DRIVEN" ] && CTRL_LIGHTBAR=1
 
 WORKS=""
 add_works() { WORKS="${WORKS:+$WORKS, }$1"; }

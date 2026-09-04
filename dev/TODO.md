@@ -27,30 +27,56 @@ driver was installed without it, so it is running on whatever ceiling the
 firmware reports. Measuring it and reinstalling would pin a real one.
 
 ### 1.2 Ask the firmware about the lightbar **[HP]**
-The `rgb` module is written (`daemon/crates/rgb`) and has **never been run
-against a light strip**, for one installable reason: `/proc/acpi/call` does
-not exist here because `acpi_call` is not installed. Everything that can be
-tested without it is — the 144-byte buffer the port builds, the replies it
-accepts, the probe on a machine with neither path — so this is a
+The `rgb` module is written (`daemon/crates/rgb`), the app's lighting page
+now drives it, and the whole stack has **never been run against a light
+strip** — for one reason, and it is now smaller than it was. `acpi_call` is
+**installed** on this machine (DKMS, built against `linux-cachyos`); it is
+simply not loaded, so `/proc/acpi/call` does not exist yet. Everything that
+can be tested without it is — the 144-byte buffer the port builds, the
+replies it accepts, the probe on a machine with neither path — so this is a
 one-variable test:
 
 ```sh
-sudo pacman -S acpi_call                          # prebuilt for this kernel
+sudo modprobe acpi_call                           # already installed here
 cd daemon && sudo -E cargo run -p pyren-daemon    # terminal 1
 cargo run -q -p pyren-ctl -- rgb probe            # terminal 2
 cargo run -q -p pyren-ctl -- rgb set '#ff9900'
 cargo run -q -p pyren-ctl -- rgb read             # did it understand the payload?
 ```
 
-*Done when*: `rgb probe` says whether the firmware answered, and either
-answer is in `FINDINGS.md`. **"The firmware refused" is a result**, and the
-one that stops the next person re-deriving this — the payload constants are
-upstream's reverse engineering and nobody has confirmed them on any
-machine.
+**Done, 2026-09-04.** The firmware answers, the lights change, and the
+answer is in `FINDINGS.md` §"The lights work, and what was in the way was
+our own read". The short version: the blocker was not HP but
+`fs::read_to_string` on `/proc/acpi/call` returning nothing; this machine
+speaks the `fourZone` dialect; and the `lightbar` dialect answers `PASS`
+while doing nothing, which is why "the firmware accepted it" is not
+evidence a dialect works.
 
-The per-key path stays unported until a `0d62:54bf` turns up somewhere and
-the review's finding 1 can be settled on it; the `keys.json` half of that
-finding is already confirmed (`FINDINGS.md`).
+### 1.2b Get the zone-4 read back **[HP]**
+`acpi_call` truncates a 128-byte reply to its first 34 bytes, so zone 4
+starts one byte past the end. The colour written to it is real; it just
+cannot be read back, and a write pads the unseen tail of the state buffer
+with zeros. The fix is not more reverse engineering - it is the
+`kernelZones` dialect, which needs no `acpi_call` at all and which this
+build already speaks:
+
+```sh
+# out-of-tree module that publishes /sys/devices/platform/hp-wmi/rgb_zones
+git clone https://github.com/OmenLinux/omen-rgb-keyboard && cd omen-rgb-keyboard
+sudo make install && sudo modprobe omen_rgb_keyboard
+pyren-ctl rgb probe        # kernelZones should now answer, and auto pick it
+```
+
+*Done when*: `rgb probe` shows `kernelZones` answering, `rgb read` reports
+four real colours, and `FINDINGS.md` says whether the module was worth it.
+
+The per-key path stays unported, and is now blocked twice over: no
+`0d62:54bf` device on this machine to settle the review's finding 1 on, and
+**the upstream source is gone** — `src/driver.py` on the USB stick is zero
+bytes, along with the rest of `src/`. `data/keys.json` and the README
+survive, so the key map and the SDK's shape are recoverable; the HID report
+layout is not. Porting it now means re-fetching `omen-rgb-linux` from
+GitHub, not reading the stick.
 
 ---
 

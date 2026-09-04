@@ -40,8 +40,10 @@ Three stores, deliberately separate:
   started once in the root layout so history graphs stay continuous across
   navigation. Ref-counted `start()`/`stop()`.
 - **`hardware`** — what the *user asked for* (power mode, fan mode, curve,
-  power limits, lighting, GPU mode). Power and fan writes go to the daemon;
-  lighting and GPU stay local-only until those daemon paths land.
+  power limits, GPU mode). Power and fan writes go to the daemon; GPU stays
+  local-only until that daemon path lands. Lighting used to live here and
+  no longer does: the lighting page reads and writes the `rgb` module
+  directly, so there is no second copy of the zone colours to keep in step.
   `syncFromDaemon()` seeds the store from the machine's real state on
   startup, so the UI opens showing the mode the machine is actually in.
 
@@ -231,5 +233,14 @@ be installed by asking the unprivileged daemon to do it.
 
 ## Not built yet (frontend side)
 
-- Lighting, GPU switching, network booster and key mapping drive local
-  state only — there is no daemon module behind any of them yet.
+- GPU switching, network booster and key mapping drive local state only —
+  there is no daemon module behind any of them yet.
+- Lighting is **wired** (`system/lighting`) to the `rgb` module: zone
+  colours, brightness, off, restore-on-start, a read-back button that asks
+  the firmware, and a Protocol panel that lists the three lighting dialects,
+  says what each one answered, and lets the user pin one instead of the
+  automatic pick. What it cannot offer is effects — the ACPI protocol
+  carries colours and a brightness and nothing else, so there is no
+  breathing or wave, and the page says so rather than showing a switch
+  that does nothing. Per-key USB keyboards are reported when attached and
+  explicitly not driven.

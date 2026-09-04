@@ -110,6 +110,100 @@ export type FanCleanerStatus = {
   error: Msg | null;
 };
 
+/**
+ * Per-key RGB over USB HID. Probed and reported, deliberately not driven:
+ * a `0d62:54bf` keyboard is a different device on a different bus from the
+ * lightbar, and a machine can have either, both or neither.
+ */
+export type RgbPerKey = {
+  present: boolean;
+  /** The USB id that was looked for, so a bug report says what was searched. */
+  usbId: string;
+  /** Always false in this build - see docs/04-rgb-porting-review.md step 3. */
+  ported: boolean;
+  detail: string;
+};
+
+/** The stable ids of the three ways of talking to these lights. */
+export type RgbDialectId = "kernelZones" | "fourZone" | "lightbar";
+
+/** What one dialect answered when it was asked. */
+export type RgbDialectProbe = {
+  id: RgbDialectId;
+  /** What it talks to, in one phrase: "WMI 0x20009, command types 2/3". */
+  transport: string;
+  /** A read through it worked. The only field that means the lights can be
+   *  driven this way. */
+  available: boolean;
+  /** Whether anything was actually asked. False means the dialect was
+   *  skipped for want of `acpi_call` or the kernel's files — which is not
+   *  a refusal, and must not be shown as one. */
+  asked: boolean;
+  detail: string;
+};
+
+/**
+ * What lighting this machine answers, and how each dialect answered.
+ *
+ * There is no single OMEN lighting protocol: three unrelated ways exist,
+ * and which one a laptop speaks is not decided by its model name. Hence a
+ * list rather than a boolean.
+ *
+ * Fields that are easy to conflate and must not be:
+ *
+ * - `present` is a claim about **hardware**: at least one dialect answered
+ *   a read.
+ * - a dialect with `asked: false` is **not a refusal** — the question could
+ *   not be put at all.
+ * - `acpiCall` vs `acpiCallInstalled`: not installed needs a package,
+ *   installed-but-not-loaded needs a `modprobe`.
+ * - `commandAnswers: true` with nothing available is the interesting
+ *   machine: the firmware *has* a lighting command and none of the three
+ *   operations this build knows is the one it wants.
+ */
+export type RgbLighting = {
+  present: boolean;
+  hpWmi: boolean;
+  acpiCall: boolean;
+  acpiCallInstalled: boolean;
+  dialects: RgbDialectProbe[];
+  commandAnswers: boolean | null;
+  /** Set when the interfaces are there and nothing could be asked anyway —
+   *  almost always "the daemon is not root". Carries why. */
+  unreachable: string | null;
+  detail: string;
+};
+
+export type RgbProbe = {
+  perKey: RgbPerKey;
+  lighting: RgbLighting;
+  /** Whether anything here can be driven at all. */
+  supported: boolean;
+};
+
+export type RgbStatus = {
+  /** The probe taken at daemon startup. `rgbCapabilities()` re-asks. */
+  capabilities: RgbProbe;
+  /** What the user picked: `"auto"` or one dialect id. */
+  dialect: "auto" | RgbDialectId;
+  /** What that resolved to — null when nothing answered. Shown apart from
+   *  `dialect` so an automatic pick is distinguishable from a chosen one. */
+  activeDialect: RgbDialectId | null;
+  /** Four `"#rrggbb"` strings. */
+  zones: string[];
+  /** A percentage, not a 0-255 level. */
+  brightness: number;
+  restoreOnStart: boolean;
+  /** Whether *this daemon* put the lights where they are. False until
+   *  something is written, so the colours below are never presented as
+   *  the hardware's when nobody asked the hardware. */
+  owned: boolean;
+  /** The last write failure. Translatable - render with `tm()`. */
+  error: Msg | null;
+  saved: boolean;
+  saveError: string | null;
+};
+
 export type ModuleCapability = { id: string; supported: boolean };
 
 /**
@@ -127,9 +221,9 @@ export type Controls = {
   /** A specific fan speed, i.e. manual and curve. */
   fanSpeed: boolean;
   powerMode: boolean;
-  /** The 4-zone lightbar answered an ACPI read. Named for what was probed
-   *  rather than "lighting": the per-key keyboard is a different device on
-   *  a different bus, and a machine can have either, both or neither. */
+  /** Some lighting dialect answered a read. Still named `lightbar` on the
+   *  wire, which is what the daemon calls it; the per-key keyboard is a
+   *  different device on a different bus and is not counted here. */
   lightbar: boolean;
 };
 
@@ -764,6 +858,14 @@ const DAEMON_ROUTES: Record<
   overclock_cancel: { module: "overclock", method: "cancel" },
   overclock_reset: { module: "overclock", method: "reset" },
   overclock_set_restore_on_start: { module: "overclock", method: "setRestoreOnStart" },
+  rgb_get_status: { module: "rgb", method: "getStatus" },
+  rgb_get_capabilities: { module: "rgb", method: "getCapabilities" },
+  rgb_set_static: { module: "rgb", method: "setStatic" },
+  rgb_set_zones: { module: "rgb", method: "setZones" },
+  rgb_off: { module: "rgb", method: "off" },
+  rgb_read_zones: { module: "rgb", method: "readZones" },
+  rgb_set_dialect: { module: "rgb", method: "setDialect" },
+  rgb_set_restore_on_start: { module: "rgb", method: "setRestoreOnStart" },
   installer_inspect: { module: "installer", method: "inspect" },
   installer_autodetect: {
     module: "installer",
@@ -974,6 +1076,32 @@ export const daemon = {
   resetOverclock: (gpu?: string) => call<OverclockState>("overclock_reset", { gpu }),
   setOverclockRestoreOnStart: (enabled: boolean) =>
     call<OverclockState>("overclock_set_restore_on_start", { enabled }),
+  /** The lightbar: the startup probe plus what this daemon last set. */
+  rgbStatus: () => call<RgbStatus>("rgb_get_status"),
+  /** Re-probes both lighting paths. Costs an ACPI round trip, so it is
+   *  the answer to "I just installed acpi_call", not a poll. */
+  rgbCapabilities: () => call<RgbProbe>("rgb_get_capabilities"),
+  /** All four zones one colour. `brightness` is a percentage; leaving it
+   *  out keeps the stored one. */
+  setRgbStatic: (color: string, brightness?: number) =>
+    call<RgbStatus>("rgb_set_static", { color, brightness }),
+  /** One colour per zone, in zone order. */
+  setRgbZones: (zones: string[], brightness?: number) =>
+    call<RgbStatus>("rgb_set_zones", { zones, brightness }),
+  /** Black *and* brightness 0: on some firmwares either alone leaves a
+   *  dim glow, and "off" should mean off. */
+  rgbOff: () => call<RgbStatus>("rgb_off"),
+  /** Asks the firmware what the zones are - and the only check that the
+   *  payload was understood, not just accepted. Answers which dialect
+   *  answered, because that is the interesting half. */
+  rgbReadZones: () => call<{ zones: string[]; dialect: RgbDialectId }>("rgb_read_zones"),
+  /** Pins a dialect, or `"auto"` to go back to picking the first that
+   *  answers. A pinned dialect is used whether or not it probed: the user
+   *  can see the lights and this build cannot. */
+  setRgbDialect: (dialect: "auto" | RgbDialectId) =>
+    call<RgbStatus>("rgb_set_dialect", { dialect }),
+  setRgbRestoreOnStart: (enabled: boolean) =>
+    call<RgbStatus>("rgb_set_restore_on_start", { enabled }),
   /** What this machine has, and whether the patched driver is needed. */
   installerInspect: () => call<InstallerInspection>("installer_inspect"),
   /** Reads DMI, the driver's tables and the fan config; changes nothing. */
