@@ -175,8 +175,20 @@ fn fan_set_mode(mode: String, pwm: Option<u8>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn fan_set_curve(curve: Value, interpolation: Option<String>) -> Result<Value, String> {
-    call_daemon("fan", "setCurve", json!({ "curve": curve, "interpolation": interpolation }))
+fn fan_set_curve(
+    curve: Value,
+    interpolation: Option<String>,
+    reference_sensor: Option<String>,
+) -> Result<Value, String> {
+    call_daemon(
+        "fan",
+        "setCurve",
+        json!({
+            "curve": curve,
+            "interpolation": interpolation,
+            "referenceSensor": reference_sensor,
+        }),
+    )
 }
 
 #[tauri::command]

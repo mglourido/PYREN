@@ -66,7 +66,10 @@
     "autoPerformanceHint": "Plugging in steps up to Performance; an idle machine on mains comes back down to Balanced. Unlimited is never chosen for you.",
     "new": "NEW",
     "fanCleaning": "Fan cleaning",
-    "fanCleaningDesc": "Spin the fans backwards for a few seconds to shake dust out of the vents."
+    "fanCleaningDesc": "Spin the fans backwards for a few seconds to shake dust out of the vents.",
+    "thermalBackOff": "Step down when it runs hot",
+    "thermalBackOffHint": "A machine over 85 °C drops to the quieter profile until it is back under 75 °C. Two thresholds rather than one, so it does not flip back into the same wall a degree later. Outranks the other two rules - heat and load always arrive together.",
+    "runningHot": "Running hot: the automatic switch is holding the machine at the quieter profile."
   },
   "vitals": {
     "mode": "Mode",
@@ -135,7 +138,6 @@
     "fanSpeedUnavailable": "This machine's driver can switch the fans between automatic and maximum, but cannot set a speed: it exposes pwm1_enable and no pwm1. Run the hardware check for the details.",
     "turbo": "Turbo boost",
     "turboHint": "Lets the CPU burst above its base frequency. Turning it off is the single biggest thing you can do for fan noise and battery life.",
-    "limitsApplyTo": "These limits belong to the {mode} profile.",
     "smartBoost": "Smart performance boost",
     "maxBatteryDrain": "Maximum battery drain",
     "chassisTempLimit": "Chassis temperature limit",
@@ -151,7 +153,15 @@
     "fanReverse": "reverse",
     "pl1Hint": "Sustained CPU power limit, in watts. This is the one the fans feel.",
     "pl2Hint": "Short-term boost limit, in watts.",
-    "smartBoostHint": "Extra wattage the firmware may add on top of the base limit."
+    "smartBoostHint": "Extra wattage the firmware may add on top of the base limit.",
+    "curveSensor": "Curve follows",
+    "curveSensorHint": "Which temperature the curve is read at. The GPU is usually what heats up first under a game; while the card is asleep the curve follows the CPU instead.",
+    "sensorCpu": "CPU",
+    "sensorGpu": "GPU",
+    "curveSensorAsleep": "The graphics card is reporting nothing right now, so the curve is following the CPU.",
+    "limitsBelongTo": "Tuning the profile:",
+    "limitsApplyNow": "This is the mode the machine is in, so changes take effect straight away.",
+    "limitsApplyLater": "The machine is not in {mode} right now, so these take effect when it next switches to it."
   },
   "advanced": {
     "gpuOverclocking": "GPU overclocking",
@@ -626,7 +636,8 @@
       "pluggedIn": "plugged in",
       "sustainedLoad": "sustained load ({percent}% per core)",
       "batteryLow": "battery at {percent}%",
-      "idle": "idle"
+      "idle": "idle",
+      "hot": "running hot ({temp} C)"
     },
     "autoSwitch": {
       "failed": "{mode} failed: {failed}"

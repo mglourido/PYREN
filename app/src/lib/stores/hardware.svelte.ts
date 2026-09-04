@@ -15,6 +15,7 @@ import {
   onDaemonEvent,
   type ApplyReport,
   type AutoConfig,
+  type FanReferenceSensor,
   type FanStatus,
   type PowerConfigReply,
   type PowerState,
@@ -50,6 +51,10 @@ export type HardwareState = {
   fanMode: FanMode;
   fanPercent: number;
   fanCurve: CurvePoint[];
+  /** Which sensor the curve follows; `gpu` falls back to the CPU while
+   *  the card is asleep. Mirrored from the daemon, which is the
+   *  authority - this copy only exists so the first frame has a value. */
+  fanReferenceSensor: FanReferenceSensor;
   smartBoostEnabled: boolean;
   smartBoostW: number;
   maxBatteryDrain: number;
@@ -83,6 +88,7 @@ function defaults(): HardwareState {
     autoPerformance: true,
     fanMode: "auto",
     fanPercent: 50,
+    fanReferenceSensor: "cpu",
     fanCurve: [
       { tempC: 40, percent: 0 },
       { tempC: 55, percent: 25 },
@@ -227,6 +233,9 @@ class HardwareStore {
       samplesToSwitch: 3,
       intervalSecs: 10,
       manualOverrideSecs: 600,
+      backOffWhenHot: true,
+      tempHighC: 85,
+      tempLowC: 75,
     };
 
     try {
@@ -288,7 +297,36 @@ class HardwareStore {
    */
   setFanCurve(curve: CurvePoint[]) {
     this.set("fanCurve", curve);
-    this.pushFanSoon(() => daemon.setFanCurve(curve));
+    this.pushFanSoon(() => daemon.setFanCurve(curve, undefined, this.state.fanReferenceSensor));
+  }
+
+  /**
+   * Which sensor the curve follows. Sent with the curve rather than on its
+   * own, because that is the one call the daemon has for the pair - and it
+   * lands immediately rather than debounced: this is a click, not a drag.
+   */
+  async setFanReferenceSensor(sensor: FanReferenceSensor) {
+    this.set("fanReferenceSensor", sensor);
+    await this.pushFan(() =>
+      daemon.setFanCurve(this.state.fanCurve, undefined, sensor),
+    );
+  }
+
+  /**
+   * The supervisor's thermal rule. Like the two auto-switch toggles it
+   * writes the whole `AutoConfig` back, so it reads the current one first
+   * rather than clobbering thresholds someone tuned.
+   */
+  async setThermalBackOff(enabled: boolean) {
+    const base = this.power?.auto;
+    if (!base) return;
+    try {
+      this.applyConfigReply(
+        await daemon.setAutoConfig({ ...base, backOffWhenHot: enabled }),
+      );
+    } catch (e) {
+      this.lastError = errorText(e);
+    }
   }
 
   /**
@@ -312,9 +350,16 @@ class HardwareStore {
    * controls - these are sliders, and each change is a socket round trip
    * that re-applies the profile to the CPU.
    */
-  setPowerTuning(tuning: { pl1W?: number; pl2W?: number; turbo?: boolean }) {
-    if (tuning.pl1W !== undefined) this.set("pl1", Math.round(tuning.pl1W));
-    if (tuning.pl2W !== undefined) this.set("pl2", Math.round(tuning.pl2W));
+  setPowerTuning(tuning: { mode?: PowerMode; pl1W?: number; pl2W?: number; turbo?: boolean }) {
+    // The local mirror is only ever the *current* mode's envelope - it is
+    // what the rest of the UI reads for "the watts right now". Tuning a
+    // mode the machine is not in changes a stored profile and nothing
+    // else, so copying it here would show numbers nothing is applying.
+    const forCurrentMode = tuning.mode === undefined || tuning.mode === this.state.powerMode;
+    if (forCurrentMode) {
+      if (tuning.pl1W !== undefined) this.set("pl1", Math.round(tuning.pl1W));
+      if (tuning.pl2W !== undefined) this.set("pl2", Math.round(tuning.pl2W));
+    }
     if (this.powerTuningTimer !== null) clearTimeout(this.powerTuningTimer);
     this.powerTuningTimer = setTimeout(() => {
       this.powerTuningTimer = null;
@@ -345,6 +390,9 @@ class HardwareStore {
     this.fan = status;
     if (status.driverInstalled && status.mode !== this.state.fanMode) {
       this.state = { ...this.state, fanMode: status.mode };
+    }
+    if (status.referenceSensor && status.referenceSensor !== this.state.fanReferenceSensor) {
+      this.state = { ...this.state, fanReferenceSensor: status.referenceSensor };
     }
   }
 

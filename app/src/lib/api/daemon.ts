@@ -31,10 +31,17 @@ export type FanDaemonMode = "auto" | "max" | "manual" | "curve";
 
 export type FanCurvePoint = { tempC: number; percent: number };
 
+/** Which temperature the curve follows. */
+export type FanReferenceSensor = "cpu" | "gpu";
+
 export type FanStatus = {
   driverInstalled: boolean;
   capabilities: FanCapabilities;
   cpuTempC: number | null;
+  /** The discrete GPU's own sensor, where hwmon publishes one. Null is
+   *  the common case rather than a fault - an integrated-only machine has
+   *  no such sensor, and neither does one whose card is powered down. */
+  gpuTempC: number | null;
   fanRpm: number;
   isReverse: boolean;
   mode: FanDaemonMode;
@@ -44,6 +51,13 @@ export type FanStatus = {
   manualPwm: number;
   curve: FanCurvePoint[];
   interpolation: "smooth" | "discrete";
+  /** The sensor the curve is *set* to follow. */
+  referenceSensor: FanReferenceSensor;
+  /** ...and the one it is actually reading, which differs whenever the
+   *  card is asleep. Null when neither sensor answers at all. */
+  referenceSensorInUse: FanReferenceSensor | null;
+  /** Whether this machine has a GPU sensor to offer in the first place. */
+  gpuSensorAvailable: boolean;
   restoreModeOnStart: boolean;
   /** Whether a cleaning cycle owns the fans - through both transitions,
    *  not only while they are actually reversed. `fanCleanerStatus` is the
@@ -330,6 +344,22 @@ export type AutoConfig = {
   samplesToSwitch: number;
   intervalSecs: number;
   manualOverrideSecs: number;
+  /** The third rule, and the one that outranks both others: a machine
+   *  over `tempHighC` steps down until it is back under `tempLowC`. */
+  backOffWhenHot: boolean;
+  tempHighC: number;
+  tempLowC: number;
+};
+
+/** What the supervisor's thermal rule can see, and what it thinks.
+ *
+ *  `hot` is latched between the two thresholds, so it is not something a
+ *  client could work out from `tempC` - which is exactly why the daemon
+ *  reports it rather than leaving it to be inferred. */
+export type ThermalState = {
+  available: boolean;
+  tempC: number | null;
+  hot: boolean;
 };
 
 /** Package power limits in microwatts; `null` for one this machine lacks. */
@@ -374,6 +404,7 @@ export type PowerState = {
    *  (power-profiles-daemon), or only the laptop's own firmware profile. */
   applyToOsProfile: boolean;
   autoOverrideSecondsLeft: number | null;
+  thermal: ThermalState;
   /** Why the supervisor last moved the mode. Translatable - render with `tm()`. */
   lastAutoSwitch: Msg | null;
   /** Where the daemon keeps this module's settings. */
@@ -1014,8 +1045,11 @@ export const daemon = {
   setFanMode: (mode: FanDaemonMode, pwm?: number) =>
     call<FanStatus>("fan_set_mode", { mode, pwm }),
   /** Stores the curve; it only drives the fans while the mode is `curve`. */
-  setFanCurve: (curve: FanCurvePoint[], interpolation?: "smooth" | "discrete") =>
-    call<FanStatus>("fan_set_curve", { curve, interpolation }),
+  setFanCurve: (
+    curve: FanCurvePoint[],
+    interpolation?: "smooth" | "discrete",
+    referenceSensor?: FanReferenceSensor,
+  ) => call<FanStatus>("fan_set_curve", { curve, interpolation, referenceSensor }),
   setFanRestoreOnStart: (enabled: boolean) =>
     call<FanStatus>("fan_set_restore_on_start", { enabled }),
   /** `refresh` re-asks the firmware what it can do (two ACPI calls); the

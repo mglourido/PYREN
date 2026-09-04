@@ -805,7 +805,7 @@ mod tests {
     fn a_machine_that_was_never_asked_is_not_reported_as_incapable() {
         let dir = std::env::temp_dir().join(format!("pyren-cleaner-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PYREN_ACPI_CALL", dir.join("definitely-not-here"));
+        let _no_acpi = crate::testenv::without_acpi_call(&dir);
 
         let probe = probe();
         assert!(!probe.supported);
@@ -813,7 +813,6 @@ mod tests {
         assert!(probe.unreachable.is_some(), "not being able to ask comes with a remedy");
         assert!(!probe.detail.contains("has no fan cleaner"));
 
-        std::env::remove_var("PYREN_ACPI_CALL");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

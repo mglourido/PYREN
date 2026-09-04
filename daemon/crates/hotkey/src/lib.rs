@@ -52,6 +52,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{log_warn};
 use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -234,8 +235,8 @@ impl HotkeyModule {
         match &loaded.outcome {
             LoadOutcome::Loaded | LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
-                eprintln!(
-                    "pyren-daemon: hotkey config was unreadable ({reason}); using defaults{}",
+                log_warn!(
+                    "hotkey config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -243,8 +244,8 @@ impl HotkeyModule {
                 );
             }
             LoadOutcome::TooNew { found } => {
-                eprintln!(
-                    "pyren-daemon: hotkey config is version {found}, newer than this build \
+                log_warn!(
+                    "hotkey config is version {found}, newer than this build \
                      understands; using defaults and leaving the file alone"
                 );
             }
@@ -592,7 +593,7 @@ impl HotkeyModule {
             Ok(()) => state.last_save_error = None,
             Err(e) => {
                 let message = e.to_string();
-                eprintln!("pyren-daemon: could not save hotkey config: {message}");
+                log_warn!("could not save hotkey config: {message}");
                 state.last_save_error = Some(message);
             }
         }

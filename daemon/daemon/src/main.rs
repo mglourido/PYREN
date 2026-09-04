@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
+use pyren_core::{log_error, log_info};
 use pyren_core::{serve_unix_socket, Audience, EventBus, Module, Registry};
 use pyren_fan::FanModule;
 use pyren_hotkey::{HotkeyModule, KeyPress};
@@ -82,7 +83,11 @@ fn usage() -> ! {
         \x20 --help              this text\n\n\
          ENVIRONMENT\n\
         \x20 PYREN_SOCKET        where to listen (default /tmp/pyren-daemon.sock)\n\
-        \x20 PYREN_SOCKET_GROUP  group allowed to connect (default 'pyren')\n"
+        \x20 PYREN_SOCKET_GROUP  group allowed to connect (default 'pyren')\n\
+        \x20 PYREN_LOG           how much to say: off, error, warn, info\n\
+        \x20                     (the default) or debug. The startup report\n\
+        \x20                     and --check are output, not logging, and\n\
+        \x20                     are printed whatever this says\n"
     );
     std::process::exit(0);
 }
@@ -114,7 +119,7 @@ fn show_power_modes(power: &PowerModule, events: &EventBus, press: &KeyPress) {
         }),
     );
 
-    println!("pyren-daemon: hotkey: showing the modes ({mode:?})");
+    log_info!("hotkey: showing the modes ({mode:?})");
 }
 
 /// What to print at startup about the performance key. Every branch names
@@ -285,7 +290,7 @@ fn main() {
     };
 
     if let Err(e) = serve_unix_socket(&socket_path, registry, announce) {
-        eprintln!("pyren-daemon: fatal: {e}");
+        log_error!("fatal: {e}");
         std::process::exit(1);
     }
 }

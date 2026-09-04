@@ -249,6 +249,8 @@ mod tests {
     /// machine this was developed on.
     #[test]
     fn a_probe_on_a_machine_with_no_omen_hardware_says_so_calmly() {
+        // Asks the real machine, so nothing may redirect it meanwhile.
+        let _acpi = crate::testenv::real();
         let probe = probe();
         assert!(!probe.per_key.ported, "the per-key path is not ported in this build");
         assert!(!probe.per_key.detail.is_empty());
@@ -265,6 +267,8 @@ mod tests {
     /// exists to keep.
     #[test]
     fn every_dialect_appears_in_the_probe_in_the_order_it_is_tried() {
+        // Asks the real machine, so nothing may redirect it meanwhile.
+        let _acpi = crate::testenv::real();
         let probe = probe();
         let ids: Vec<&str> = probe.lighting.dialects.iter().map(|d| d.id).collect();
         let expected: Vec<&str> = dialect::ORDER.iter().map(|d| d.id()).collect();
@@ -279,6 +283,8 @@ mod tests {
     /// be triggered on every call - or, worse, never.
     #[test]
     fn the_cheap_interface_check_matches_what_a_full_probe_recorded() {
+        // Asks the real machine, so nothing may redirect it meanwhile.
+        let _acpi = crate::testenv::real();
         assert_eq!(probe().lighting.interfaces(), interfaces());
     }
 
@@ -288,6 +294,8 @@ mod tests {
     /// wrong one.
     #[test]
     fn a_machine_that_was_never_asked_does_not_report_a_refusal() {
+        // Asks the real machine, so nothing may redirect it meanwhile.
+        let _acpi = crate::testenv::real();
         let probe = probe();
         if probe.lighting.dialects.iter().all(|d| !d.asked) {
             assert!(

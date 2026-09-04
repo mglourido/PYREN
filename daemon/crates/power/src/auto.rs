@@ -67,6 +67,17 @@ pub struct AutoConfig {
     /// Battery percentage at or below which Eco is preferred whatever the
     /// load is doing. A nearly flat battery is its own argument.
     pub battery_low_percent: f64,
+    /// Whether a hot machine is a reason to step down. On by default: the
+    /// case it exists for is a laptop on a duvet, and the answer to that
+    /// is not "keep asking for Performance".
+    pub back_off_when_hot: bool,
+    /// Temperature at or above which the machine counts as hot...
+    pub temp_high_c: f64,
+    /// ...and the one it has to come back below before it stops counting.
+    /// A second dead band, and a wider one than the load's on purpose: a
+    /// chassis that has just been throttled is still full of heat, and a
+    /// single threshold would step back up into the same wall.
+    pub temp_low_c: f64,
     /// Consecutive agreeing samples required before a refinement happens.
     /// Does not apply to a change of power source, which is immediate.
     pub samples_to_switch: u32,
@@ -86,6 +97,13 @@ impl Default for AutoConfig {
             load_high: 0.70,
             load_low: 0.30,
             battery_low_percent: 25.0,
+            back_off_when_hot: true,
+            // Not a shutdown temperature and not meant to be: the CPU's own
+            // throttle is at 100 C, and the point of backing off at 85 is
+            // to arrive there less often. Below 75 the machine has actually
+            // cooled rather than paused.
+            temp_high_c: 85.0,
+            temp_low_c: 75.0,
             samples_to_switch: 3,
             interval_secs: 10,
             manual_override_secs: 600,
@@ -101,11 +119,61 @@ pub struct AutoInputs {
     /// 1-minute load average divided by CPU count.
     pub load_ratio: f64,
     pub battery_percent: Option<f64>,
+    /// The hottest of the CPU and GPU, or `None` on a machine that
+    /// publishes neither - which is not the same as a cold one, and is why
+    /// this is an option rather than a zero.
+    pub temp_c: Option<f64>,
 }
 
 impl AutoInputs {
-    pub fn sample(on_battery: Option<bool>, battery_percent: Option<f64>) -> Self {
-        Self { on_battery, load_ratio: load_ratio(), battery_percent }
+    pub fn sample(
+        on_battery: Option<bool>,
+        battery_percent: Option<f64>,
+        sensors: &Sensors,
+    ) -> Self {
+        Self {
+            on_battery,
+            load_ratio: load_ratio(),
+            battery_percent,
+            temp_c: sensors.hottest_c(),
+        }
+    }
+}
+
+/// The temperature sensors this machine turned out to have.
+///
+/// Found once and held, rather than searched for on every tick: the
+/// supervisor samples on a timer for as long as the daemon runs, and
+/// walking `/sys/class/hwmon` ten times a minute to re-derive an answer
+/// that does not change is a waste. The cost is that a card which appears
+/// later - an eGPU, or a driver loaded after boot - is not picked up until
+/// the daemon restarts, which is the same trade the fan module makes.
+#[derive(Debug, Clone, Default)]
+pub struct Sensors {
+    cpu: Option<std::path::PathBuf>,
+    gpu: Option<std::path::PathBuf>,
+}
+
+impl Sensors {
+    pub fn discover() -> Self {
+        Self { cpu: pyren_core::sensors::cpu_temp_path(), gpu: pyren_core::sensors::gpu_temp_path() }
+    }
+
+    /// True when this machine can answer the question at all. A supervisor
+    /// on a machine with no sensors must not behave as though it were
+    /// permanently cool.
+    pub fn any(&self) -> bool {
+        self.cpu.is_some() || self.gpu.is_some()
+    }
+
+    /// The reading right now, for a status call rather than for the
+    /// supervisor's own tick.
+    pub fn hottest_c_now(&self) -> Option<f64> {
+        self.hottest_c()
+    }
+
+    fn hottest_c(&self) -> Option<f64> {
+        pyren_core::sensors::hottest_c(self.cpu.as_deref(), self.gpu.as_deref())
     }
 }
 
@@ -163,10 +231,60 @@ fn system_enabled(on_battery: bool, config: &AutoConfig) -> bool {
     }
 }
 
+/// Whether the machine counts as hot, with the dead band latched.
+///
+/// A latch rather than a comparison because the two thresholds are the
+/// whole design: crossing 85 C makes it hot, and only coming back below
+/// 75 C makes it cool again. Comparing against one number would step down,
+/// see the temperature fall by a degree because the fans caught up, step
+/// back up into the same wall, and do it again for as long as the load
+/// lasted.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeatLatch {
+    hot: bool,
+}
+
+impl HeatLatch {
+    /// Feeds one reading in and returns what it now means. A machine with
+    /// no sensor never becomes hot, and - this is the half worth saying
+    /// out loud - never stops being hot either if it somehow got there:
+    /// losing a sensor mid-run is not evidence of cooling.
+    pub fn observe(&mut self, temp_c: Option<f64>, config: &AutoConfig) -> bool {
+        if let Some(temp_c) = temp_c {
+            if temp_c >= config.temp_high_c {
+                self.hot = true;
+            } else if temp_c <= config.temp_low_c {
+                self.hot = false;
+            }
+        }
+        self.hot
+    }
+
+    pub fn is_hot(self) -> bool {
+        self.hot
+    }
+}
+
 /// Where inside the source's range the current conditions point, or `None`
 /// while they are inside the dead band and nothing should move.
-pub fn refine(inputs: AutoInputs, config: &AutoConfig, on_battery: bool) -> Option<PowerMode> {
+///
+/// `hot` comes from a [`HeatLatch`] rather than from `inputs` because it
+/// is the one input with memory; everything else here is a comparison
+/// against the moment.
+pub fn refine(
+    inputs: AutoInputs,
+    config: &AutoConfig,
+    on_battery: bool,
+    hot: bool,
+) -> Option<PowerMode> {
     let (quiet, fast) = range(on_battery);
+
+    // Heat outranks load, and it has to: a machine is hot *because* it is
+    // busy, so the two arguments arrive together and the load one would
+    // otherwise win every time.
+    if hot && config.back_off_when_hot {
+        return Some(quiet);
+    }
 
     // A battery this low is its own argument, whatever the CPU is doing.
     if on_battery {
@@ -194,6 +312,7 @@ pub struct AutoSwitcher {
     /// look like the user just plugged the machine in.
     last_on_battery: Option<bool>,
     pending: Option<(PowerMode, u32)>,
+    heat: HeatLatch,
 }
 
 impl AutoSwitcher {
@@ -204,6 +323,11 @@ impl AutoSwitcher {
         config: &AutoConfig,
         current: PowerMode,
     ) -> Option<AutoDecision> {
+        // Updated on every tick, including the ones that return early:
+        // the latch is about the machine, not about which branch this
+        // sample took, and a transition must not leave it stale.
+        self.heat.observe(inputs.temp_c, config);
+
         let Some(on_battery) = inputs.on_battery else {
             // No battery at all: nothing to transition between, and the
             // mains system is the only one that could apply.
@@ -249,7 +373,7 @@ impl AutoSwitcher {
             return None;
         }
 
-        let Some(target) = refine(inputs, config, on_battery) else {
+        let Some(target) = refine(inputs, config, on_battery, self.heat.is_hot()) else {
             self.pending = None;
             return None;
         };
@@ -265,7 +389,13 @@ impl AutoSwitcher {
 
         if count >= config.samples_to_switch.max(1) {
             self.pending = None;
-            let reason = if inputs.load_ratio >= config.load_high {
+            let reason = if self.heat.is_hot() && config.back_off_when_hot {
+                msg!(
+                    "power.autoReason.hot",
+                    { "temp" => format!("{:.0}", inputs.temp_c.unwrap_or_default()) },
+                    "running hot ({temp} C)"
+                )
+            } else if inputs.load_ratio >= config.load_high {
                 msg!(
                     "power.autoReason.sustainedLoad",
                     { "percent" => format!("{:.0}", inputs.load_ratio * 100.0) },
@@ -292,8 +422,16 @@ impl AutoSwitcher {
     }
 
     /// Forgets any in-progress refinement - used when the user takes over.
+    ///
+    /// The heat latch is deliberately *not* reset: how hot the machine is
+    /// is not an opinion the user overrode, and clearing it would let the
+    /// next tick treat a chassis at 90 C as freshly cool.
     pub fn reset(&mut self) {
         self.pending = None;
+    }
+
+    pub fn is_hot(&self) -> bool {
+        self.heat.is_hot()
     }
 }
 
@@ -305,8 +443,14 @@ mod tests {
         AutoConfig { enabled: true, samples_to_switch: 3, ..AutoConfig::default() }
     }
 
+    /// A comfortable machine: 60 C is well below `temp_low_c`, so the
+    /// thermal rule is inert in every test that does not opt into it.
     fn inputs(on_battery: Option<bool>, load_ratio: f64) -> AutoInputs {
-        AutoInputs { on_battery, load_ratio, battery_percent: Some(80.0) }
+        AutoInputs { on_battery, load_ratio, battery_percent: Some(80.0), temp_c: Some(60.0) }
+    }
+
+    fn at(temp_c: f64, on_battery: bool, load_ratio: f64) -> AutoInputs {
+        AutoInputs { temp_c: Some(temp_c), ..inputs(Some(on_battery), load_ratio) }
     }
 
     /// Settles the switcher's idea of the power source without producing a
@@ -390,7 +534,103 @@ mod tests {
     #[test]
     fn a_low_battery_asks_for_eco_however_busy_the_machine_is() {
         let flat = AutoInputs { battery_percent: Some(12.0), ..inputs(Some(true), 0.99) };
-        assert_eq!(refine(flat, &config(), true), Some(PowerMode::Eco));
+        assert_eq!(refine(flat, &config(), true, false), Some(PowerMode::Eco));
+    }
+
+    /// The rule this exists for: a machine that is busy *and* hot gets the
+    /// quiet end, not the fast one. Heat and load always arrive together -
+    /// the machine is hot because it is working - so if load won here the
+    /// thermal rule would never fire at all.
+    #[test]
+    fn heat_outranks_load() {
+        let busy_and_hot = at(90.0, false, 0.99);
+        assert_eq!(refine(busy_and_hot, &config(), false, true), Some(PowerMode::Balanced));
+        assert_eq!(
+            refine(busy_and_hot, &config(), false, false),
+            Some(PowerMode::Performance),
+            "the same sample with the latch cool is an ordinary busy machine"
+        );
+    }
+
+    /// Two thresholds, not one. A single 85 C line would step down, watch
+    /// the fans win back one degree, step up into the same wall, and do it
+    /// again for as long as the load lasted.
+    #[test]
+    fn the_heat_latch_holds_until_the_machine_has_actually_cooled() {
+        let mut latch = HeatLatch::default();
+        assert!(!latch.observe(Some(84.0), &config()));
+        assert!(latch.observe(Some(85.0), &config()), "at the threshold, not past it");
+        assert!(latch.observe(Some(80.0), &config()), "still hot inside the dead band");
+        assert!(latch.observe(Some(76.0), &config()), "and at the bottom of it");
+        assert!(!latch.observe(Some(75.0), &config()), "cool again only below temp_low_c");
+    }
+
+    /// A machine with no sensor is not a cold machine - but it is not a hot
+    /// one either, and the rule simply never fires there.
+    #[test]
+    fn a_machine_with_no_sensor_never_becomes_hot() {
+        let mut latch = HeatLatch::default();
+        for _ in 0..5 {
+            assert!(!latch.observe(None, &config()));
+        }
+    }
+
+    /// ...and losing the sensor mid-run is not evidence of cooling. The
+    /// last thing this machine said was 90 C; a driver unloading does not
+    /// change that.
+    #[test]
+    fn losing_the_sensor_does_not_cool_a_hot_machine() {
+        let mut latch = HeatLatch::default();
+        assert!(latch.observe(Some(90.0), &config()));
+        assert!(latch.observe(None, &config()), "no reading is no news");
+    }
+
+    /// The whole rule is switchable, and off it changes nothing at all.
+    #[test]
+    fn a_user_who_turned_the_thermal_rule_off_keeps_their_performance_mode() {
+        let cool_headed = AutoConfig { back_off_when_hot: false, ..config() };
+        assert_eq!(
+            refine(at(95.0, false, 0.99), &cool_headed, false, true),
+            Some(PowerMode::Performance)
+        );
+    }
+
+    /// End to end through the switcher, which is where the latch actually
+    /// lives: three agreeing samples and the reason names the temperature.
+    #[test]
+    fn a_hot_machine_steps_down_and_says_why() {
+        let mut switcher = settled(false);
+        let hot = at(92.0, false, 0.99);
+
+        assert_eq!(switcher.observe(hot, &config(), PowerMode::Performance), None);
+        assert_eq!(switcher.observe(hot, &config(), PowerMode::Performance), None);
+        let decision = switcher.observe(hot, &config(), PowerMode::Performance).unwrap();
+
+        assert_eq!(decision.mode, PowerMode::Balanced);
+        assert!(!decision.from_transition);
+        assert_eq!(decision.reason.key, "power.autoReason.hot");
+        assert!(decision.reason.to_string().contains("92"), "{}", decision.reason);
+    }
+
+    /// The latch is updated on every tick, including the ones that return
+    /// early. A machine that got hot while unplugged must not come back
+    /// from the transition believing it is cool.
+    #[test]
+    fn the_latch_is_updated_even_on_a_tick_that_answers_a_transition() {
+        let mut switcher = settled(false);
+        let decision = switcher.observe(at(92.0, true, 0.99), &config(), PowerMode::Performance);
+        assert!(decision.is_some_and(|d| d.from_transition));
+        assert!(switcher.is_hot(), "the transition tick still read the sensor");
+    }
+
+    /// Taking over by hand is an opinion about the mode, not about the
+    /// temperature.
+    #[test]
+    fn a_manual_override_does_not_clear_the_heat_latch() {
+        let mut switcher = settled(false);
+        switcher.observe(at(92.0, false, 0.99), &config(), PowerMode::Performance);
+        switcher.reset();
+        assert!(switcher.is_hot());
     }
 
     /// Nothing the supervisor does may arrive at Unlimited.
@@ -398,7 +638,12 @@ mod tests {
     fn refinement_never_selects_unlimited() {
         for on_battery in [true, false] {
             for load in [0.0, 0.5, 1.0, 4.0] {
-                let target = refine(inputs(Some(on_battery), load), &config(), on_battery);
+                for hot in [false, true] {
+                    let target =
+                        refine(inputs(Some(on_battery), load), &config(), on_battery, hot);
+                    assert_ne!(target, Some(PowerMode::Unlimited));
+                }
+                let target = refine(inputs(Some(on_battery), load), &config(), on_battery, false);
                 assert_ne!(target, Some(PowerMode::Unlimited));
             }
         }
@@ -429,7 +674,7 @@ mod tests {
     #[test]
     fn the_dead_band_between_the_thresholds_produces_no_opinion() {
         let middling = inputs(Some(false), 0.5);
-        assert_eq!(refine(middling, &config(), false), None);
+        assert_eq!(refine(middling, &config(), false, false), None);
     }
 
     #[test]
@@ -449,7 +694,12 @@ mod tests {
     #[test]
     fn a_desktop_with_no_battery_is_treated_as_being_on_mains() {
         let mut switcher = AutoSwitcher::default();
-        let busy = AutoInputs { on_battery: None, load_ratio: 0.9, battery_percent: None };
+        let busy = AutoInputs {
+            on_battery: None,
+            load_ratio: 0.9,
+            battery_percent: None,
+            temp_c: Some(60.0),
+        };
         for _ in 0..2 {
             switcher.observe(busy, &config(), PowerMode::Balanced);
         }

@@ -514,12 +514,14 @@ different platform profile.
 `power.getState`'s `auto` object configures a supervisor thread that runs
 whether or not the app is open:
 
-It is **two systems**, matching the two switches on the app's home screen:
+It is **two systems**, matching the two switches on the app's home screen,
+plus a thermal rule that applies to both:
 
 | | when it acts | what it does |
 |---|---|---|
 | `ecoOnBattery` | the machine is unplugged | drops to Balanced *at once*, then to Eco if it stays idle or the battery gets low |
 | `performanceOnLoad` | the machine is plugged in | steps up to Performance *at once*, then back to Balanced if it sits idle |
+| `backOffWhenHot` | the machine is over `tempHighC` | holds it at the quiet end of whichever range applies until it is back under `tempLowC` |
 
 So a change of power source is a discrete event with an immediate answer,
 and everything after it is a slow refinement inside the range that source
@@ -542,6 +544,10 @@ Three consequences worth knowing:
 - **A manual `setMode` suspends refinement, not transitions.** Plugging the
   machine in is the user speaking too, and more recently than the last
   click.
+- **Heat outranks load.** A machine is hot *because* it is busy, so the two
+  arguments always arrive together; if load won, the thermal rule would
+  never fire at all. It does not outrank the user, though — like the other
+  rules it leaves `Unlimited` alone and it is suspended by a manual change.
 
 | field | meaning |
 |---|---|
@@ -551,10 +557,31 @@ Three consequences worth knowing:
 | `samplesToSwitch` | consecutive agreeing samples required before a *refinement*. Transitions ignore it. |
 | `intervalSecs` | how often it samples |
 | `manualOverrideSecs` | how long a manual `setMode` suspends refinement — whoever is at the keyboard wins |
+| `backOffWhenHot` | whether a hot machine is a reason to step down. On by default; the case it exists for is a laptop on a duvet |
+| `tempHighC` / `tempLowC` | the temperature at or above which the machine counts as hot, and the one it has to come back below before it stops counting. **Latched between the two**, and the band is wider than the load one on purpose: a chassis that has just been throttled is still full of heat, and a single threshold would step straight back into the same wall |
 
 The load average is used rather than instantaneous CPU usage precisely
 because it is already smoothed: a mode switch spins fans up or down and is
 very visible, so only *sustained* load should trigger one.
+
+The temperature is the hotter of the CPU package and the GPU, read from
+hwmon by driver name (`coretemp`/`k10temp`, `amdgpu`/`nouveau`/`nvidia`/
+`radeon`) rather than from whichever `temp1_input` turns up first — most of
+what is in `/sys/class/hwmon` on a laptop is the temperature of something
+else. A part reading 0 is powered down rather than cold, so it is left out
+of the comparison; a machine with no sensor at all never becomes hot, and
+never stops being hot either if it somehow got there, because losing a
+sensor is not evidence of cooling.
+
+`getState` reports what the rule can see, as `thermal`:
+
+```json
+"thermal": { "available": true, "tempC": 74.0, "hot": true }
+```
+
+`hot` is latched, so it is deliberately not something a client could
+recompute from `tempC` — at 74 C it can be either, depending on which
+threshold was crossed last.
 
 `getState` also reports `autoOverrideSecondsLeft` and `lastAutoSwitch` so
 the UI can explain why the supervisor is or isn't acting. `lastAutoSwitch`
@@ -810,7 +837,7 @@ which is why `stage-source` comes before `patch-source` in every plan.
 | `fan.getStatus` | none | the status object below | ✅ implemented, read-only, no privileges needed |
 | `fan.diagnose` | `{ "allowWrites": bool }` | full self-test report (see below) | ✅ implemented |
 | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the status object | ✅ implemented, needs root |
-| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete" }` | the status object | ✅ implemented |
+| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the status object | ✅ implemented |
 | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
 | `fan.calibrate` | `{ "seconds"?: 10-120 }` | the calibration report below | ✅ implemented, needs root, **blocks and spins the fans** |
 | `fan.cleanerStatus` | `{ "refresh"?: bool }` | the cleaner status below | ✅ implemented, read-only (`refresh` puts two ACPI *queries*) |
@@ -826,6 +853,7 @@ never has to follow a write with a read:
   "driverInstalled": true,
   "capabilities": { "switchMode": true, "setSpeed": false },
   "cpuTempC": 38,
+  "gpuTempC": null,
   "fanRpm": 2097,
   "isReverse": false,
   "mode": "auto",
@@ -834,6 +862,9 @@ never has to follow a write with a read:
   "manualPwm": 128,
   "curve": [{ "tempC": 40, "percent": 20 }],
   "interpolation": "smooth",
+  "referenceSensor": "cpu",
+  "referenceSensorInUse": "cpu",
+  "gpuSensorAvailable": false,
   "restoreModeOnStart": false,
   "cleaning": false,
   "fanMaxRpm": null,
@@ -1121,9 +1152,39 @@ instead of being pointed at an HP driver it can't use.
 The same report is available without the app, from `pyren-check` - see
 `docs/02-development.md`.
 
+### Which sensor the curve follows
+
+`referenceSensor` picks it: `cpu` (the default) or `gpu`. The GPU is worth
+having because on a laptop it is usually what heats up first under a game,
+and a CPU-only curve spins up after the heat has already spread.
+
+The fallback is **one-directional**, and that is the whole design:
+
+- `gpu` falls back to the CPU whenever the card reports nothing. A GPU at
+  0 C is one that is powered down, not a cold one, and stopping the fan
+  curve while the machine works would be worse than following the other
+  sensor.
+- `cpu` never falls back to the GPU. Someone who picked the CPU and
+  silently got a curve driven by the other sensor would be looking at a
+  machine nobody asked for.
+
+So a client has to be told two things rather than one, and the status
+carries both: `referenceSensor` is the setting, `referenceSensorInUse` is
+what is actually being read right now (`null` when neither sensor answers),
+and they differ exactly while the card is asleep. `gpuSensorAvailable`
+says whether there is a GPU sensor to offer at all — a machine with
+integrated graphics only should be shown no choice rather than one that
+does nothing.
+
+Changing the sensor restarts the smoothing window: it holds ten seconds of
+the *other* sensor's readings, and averaging across the change would drive
+the fans from a temperature neither part is at.
+
 `cpuTempC` is `null` if no CPU temperature sensor was found (mirrors the
 Python original's fallback chain: `coretemp`/`k10temp` hwmon →
-`thermal_zone0` → give up). `fanRpm` is `max(fan1, fan2)`, decoded through
+`thermal_zone0` → give up); `gpuTempC` is `null` far more often, and both
+come from `pyren_core::sensors`, which the power supervisor's thermal rule
+reads too. `fanRpm` is `max(fan1, fan2)`, decoded through
 the hp-wmi reverse-bit encoding — see
 `docs/02-kernel-driver.md` in the `omen-fan-control` project (see
 `dev/README.md` for where that checkout is) for why raw values

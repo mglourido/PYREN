@@ -45,16 +45,22 @@ POWER
                                OS power profile (power-profiles-daemon),
                                or only the laptop's own firmware profile
   power auto <on|off> [--eco on|off] [--performance on|off]
+              [--thermal on|off] [--temp-high C] [--temp-low C]
                                the two automatic systems: unplugging drops
                                to Balanced then refines towards Eco;
-                               plugging in steps up to Performance
+                               plugging in steps up to Performance.
+                               --thermal is the third rule and outranks
+                               both: a machine over --temp-high steps down
+                               until it is back under --temp-low
   power restore-on-start <on|off>
 
 FANS
   fan get                      speed, temperature, mode, capabilities
   fan set <auto|max|manual|curve> [--pwm 0-255]
-  fan curve <t:pct,...> [--interpolation smooth|discrete]
+  fan curve <t:pct,...> [--interpolation smooth|discrete] [--sensor cpu|gpu]
                                e.g. fan curve 40:20,60:50,85:100
+                               --sensor gpu follows the graphics card and
+                               falls back to the CPU while it is asleep
   fan restore-on-start <on|off>
   fan diagnose [--write]       the fan-control self-test
   fan calibrate [--seconds N]  run the fans at max and measure what full
@@ -279,6 +285,9 @@ fn run(command: &args::Command) -> Run {
             let mut params = json!({ "curve": points });
             if let Some(interpolation) = command.option("interpolation") {
                 params["interpolation"] = json!(interpolation);
+            }
+            if let Some(sensor) = command.option("sensor") {
+                params["referenceSensor"] = json!(sensor);
             }
             show(command, client::call("fan", "setCurve", params)?, print_fan)
         }
@@ -516,6 +525,24 @@ fn power_auto(command: &args::Command, value: &str) -> Run {
     }
     if let Some(performance) = command.switch("performance")? {
         config["performanceOnLoad"] = json!(performance);
+    }
+    if let Some(hot) = command.switch("thermal")? {
+        config["backOffWhenHot"] = json!(hot);
+    }
+    if let Some(high) = command.number("temp-high")? {
+        config["tempHighC"] = json!(high);
+    }
+    if let Some(low) = command.number("temp-low")? {
+        config["tempLowC"] = json!(low);
+    }
+    // Two thresholds that have crossed would latch on and never let go.
+    let high = config.get("tempHighC").and_then(Value::as_f64).unwrap_or(f64::MAX);
+    let low = config.get("tempLowC").and_then(Value::as_f64).unwrap_or(f64::MIN);
+    if low >= high {
+        return Err(Failure::Usage(format!(
+            "--temp-low ({low}) has to be below --temp-high ({high}): they are the two \
+             ends of a dead band, and a machine that crossed them would never cool down again"
+        )));
     }
 
     client::call("power", "setAutoConfig", config)?;
@@ -820,6 +847,26 @@ fn print_power(state: &Value) {
             },
         );
     }
+    if let Some(thermal) = state.get("thermal") {
+        row(
+            "temp",
+            match (
+                thermal.get("available").and_then(Value::as_bool),
+                thermal.get("tempC").and_then(Value::as_f64),
+            ) {
+                (Some(true), Some(temp)) => format!(
+                    "{temp:.0} C{}",
+                    if thermal.get("hot").and_then(Value::as_bool) == Some(true) {
+                        " - running hot, the supervisor is holding it down"
+                    } else {
+                        ""
+                    }
+                ),
+                (Some(true), None) => "a sensor was found and read nothing".to_string(),
+                _ => "no CPU or GPU sensor on this machine".to_string(),
+            },
+        );
+    }
     if let Some(last) = msg_line(state, "lastAutoSwitch") {
         row("last auto", last);
     }
@@ -874,10 +921,15 @@ fn print_fan(status: &Value) {
     row(
         "reading",
         format!(
-            "{} rpm, cpu {} C{}",
+            "{} rpm, cpu {} C, gpu {} C{}",
             status.get("fanRpm").and_then(Value::as_i64).unwrap_or(0),
             status
                 .get("cpuTempC")
+                .and_then(Value::as_i64)
+                .map(|t| t.to_string())
+                .unwrap_or("-".into()),
+            status
+                .get("gpuTempC")
                 .and_then(Value::as_i64)
                 .map(|t| t.to_string())
                 .unwrap_or("-".into()),
@@ -919,6 +971,22 @@ fn print_fan(status: &Value) {
                 .collect();
             row("curve", drawn.join(","));
         }
+    }
+
+    // The setting and what is being read are two lines' worth of one fact
+    // only when they disagree - which is exactly when it matters, because
+    // the card being asleep is why the curve is on the other sensor.
+    if let Some(sensor) = status.get("referenceSensor").and_then(Value::as_str) {
+        let in_use = status.get("referenceSensorInUse").and_then(Value::as_str);
+        row(
+            "curve from",
+            match in_use {
+                Some(in_use) if in_use != sensor => {
+                    format!("{sensor} (reading {in_use} - the {sensor} has nothing to report)")
+                }
+                _ => sensor.to_string(),
+            },
+        );
     }
 
     // Only worth a line once it exists: an absent ceiling is the normal

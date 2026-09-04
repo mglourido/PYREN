@@ -23,6 +23,7 @@
   import { formatTemp } from "$lib/stores/settings.svelte";
   import { telemetry, tempColor } from "$lib/stores/telemetry.svelte";
   import { LIMITS, hardware, type FanMode, type PowerMode } from "$lib/stores/hardware.svelte";
+  import type { FanReferenceSensor } from "$lib/api/daemon";
 
   const modes: { id: PowerMode; icon: string }[] = [
     { id: "eco", icon: "leaf" },
@@ -105,7 +106,19 @@
   const PL_FLOOR_W = 5;
 
   const powerLimits = $derived(hardware.power?.limits ?? null);
-  const currentTuning = $derived(powerLimits?.tuning?.[mode] ?? null);
+
+  /**
+   * Which profile the sliders below are editing.
+   *
+   * The reference app only shows this sub-tab under Performance and
+   * Unlimited, and that layout is kept - but the envelope is stored per
+   * mode, so with no selector here an Eco profile could only ever be tuned
+   * over IPC. `null` means "whichever mode the machine is in", so the tab
+   * still opens on the current one and follows it if it changes.
+   */
+  let tuningModeChoice = $state<PowerMode | null>(null);
+  const tuningMode = $derived(tuningModeChoice ?? mode);
+  const currentTuning = $derived(powerLimits?.tuning?.[tuningMode] ?? null);
 
   /** Microwatts to whole watts, the unit everything above the daemon uses. */
   const toWatts = (uw: number | null | undefined) => (uw == null ? null : Math.round(uw / 1e6));
@@ -140,6 +153,28 @@
     }
     return rows;
   });
+
+  /**
+   * The GPU is what gets hot first under a game, so a curve that can
+   * follow it is worth having - but only where there is a sensor to
+   * follow. A machine with integrated graphics only gets no selector
+   * rather than a choice that silently does nothing.
+   */
+  const gpuSensorAvailable = $derived(hardware.fan?.gpuSensorAvailable ?? false);
+  const referenceSensor = $derived(hardware.state.fanReferenceSensor);
+  /** A card that is powered down reads nothing, and the daemon follows the
+   *  CPU instead. Saying so is the difference between a fallback and a
+   *  setting that looks ignored. */
+  const fallenBackToCpu = $derived(
+    referenceSensor === "gpu" && hardware.fan?.referenceSensorInUse === "cpu",
+  );
+  /** The marker on the curve has to be the temperature the curve is
+   *  actually read at, or it points at the wrong part of the shape. */
+  const curveTempC = $derived(
+    referenceSensor === "gpu" && hardware.fan?.gpuTempC != null
+      ? hardware.fan.gpuTempC
+      : telemetry.cpuTempC,
+  );
 
   /** The curve editor is the point of curve mode, and the shape a manual
    *  session is drawn against. */
@@ -330,9 +365,30 @@
 
             <h3 class="curve-title">{t("performance.fanCurve")}</h3>
             <p class="curve-desc">{t("performance.fanCurveDesc")}</p>
+
+            {#if gpuSensorAvailable}
+              <div class="sensor-row">
+                <span class="sensor-label">
+                  {t("performance.curveSensor")}
+                  <InfoTip>{t("performance.curveSensorHint")}</InfoTip>
+                </span>
+                <Segmented
+                  value={referenceSensor}
+                  options={[
+                    { value: "cpu", label: t("performance.sensorCpu") },
+                    { value: "gpu", label: t("performance.sensorGpu") },
+                  ]}
+                  onchange={(v) => hardware.setFanReferenceSensor(v as FanReferenceSensor)}
+                />
+              </div>
+              {#if fallenBackToCpu}
+                <p class="fan-note">{t("performance.curveSensorAsleep")}</p>
+              {/if}
+            {/if}
+
             <FanCurve
               curve={hardware.state.fanCurve}
-              currentTempC={telemetry.cpuTempC}
+              currentTempC={curveTempC}
               onchange={(curve) => hardware.setFanCurve(curve)}
             />
           </div>
@@ -345,7 +401,24 @@
     {:else}
       <div class="power-area">
         {#if powerLimits?.available}
-          <p class="limit-scope">{t("performance.limitsApplyTo", { mode: t(`performance.modes.${mode}`) })}</p>
+          <div class="tuning-scope">
+            <span class="limit-scope">{t("performance.limitsBelongTo")}</span>
+            <Segmented
+              value={tuningMode}
+              options={modes.map(({ id }) => ({
+                value: id,
+                label: t(`performance.modes.${id}`),
+              }))}
+              onchange={(v) => (tuningModeChoice = v as PowerMode)}
+            />
+          </div>
+          <p class="limit-scope">
+            {tuningMode === mode
+              ? t("performance.limitsApplyNow")
+              : t("performance.limitsApplyLater", {
+                  mode: t(`performance.modes.${tuningMode}`),
+                })}
+          </p>
           <div class="limits">
             {#each pl as { key, label, watts, max } (key)}
               <div class="limit">
@@ -363,7 +436,9 @@
                   maxLabel="{max}W"
                   ariaLabel={label}
                   onchange={(v) =>
-                    hardware.setPowerTuning(key === "pl1" ? { pl1W: v } : { pl2W: v })}
+                    hardware.setPowerTuning(
+                      key === "pl1" ? { mode: tuningMode, pl1W: v } : { mode: tuningMode, pl2W: v },
+                    )}
                 />
                 <span class="limit-value">{watts}W</span>
               </div>
@@ -377,7 +452,7 @@
                 </span>
                 <Toggle
                   checked={currentTuning?.turbo ?? true}
-                  onchange={(v) => hardware.setPowerTuning({ turbo: v })}
+                  onchange={(v) => hardware.setPowerTuning({ mode: tuningMode, turbo: v })}
                   labelOn={t("performance.activated")}
                   ariaLabel={t("performance.turbo")}
                 />
@@ -622,6 +697,36 @@
 
   .limit-scope {
     margin: 0 0 12px;
+    color: var(--text-mute);
+    font-size: 13px;
+  }
+
+  /* The selector and its label sit on one line while there is room, and
+     wrap rather than squeezing the four mode buttons. */
+  .tuning-scope {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .tuning-scope .limit-scope {
+    margin: 0;
+  }
+
+  .sensor-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .sensor-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     color: var(--text-mute);
     font-size: 13px;
   }

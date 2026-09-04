@@ -133,10 +133,6 @@ real backend decision before any daemon work:
 
 ## 3. Worth doing, not urgent
 
-- **Logging.** ~20 `println!`/`eprintln!` calls. A level-filtered logger
-  would let the daemon be quiet under systemd and verbose when diagnosing.
-- **Temperature in the power supervisor.** It refines on load and battery
-  charge only; a hot chassis is a good reason to back off.
 - **Import the Windows OMEN profile.** The one honest source of per-machine
   envelope numbers that exists: `PowerControlConfig.json` on the Windows
   partition (gzip'd UTF-16 JSON) holds what HP itself considers this
@@ -150,14 +146,6 @@ real backend decision before any daemon work:
   PCIe ASPM policy (`/sys/module/pcie_aspm/parameters/policy`) as an
   explicit, off-by-default setting would recover a little of it; it is not
   something to switch on behalf of anyone, and it is not a fan curve.
-- **Reaching Eco and Balanced tuning from the UI.** The power-limit sliders
-  live in the power sub-tab, which the reference app only shows under
-  Performance and Unlimited — so the Eco and Balanced profiles can only be
-  tuned over IPC (`power.setTuning` takes a `mode`). The defaults are
-  reasonable, but a user who wants a 25 W Eco cannot get there by clicking.
-- **A second reference sensor.** The curve follows the CPU only. The
-  original also supports GPU, with a fallback to CPU when the GPU reads 0
-  because it is asleep; `FanConfig` has no `referenceSensor` field yet.
 - **Confirming the fan cleaner against firmware that has it.** The feature
   is ported and the app has a page for it, but no machine here answers the
   capability query — so what byte 8 of the modern reply really means, and
@@ -165,8 +153,6 @@ real backend decision before any daemon work:
   `fan.startCleaning { "force": true }` exists for exactly this: it skips
   the "no fan cleaner here" refusal so a machine that has the feature can
   be tried against a build that decodes its answer wrongly.
-- **Per-process GPU usage** in the vitals table (the column exists and
-  shows `--`).
 - **Packaging**: nothing exists. PKGBUILD first, given the audience.
 - **CONTRIBUTING.md**, including how to add a translation (the mechanism is
   already documented in `docs/03-frontend.md` and the Help page).
@@ -312,6 +298,53 @@ Eco and Balanced on its own — is the `power` supervisor.
 Newest first. Kept because the *reasons* are the useful part - several of
 these replaced an earlier version of themselves, and knowing why saves
 someone re-proposing it.
+
+- **Four of §3 landed together, and one of them was already done.**
+  2026-09-04. None needed the laptop, which is why they were the ones to
+  do while the hardware items wait.
+
+  - **A second reference sensor.** `FanConfig.referenceSensor` is `cpu` or
+    `gpu`, `fan.setCurve` takes it, and the fan page offers it - but only
+    where hwmon publishes a GPU sensor, which this machine does not. The
+    fallback is one-directional and that is the design: `gpu` falls back
+    to the CPU when the card reads nothing (0 C is a card that is asleep,
+    not a cold one), `cpu` never falls back to the GPU, because a curve
+    silently driven by the sensor the user did not pick is a machine
+    nobody asked for. The status carries the setting *and* what is being
+    read, since they differ exactly while the card sleeps.
+  - **Temperature in the power supervisor.** A third rule beside the two
+    power-source ones: over `tempHighC` the machine is held at the quiet
+    end until it is back under `tempLowC`. Two thresholds rather than one
+    - a single line would step down, watch the fans win back a degree,
+    and step straight into the same wall again - and the latch survives a
+    manual override, because how hot the machine is is not an opinion the
+    user overrode. Heat outranks load for the reason the rule exists: a
+    machine is hot *because* it is busy, so if load won it would never
+    fire.
+  - **Reaching Eco and Balanced tuning from the UI.** The power sub-tab
+    keeps the reference app's placement (Performance and Unlimited only)
+    and gains a selector for *which* profile the sliders edit, so an Eco
+    envelope no longer needs `pyren-ctl`. The page says whether what is
+    being tuned applies now or at the next switch; `power.setTuning`
+    already took a `mode`, so nothing changed below the UI.
+  - **Logging.** `pyren_core::log` - four levels, `PYREN_LOG`, no
+    dependency. The ~20 prints in the modules went through it; the
+    startup report, `--check` and `--help` deliberately did **not**, since
+    those are output somebody asked for and `PYREN_LOG=warn` emptying a
+    report would be a bug rather than a setting.
+  - **Per-process GPU usage** was already there and the entry was stale:
+    the daemon walks `/proc/*/fdinfo` for it (`DrmUsageReader`), the
+    column renders it, and `--` means that process holds no DRM client.
+
+  Two things found on the way, both fixed. Four `pyren-fan` tests were
+  setting and then *removing* `PYREN_ACPI_CALL` in parallel threads, which
+  was harmless for as long as this machine had no `/proc/acpi/call` - the
+  fallback the removal exposed was also a path that did not exist. Now
+  that `acpi_call` is loaded the same race reaches the real firmware
+  interface and two of them fail; they hold one lock and restore the
+  variable rather than deleting it. And the CPU/GPU sensor lookup, which
+  the fan module owned, is now `pyren_core::sensors`, because the
+  supervisor wanted the same two numbers for a different reason.
 
 - **The board-params variant is decided, not guessed.** Reading `hp-wmi.c`
   answered the question the install raised: all four variants share one fan

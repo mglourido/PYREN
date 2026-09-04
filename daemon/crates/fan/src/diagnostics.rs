@@ -881,6 +881,7 @@ fn paths_for_testing(hwmon_dir: PathBuf, cpu_temp: Option<PathBuf>) -> FanPaths 
         fan2_input: Some(hwmon_dir.join("fan2_input")),
         hwmon_dir: Some(hwmon_dir),
         cpu_temp,
+        gpu_temp: None,
     }
 }
 
@@ -896,7 +897,7 @@ mod tests {
     fn a_fan_cleaner_that_was_never_asked_about_is_not_reported_as_absent() {
         let dir = std::env::temp_dir().join(format!("pyren-diag-cleaner-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("PYREN_ACPI_CALL", dir.join("nothing-here"));
+        let _no_acpi = crate::testenv::without_acpi_call(&dir);
 
         let check = check_fan_cleaner();
         assert_eq!(check.id, "fan-cleaner");
@@ -904,7 +905,6 @@ mod tests {
         assert!(check.remedy.is_some(), "not being able to ask comes with a way to ask");
         assert!(!check.detail.contains("has no fan cleaner"));
 
-        std::env::remove_var("PYREN_ACPI_CALL");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -965,6 +965,8 @@ mod tests {
 
     #[test]
     fn a_machine_with_no_interface_at_all_is_unsupported() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let diagnosis = diagnose(&FanPaths::default(), false);
         assert_eq!(diagnosis.verdict, Verdict::Unsupported);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Skip);
@@ -973,6 +975,8 @@ mod tests {
     /// A single-fan machine is not a broken one.
     #[test]
     fn a_missing_second_fan_is_skipped_rather_than_failed() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("onefan");
         write(&dir, "fan1_input", "2400\n");
         write(&dir, "pwm1", "128\n");
@@ -992,6 +996,8 @@ mod tests {
     /// fan control worked here - which it does not.
     #[test]
     fn an_hwmon_node_without_a_pwm_file_is_monitoring_only() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("nopwm");
         write(&dir, "fan1_input", "2400\n");
         write(&dir, "fan2_input", "2300\n");
@@ -1007,6 +1013,8 @@ mod tests {
     /// the write, so it must not downgrade the verdict - it asks for root.
     #[test]
     fn a_write_test_blocked_by_permissions_asks_for_root_instead_of_failing() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("readonly");
         write(&dir, "fan1_input", "2400\n");
         write(&dir, "pwm1", "128\n");
@@ -1032,6 +1040,8 @@ mod tests {
 
     #[test]
     fn a_write_test_that_was_never_asked_for_does_not_rule_control_out() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("untested");
         write(&dir, "fan1_input", "2400\n");
         write(&dir, "pwm1", "128\n");
@@ -1045,6 +1055,8 @@ mod tests {
 
     #[test]
     fn a_full_interface_reports_full_control() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("full");
         write(&dir, "fan1_input", "2400\n");
         write(&dir, "fan2_input", "2500\n");
@@ -1059,6 +1071,8 @@ mod tests {
 
     #[test]
     fn the_reverse_spin_encoding_is_decoded_rather_than_reported_as_a_huge_rpm() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("reverse");
         // 0x80 | 24 hundreds of rpm, i.e. 2400 rpm spinning backwards.
         write(&dir, "fan1_input", "15200\n");
@@ -1074,6 +1088,8 @@ mod tests {
 
     #[test]
     fn the_write_test_is_skipped_unless_asked_for() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("nowrite");
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
@@ -1085,6 +1101,8 @@ mod tests {
 
     #[test]
     fn the_write_test_restores_the_previous_mode() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("write");
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
@@ -1136,6 +1154,8 @@ mod tests {
     /// summary must carry a catalog key alongside the English text.
     #[test]
     fn checks_and_the_summary_are_translatable() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("i18n");
         write(&dir, "fan1_input", "2400\n");
         write(&dir, "pwm1", "128\n");
@@ -1152,6 +1172,8 @@ mod tests {
 
     #[test]
     fn an_unparseable_sysfs_value_fails_rather_than_being_read_as_zero() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = fixture("garbage");
         write(&dir, "fan1_input", "not a number\n");
         write(&dir, "pwm1", "128\n");

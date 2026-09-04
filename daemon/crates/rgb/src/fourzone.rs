@@ -241,10 +241,11 @@ mod wire_tests {
         std::fs::create_dir_all(&dir).expect("a temp dir is writable");
         let path = dir.join("call");
 
-        unsafe { std::env::set_var("PYREN_ACPI_CALL", &path) };
-        let _ = read_state();
-        let written = std::fs::read_to_string(&path).expect("the request was written");
-        unsafe { std::env::remove_var("PYREN_ACPI_CALL") };
+        let written = {
+            let _acpi = crate::testenv::redirect(&path);
+            let _ = read_state();
+            std::fs::read_to_string(&path).expect("the request was written")
+        };
         let _ = std::fs::remove_dir_all(&dir);
 
         let expected = format!(

@@ -49,6 +49,24 @@
           />
           <span>{t("home.autoPerformance")}<InfoTip>{t("home.autoPerformanceHint")}</InfoTip></span>
         </div>
+        <!-- The third rule, and the only one about the machine rather than
+             about the wall socket. Hidden where there is no sensor to
+             read: a switch that can never fire is worse than none. -->
+        {#if hardware.power?.thermal.available}
+          <div class="switch-row">
+            <Toggle
+              checked={hardware.power.auto.backOffWhenHot}
+              onchange={(v) => hardware.setThermalBackOff(v)}
+              ariaLabel={t("home.thermalBackOff")}
+            />
+            <span>
+              {t("home.thermalBackOff")}<InfoTip>{t("home.thermalBackOffHint")}</InfoTip>
+            </span>
+          </div>
+          {#if hardware.power.thermal.hot}
+            <p class="hot-now">{t("home.runningHot")}</p>
+          {/if}
+        {/if}
       </article>
 
       <article class="card">
@@ -310,6 +328,14 @@
   .mini.active {
     border-color: var(--text);
     color: var(--text);
+  }
+
+  /* Only appears while the machine is actually over the threshold, which
+     is why it is allowed to be this loud. */
+  .hot-now {
+    margin: 8px 0 0;
+    color: var(--warn, #e0a33e);
+    font-size: 13px;
   }
 
   .switch-row {

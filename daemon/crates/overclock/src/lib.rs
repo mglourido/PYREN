@@ -55,6 +55,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{log_error, log_info, log_warn};
 use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -183,15 +184,15 @@ impl OverclockModule {
         let loaded = store.load::<OverclockConfig>("overclock");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                println!(
-                    "pyren-daemon: overclock config loaded from {}",
+                log_info!(
+                    "overclock config loaded from {}",
                     store.path_for("overclock").display()
                 );
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
-                eprintln!(
-                    "pyren-daemon: overclock config was unreadable ({reason}); using defaults{}",
+                log_warn!(
+                    "overclock config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -199,8 +200,8 @@ impl OverclockModule {
                 );
             }
             LoadOutcome::TooNew { found } => {
-                eprintln!(
-                    "pyren-daemon: overclock config is version {found}, newer than this build \
+                log_warn!(
+                    "overclock config is version {found}, newer than this build \
                      understands; using defaults and leaving the file alone"
                 );
             }
@@ -256,14 +257,14 @@ impl OverclockModule {
             return;
         }
         if unconfirmed {
-            eprintln!(
-                "pyren-daemon: not restoring the saved GPU offsets - the last one was applied \
+            log_warn!(
+                "not restoring the saved GPU offsets - the last one was applied \
                  and never confirmed, which is what a machine that hung looks like from here"
             );
             return;
         }
         if !consented {
-            eprintln!("pyren-daemon: not restoring GPU offsets - the warning was never accepted");
+            log_warn!("not restoring GPU offsets - the warning was never accepted");
             return;
         }
 
@@ -272,16 +273,16 @@ impl OverclockModule {
                 continue;
             }
             let Some(gpu) = lock(&self.probe).gpu(&id).cloned() else {
-                eprintln!("pyren-daemon: saved overclock is for {id}, which is not on this machine");
+                log_warn!("saved overclock is for {id}, which is not on this machine");
                 continue;
             };
-            println!("pyren-daemon: restoring the saved overclock on {} ({id})", gpu.name);
+            log_info!("restoring the saved overclock on {} ({id})", gpu.name);
             match self.climb(&gpu, Target::default(), target) {
                 Ok(()) => {
                     lock(&self.state).applied.insert(id, target);
                 }
                 Err(e) => {
-                    eprintln!("pyren-daemon: could not restore the overclock on {id}: {e}");
+                    log_warn!("could not restore the overclock on {id}: {e}");
                     lock(&self.state).last_error = Some(e.as_msg());
                 }
             }
@@ -312,11 +313,11 @@ impl OverclockModule {
 
             let gpu = pending.gpu.clone();
             match revert(&state, &probe, &store, pending, RevertReason::NotConfirmed) {
-                Ok(()) => eprintln!("pyren-daemon: overclock on {gpu} was never confirmed; reverted"),
+                Ok(()) => log_warn!("overclock on {gpu} was never confirmed; reverted"),
                 // The one failure with nothing left to try. Say it loudly:
                 // the card is running something nobody confirmed and this
                 // daemon could not take it back.
-                Err(e) => eprintln!("pyren-daemon: could NOT undo the overclock on {gpu}: {e}"),
+                Err(e) => log_error!("could NOT undo the overclock on {gpu}: {e}"),
             }
         });
     }
@@ -1025,7 +1026,7 @@ fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("overclock", &state.config) {
         Ok(()) => state.last_save_error = None,
         Err(e) => {
-            eprintln!("pyren-daemon: could not save overclock config: {e}");
+            log_warn!("could not save overclock config: {e}");
             state.last_save_error = Some(e.to_string());
         }
     }

@@ -49,11 +49,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{log_info, log_warn};
 use pyren_core::{msg, ErrorKind, EventBus, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub use auto::{AutoConfig, AutoInputs, AutoSwitcher};
+pub use auto::{AutoConfig, AutoInputs, AutoSwitcher, HeatLatch, Sensors};
 pub use backend::{ApplyReport, BackendState};
 pub use limits::{Limits, ModeTuning, Tuning};
 pub use supply::PowerSupplyState;
@@ -214,6 +215,10 @@ pub struct PowerModule {
     store: ConfigStore,
     limits: limits::LimitPaths,
     announce: Announcer,
+    /// Discovered once - see [`Sensors`] - and shared with the supervisor
+    /// thread, which is the only reason a status read has a temperature to
+    /// show at all.
+    sensors: Sensors,
 }
 
 impl PowerModule {
@@ -227,12 +232,12 @@ impl PowerModule {
         let loaded = store.load::<PowerConfig>("power");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                println!("pyren-daemon: power config loaded from {}", store.path_for("power").display());
+                log_info!("power config loaded from {}", store.path_for("power").display());
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
-                eprintln!(
-                    "pyren-daemon: power config was unreadable ({reason}); using defaults{}",
+                log_warn!(
+                    "power config was unreadable ({reason}); using defaults{}",
                     backup
                         .as_ref()
                         .map(|b| format!(", previous file kept at {}", b.display()))
@@ -240,8 +245,8 @@ impl PowerModule {
                 );
             }
             LoadOutcome::TooNew { found } => {
-                eprintln!(
-                    "pyren-daemon: power config is version {found}, newer than this \
+                log_warn!(
+                    "power config is version {found}, newer than this \
                      build understands; using defaults and leaving the file alone"
                 );
             }
@@ -262,12 +267,12 @@ impl PowerModule {
             if let Some(saved) = config.mode {
                 let report = apply_profile(saved, &config, &limit_paths);
                 if report.is_empty() {
-                    eprintln!(
-                        "pyren-daemon: could not restore power mode {saved:?}: {}",
+                    log_warn!(
+                        "could not restore power mode {saved:?}: {}",
                         report.failed.join("; ")
                     );
                 } else {
-                    println!("pyren-daemon: restored power mode {saved:?}");
+                    log_info!("restored power mode {saved:?}");
                     mode = saved;
                 }
             }
@@ -283,13 +288,15 @@ impl PowerModule {
         }));
 
         let announce = Announcer::default();
+        let sensors = Sensors::discover();
         spawn_supervisor(
             Arc::clone(&state),
             store.clone(),
             limit_paths.clone(),
             announce.clone(),
+            sensors.clone(),
         );
-        Self { state, store, limits: limit_paths, announce }
+        Self { state, store, limits: limit_paths, announce, sensors }
     }
 
     /// Hands the module the bus to announce mode changes on. Called once,
@@ -386,6 +393,15 @@ impl PowerModule {
             "restoreModeOnStart": state.config.restore_mode_on_start,
             "applyToOsProfile": state.config.apply_to_os_profile,
             "autoOverrideSecondsLeft": override_remaining,
+            // What the supervisor's thermal rule can see and what it
+            // currently thinks. `hot` is latched, so it is not a
+            // comparison a client could redo from `tempC` - which is the
+            // reason it is reported rather than left to be inferred.
+            "thermal": {
+                "available": self.sensors.any(),
+                "tempC": self.sensors.hottest_c_now(),
+                "hot": state.switcher.is_hot(),
+            },
             "lastAutoSwitch": state.last_auto_switch,
             "configPath": self.store.path_for("power"),
             "configSaveError": state.last_save_error,
@@ -586,6 +602,7 @@ fn spawn_supervisor(
     store: ConfigStore,
     paths: limits::LimitPaths,
     announce: Announcer,
+    sensors: Sensors,
 ) {
     std::thread::spawn(move || loop {
         let (interval, decision) = {
@@ -596,7 +613,8 @@ fn spawn_supervisor(
                 (interval, None)
             } else {
                 let supply = PowerSupplyState::read();
-                let inputs = AutoInputs::sample(supply.on_battery, supply.battery_percent);
+                let inputs =
+                    AutoInputs::sample(supply.on_battery, supply.battery_percent, &sensors);
                 let current = guard.mode;
                 let config = guard.config.auto.clone();
                 let decision = guard.switcher.observe(inputs, &config, current);
@@ -628,7 +646,7 @@ fn spawn_supervisor(
             let mut guard = lock(&state);
             if !report.is_empty() {
                 guard.mode = mode;
-                println!("pyren-daemon: power auto-switch -> {mode:?} ({})", decision.reason);
+                log_info!("power auto-switch -> {mode:?} ({})", decision.reason);
                 guard.last_auto_switch = Some(decision.reason);
                 // Only worth a disk write when the mode is meant to survive
                 // a reboot; otherwise the supervisor would rewrite the file
@@ -649,8 +667,8 @@ fn spawn_supervisor(
                     { "mode" => format!("{mode:?}"), "failed" => report.failed.join("; ") },
                     "{mode} failed: {failed}"
                 ));
-                eprintln!(
-                    "pyren-daemon: power auto-switch to {mode:?} failed: {}",
+                log_warn!(
+                    "power auto-switch to {mode:?} failed: {}",
                     report.failed.join("; ")
                 );
             }
@@ -728,7 +746,7 @@ fn persist(store: &ConfigStore, state: &mut State) {
     match store.save("power", &state.config) {
         Ok(()) => state.last_save_error = None,
         Err(e) => {
-            eprintln!("pyren-daemon: could not save power config: {e}");
+            log_warn!("could not save power config: {e}");
             state.last_save_error = Some(e.to_string());
         }
     }
