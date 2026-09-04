@@ -928,6 +928,10 @@ const DAEMON_ROUTES: Record<
   gpu_set_mode: { module: "gpu", method: "setMode" },
   network_get_status: { module: "network", method: "getStatus" },
   network_set_mode: { module: "network", method: "setMode" },
+  keymap_get_status: { module: "keymap", method: "getStatus" },
+  keymap_set_mapping: { module: "keymap", method: "setMapping", params: (a) => a.mapping },
+  keymap_remove_mapping: { module: "keymap", method: "removeMapping", params: (a) => a.from },
+  keymap_set_enabled: { module: "keymap", method: "setEnabled" },
   rgb_set_static: { module: "rgb", method: "setStatic" },
   rgb_set_zones: { module: "rgb", method: "setZones" },
   rgb_off: { module: "rgb", method: "off" },
@@ -1057,6 +1061,31 @@ export type HotkeyLearned = {
   } | null;
   timedOut: boolean;
   bound: boolean;
+};
+
+/** One key remapped to another. `device` scopes the source key to one
+ *  named keyboard; omitted, it matches that keycode on any of them.
+ *  Keycodes are Linux evdev codes, the same vocabulary `HotkeyTrigger`
+ *  already uses - see `keycodeFromDomCode` / `domCodeFromKeycode`. */
+export type KeyMapping = {
+  from: { device: string | null; keycode: number };
+  to: number;
+};
+
+export type KeymapStatus = {
+  /** Whether the remapper is meant to be running. Off by default, unlike
+   *  `hotkey.enabled`: turning this on grabs a keyboard exclusively, which
+   *  silences `hotkey` on it for as long as it runs. */
+  enabled: boolean;
+  /** Whether it is actually grabbing devices right now. Can be false while
+   *  `enabled` is true - not root, or no keyboard found. */
+  running: boolean;
+  /** Translatable - render with `tm()`. */
+  detail: Msg;
+  devices: string[];
+  mappings: KeyMapping[];
+  configPath: string;
+  configSaveError: string | null;
 };
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -1210,4 +1239,15 @@ export const daemon = {
     pl2W?: number;
     turbo?: boolean;
   }) => call<PowerState>("power_set_tuning", { tuning }),
+  /** The mappings, and whether the remapper is actually grabbing devices. */
+  keymapStatus: () => call<KeymapStatus>("keymap_get_status"),
+  /** Replaces whatever this key (and device, if given) already mapped to. */
+  setKeyMapping: (mapping: KeyMapping) => call<KeymapStatus>("keymap_set_mapping", { mapping }),
+  removeKeyMapping: (from: { device?: string | null; keycode: number }) =>
+    call<KeymapStatus>("keymap_remove_mapping", { from }),
+  /** Grabs (or releases) the keyboards a mapping names. Turning this on is
+   *  the one call here that can take a keyboard away from the rest of the
+   *  session if the mapping is wrong - see `docs/01-ipc-protocol.md`
+   *  §"`keymap` module". */
+  setKeymapEnabled: (enabled: boolean) => call<KeymapStatus>("keymap_set_enabled", { enabled }),
 };

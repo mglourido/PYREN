@@ -12,6 +12,7 @@ pyren-power = { path = "../crates/power" }
 pyren-installer = { path = "../crates/installer" }
 pyren-rgb = { path = "../crates/rgb" }
 pyren-hotkey = { path = "../crates/hotkey" }
+pyren-keymap = { path = "../crates/keymap" }
 pyren-overclock = { path = "../crates/overclock" }
 pyren-gpu = { path = "../crates/gpu" }
 pyren-network = { path = "../crates/network" }

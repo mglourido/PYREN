@@ -313,7 +313,10 @@
     "testTitle": "Test your key mapping",
     "testHint": "Click here to test the key mapping",
     "clearAll": "Clear all",
-    "emptyHint": "Select a key above to assign it"
+    "emptyHint": "Select a key above to assign it",
+    "applyToggle": "Apply key mapping",
+    "applyHint": "Grabs the keyboard system-wide. If a mapping is wrong, typing can briefly stop working until it is turned off again.",
+    "notMappable": "This key has no fixed code the daemon can remap."
   },
   "drivers": {
     "title": "Drivers",

@@ -104,6 +104,18 @@ HOTKEY
                                how the on-screen display is tested on a
                                machine whose Fn+P never reaches Linux
 
+KEYMAP
+  keymap get                   the mappings, and whether the remapper is
+                               running
+  keymap map <from> <to> [--device NAME]
+                               remap keycode <from> to keycode <to>,
+                               optionally on one named keyboard only
+  keymap unmap <from> [--device NAME]
+                               forget that mapping
+  keymap <on|off>              start or stop grabbing keyboards and
+                               remapping them; grabbing one silences
+                               'hotkey' on it while this runs
+
 GPU
   gpu get                       which GPU is driving the screen (needs the
                                patched hp-wmi driver's gpu_mux_mode)
@@ -407,6 +419,41 @@ fn run(command: &args::Command) -> Run {
                 command,
                 client::call("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))?,
                 print_rgb,
+            )
+        }
+
+        ["keymap", "get"] => {
+            show(command, client::call("keymap", "getStatus", Value::Null)?, print_keymap)
+        }
+        ["keymap", "map", from, to] => {
+            let from = parse_keycode("from", from)?;
+            let to = parse_keycode("to", to)?;
+            let mut spec = serde_json::Map::new();
+            spec.insert("keycode".into(), json!(from));
+            if let Some(device) = command.option("device") {
+                spec.insert("device".into(), json!(device));
+            }
+            show(
+                command,
+                client::call("keymap", "setMapping", json!({ "from": spec, "to": to }))?,
+                print_keymap,
+            )
+        }
+        ["keymap", "unmap", from] => {
+            let from = parse_keycode("from", from)?;
+            let mut spec = serde_json::Map::new();
+            spec.insert("keycode".into(), json!(from));
+            if let Some(device) = command.option("device") {
+                spec.insert("device".into(), json!(device));
+            }
+            show(command, client::call("keymap", "removeMapping", Value::Object(spec))?, print_keymap)
+        }
+        ["keymap", value] => {
+            let enabled = word_switch("keymap", value)?;
+            show(
+                command,
+                client::call("keymap", "setEnabled", json!({ "enabled": enabled }))?,
+                print_keymap,
             )
         }
 
@@ -1206,6 +1253,15 @@ fn parse_clock_lock(spec: &str) -> Result<Value, Failure> {
     Ok(json!({ "minMhz": parse(min, "minimum")?, "maxMhz": parse(max, "maximum")? }))
 }
 
+/// A Linux evdev keycode - a plain number (`pyren-ctl keymap map 30 48`,
+/// A→B), not a name, since no name table here would cover the same ground
+/// `pyren_hotkey::key_name` already lets `hotkey learn` show while binding.
+fn parse_keycode(name: &str, value: &str) -> Result<u16, Failure> {
+    value
+        .parse::<u16>()
+        .map_err(|_| Failure::Usage(format!("keymap's {name} is not a keycode: '{value}'")))
+}
+
 fn print_oc(state: &Value) {
     let empty = Vec::new();
     let gpus = state.get("gpus").and_then(Value::as_array).unwrap_or(&empty);
@@ -1317,6 +1373,26 @@ fn print_gpu(status: &Value) {
         "mode",
         status.get("mode").and_then(Value::as_str).unwrap_or("unknown - firmware answered a mode this build does not recognise"),
     );
+}
+
+fn print_keymap(status: &Value) {
+    row("enabled", status.get("enabled").and_then(Value::as_bool).unwrap_or(false));
+    row("running", status.get("running").and_then(Value::as_bool).unwrap_or(false));
+    row("detail", text(status, "detail"));
+    let mappings = status.get("mappings").and_then(Value::as_array).cloned().unwrap_or_default();
+    if mappings.is_empty() {
+        row("mappings", "none");
+    }
+    for mapping in &mappings {
+        let from = mapping.get("from").cloned().unwrap_or(Value::Null);
+        let device = from.get("device").and_then(Value::as_str);
+        let keycode = from.get("keycode").and_then(Value::as_u64).unwrap_or_default();
+        let to = mapping.get("to").and_then(Value::as_u64).unwrap_or_default();
+        match device {
+            Some(device) => row("map", format!("{keycode} -> {to} (on {device})")),
+            None => row("map", format!("{keycode} -> {to}")),
+        }
+    }
 }
 
 fn print_network(status: &Value) {

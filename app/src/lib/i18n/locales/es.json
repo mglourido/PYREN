@@ -313,7 +313,10 @@
     "testTitle": "Prueba tu asignación de tecla",
     "testHint": "Haz clic aquí para probar la asignación de tecla",
     "clearAll": "Borrar todo",
-    "emptyHint": "Selecciona en el teclado de arriba para asignar"
+    "emptyHint": "Selecciona en el teclado de arriba para asignar",
+    "applyToggle": "Aplicar asignación de teclas",
+    "applyHint": "Toma el control exclusivo del teclado. Si una asignación es incorrecta, escribir puede dejar de funcionar hasta que se desactive de nuevo.",
+    "notMappable": "Esta tecla no tiene un código fijo que el daemon pueda reasignar."
   },
   "drivers": {
     "title": "Controladores",

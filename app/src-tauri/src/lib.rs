@@ -627,6 +627,33 @@ fn hotkey_press() -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn keymap_get_status() -> Result<Value, String> {
+    call_daemon("keymap", "getStatus", Value::Null)
+}
+
+/// `mapping` and `from` are passed through as-is - `{ from: { device?, keycode }, to }`
+/// and `{ device?, keycode }` respectively - rather than unpacked into
+/// separate arguments, since both are already the daemon's own shape.
+#[tauri::command]
+fn keymap_set_mapping(mapping: Value) -> Result<Value, String> {
+    call_daemon("keymap", "setMapping", mapping)
+}
+
+#[tauri::command]
+fn keymap_remove_mapping(from: Value) -> Result<Value, String> {
+    call_daemon("keymap", "removeMapping", from)
+}
+
+/// The one call here that can take a keyboard away from the rest of the
+/// session if the mapping is wrong - `EVIOCGRAB` is exclusive, so `hotkey`
+/// stops hearing the same device too. See `docs/01-ipc-protocol.md`
+/// §"`keymap` module".
+#[tauri::command]
+fn keymap_set_enabled(enabled: bool) -> Result<Value, String> {
+    call_daemon("keymap", "setEnabled", json!({ "enabled": enabled }))
+}
+
+#[tauri::command]
 fn session_set_app_at_login(enabled: bool) -> Result<Value, String> {
     session::set_app_at_login(enabled)
 }
@@ -789,6 +816,10 @@ pub fn run() {
             hotkey_clear,
             hotkey_set_enabled,
             hotkey_press,
+            keymap_get_status,
+            keymap_set_mapping,
+            keymap_remove_mapping,
+            keymap_set_enabled,
             app_config_load,
             app_config_save
         ])

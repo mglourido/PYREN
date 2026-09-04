@@ -9,6 +9,7 @@ members = [
     "crates/installer",
     "crates/fan",
     "crates/hotkey",
+    "crates/keymap",
     "crates/system",
     "crates/power",
     "crates/rgb",

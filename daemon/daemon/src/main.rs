@@ -12,6 +12,7 @@ use pyren_core::{serve_unix_socket, Audience, EventBus, Module, Registry};
 use pyren_fan::FanModule;
 use pyren_gpu::GpuModule;
 use pyren_hotkey::{HotkeyModule, KeyPress};
+use pyren_keymap::KeymapModule;
 use pyren_installer::{
     execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
 };
@@ -189,6 +190,10 @@ fn main() {
     // is coordination between two modules, and a module never calls
     // another one directly.
     let hotkey = HotkeyModule::new();
+    // Off until a mapping is set and turned on: grabbing a keyboard here
+    // silences `hotkey` on it (see `pyren_keymap`'s own doc comment), so
+    // this must never come up watching on its own the way `hotkey` does.
+    let keymap = KeymapModule::new();
 
     let system = SystemModule::new(controls);
 
@@ -263,6 +268,7 @@ fn main() {
     registry.register(Box::new(gpu));
     registry.register(Box::new(network));
     registry.register(Box::new(hotkey.clone()));
+    registry.register(Box::new(keymap));
     registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);
 

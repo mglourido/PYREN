@@ -140,9 +140,36 @@ rather than the caller's. It now drops back through `SUDO_USER`.
 ## 2. Blocked on a decision or on hardware
 
 ### 2.1 Network booster, key mapping
-- **Key mapping**: still local state only. Needs a real backend decision -
-  `keyd`, `udev` hwdb, or an evdev-level remapper - which affects whether
-  the daemon needs to hold an input device open.
+
+**Key mapping decided and built, 2026-09-04.** The backend this item asked
+for is an evdev-level remapper, not `keyd` or a `udev` hwdb entry:
+`pyren_hotkey` already opens `/dev/input/event*` directly as root for the
+vendor performance key, so a `/dev/uinput` virtual device reusing that same
+access is one fewer moving part than a second daemon's config file. Built:
+`daemon/crates/keymap` (`keymap.getStatus`/`setMapping`/`removeMapping`/
+`setEnabled`, see `docs/01-ipc-protocol.md` §"`keymap` module"),
+`pyren-ctl keymap`, and the `/system/keys` page wired to it end to end -
+mappings now live in the daemon, not the page's own `$state`, and a new
+"Apply key mapping" switch is the explicit opt-in `setEnabled` needs.
+
+Two decisions worth keeping: **`enabled` defaults to `false`**, unlike
+`hotkey`'s own - `EVIOCGRAB` makes this module's file descriptor the only
+one the kernel delivers a grabbed keyboard's events to, so turning this on
+silences `hotkey` on that device for as long as it runs, and that must
+never happen just because a mapping was set; and **the ioctl numbers are
+derived from the kernel's own `_IOC` formula and unit-tested against the
+values the headers are known to produce**, rather than pasted in as magic
+hex, because a wrong one here does not fail cleanly - it grabs the wrong
+thing or corrupts a struct layout on a root daemon reading real keyboards.
+
+**Not yet run against hardware.** Grabbing this development machine's own
+keyboard from inside the session used to edit the code is not a test to
+fire blind - a wrong substitution would take the keyboard away from
+whoever needs to fix it. What a real run would still confirm: the grab and
+the virtual device actually come up, that ungrab-on-disable really hands
+the keyboard back, and that ordinary typing still works once a mapping
+exists but the switch is off. `pyren-ctl keymap on` on a spare keyboard, or
+over SSH with a way back in, is the next honest step.
 
 **Network booster decided and built (the honest half), 2026-09-04.**
 Per-process traffic accounting plus per-PID `tc`/`nftables` rules — what

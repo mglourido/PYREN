@@ -2,38 +2,73 @@
   /**
    * Key mapping. Picking a key opens an action panel below the board,
    * exactly like the reference app; the remap capture reads the physical
-   * key from a real keydown so the value stored is a KeyboardEvent `code`
-   * the daemon can act on later.
+   * key from a real keydown, and both the captured code and the key ids
+   * `Keyboard.svelte` uses are DOM `KeyboardEvent.code` strings - converted
+   * to the daemon's Linux evdev keycodes at the edge, in `keymap-codes.ts`.
+   *
+   * Mappings live in the daemon (`keymap.setMapping` / `removeMapping`),
+   * not in this page's own state: a page reload must show what is actually
+   * being remapped, not an empty board. Whether the daemon is actually
+   * *acting* on them is a separate switch (`applyEnabled`) - see
+   * `docs/01-ipc-protocol.md` §"`keymap` module" for why grabbing a
+   * keyboard is never turned on implicitly by adding a mapping.
    */
   import Icon from "$lib/components/Icon.svelte";
   import Keyboard from "$lib/components/Keyboard.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { t, tm } from "$lib/i18n/index.svelte";
+  import { daemon, type KeymapStatus } from "$lib/api/daemon";
+  import { domCodeFromKeycode, keycodeFromDomCode } from "$lib/keymap-codes";
 
   type Action = "remap" | "shortcut" | "macro" | "media";
 
   let selected = $state<string | null>(null);
   let action = $state<Action | "">("");
-  let mappings = $state<Record<string, string>>({});
+  let status = $state<KeymapStatus | null>(null);
   let capturing = $state(false);
   let testValue = $state("");
 
-  function captureKey(event: KeyboardEvent) {
+  const mappings = $derived.by(() => {
+    const map: Record<string, string> = {};
+    for (const m of status?.mappings ?? []) {
+      const code = domCodeFromKeycode(m.to);
+      if (code) map[domCodeFromKeycode(m.from.keycode) ?? ""] = code;
+    }
+    return map;
+  });
+  const applyEnabled = $derived(status?.enabled ?? false);
+
+  async function refresh() {
+    status = await daemon.keymapStatus();
+  }
+  refresh();
+
+  async function captureKey(event: KeyboardEvent) {
     if (!capturing || !selected) return;
     event.preventDefault();
-    mappings = { ...mappings, [selected]: event.code };
+    const from = keycodeFromDomCode(selected);
+    const to = keycodeFromDomCode(event.code);
     capturing = false;
+    if (from === null || to === null) return;
+    status = await daemon.setKeyMapping({ from: { device: null, keycode: from }, to });
   }
 
-  function clearSelected() {
+  async function clearSelected() {
     if (!selected) return;
-    const { [selected]: _removed, ...rest } = mappings;
-    mappings = rest;
+    const keycode = keycodeFromDomCode(selected);
+    if (keycode === null) return;
+    status = await daemon.removeKeyMapping({ keycode });
   }
 
-  function clearAll() {
-    mappings = {};
+  async function clearAll() {
+    for (const m of status?.mappings ?? []) {
+      status = await daemon.removeKeyMapping({ device: m.from.device, keycode: m.from.keycode });
+    }
     selected = null;
     action = "";
+  }
+
+  async function toggleApply() {
+    status = await daemon.setKeymapEnabled(!applyEnabled);
   }
 </script>
 
@@ -42,10 +77,17 @@
 <div class="keys">
   <header class="head">
     <span class="prompt">{t("keys.selectKey")}</span>
+    <label class="apply" title={t("keys.applyHint")}>
+      <input type="checkbox" checked={applyEnabled} onchange={toggleApply} />
+      {t("keys.applyToggle")}
+    </label>
     <button class="clear" disabled={Object.keys(mappings).length === 0} onclick={clearAll}>
       {t("keys.clearAll")}
     </button>
   </header>
+  {#if status}
+    <p class="status-detail">{tm(status.detail)}</p>
+  {/if}
 
   <div class="board-area">
     <Keyboard
@@ -73,6 +115,8 @@
 
   {#if !selected}
     <p class="empty">{t("keys.emptyHint")}</p>
+  {:else if keycodeFromDomCode(selected) === null}
+    <p class="empty">{t("keys.notMappable")}</p>
   {:else if action === "remap"}
     <div class="detail">
       <div class="detail-main">
@@ -141,6 +185,22 @@
   .clear:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .apply {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .status-detail {
+    margin: 0;
+    padding: 0 26px;
+    color: var(--text-dim);
+    font-size: 13px;
   }
 
   .board-area {

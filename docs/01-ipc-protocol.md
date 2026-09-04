@@ -1758,6 +1758,68 @@ stored, never logged, never sent anywhere. The one exception is a learn
 window the user opened deliberately, which lasts seconds and reports
 exactly one press: the one they pressed to answer the question.
 
+## `keymap` module
+
+Remaps one physical key to another, system-wide, with no compositor
+keybinding involved. Closes the "key mapping" half of `dev/TODO.md` §2.1 —
+the backend decision it names (`keyd`, a `udev` hwdb entry, or an
+evdev-level remapper) is the third: this daemon already opens
+`/dev/input/event*` directly for `hotkey`, so a `/dev/uinput` virtual
+device reusing that same access is one fewer moving part than a second
+daemon's config file.
+
+| method | params | result |
+|---|---|---|
+| `keymap.getStatus` | none | `{ "enabled", "running", "detail", "devices": [string], "mappings": [{ "from": { "device"?, "keycode" }, "to" }] }` |
+| `keymap.setMapping` | `{ "from": { "device"?: string, "keycode": number }, "to": number }` | as `getStatus` |
+| `keymap.removeMapping` | `{ "device"?: string, "keycode": number }` | as `getStatus` |
+| `keymap.setEnabled` | `{ "enabled": bool }` | as `getStatus` |
+
+Keycodes are Linux evdev codes (`KEY_A` = 30, and so on) — the same
+vocabulary `hotkey.learn`'s `press.keycode` already speaks — not DOM
+`KeyboardEvent.code` strings; a client translates once, at the UI layer,
+rather than the daemon accepting two vocabularies for the same number.
+
+`getStatus.detail` is a **`Msg` object** (see *Translatable messages*
+above); `setMapping`/`removeMapping`/`setEnabled` refusals carry
+`key`/`params` beside `message` the same way `hotkey`'s do.
+
+### Grabbing a keyboard silences `hotkey` on it
+
+`EVIOCGRAB` makes this module's file descriptor the *only* one the kernel
+delivers a device's events to, `hotkey`'s own reader included. So enabling
+a mapping on the keyboard the vendor performance key lives on stops
+`hotkey` hearing it for as long as the remapper runs on that device. This
+is the reason `enabled` defaults to `false` here, unlike `hotkey`'s own
+`enabled` (which only ever gates whether a heard key does anything, never
+whether the key is heard at all): a keymap must be turned on deliberately,
+after a mapping exists, not the moment the daemon starts.
+
+### One virtual keyboard, not one per device
+
+Every grabbed keyboard's events are forwarded through a single `uinput`
+device, substituting a keycode when a mapping matches. A mapping with no
+`device` matches that keycode from any of them; naming a `device` scopes it
+to one, which round-trips through `getStatus` but is not surfaced
+differently by the merge — the common case, one keyboard, does not need it.
+
+Only a bare keycode is substituted — no chords, no macros. Those stay the
+app's own "coming soon", because they are a sequence of synthetic events
+this module has no reason to own once a plain substitution is what the
+virtual device is for.
+
+### Not yet run against hardware
+
+Grabbing this development machine's own keyboard from inside the same
+session it is being edited in is not a test to run blind — a mistake in
+the substitution table would take the keyboard away from whoever needs it
+to fix that mistake. The ioctl numbers (`EVIOCGRAB`, `UI_SET_EVBIT`,
+`UI_SET_KEYBIT`, `UI_DEV_SETUP`, `UI_DEV_CREATE`, `UI_DEV_DESTROY`) are
+derived from the same `_IOC` formula the kernel headers use and checked
+against the values those headers are known to produce
+(`crates/keymap/src/raw.rs` tests); what a real grab-and-remap run on a
+spare keyboard, or over SSH, would still confirm is untested here.
+
 ## Adding a new module
 
 1. New crate under `daemon/crates/<name>`, depending on `pyren-core`,

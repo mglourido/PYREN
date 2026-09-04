@@ -1,0 +1,15 @@
+[package]
+name = "pyren-keymap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pyren-core = { path = "../core" }
+pyren-config = { path = "../config" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Same reason as pyren-hotkey: struct input_event and O_NONBLOCK/poll(2) are
+# the whole of what reading /dev/input needs, and /dev/uinput's ioctls are
+# three integers and a struct - no evdev/uinput crate pulls its weight here.
+libc = "0.2"

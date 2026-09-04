@@ -78,6 +78,7 @@ dependencies = [
  "pyren-gpu",
  "pyren-hotkey",
  "pyren-installer",
+ "pyren-keymap",
  "pyren-network",
  "pyren-overclock",
  "pyren-power",
@@ -126,6 +127,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "pyren-keymap"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pyren-config",
+ "pyren-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
