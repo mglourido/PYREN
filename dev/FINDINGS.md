@@ -586,15 +586,125 @@ which is the argument for trying more than one and for the manual override.
 `acpi_call` renders a buffer reply as the text `{0x50, 0x41, …}` into a
 fixed result buffer of a few hundred bytes, so the firmware's 128-byte
 answer arrives as its first **34** bytes. Zones 0–2 fit; zone 3 starts at
-byte 34 and does not. Consequences, all of them live:
+byte 34 and does not. Consequences — all of them live at the time, and all
+of them gone since `kernelZones` started answering, two sections down:
 
 - `rgb read` always reports zone 4 as black. The colour written to it is
   real — the lights show it — but it cannot be read back.
 - A write pads the unseen tail with zeros. Bounded, but a guess: everything
   visible before the colours is zero apart from `state[0] = 3`.
 
-The way out is the `kernelZones` dialect (`/sys/devices/platform/hp-wmi/
-rgb_zones/zone00…03`), which needs no `acpi_call` and has no such limit.
-This kernel's `hp-wmi` does not publish those files; `OmenLinux/omen-rgb-keyboard`
-is an out-of-tree module that would, and the dialect is already implemented
-and would be picked automatically.
+The way out is the `kernelZones` dialect, which needs no `acpi_call` and
+has no such limit. This kernel's `hp-wmi` does not publish those files;
+`OmenLinux/omen-rgb-keyboard` is an out-of-tree module that would. Two
+things about that module turned out not to be what this paragraph first
+assumed — see "What `omen-rgb-keyboard` actually costs" below.
+
+## Full speed on this machine is 5200 rpm — measured 2026-09-04
+
+`fan calibrate`, run against the hardware for the first time. It is the
+number the curve's hysteresis and the installer's `cpuMaxRpm`/`gpuMaxRpm`
+patch both wanted, and until now every one of them was working from
+whatever ceiling the firmware volunteered.
+
+```
+baseline 2400 rpm (idle, mode auto)
+  1s  2600 / 2400      9s  4800 / 4600
+  2s  2900 / 2700     10s  5100 / 4900
+  3s  3200 / 3000     11s  5200 / 5100
+  4s  3500 / 3300     12s  5200 / 5200
+  5s  3800 / 3600     13s  5200 / 5200
+  6s  4100 / 3900     14s  5200 / 5200
+  7s  4300 / 4100     15s  5200 / 5200
+  8s  4600 / 4400     16s  5200 / 5200
+fan1Max 5200, fan2Max 5200, fanMax 5200
+restoredMode auto, restoreError null
+```
+
+Three things the trace says that the single number does not:
+
+- **The ramp is linear and slow** — about 290 rpm/s, sixteen seconds from
+  idle to the ceiling. Anything that reads an rpm right after commanding
+  `max` and calls it the maximum is reading the ramp, not the ceiling.
+  This is the argument for calibration existing at all.
+- **The two fans are not in step.** `fan1` leads `fan2` by 200 rpm the
+  whole way up and they land on the same number. So the lag is the ramp,
+  not different hardware, and taking the max of the two is right.
+- **It put the mode back.** `restoredMode: auto` with no error, which is
+  the half of the routine that had never been exercised against a real
+  `switchMode`.
+
+## What `omen-rgb-keyboard` actually costs — read 2026-09-04
+
+Read out of the clone before installing it, and both findings contradict
+what §1.2b of the TODO assumed.
+
+**It does not publish under `hp-wmi`.** `DRIVER_NAME` is
+`"omen-rgb-keyboard"` and `platform_device_register_simple(DRIVER_NAME, …)`
+registers under that, so the files are at
+`/sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone00…03`. The
+variable holding the device is still called `hp_wmi_platform_dev`, which
+is probably why the older path is the one written down everywhere. Our
+`kernelZones` dialect had `/sys/devices/platform/hp-wmi/rgb_zones`
+hardcoded, so installing the module and expecting `rgb probe` to notice
+would have found nothing and taught us nothing. `dir()` now searches both.
+
+**It wants `hp_wmi` gone.** The repo ships `hp_wmi-blacklist.conf`
+(`blacklist hp_wmi`) and its README says to `modprobe -r hp_wmi` and
+regenerate the initramfs, on the grounds that the two fight over WMI
+events. That is not a small ask here: every fan control PYREN has goes
+through `hp-wmi`'s hwmon, including the 5200 rpm above, and this machine's
+`hp-wmi` is the *patched* one that the installer put there to get `pwm1`
+at all. Taking it out to read one more RGB zone trades the project's main
+feature for a colour.
+
+So the experiment worth running is the one the module's own documentation
+says not to: load both, then check `hp-wmi`'s `pwm1` still answers. **It
+does** — see the next section.
+
+## `kernelZones` works, and `hp_wmi` did not have to go — 2026-09-04
+
+`omen-rgb-keyboard` 1.4 installed through DKMS and loaded **without**
+removing or blacklisting `hp_wmi`, against its own README's instructions.
+The result is the good one on both counts:
+
+| | |
+|---|---|
+| `lsmod` | `omen_rgb_keyboard` **and** `hp_wmi` loaded together |
+| `hp-wmi` `pwm1` | still answers (`127`), fan control untouched |
+| zone files | `/sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone00…03` |
+| `rgb probe` | `kernelZones yes - answered a read of all four zones` |
+| `rgb read` | `#0f84fa #710ffa #f9350f #f9350f` |
+| `rgb get` | `dialect kernelZones (chosen automatically)` |
+
+**Zone 4 reads back.** `#f9350f` where `acpi_call`'s truncated reply could
+only ever report black. The read half of §"3. `acpi_call` truncates the
+reply" is closed, and with it the zero-padded write: `kernelZones` writes
+one file per zone and never builds a state buffer to guess the tail of.
+
+Two things worth keeping from this:
+
+- **The README's conflict did not happen here.** It says the two modules
+  fight over WMI events and tells you to blacklist `hp_wmi`. On this board
+  they coexist, and since our fan control *is* `hp-wmi`'s hwmon, that was
+  the difference between the dialect being usable and being unaffordable.
+  Not a general claim — one board, one kernel — but it is the board we
+  have, and the check is cheap to repeat (`tools/try-kernel-zones.sh`
+  rolls back by itself if `pwm1` ever stops answering).
+- **The auto-pick needed no help.** `kernelZones` is first in `ORDER`, it
+  became reachable, and the daemon chose it with nothing pinned — no
+  restart required either, since the probe runs per call.
+
+## `hotkey press` is safe to test with — 2026-09-04
+
+Two properties of `pyren-ctl hotkey press`, found while using it to raise
+the OSD. Neither is about whether the widget works — it does, and did
+before — but both matter for reading the `hotkey learn` runs:
+
+- **It does not cycle the power mode.** The mode was `eco` before and
+  after. It raises the widget and lets the *selection* do the switching,
+  so it can be fired at any time without changing the machine.
+- **It does not increment `presses`.** That counter stayed at 0 across a
+  press. So it counts real keys off an evdev device and not synthetic
+  ones, which makes it trustworthy evidence that Fn+P arrived — a
+  non-zero `presses` cannot have come from us.

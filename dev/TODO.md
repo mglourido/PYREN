@@ -10,21 +10,26 @@ root on it, not different hardware.
 ## 1. Do next
 
 ### 1.1 Run `fan.calibrate` on the laptop **[HP]**
-The routine is written, unit-tested and wired into `pyren-ctl`; it has
-**never been run against hardware**, and nothing is blocking that but a
-root daemon. It needs only `switchMode`, which this board had even before
-the driver was patched, so it is the cheapest hardware experiment left:
+The routine was written, unit-tested and wired into `pyren-ctl` long before
+anything ran it against hardware. It needs only `switchMode`, which this
+board had even before the driver was patched, which is what made it the
+cheapest hardware experiment left:
 
 ```sh
-cd daemon && sudo -E cargo run -p pyren-daemon      # terminal 1
-cargo run -q -p pyren-ctl -- fan calibrate          # terminal 2, loud
+pyren-ctl fan calibrate          # loud, ~20s, puts the mode back itself
 ```
 
-*Done when*: `fanMaxRpm` is a number in `fan.getStatus`, and the sample
-trace in the reply is in `FINDINGS.md` next to the `max`/`auto` one. It is
-also the number the installer's `cpuMaxRpm`/`gpuMaxRpm` patch wants: the
-driver was installed without it, so it is running on whatever ceiling the
-firmware reports. Measuring it and reinstalling would pin a real one.
+**Done, 2026-09-04.** `fanMaxRpm` is **5200**, both fans, and `fan get`
+reports "5200 rpm, measured". The trace is in `FINDINGS.md` §"Full speed on
+this machine is 5200 rpm". It restored `auto` cleanly, which is the half of
+the routine that had never met a real `switchMode`.
+
+What is left of this item is the *second* sentence it used to end on: 5200
+is the number the installer's `cpuMaxRpm`/`gpuMaxRpm` patch wants, and the
+driver was installed without it, so it is still running on whatever ceiling
+the firmware reports. Reinstalling with `--cpu-max-rpm 5200 --gpu-max-rpm
+5200` would pin a measured one. Filed under §3, not here: it is a
+reinstall, and nothing is visibly wrong without it.
 
 ### 1.2 Ask the firmware about the lightbar **[HP]**
 The `rgb` module is written (`daemon/crates/rgb`), the app's lighting page
@@ -56,19 +61,36 @@ evidence a dialect works.
 `acpi_call` truncates a 128-byte reply to its first 34 bytes, so zone 4
 starts one byte past the end. The colour written to it is real; it just
 cannot be read back, and a write pads the unseen tail of the state buffer
-with zeros. The fix is not more reverse engineering - it is the
+with zeros. The fix needs no more reverse engineering - it is the
 `kernelZones` dialect, which needs no `acpi_call` at all and which this
-build already speaks:
+build already speaks.
 
-```sh
-# out-of-tree module that publishes /sys/devices/platform/hp-wmi/rgb_zones
-git clone https://github.com/OmenLinux/omen-rgb-keyboard && cd omen-rgb-keyboard
-sudo make install && sudo modprobe omen_rgb_keyboard
-pyren-ctl rgb probe        # kernelZones should now answer, and auto pick it
-```
+Two things this item assumed about `omen-rgb-keyboard` are wrong, both read
+out of the clone on 2026-09-04 and both written up in `FINDINGS.md` §"What
+`omen-rgb-keyboard` actually costs":
 
-*Done when*: `rgb probe` shows `kernelZones` answering, `rgb read` reports
-four real colours, and `FINDINGS.md` says whether the module was worth it.
+- It publishes under `/sys/devices/platform/**omen-rgb-keyboard**/rgb_zones`,
+  not under `hp-wmi`. **Fixed**: `kernel_zones::dir()` now searches both
+  names, so whichever module publishes them is found.
+- It ships `blacklist hp_wmi` and its README says to unload `hp_wmi`. Every
+  fan control we have - including the 5200 rpm from §1.1 - goes through
+  `hp-wmi`'s hwmon, and this machine's `hp-wmi` is the *patched* one. So
+  the blacklist is not an option, and the experiment is whether the two can
+  be loaded at once.
+
+**Done, 2026-09-04.** `tools/try-kernel-zones.sh` installed the module
+through DKMS and loaded it **with `hp_wmi` still in place**, against the
+module's own README. Both worked at once: `hp-wmi`'s `pwm1` kept answering,
+and `rgb read` now reports four real colours — `#f9350f` in zone 4, where
+the truncated `acpi_call` reply could only ever say black. `rgb get` shows
+`dialect kernelZones (chosen automatically)`, with nothing pinned and no
+daemon restart needed. Written up in `FINDINGS.md` §"`kernelZones` works,
+and `hp_wmi` did not have to go".
+
+Was the module worth it, as this item asked? Yes, and the reason is not
+zone 4 by itself: `kernelZones` writes one file per zone, so it also
+retires the hand-built 144-byte buffer and the zero-padded tail we were
+guessing at on every write.
 
 The per-key path stays unported, and is now blocked twice over: no
 `0d62:54bf` device on this machine to settle the review's finding 1 on, and
@@ -80,38 +102,38 @@ GitHub, not reading the stick.
 
 ---
 
-### 1.3 Bind the real Fn+P and press it **[HP]**
-The whole path is built and tested end to end *except* the one step that
-needs fingers on the laptop: nothing has ever been bound to a real key.
+### 1.3 The trigger is a shortcut, not Fn+P — settled 2026-09-04
+Closed by a decision rather than by an experiment. The trigger is set in
+the app's Settings and is currently `Ctrl+Shift+P` (keycode 25 on the AT
+keyboard); `hotkey learn` binds it and the daemon acts on it. Whether the
+EC ever lets Fn+P reach Linux is no longer on the critical path, and this
+item should not be reopened to find out.
 
-```sh
-sudo systemctl restart pyren-daemon    # a build with the hotkey module
-pyren-ctl hotkey learn                 # then press Fn+P
-pyren-ctl hotkey get                   # what it caught
-systemctl --user start pyren-osd       # then press Fn+P again
-```
-
-Done when `pyren-ctl hotkey get` shows a trigger and pressing the key puts
-the widget on screen. Three outcomes are worth telling apart, and the CLI
-already words them differently:
-
-- **A scancode with no keycode** — almost certainly `0xe02b`, see
-  `FINDINGS.md`. Expected, and the case the module was built around.
-- **A keycode**, probably on `HP WMI hotkeys`. Also fine, and it means the
-  press/release debounce is not doing any work.
-- **`No key arrived`** — the EC keeps Fn+P to itself and Linux never hears
-  it. Then the widget needs a different trigger: a compositor keybinding on
-  `pyren-osd` (launching a second copy shows it), or `pyren-ctl hotkey
-  press` from a Hyprland `bind`.
+Everything downstream of the trigger works: `hotkey press` raises the OSD,
+and `presses` counts real keys only — it stays at 0 for a synthetic press,
+so a non-zero value is evidence a real key arrived.
 
 ### 1.4 Package `pyren-osd`
 Starting it is done: the app spawns it at launch, and Settings → Services
 has the "start at login" switch, which writes
 `~/.config/systemd/user/pyren-osd.service` pointing at whichever binary was
-found. What is left is *installing* it — nothing puts `pyren-osd` in
-`/usr/local/bin`, so on a machine without the build tree the app finds no
-binary and says so. `osd/pyren-osd.service` stays as the packaging
-reference for a system-wide install.
+found.
+
+**Written, 2026-09-04**: `tools/install.sh` puts `pyren-osd` — and
+`pyren-ctl`/`pyren-daemon`, where they are built — in `/usr/local/bin`,
+which is the first place `find_osd()` looks outside the build tree, and
+installs `osd/pyren-osd.service` to `/usr/lib/systemd/user`. That last one
+is the difference between the app writing somebody a unit into `$HOME` and
+`systemctl --user enable pyren-osd` simply working. `--dry-run` says what
+it would do and `--uninstall` takes it back out, leaving the app's own
+`~/.config/systemd/user` copy alone.
+
+**Done, 2026-09-04.** Run once as root here: all three binaries are in
+`/usr/local/bin` and answer `--version` from a shell with no build tree in
+it, and `systemctl --user list-unit-files` shows `pyren-osd.service`. One
+defect the run found and fixed: the closing `systemctl --user
+daemon-reload` ran as root under `sudo`, which reloads root's user manager
+rather than the caller's. It now drops back through `SUDO_USER`.
 
 ---
 
@@ -153,7 +175,17 @@ real backend decision before any daemon work:
   `fan.startCleaning { "force": true }` exists for exactly this: it skips
   the "no fan cleaner here" refusal so a machine that has the feature can
   be tried against a build that decodes its answer wrongly.
-- **Packaging**: nothing exists. PKGBUILD first, given the audience.
+- **Reinstall the driver with the measured fan ceiling.** §1.1 put a real
+  number on this chassis — 5200 rpm, both fans — and the driver was
+  installed before it existed, so it is still running on whatever ceiling
+  the firmware volunteers. `--cpu-max-rpm 5200 --gpu-max-rpm 5200` on a
+  reinstall would pin the measured one. Nothing is visibly wrong without
+  it, which is why this is here and not in §1.
+- **Packaging**: `tools/install.sh` covers the binaries and the widget's
+  user unit, which is what §1.4 needed; a PKGBUILD is still the right next
+  step, given the audience. It would also settle where the *daemon's*
+  system unit comes from — nothing installs one today, and the service
+  running here points at a debug build inside the tree.
 - **CONTRIBUTING.md**, including how to add a translation (the mechanism is
   already documented in `docs/03-frontend.md` and the Help page).
 - **More locales.** Only `en` and `es`; adding one is dropping a JSON file

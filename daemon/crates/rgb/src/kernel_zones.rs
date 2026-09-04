@@ -2,8 +2,11 @@
 //!
 //! Some builds of `hp-wmi` - and the out-of-tree modules that predate the
 //! in-tree support - publish the four zones as
-//! `/sys/devices/platform/hp-wmi/rgb_zones/zone00 … zone03`, each holding
-//! one `RRGGBB` hex colour.
+//! `/sys/devices/platform/<driver>/rgb_zones/zone00 … zone03`, each holding
+//! one `RRGGBB` hex colour. Which `<driver>` depends on who published them:
+//! a patched `hp-wmi` uses its own name, while `omen-rgb-keyboard` registers
+//! a platform device under *its* name and hangs the same `rgb_zones` group
+//! off that. Both are the same dialect, so this looks for either.
 //!
 //! This is the dialect to prefer wherever it exists, and the reason is not
 //! taste: it is the only one of the three that does not need `acpi_call`,
@@ -20,14 +23,30 @@ use std::path::{Path, PathBuf};
 use crate::color::Rgb;
 use crate::dialect::DialectError;
 
-/// Where the kernel publishes them. `PYREN_RGB_ZONES_DIR` points this at a
-/// fixture directory, which is the only way to exercise the dialect on a
-/// machine whose kernel does not expose it - which is every machine this
-/// was written on.
-const ZONES_DIR: &str = "/sys/devices/platform/hp-wmi/rgb_zones";
+/// Where the kernel might publish them, best-known first. Both entries are
+/// the same interface under a different platform-device name - see the
+/// module docs - so the first one that is actually there wins.
+const ZONES_DIRS: [&str; 2] = [
+    "/sys/devices/platform/hp-wmi/rgb_zones",
+    "/sys/devices/platform/omen-rgb-keyboard/rgb_zones",
+];
 
+/// The directory to talk to. `PYREN_RGB_ZONES_DIR` overrides the search and
+/// points this at a fixture directory, which is the only way to exercise the
+/// dialect on a machine whose kernel does not expose it.
+///
+/// With nothing found, this answers the first candidate rather than nothing:
+/// the caller is then about to fail, and a failure that names a path reads
+/// better than one that cannot say where it looked.
 pub fn dir() -> PathBuf {
-    std::env::var("PYREN_RGB_ZONES_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(ZONES_DIR))
+    if let Ok(from_env) = std::env::var("PYREN_RGB_ZONES_DIR") {
+        return PathBuf::from(from_env);
+    }
+    ZONES_DIRS
+        .iter()
+        .map(PathBuf::from)
+        .find(|dir| dir.join("zone00").exists())
+        .unwrap_or_else(|| PathBuf::from(ZONES_DIRS[0]))
 }
 
 fn zone_path(zone: usize) -> PathBuf {

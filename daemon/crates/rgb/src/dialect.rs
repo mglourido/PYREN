@@ -10,7 +10,7 @@
 //!
 //! | dialect | how | needs |
 //! |---|---|---|
-//! | [`Dialect::KernelZones`] | `/sys/.../hp-wmi/rgb_zones/zone0*` | a kernel that publishes them |
+//! | [`Dialect::KernelZones`] | `/sys/.../<driver>/rgb_zones/zone0*` | a kernel that publishes them |
 //! | [`Dialect::FourZone`] | WMI `0x20009`, command types 2/3 | `acpi_call`, root |
 //! | [`Dialect::Lightbar`] | WMI `0x20009`, command type 11 | `acpi_call`, root |
 //!
@@ -166,7 +166,7 @@ impl Dialect {
         match self {
             Self::KernelZones => kernel_zones::present()
                 .then_some(())
-                .ok_or("this kernel does not publish rgb_zones for hp-wmi"),
+                .ok_or("no kernel rgb_zones files, under either hp-wmi or omen-rgb-keyboard"),
             Self::FourZone | Self::Lightbar => {
                 if !lightbar::hp_wmi_present() {
                     Err("no hp-wmi interface on this machine")
