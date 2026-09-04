@@ -279,7 +279,8 @@
     "integratedDesc": "Disables the discrete GPU and uses only integrated graphics to maximise battery life.",
     "discrete": "Discrete",
     "discreteDesc": "Best for games and graphics-heavy applications. May increase noise and heat.",
-    "rebootNeeded": "Switching GPU mode requires signing out or rebooting."
+    "rebootNeeded": "Switching GPU mode requires signing out or rebooting.",
+    "applyFailed": "Could not apply: {error}"
   },
   "network": {
     "mode": "Mode",
@@ -433,7 +434,8 @@
       "fanSpeed": "fan speed",
       "fanMode": "fan mode (auto/max only)",
       "powerModes": "power modes",
-      "lightbar": "lightbar colour"
+      "lightbar": "lightbar colour",
+      "gpuMux": "GPU switching"
     }
   },
   "acpi": {
@@ -609,6 +611,14 @@
         "notLoaded": "acpi_call is installed but not loaded, so the firmware was not asked",
         "noAcpiCall": "/proc/acpi/call is missing, so the firmware was not asked; {hint}"
       }
+    }
+  },
+  "gpu": {
+    "err": {
+      "needsRoot": "{path} needs root",
+      "modeNotSupported": "this machine's firmware does not offer '{mode}' mode",
+      "modeRequired": "params.mode is required: 'integrated', 'hybrid', 'discrete' or 'optimus'",
+      "modeUnknown": "'{mode}' is not a GPU mode"
     }
   },
   "hotkey": {

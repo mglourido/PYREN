@@ -35,17 +35,22 @@
             icon={mode.icon}
             label={t(`graphics.${mode.id}`)}
             selected={hardware.state.gpuMode === mode.id}
-            onselect={() => hardware.set("gpuMode", mode.id)}
+            onselect={() => hardware.setGpuMode(mode.id)}
           />
           <p class="desc">{t(`graphics.${mode.id}Desc`)}</p>
         </div>
       {/each}
     </div>
 
+    <!-- Say what actually happened, rather than assuming the write landed -
+         the same rule the performance page follows for power modes. -->
+    {#if hardware.lastError}
+      <p class="feedback err">{t("graphics.applyFailed", { error: hardware.lastError })}</p>
+    {/if}
   </div>
 
   <footer class="foot">
-    <button class="reset" onclick={() => hardware.set("gpuMode", "hybrid")}>
+    <button class="reset" onclick={() => hardware.setGpuMode("hybrid")}>
       {t("common.reset")}
     </button>
   </footer>
@@ -88,6 +93,16 @@
     color: var(--text-dim);
     font-size: 14px;
     line-height: 1.45;
+  }
+
+  .feedback {
+    text-align: center;
+    margin: 28px 0 0;
+    font-size: 12px;
+  }
+
+  .feedback.err {
+    color: var(--danger);
   }
 
   .foot {

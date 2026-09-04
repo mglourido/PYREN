@@ -105,6 +105,12 @@ HOTKEY
                                machine whose Fn+P never reaches Linux
 
 GPU
+  gpu get                       which GPU is driving the screen (needs the
+                               patched hp-wmi driver's gpu_mux_mode)
+  gpu set <integrated|hybrid|discrete|optimus>
+                               switch, and log out or reboot for it to
+                               take effect - the firmware does not do that
+                               itself
   oc get                       what can be tuned on each GPU, what is set,
                                and - where nothing can be - why not
   oc probe [--write]           ask the machine again. --write finds out
@@ -394,6 +400,11 @@ fn run(command: &args::Command) -> Run {
                 client::call("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))?,
                 print_rgb,
             )
+        }
+
+        ["gpu", "get"] => show(command, client::call("gpu", "getStatus", Value::Null)?, print_gpu),
+        ["gpu", "set", mode] => {
+            show(command, client::call("gpu", "setMode", json!({ "mode": mode }))?, print_gpu)
         }
 
         ["hotkey", "get"] => {
@@ -1280,6 +1291,17 @@ fn print_rgb(status: &Value) {
     if let Some(error) = msg_line(status, "error") {
         println!("  ! {error}");
     }
+}
+
+fn print_gpu(status: &Value) {
+    if status.get("supported").and_then(Value::as_bool) != Some(true) {
+        println!("  no GPU MUX switch on this machine (no gpu_mux_mode)");
+        return;
+    }
+    row(
+        "mode",
+        status.get("mode").and_then(Value::as_str).unwrap_or("unknown - firmware answered a mode this build does not recognise"),
+    );
 }
 
 fn print_zones(value: &Value) {

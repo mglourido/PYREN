@@ -75,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "pyren-core",
  "pyren-fan",
+ "pyren-gpu",
  "pyren-hotkey",
  "pyren-installer",
  "pyren-overclock",
@@ -93,6 +94,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "pyren-gpu"
+version = "0.1.0"
+dependencies = [
+ "pyren-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

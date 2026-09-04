@@ -1425,6 +1425,55 @@ The daemon does **not** `modprobe` at startup. Probing is a question, and
 a question should not change the answer; the module is loaded only on a
 call that needs it, and only when running as root.
 
+## `gpu` module
+
+Which GPU is driving the screen — iGPU only, hybrid, or the discrete card
+— read and written through the patched `hp-wmi` driver's own
+`gpu_mux_mode`, not `supergfxctl`.
+
+| method | params | result |
+|---|---|---|
+| `gpu.getStatus` | none | `{ "supported": bool, "mode": string \| null, "raw": number \| null }` |
+| `gpu.setMode` | `{ "mode": "integrated" \| "hybrid" \| "discrete" \| "optimus" }` | as `getStatus` |
+
+Confirmed on hardware, 2026-09-04: `gpu.getStatus` reads `hybrid` off the
+development machine's `gpu_mux_mode`. `setMode` has not — it changes the
+session's card and needs a logout or reboot to take effect, so it is one
+to run deliberately, from `pyren-ctl gpu set`, not from an automated pass.
+
+### Why this is not a `supergfxctl` wrapper
+
+`driver/hp-wmi-omen/hp-wmi.c` — the driver this project already patches
+and installs for fan control — exposes
+`/sys/devices/platform/hp-wmi/gpu_mux_mode` as a plain `RW` attribute that
+talks to `HPWMI_GRAPHICS_MUX_QUERY` over ACPI-WMI directly, on every board
+that reaches this driver at all. Where that file exists, wrapping a
+second daemon to do the same round trip would only add a dependency and a
+second place for the mode to disagree with what this one just set.
+
+### Four modes, one small integer, read and write agree
+
+The kernel source defines `HPWMI_MUX_MODE_*` as bits (`hybrid = BIT(1)`,
+`discrete = BIT(2)`, …), which reads like the wire format — it is not. That
+encoding exists only inside the driver, to check a requested mode against
+a supported-set query before writing it. The byte actually read from and
+written to `gpu_mux_mode` is a plain index: `0` hybrid, `1` discrete, `2`
+optimus (NVIDIA render offload, distinct from plain "discrete" in the
+firmware's own vocabulary), `3` uma (integrated only, called `integrated`
+here since that is what choosing it means to a person). `gpu.setMode`
+also accepts the app's own `GpuMode` names (`igpu`/`dgpu`/`uma` as
+synonyms), so a client never has to know which vocabulary it is speaking.
+
+### There is no userspace query for what a board supports
+
+The capability check happens inside the kernel, on write, against a
+design-data query that has no sysfs file of its own. So unlike `rgb` —
+which can probe every dialect with a read that changes nothing — this
+module cannot list what a board offers without asking it to switch. A
+write the firmware refuses comes back `EOPNOTSUPP`, which `setMode`
+reports as `notCapable` naming the mode, rather than as a bare I/O
+failure.
+
 ## `overclock` module
 
 | method | params | result | status |

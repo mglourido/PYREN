@@ -13,5 +13,6 @@ pyren-installer = { path = "../crates/installer" }
 pyren-rgb = { path = "../crates/rgb" }
 pyren-hotkey = { path = "../crates/hotkey" }
 pyren-overclock = { path = "../crates/overclock" }
+pyren-gpu = { path = "../crates/gpu" }
 # For the payloads the daemon publishes on the event bus.
 serde_json = "1"

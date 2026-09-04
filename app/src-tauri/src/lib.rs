@@ -260,6 +260,21 @@ fn rgb_get_status() -> Result<Value, String> {
     call_daemon("rgb", "getStatus", Value::Null)
 }
 
+/// Which GPU is driving the screen - iGPU only / hybrid / dGPU - through
+/// the patched `hp-wmi` driver's `gpu_mux_mode`, not `supergfxctl`. See
+/// `docs/01-ipc-protocol.md` §"`gpu` module".
+#[tauri::command]
+fn gpu_get_status() -> Result<Value, String> {
+    call_daemon("gpu", "getStatus", Value::Null)
+}
+
+/// Takes effect after a logout or reboot, which the daemon does not do
+/// itself - the graphics page says so.
+#[tauri::command]
+fn gpu_set_mode(mode: String) -> Result<Value, String> {
+    call_daemon("gpu", "setMode", json!({ "mode": mode }))
+}
+
 /// A **fresh** probe, unlike the one in `getStatus`. This is what makes
 /// "install acpi_call, then ask again" a complete workflow without
 /// restarting the daemon, so the page calls it after an install.
@@ -734,6 +749,8 @@ pub fn run() {
             overclock_reset,
             overclock_set_restore_on_start,
             rgb_get_status,
+            gpu_get_status,
+            gpu_set_mode,
             rgb_get_capabilities,
             rgb_set_static,
             rgb_set_zones,

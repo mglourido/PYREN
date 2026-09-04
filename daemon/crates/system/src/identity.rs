@@ -33,11 +33,14 @@ pub struct Controls {
     /// different device on a different bus, and a machine can have either,
     /// both or neither.
     pub lightbar: bool,
+    /// `/sys/devices/platform/hp-wmi/gpu_mux_mode` answered a read - the
+    /// patched driver's own GPU MUX switch, not `supergfxctl`.
+    pub gpu_mux: bool,
 }
 
 impl Controls {
     fn any(&self) -> bool {
-        self.fan_mode || self.fan_speed || self.power_mode || self.lightbar
+        self.fan_mode || self.fan_speed || self.power_mode || self.lightbar || self.gpu_mux
     }
 }
 
@@ -225,6 +228,9 @@ fn classify(controls: Controls, hp_wmi: bool) -> (Compatibility, Msg) {
     if controls.lightbar {
         works.push(msg!("system.can.lightbar", "lightbar colour"));
     }
+    if controls.gpu_mux {
+        works.push(msg!("system.can.gpuMux", "GPU switching"));
+    }
 
     let list = Msg::join(works, ", ").unwrap_or_else(|| Msg::literal(""));
     (
@@ -404,7 +410,8 @@ mod tests {
 
     #[test]
     fn a_controllable_machine_lists_what_works() {
-        let controls = Controls { fan_mode: true, fan_speed: true, power_mode: true, lightbar: false };
+        let controls =
+            Controls { fan_mode: true, fan_speed: true, power_mode: true, lightbar: false, gpu_mux: false };
         let (compat, reason) = classify(controls, true);
 
         assert_eq!(compat, Compatibility::Controllable);

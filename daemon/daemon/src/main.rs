@@ -10,6 +10,7 @@ use serde_json::json;
 use pyren_core::{log_error, log_info};
 use pyren_core::{serve_unix_socket, Audience, EventBus, Module, Registry};
 use pyren_fan::FanModule;
+use pyren_gpu::GpuModule;
 use pyren_hotkey::{HotkeyModule, KeyPress};
 use pyren_installer::{
     execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
@@ -172,11 +173,13 @@ fn main() {
     // is a question that has to be put to the machine before anything can
     // be said about it.
     let overclock = OverclockModule::new();
+    let gpu = GpuModule::new();
     let controls = Controls {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
         power_mode: power.is_supported(),
         lightbar: rgb.probe().lighting.present,
+        gpu_mux: gpu.is_supported(),
     };
 
     // Built here, wired to the power module further down: what a key does
@@ -254,6 +257,7 @@ fn main() {
     registry.register(Box::new(fan));
     registry.register(Box::new(rgb));
     registry.register(Box::new(overclock));
+    registry.register(Box::new(gpu));
     registry.register(Box::new(hotkey.clone()));
     registry.register(Box::new(InstallerModule::new()));
     let registry = Arc::new(registry);

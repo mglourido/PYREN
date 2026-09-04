@@ -12,6 +12,7 @@ members = [
     "crates/system",
     "crates/power",
     "crates/rgb",
+    "crates/gpu",
     "crates/overclock",
 ]
 

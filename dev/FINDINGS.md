@@ -708,3 +708,45 @@ before — but both matter for reading the `hotkey learn` runs:
   press. So it counts real keys off an evdev device and not synthetic
   ones, which makes it trustworthy evidence that Fn+P arrived — a
   non-zero `presses` cannot have come from us.
+
+## GPU MUX switching needs no `supergfxctl` — read and confirmed 2026-09-04
+
+Read out of `driver/hp-wmi-omen/hp-wmi.c` while scoping TODO §2.1's GPU
+switching decision, before writing anything: the driver this project
+already patches and installs for fan control defines
+`HPWMI_GRAPHICS_MUX_QUERY` (`0x52`) and exposes it as a plain `RW` sysfs
+attribute, `gpu_mux_mode`. `supergfxctl` is not installed on this machine
+and was never seriously in the running once that was known — it would
+have been a second daemon doing the same ACPI-WMI round trip a file this
+project already owns can do directly.
+
+```
+$ cat /sys/devices/platform/hp-wmi/gpu_mux_mode
+0
+```
+
+`0` is `hybrid`, matching the app's own default. Confirmed against the
+daemon after `pyren-gpu` was built: `pyren-ctl gpu get` reads the same
+`hybrid`, restarting the daemon (a debug build) left fans and lighting
+untouched, and `core.capabilities` / the compatibility line both picked up
+`gpu` without any hand-written list to update — it comes from the
+registry.
+
+Two things read out of the source that are easy to get backwards:
+
+- **The bitmask constants (`HPWMI_MUX_MODE_HYBRID = BIT(1)`, etc.) are not
+  the wire format.** They exist only so the kernel can check a requested
+  mode against a supported-set query before writing it. The byte actually
+  read from and written to `gpu_mux_mode` is a plain index — `0` hybrid,
+  `1` discrete, `2` optimus, `3` uma — and read/write agree on it.
+- **There is no userspace query for which modes a board supports.** The
+  capability check happens inside the kernel, on write, against a
+  design-data query with no sysfs file of its own. So a mode the firmware
+  refuses can only be discovered by asking it to switch and reading
+  `EOPNOTSUPP` back — unlike `rgb`, which probes every dialect with a read
+  that changes nothing first.
+
+**`gpu.setMode` has not been run.** It changes the session's card and
+needs a logout or reboot to take effect, which is exactly the kind of
+write this pass should not fire blind. `getStatus` is the half that is
+confirmed; trying an actual switch is next.

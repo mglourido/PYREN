@@ -139,17 +139,38 @@ rather than the caller's. It now drops back through `SUDO_USER`.
 
 ## 2. Blocked on a decision or on hardware
 
-### 2.1 GPU switching, network booster, key mapping
-The UI for all three is complete and drives local state only. Each needs a
-real backend decision before any daemon work:
+### 2.1 Network booster, key mapping
+The UI for both is complete and drives local state only. Each needs a real
+backend decision before any daemon work:
 
-- **GPU switching**: wrap `supergfxctl`, or implement it directly? Either
-  way it needs a session restart, which the UI already says.
 - **Network booster**: per-process traffic accounting plus `tc`/`nftables`
-  rules. This is the largest of the three by far, and arguably the least
+  rules. This is the largest of the two by far, and arguably the least
   valuable — consider dropping the page rather than building it.
 - **Key mapping**: `keyd`, `udev` hwdb, or an evdev-level remapper. Affects
   whether the daemon needs to hold an input device open.
+
+**GPU switching decided and built, 2026-09-04.** Not `supergfxctl` — the
+driver this project already patches and installs for fan control
+(`driver/hp-wmi-omen/hp-wmi.c`) turned out to expose
+`/sys/devices/platform/hp-wmi/gpu_mux_mode` directly, talking
+`HPWMI_GRAPHICS_MUX_QUERY` over ACPI-WMI with no third daemon in the way.
+Confirmed present and readable on the development machine before anything
+was written: `cat gpu_mux_mode` answered `0` (hybrid), matching the UI's
+own default. Wrapping `supergfxctl` — not installed here, and now strictly
+worse than the file already open — was never seriously in the running once
+that was known.
+
+Built: `daemon/crates/gpu` (`gpu.getStatus` / `gpu.setMode`, see
+`docs/01-ipc-protocol.md` §"`gpu` module"), registered in the daemon and in
+`system`'s `Controls` so the compatibility line picks it up, `pyren-ctl gpu
+get`/`gpu set`, and the app wired end to end — Tauri commands, `daemon.ts`,
+`hardware.svelte.ts` (`syncFromDaemon` now reads the real mode at startup;
+`setGpuMode` writes it and surfaces a refusal instead of pretending the
+write landed). `gpu.getStatus` confirmed on hardware, reading back
+`hybrid`. **`gpu.setMode` has not been run** — it changes the session's
+card and needs a logout or reboot, so it is one to try deliberately with
+`pyren-ctl gpu set <mode>` rather than something this pass should have
+fired blind.
 
 ---
 

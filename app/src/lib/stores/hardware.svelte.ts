@@ -175,6 +175,21 @@ class HardwareStore {
       // already tells the user the daemon is unreachable.
       this.power = null;
     }
+
+    // Separate try: a daemon with no GPU MUX switch (`supported: false`,
+    // or older still and the call itself fails) must not stop the power
+    // read above from taking effect.
+    try {
+      const gpu = await daemon.gpuStatus();
+      // `optimus` and an unrecognised `raw` both come back as a mode this
+      // page's three cards do not offer - left as whatever was last
+      // chosen here rather than shown wrong.
+      if (gpu.supported && (gpu.mode === "integrated" || gpu.mode === "hybrid" || gpu.mode === "discrete")) {
+        this.state = { ...this.state, gpuMode: gpu.mode };
+      }
+    } catch {
+      // No GPU MUX switch reachable: leave the persisted choice alone.
+    }
   }
 
   /**
@@ -339,6 +354,25 @@ class HardwareStore {
     this.set("applyToOsPowerProfile", enabled);
     try {
       this.power = await daemon.setApplyToOsProfile(enabled);
+      this.lastError = null;
+    } catch (e) {
+      this.lastError = errorText(e);
+    }
+  }
+
+  /**
+   * Switches the GPU MUX. Set locally first, same as every other control
+   * here - a machine with no daemon reachable still lets the page record
+   * a choice, even though nothing downstream of it moves. A refusal (no
+   * `gpu_mux_mode` on this board, or this particular mode not in the
+   * firmware's supported set) surfaces through `lastError` rather than
+   * reverting the card: the picked card is what the user asked for, and
+   * `syncFromDaemon` is what corrects it against reality on the next read.
+   */
+  async setGpuMode(mode: GpuMode) {
+    this.set("gpuMode", mode);
+    try {
+      await daemon.setGpuMode(mode);
       this.lastError = null;
     } catch (e) {
       this.lastError = errorText(e);

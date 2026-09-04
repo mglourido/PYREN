@@ -84,6 +84,11 @@ fn main() -> ExitCode {
         fan_speed: fan.capabilities().set_speed,
         power_mode: !power.mechanisms.is_empty(),
         lightbar: lighting.lighting.present,
+        // Not probed here: GPU MUX switching is `pyren-daemon`'s own
+        // module, and this tool's checks (`compat.rs`) stop at fans,
+        // power and lighting, same as they already do for overclock and
+        // hotkey - see the daemon/rgb docs for why.
+        gpu_mux: false,
     });
     let diagnosis = fan.diagnose(allow_writes);
     let power_section = compat::power(&power);

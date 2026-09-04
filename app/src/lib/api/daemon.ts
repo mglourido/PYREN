@@ -195,6 +195,20 @@ export type RgbProbe = {
   supported: boolean;
 };
 
+/** `gpu.getStatus` - see `docs/01-ipc-protocol.md` §"`gpu` module". */
+export type GpuStatus = {
+  /** False on a machine with no `gpu_mux_mode` at all - no HP MUX switch,
+   *  or a driver older than the patch that adds it. */
+  supported: boolean;
+  /** The firmware's own name for the mode, or `null` when `supported` is
+   *  false. Includes `"optimus"`, which the app's three-card UI does not
+   *  offer as a destination but may see reported. */
+  mode: "integrated" | "hybrid" | "discrete" | "optimus" | null;
+  /** The raw index `mode` was decoded from, kept for whoever needs it
+   *  when `mode` is `null` because this build does not recognise it. */
+  raw: number | null;
+};
+
 export type RgbStatus = {
   /** The probe taken at daemon startup. `rgbCapabilities()` re-asks. */
   capabilities: RgbProbe;
@@ -891,6 +905,8 @@ const DAEMON_ROUTES: Record<
   overclock_set_restore_on_start: { module: "overclock", method: "setRestoreOnStart" },
   rgb_get_status: { module: "rgb", method: "getStatus" },
   rgb_get_capabilities: { module: "rgb", method: "getCapabilities" },
+  gpu_get_status: { module: "gpu", method: "getStatus" },
+  gpu_set_mode: { module: "gpu", method: "setMode" },
   rgb_set_static: { module: "rgb", method: "setStatic" },
   rgb_set_zones: { module: "rgb", method: "setZones" },
   rgb_off: { module: "rgb", method: "off" },
@@ -1110,6 +1126,12 @@ export const daemon = {
   resetOverclock: (gpu?: string) => call<OverclockState>("overclock_reset", { gpu }),
   setOverclockRestoreOnStart: (enabled: boolean) =>
     call<OverclockState>("overclock_set_restore_on_start", { enabled }),
+  /** Which GPU is driving the screen right now. */
+  gpuStatus: () => call<GpuStatus>("gpu_get_status"),
+  /** Switches the MUX. Needs a logout or reboot to take effect - the
+   *  daemon does not do that itself, and neither does this call. */
+  setGpuMode: (mode: "integrated" | "hybrid" | "discrete" | "optimus") =>
+    call<GpuStatus>("gpu_set_mode", { mode }),
   /** The lightbar: the startup probe plus what this daemon last set. */
   rgbStatus: () => call<RgbStatus>("rgb_get_status"),
   /** Re-probes both lighting paths. Costs an ACPI round trip, so it is

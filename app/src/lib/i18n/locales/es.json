@@ -279,7 +279,8 @@
     "integratedDesc": "Desactiva la GPU independiente y usa solo la GPU integrada para maximizar la duración de la batería.",
     "discrete": "Discretos",
     "discreteDesc": "Adecuado para juegos y aplicaciones con uso intensivo de gráficos. Podría aumentar los niveles de ruido y calor.",
-    "rebootNeeded": "Cambiar el modo de GPU requiere cerrar sesión o reiniciar."
+    "rebootNeeded": "Cambiar el modo de GPU requiere cerrar sesión o reiniciar.",
+    "applyFailed": "No se ha podido aplicar: {error}"
   },
   "network": {
     "mode": "Modo",
@@ -433,7 +434,8 @@
       "fanSpeed": "velocidad del ventilador",
       "fanMode": "modo de ventilador (solo automático/máximo)",
       "powerModes": "modos de energía",
-      "lightbar": "color de la barra de luz"
+      "lightbar": "color de la barra de luz",
+      "gpuMux": "cambio de GPU"
     }
   },
   "acpi": {
@@ -609,6 +611,14 @@
         "notLoaded": "acpi_call está instalado pero no cargado, así que no se preguntó al firmware",
         "noAcpiCall": "falta /proc/acpi/call, así que no se preguntó al firmware; {hint}"
       }
+    }
+  },
+  "gpu": {
+    "err": {
+      "needsRoot": "{path} necesita permisos de administrador",
+      "modeNotSupported": "el firmware de este equipo no ofrece el modo '{mode}'",
+      "modeRequired": "falta params.mode: 'integrated', 'hybrid', 'discrete' u 'optimus'",
+      "modeUnknown": "'{mode}' no es un modo de GPU"
     }
   },
   "hotkey": {
