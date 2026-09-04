@@ -5,9 +5,29 @@
 
   let { children, align = "left" }: { children: Snippet; align?: "left" | "right" } = $props();
   let open = $state(false);
+  let root = $state<HTMLElement>();
+
+  /** Dismiss the popover when the click (or Escape) lands outside it. */
+  $effect(() => {
+    if (!open) return;
+
+    const onPointer = (e: PointerEvent) => {
+      if (root && !root.contains(e.target as Node)) open = false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") open = false;
+    };
+    // `capture` so it still fires if something inside stops propagation.
+    document.addEventListener("pointerdown", onPointer, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  });
 </script>
 
-<span class="tip">
+<span class="tip" bind:this={root}>
   <button class="dot" onclick={() => (open = !open)} aria-label="i" aria-expanded={open}>
     <Icon name="info" size={15} stroke={1.8} />
   </button>

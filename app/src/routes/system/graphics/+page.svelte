@@ -21,6 +21,10 @@
 </script>
 
 <div class="graphics">
+  {#if changed}
+    <Banner kind="info" title="i">{t("graphics.rebootNeeded")}</Banner>
+  {/if}
+
   <div class="stage">
     <h1 class="title">{t("graphics.title")}</h1>
 
@@ -38,11 +42,6 @@
       {/each}
     </div>
 
-    {#if changed}
-      <div class="notice">
-        <Banner kind="info" title="i">{t("graphics.rebootNeeded")}</Banner>
-      </div>
-    {/if}
   </div>
 
   <footer class="foot">
@@ -89,11 +88,6 @@
     color: var(--text-dim);
     font-size: 14px;
     line-height: 1.45;
-  }
-
-  .notice {
-    max-width: 900px;
-    margin: 36px auto 0;
   }
 
   .foot {

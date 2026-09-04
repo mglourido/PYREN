@@ -472,14 +472,31 @@
   }
 
   select {
+    appearance: none;
     min-width: 220px;
-    padding: 7px 12px;
-    background: #2a2a2e;
+    padding: 7px 30px 7px 12px;
+    background-color: #2a2a2e;
     color: var(--text);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     font: inherit;
     font-size: 13px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+      linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+    background-position:
+      right 15px center,
+      right 10px center;
+    background-size:
+      6px 6px,
+      6px 6px;
+    background-repeat: no-repeat;
+  }
+
+  /* The native popup list ignores the control's colours on some engines,
+     so it needs its own dark background to match the theme. */
+  select option {
+    background: #2a2a2e;
+    color: var(--text);
   }
 
   .hint {

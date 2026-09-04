@@ -496,11 +496,18 @@
     color: var(--text-dim);
     font-size: 12px;
     /* Card names run long ("Intel Corporation Arrow Lake-P [Arc Pro
-       130T/140T]"); one clipped line beats a card that grows to fit. */
+       130T/140T]"); keep them on one line the same height as before, but
+       let the user swipe/drag through the full name instead of clipping it.
+       The scrollbar itself is hidden so the row takes no extra space. */
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-x: auto;
+    overflow-y: hidden;
     white-space: nowrap;
+    scrollbar-width: none;
+  }
+
+  .chip-name::-webkit-scrollbar {
+    display: none;
   }
 
   .foot {
