@@ -53,7 +53,7 @@ use pyren_core::{msg, ErrorKind, EventBus, Module, ModuleError, ModuleResult, Ms
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub use auto::{AutoConfig, AutoInputs, AutoSwitcher};
+pub use auto::{AutoConfig, AutoInputs, AutoSwitcher, HeatLatch, Sensors};
 pub use backend::{ApplyReport, BackendState};
 pub use limits::{Limits, ModeTuning, Tuning};
 pub use supply::PowerSupplyState;
@@ -214,6 +214,10 @@ pub struct PowerModule {
     store: ConfigStore,
     limits: limits::LimitPaths,
     announce: Announcer,
+    /// Discovered once - see [`Sensors`] - and shared with the supervisor
+    /// thread, which is the only reason a status read has a temperature to
+    /// show at all.
+    sensors: Sensors,
 }
 
 impl PowerModule {
@@ -283,13 +287,15 @@ impl PowerModule {
         }));
 
         let announce = Announcer::default();
+        let sensors = Sensors::discover();
         spawn_supervisor(
             Arc::clone(&state),
             store.clone(),
             limit_paths.clone(),
             announce.clone(),
+            sensors.clone(),
         );
-        Self { state, store, limits: limit_paths, announce }
+        Self { state, store, limits: limit_paths, announce, sensors }
     }
 
     /// Hands the module the bus to announce mode changes on. Called once,
@@ -386,6 +392,15 @@ impl PowerModule {
             "restoreModeOnStart": state.config.restore_mode_on_start,
             "applyToOsProfile": state.config.apply_to_os_profile,
             "autoOverrideSecondsLeft": override_remaining,
+            // What the supervisor's thermal rule can see and what it
+            // currently thinks. `hot` is latched, so it is not a
+            // comparison a client could redo from `tempC` - which is the
+            // reason it is reported rather than left to be inferred.
+            "thermal": {
+                "available": self.sensors.any(),
+                "tempC": self.sensors.hottest_c_now(),
+                "hot": state.switcher.is_hot(),
+            },
             "lastAutoSwitch": state.last_auto_switch,
             "configPath": self.store.path_for("power"),
             "configSaveError": state.last_save_error,
@@ -586,6 +601,7 @@ fn spawn_supervisor(
     store: ConfigStore,
     paths: limits::LimitPaths,
     announce: Announcer,
+    sensors: Sensors,
 ) {
     std::thread::spawn(move || loop {
         let (interval, decision) = {
@@ -596,7 +612,8 @@ fn spawn_supervisor(
                 (interval, None)
             } else {
                 let supply = PowerSupplyState::read();
-                let inputs = AutoInputs::sample(supply.on_battery, supply.battery_percent);
+                let inputs =
+                    AutoInputs::sample(supply.on_battery, supply.battery_percent, &sensors);
                 let current = guard.mode;
                 let config = guard.config.auto.clone();
                 let decision = guard.switcher.observe(inputs, &config, current);

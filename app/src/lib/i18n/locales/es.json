@@ -66,7 +66,10 @@
     "autoPerformanceHint": "Al conectar la corriente sube a Rendimiento; si la máquina está inactiva vuelve a Equilibrado. Sin límites nunca se elige por ti.",
     "new": "NUEVA",
     "fanCleaning": "Limpieza de ventiladores",
-    "fanCleaningDesc": "Gira los ventiladores al revés unos segundos para expulsar el polvo de las rejillas."
+    "fanCleaningDesc": "Gira los ventiladores al revés unos segundos para expulsar el polvo de las rejillas.",
+    "thermalBackOff": "Bajar de perfil cuando se calienta",
+    "thermalBackOffHint": "Una máquina por encima de 85 °C pasa al perfil más tranquilo hasta que vuelve a bajar de 75 °C. Dos umbrales en vez de uno, para que no vuelva a chocar con el mismo muro un grado después. Manda sobre las otras dos reglas: el calor y la carga siempre llegan juntos.",
+    "runningHot": "Temperatura alta: el cambio automático está manteniendo la máquina en el perfil tranquilo."
   },
   "vitals": {
     "mode": "Modo",
@@ -631,7 +634,8 @@
       "pluggedIn": "se conectó la corriente",
       "sustainedLoad": "carga sostenida ({percent}% por núcleo)",
       "batteryLow": "batería al {percent}%",
-      "idle": "inactivo"
+      "idle": "inactivo",
+      "hot": "temperatura alta ({temp} C)"
     },
     "autoSwitch": {
       "failed": "{mode} falló: {failed}"

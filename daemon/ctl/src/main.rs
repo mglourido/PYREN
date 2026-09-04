@@ -45,16 +45,22 @@ POWER
                                OS power profile (power-profiles-daemon),
                                or only the laptop's own firmware profile
   power auto <on|off> [--eco on|off] [--performance on|off]
+              [--thermal on|off] [--temp-high C] [--temp-low C]
                                the two automatic systems: unplugging drops
                                to Balanced then refines towards Eco;
-                               plugging in steps up to Performance
+                               plugging in steps up to Performance.
+                               --thermal is the third rule and outranks
+                               both: a machine over --temp-high steps down
+                               until it is back under --temp-low
   power restore-on-start <on|off>
 
 FANS
   fan get                      speed, temperature, mode, capabilities
   fan set <auto|max|manual|curve> [--pwm 0-255]
-  fan curve <t:pct,...> [--interpolation smooth|discrete]
+  fan curve <t:pct,...> [--interpolation smooth|discrete] [--sensor cpu|gpu]
                                e.g. fan curve 40:20,60:50,85:100
+                               --sensor gpu follows the graphics card and
+                               falls back to the CPU while it is asleep
   fan restore-on-start <on|off>
   fan diagnose [--write]       the fan-control self-test
   fan calibrate [--seconds N]  run the fans at max and measure what full
@@ -520,6 +526,24 @@ fn power_auto(command: &args::Command, value: &str) -> Run {
     if let Some(performance) = command.switch("performance")? {
         config["performanceOnLoad"] = json!(performance);
     }
+    if let Some(hot) = command.switch("thermal")? {
+        config["backOffWhenHot"] = json!(hot);
+    }
+    if let Some(high) = command.number("temp-high")? {
+        config["tempHighC"] = json!(high);
+    }
+    if let Some(low) = command.number("temp-low")? {
+        config["tempLowC"] = json!(low);
+    }
+    // Two thresholds that have crossed would latch on and never let go.
+    let high = config.get("tempHighC").and_then(Value::as_f64).unwrap_or(f64::MAX);
+    let low = config.get("tempLowC").and_then(Value::as_f64).unwrap_or(f64::MIN);
+    if low >= high {
+        return Err(Failure::Usage(format!(
+            "--temp-low ({low}) has to be below --temp-high ({high}): they are the two \
+             ends of a dead band, and a machine that crossed them would never cool down again"
+        )));
+    }
 
     client::call("power", "setAutoConfig", config)?;
     show(command, power_state()?, print_power)
@@ -820,6 +844,26 @@ fn print_power(state: &Value) {
                     yes_no(auto.get("ecoOnBattery")),
                     yes_no(auto.get("performanceOnLoad"))
                 )
+            },
+        );
+    }
+    if let Some(thermal) = state.get("thermal") {
+        row(
+            "temp",
+            match (
+                thermal.get("available").and_then(Value::as_bool),
+                thermal.get("tempC").and_then(Value::as_f64),
+            ) {
+                (Some(true), Some(temp)) => format!(
+                    "{temp:.0} C{}",
+                    if thermal.get("hot").and_then(Value::as_bool) == Some(true) {
+                        " - running hot, the supervisor is holding it down"
+                    } else {
+                        ""
+                    }
+                ),
+                (Some(true), None) => "a sensor was found and read nothing".to_string(),
+                _ => "no CPU or GPU sensor on this machine".to_string(),
             },
         );
     }

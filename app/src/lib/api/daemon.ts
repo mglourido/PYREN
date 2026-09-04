@@ -344,6 +344,22 @@ export type AutoConfig = {
   samplesToSwitch: number;
   intervalSecs: number;
   manualOverrideSecs: number;
+  /** The third rule, and the one that outranks both others: a machine
+   *  over `tempHighC` steps down until it is back under `tempLowC`. */
+  backOffWhenHot: boolean;
+  tempHighC: number;
+  tempLowC: number;
+};
+
+/** What the supervisor's thermal rule can see, and what it thinks.
+ *
+ *  `hot` is latched between the two thresholds, so it is not something a
+ *  client could work out from `tempC` - which is exactly why the daemon
+ *  reports it rather than leaving it to be inferred. */
+export type ThermalState = {
+  available: boolean;
+  tempC: number | null;
+  hot: boolean;
 };
 
 /** Package power limits in microwatts; `null` for one this machine lacks. */
@@ -388,6 +404,7 @@ export type PowerState = {
    *  (power-profiles-daemon), or only the laptop's own firmware profile. */
   applyToOsProfile: boolean;
   autoOverrideSecondsLeft: number | null;
+  thermal: ThermalState;
   /** Why the supervisor last moved the mode. Translatable - render with `tm()`. */
   lastAutoSwitch: Msg | null;
   /** Where the daemon keeps this module's settings. */

@@ -66,7 +66,10 @@
     "autoPerformanceHint": "Plugging in steps up to Performance; an idle machine on mains comes back down to Balanced. Unlimited is never chosen for you.",
     "new": "NEW",
     "fanCleaning": "Fan cleaning",
-    "fanCleaningDesc": "Spin the fans backwards for a few seconds to shake dust out of the vents."
+    "fanCleaningDesc": "Spin the fans backwards for a few seconds to shake dust out of the vents.",
+    "thermalBackOff": "Step down when it runs hot",
+    "thermalBackOffHint": "A machine over 85 °C drops to the quieter profile until it is back under 75 °C. Two thresholds rather than one, so it does not flip back into the same wall a degree later. Outranks the other two rules - heat and load always arrive together.",
+    "runningHot": "Running hot: the automatic switch is holding the machine at the quieter profile."
   },
   "vitals": {
     "mode": "Mode",
@@ -631,7 +634,8 @@
       "pluggedIn": "plugged in",
       "sustainedLoad": "sustained load ({percent}% per core)",
       "batteryLow": "battery at {percent}%",
-      "idle": "idle"
+      "idle": "idle",
+      "hot": "running hot ({temp} C)"
     },
     "autoSwitch": {
       "failed": "{mode} failed: {failed}"

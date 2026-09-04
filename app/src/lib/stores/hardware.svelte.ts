@@ -233,6 +233,9 @@ class HardwareStore {
       samplesToSwitch: 3,
       intervalSecs: 10,
       manualOverrideSecs: 600,
+      backOffWhenHot: true,
+      tempHighC: 85,
+      tempLowC: 75,
     };
 
     try {
@@ -307,6 +310,23 @@ class HardwareStore {
     await this.pushFan(() =>
       daemon.setFanCurve(this.state.fanCurve, undefined, sensor),
     );
+  }
+
+  /**
+   * The supervisor's thermal rule. Like the two auto-switch toggles it
+   * writes the whole `AutoConfig` back, so it reads the current one first
+   * rather than clobbering thresholds someone tuned.
+   */
+  async setThermalBackOff(enabled: boolean) {
+    const base = this.power?.auto;
+    if (!base) return;
+    try {
+      this.applyConfigReply(
+        await daemon.setAutoConfig({ ...base, backOffWhenHot: enabled }),
+      );
+    } catch (e) {
+      this.lastError = errorText(e);
+    }
   }
 
   /**
