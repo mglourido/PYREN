@@ -10,13 +10,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 pub mod acpi;
 pub mod client;
 pub mod events;
+pub mod msg;
 mod socket;
 pub use events::{Batch, Event, EventBus};
+pub use msg::Msg;
 pub use socket::{serve_unix_socket, socket_group, Audience};
 
 /// What kind of failure this is, as it appears on the wire.
@@ -127,6 +129,12 @@ pub enum ModuleError {
     Internal(String),
     #[error("{0}")]
     Failed(String),
+    /// A refusal whose sentence a client may show in the user's language.
+    /// The `kind` is what a client branches on, exactly as with the string
+    /// variants above; `msg` carries the catalog key, its params and the
+    /// English text. Prefer [`ModuleError::localised`] to build one.
+    #[error("{msg}")]
+    Localised { kind: ErrorKind, msg: Msg },
 }
 
 impl ModuleError {
@@ -141,6 +149,31 @@ impl ModuleError {
             Self::Busy(_) => ErrorKind::Busy,
             Self::Internal(_) => ErrorKind::Internal,
             Self::Failed(_) => ErrorKind::Failed,
+            Self::Localised { kind, .. } => *kind,
+        }
+    }
+
+    /// A refusal of `kind` carrying a translatable [`Msg`]. Build the `msg`
+    /// with [`msg!`].
+    pub fn localised(kind: ErrorKind, msg: Msg) -> Self {
+        Self::Localised { kind, msg }
+    }
+
+    /// The [`Msg`] a client should show. The string variants have no key,
+    /// so they come back as a [`Msg::literal`] - the same text, untranslated.
+    pub fn into_msg(self) -> Msg {
+        match self {
+            Self::Localised { msg, .. } => msg,
+            other => Msg::literal(other.to_string()),
+        }
+    }
+
+    /// [`Self::into_msg`] without consuming - for a site that also has to
+    /// return the error itself.
+    pub fn as_msg(&self) -> Msg {
+        match self {
+            Self::Localised { msg, .. } => msg.clone(),
+            other => Msg::literal(other.to_string()),
         }
     }
 }
@@ -184,6 +217,14 @@ pub struct WireError {
     pub kind: ErrorKind,
     /// For a person to read. Never for a client to match on.
     pub message: String,
+    /// Catalog key for a client that localises. Empty (and omitted from the
+    /// wire) for a refusal that carried only prose - the client shows
+    /// `message` then.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub key: &'static str,
+    /// `{name}` values for the translated `key`.
+    #[serde(skip_serializing_if = "Map::is_empty")]
+    pub params: Map<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -201,7 +242,24 @@ impl Response {
     }
 
     pub(crate) fn err(id: u64, kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self { id, result: None, error: Some(WireError { kind, message: message.into() }) }
+        Self {
+            id,
+            result: None,
+            error: Some(WireError {
+                kind,
+                message: message.into(),
+                key: "",
+                params: Map::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn err_msg(id: u64, kind: ErrorKind, msg: Msg) -> Self {
+        Self {
+            id,
+            result: None,
+            error: Some(WireError { kind, message: msg.text, key: msg.key, params: msg.params }),
+        }
     }
 }
 
@@ -262,7 +320,7 @@ impl Registry {
             ),
             Some(m) => match m.call(&req.method, req.params) {
                 Ok(v) => Response::ok(req.id, v),
-                Err(e) => Response::err(req.id, e.kind(), e.to_string()),
+                Err(e) => Response::err_msg(req.id, e.kind(), e.into_msg()),
             },
         }
     }
@@ -381,6 +439,31 @@ mod tests {
         assert!(reply["error"]["message"].as_str().unwrap().contains("/sys/x"));
         assert_eq!(reply["id"], 7);
         assert!(reply.get("result").is_none(), "a refusal has no result");
+    }
+
+    /// A `Localised` refusal reaches the wire as its `kind` plus `key` and
+    /// `params` beside the English `message`, so a client with a catalog can
+    /// show it in the user's language.
+    #[test]
+    fn a_localised_refusal_carries_its_catalog_key_on_the_wire() {
+        let reply = reply("stub", "nope", || {
+            ModuleError::localised(
+                ErrorKind::NotCapable,
+                crate::msg!("fan.caps.none", "no fan control interface at all"),
+            )
+        });
+
+        assert_eq!(reply["error"]["kind"], "notCapable");
+        assert_eq!(reply["error"]["key"], "fan.caps.none");
+        assert_eq!(reply["error"]["message"], "no fan control interface at all");
+    }
+
+    /// A plain string refusal has no `key`, and the field is left off the
+    /// wire entirely rather than sent empty.
+    #[test]
+    fn a_plain_refusal_sends_no_key_field() {
+        let reply = reply("stub", "nope", || ModuleError::Failed("boom".into()));
+        assert!(reply["error"].get("key").is_none());
     }
 
     #[test]

@@ -44,7 +44,7 @@
 //! tested below, so that when someone does install `acpi_call-dkms` the
 //! only untested thing left is the firmware's own answer.
 
-use pyren_core::acpi;
+use pyren_core::{acpi, msg, Msg};
 
 use crate::color::Rgb;
 
@@ -83,6 +83,26 @@ pub enum LightbarError {
     /// It said `PASS` and then the bytes made no sense.
     #[error("the firmware answered {0}, which is not a lightbar reply")]
     Unreadable(String),
+}
+
+impl LightbarError {
+    /// The sentence a client should show, translatable. The firmware's own
+    /// answer bytes are passed through as a param, not translated.
+    pub fn to_msg(&self) -> Msg {
+        match self {
+            Self::Acpi(e) => e.to_msg(),
+            Self::Refused(answer) => msg!(
+                "rgb.lightbar.refused",
+                { "answer" => answer.clone() },
+                "the firmware refused the lightbar call (it answered: {answer})"
+            ),
+            Self::Unreadable(answer) => msg!(
+                "rgb.lightbar.unreadable",
+                { "answer" => answer.clone() },
+                "the firmware answered {answer}, which is not a lightbar reply"
+            ),
+        }
+    }
 }
 
 /// Brightness is a percentage in this protocol, not a 0-255 level.

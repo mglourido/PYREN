@@ -3,12 +3,12 @@
   import Panel from "$lib/components/Panel.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
-  import { availableLocales, localeName, t } from "$lib/i18n/index.svelte";
+  import { availableLocales, localeName, t, tm } from "$lib/i18n/index.svelte";
   import { settings } from "$lib/stores/settings.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { session, type SessionStatus } from "$lib/api/session";
-  import { daemon, type HotkeyStatus } from "$lib/api/daemon";
+  import { daemon, errorText, type HotkeyStatus } from "$lib/api/daemon";
 
   /**
    * What is running in this session. Read from the shell rather than from
@@ -46,7 +46,7 @@
       services = await action();
       serviceError = null;
     } catch (e) {
-      serviceError = String(e);
+      serviceError = errorText(e);
     }
   }
 
@@ -56,7 +56,7 @@
       hotkey = await action();
       serviceError = null;
     } catch (e) {
-      serviceError = String(e);
+      serviceError = errorText(e);
     }
   }
 
@@ -95,7 +95,7 @@
       const result = await daemon.hotkeyLearn(LEARN_SECONDS * 1000);
       learnTimedOut = result.timedOut;
     } catch (e) {
-      serviceError = String(e);
+      serviceError = errorText(e);
     } finally {
       clearInterval(tick);
       learning = null;
@@ -314,7 +314,7 @@
            or no key bound. The daemon composes the sentence; repeating the
            logic here would be a second place for it to go stale. -->
       {#if hotkey && !hotkey.watching}
-        <p class="notice err">{hotkey.detail}</p>
+        <p class="notice err">{tm(hotkey.detail)}</p>
       {/if}
 
       <div class="row">

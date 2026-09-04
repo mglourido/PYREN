@@ -19,6 +19,7 @@
 //!   revert would spend seconds being careful about the one change that is
 //!   never the risky one.
 
+use pyren_core::{msg, Msg};
 use serde::{Deserialize, Serialize};
 
 /// How much the core offset may move in one step of the climb.
@@ -105,9 +106,9 @@ pub struct Ceiling {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clamped {
     pub target: Target,
-    /// Prose, for a person, one line per difference. Empty when the request
-    /// survived untouched - which is the case a UI should not decorate.
-    pub notes: Vec<String>,
+    /// One translatable line per difference. Empty when the request survived
+    /// untouched - which is the case a UI should not decorate.
+    pub notes: Vec<Msg>,
 }
 
 /// Cuts a request down to what the driver said it would take.
@@ -124,15 +125,24 @@ pub fn clamp(request: Target, ceiling: &Ceiling) -> Clamped {
         Some(range) => {
             target.core_offset_mhz = range.clamp(request.core_offset_mhz);
             if target.core_offset_mhz != request.core_offset_mhz {
-                notes.push(format!(
-                    "core offset {} MHz is outside what the driver advertises ({} to {} MHz); \
-                     using {} MHz",
-                    request.core_offset_mhz, range.min, range.max, target.core_offset_mhz
+                notes.push(msg!(
+                    "overclock.clamp.coreOutOfRange",
+                    {
+                        "requested" => request.core_offset_mhz,
+                        "min" => range.min,
+                        "max" => range.max,
+                        "used" => target.core_offset_mhz,
+                    },
+                    "core offset {requested} MHz is outside what the driver advertises \
+                     ({min} to {max} MHz); using {used} MHz"
                 ));
             }
         }
         None if request.core_offset_mhz != 0 => {
-            notes.push("this GPU exposes no core-clock offset, so that part was ignored".into());
+            notes.push(msg!(
+                "overclock.clamp.noCoreOffset",
+                "this GPU exposes no core-clock offset, so that part was ignored"
+            ));
         }
         None => {}
     }
@@ -141,15 +151,24 @@ pub fn clamp(request: Target, ceiling: &Ceiling) -> Clamped {
         Some(range) => {
             target.mem_offset_mhz = range.clamp(request.mem_offset_mhz);
             if target.mem_offset_mhz != request.mem_offset_mhz {
-                notes.push(format!(
-                    "memory offset {} MHz is outside what the driver advertises ({} to {} MHz); \
-                     using {} MHz",
-                    request.mem_offset_mhz, range.min, range.max, target.mem_offset_mhz
+                notes.push(msg!(
+                    "overclock.clamp.memOutOfRange",
+                    {
+                        "requested" => request.mem_offset_mhz,
+                        "min" => range.min,
+                        "max" => range.max,
+                        "used" => target.mem_offset_mhz,
+                    },
+                    "memory offset {requested} MHz is outside what the driver advertises \
+                     ({min} to {max} MHz); using {used} MHz"
                 ));
             }
         }
         None if request.mem_offset_mhz != 0 => {
-            notes.push("this GPU exposes no memory offset, so that part was ignored".into());
+            notes.push(msg!(
+                "overclock.clamp.noMemOffset",
+                "this GPU exposes no memory offset, so that part was ignored"
+            ));
         }
         None => {}
     }
@@ -163,16 +182,27 @@ pub fn clamp(request: Target, ceiling: &Ceiling) -> Clamped {
             let max = range.clamp(lock.max_mhz).max(min);
             let clamped = ClockLock { min_mhz: min, max_mhz: max };
             if clamped != lock {
-                notes.push(format!(
-                    "clock lock {}-{} MHz is outside what this GPU supports ({} to {} MHz); \
-                     using {}-{} MHz",
-                    lock.min_mhz, lock.max_mhz, range.min, range.max, min, max
+                notes.push(msg!(
+                    "overclock.clamp.lockOutOfRange",
+                    {
+                        "reqMin" => lock.min_mhz,
+                        "reqMax" => lock.max_mhz,
+                        "min" => range.min,
+                        "max" => range.max,
+                        "usedMin" => min,
+                        "usedMax" => max,
+                    },
+                    "clock lock {reqMin}-{reqMax} MHz is outside what this GPU supports \
+                     ({min} to {max} MHz); using {usedMin}-{usedMax} MHz"
                 ));
             }
             target.core_clock = Some(clamped);
         }
         (Some(_), None) => {
-            notes.push("this GPU cannot have its clocks pinned, so that part was ignored".into());
+            notes.push(msg!(
+                "overclock.clamp.noClockLock",
+                "this GPU cannot have its clocks pinned, so that part was ignored"
+            ));
         }
         (None, _) => {}
     }

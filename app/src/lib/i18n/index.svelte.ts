@@ -90,3 +90,34 @@ class I18n {
 export const i18n = new I18n();
 /** Shorthand so markup reads `{t("nav.home")}`. */
 export const t = i18n.t;
+
+/**
+ * A translatable string as the daemon sends it (`pyren-core::Msg`):
+ * `{ key, params?, text }`. `text` is the English wording, authoritative
+ * when we have no catalog entry for `key`.
+ */
+export type Msg = {
+  key: string;
+  params?: Record<string, string | number | unknown>;
+  text: string;
+};
+
+/**
+ * Render a daemon [`Msg`] in the user's language: its catalog entry when
+ * `key` resolves, otherwise the English `text` the daemon shipped. A joined
+ * message (`key: ""`, `params.parts` a list) is rendered part by part and
+ * re-joined, so each clause is still translated.
+ */
+export function tm(m: Msg | null | undefined): string {
+  if (!m) return "";
+  const parts = m.params?.parts;
+  if (!m.key && Array.isArray(parts)) {
+    return (parts as Msg[]).map(tm).join("; ");
+  }
+  if (!m.key) return m.text;
+  const params = m.params as Record<string, string | number> | undefined;
+  const rendered = t(m.key, params);
+  // `t` echoes the key back when no catalog has it - fall back to the
+  // wording the daemon already interpolated for us.
+  return rendered === m.key ? m.text : rendered;
+}

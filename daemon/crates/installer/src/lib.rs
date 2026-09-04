@@ -116,15 +116,22 @@ impl Module for InstallerModule {
                 let plan = plan::plan(&env, request.action, options);
 
                 if !plan.is_runnable() {
-                    let reasons: Vec<&str> =
-                        plan.blockers.iter().map(|b| b.message.as_str()).collect();
-                    // Not the caller's mistake and not a permanent
-                    // property of the machine either - the blockers say
-                    // what would have to change first.
-                    return Err(ModuleError::NotCapable(format!(
-                        "this plan cannot run: {}",
-                        reasons.join("; ")
-                    )));
+                    // Not the caller's mistake and not a permanent property
+                    // of the machine either - the blockers say what would
+                    // have to change first.
+                    let reasons = pyren_core::Msg::join(
+                        plan.blockers.iter().map(|b| b.message.clone()).collect(),
+                        "; ",
+                    )
+                    .unwrap_or_else(|| pyren_core::Msg::literal(""));
+                    return Err(ModuleError::localised(
+                        pyren_core::ErrorKind::NotCapable,
+                        pyren_core::msg!(
+                            "installer.err.planNotRunnable",
+                            { "reasons" => reasons.text },
+                            "this plan cannot run: {reasons}"
+                        ),
+                    ));
                 }
 
                 let board = match (request.experimental_board, request.board_table) {

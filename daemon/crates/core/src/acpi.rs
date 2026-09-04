@@ -49,6 +49,30 @@ pub enum AcpiError {
     Io(String),
 }
 
+impl AcpiError {
+    /// The same sentence, translatable. The `Io` variant carries a raw OS
+    /// error, which is passed through as a param rather than translated.
+    pub fn to_msg(&self) -> crate::Msg {
+        match self {
+            Self::NotLoaded => crate::msg!(
+                "acpi.notLoaded",
+                { "path" => CALL_PATH, "hint" => INSTALL_HINT },
+                "the acpi_call kernel module is not loaded, so {path} does not exist; {hint}"
+            ),
+            Self::PermissionDenied => crate::msg!(
+                "acpi.needsRoot",
+                { "path" => CALL_PATH },
+                "writing {path} needs root"
+            ),
+            Self::Io(e) => crate::msg!(
+                "acpi.io",
+                { "path" => CALL_PATH, "error" => e.clone() },
+                "{path}: {error}"
+            ),
+        }
+    }
+}
+
 /// Where the interface is. `PYREN_ACPI_CALL` redirects it at a plain file,
 /// which is how the request framing is exercised in a test on a machine
 /// with no `acpi_call` - including in CI.

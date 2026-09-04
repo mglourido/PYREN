@@ -10,6 +10,7 @@
 //! when to refuse - is a pure function over [`Environment`], testable
 //! anywhere, including on a machine that has nothing to do with HP.
 
+use pyren_core::{msg, Msg};
 use serde::{Deserialize, Serialize};
 
 use crate::detect::{Environment, HookFlavour};
@@ -44,26 +45,27 @@ pub enum Strategy {
 #[serde(rename_all = "camelCase")]
 pub struct Step {
     pub id: String,
-    pub description: String,
+    /// Translatable - render with `tm()`.
+    pub description: Msg,
     pub command: Vec<String>,
     /// Failure is tolerated and reported, rather than aborting the run.
     pub optional: bool,
 }
 
 impl Step {
-    fn command(id: &str, description: &str, command: &[&str]) -> Self {
+    fn command(id: &str, description: impl Into<Msg>, command: &[&str]) -> Self {
         Self {
             id: id.to_string(),
-            description: description.to_string(),
+            description: description.into(),
             command: command.iter().map(|s| s.to_string()).collect(),
             optional: false,
         }
     }
 
-    fn internal(id: &str, description: &str) -> Self {
+    fn internal(id: &str, description: impl Into<Msg>) -> Self {
         Self {
             id: id.to_string(),
-            description: description.to_string(),
+            description: description.into(),
             command: Vec::new(),
             optional: false,
         }
@@ -80,8 +82,10 @@ impl Step {
 #[serde(rename_all = "camelCase")]
 pub struct Blocker {
     pub id: String,
-    pub message: String,
-    /// A command the user can run to resolve it, where one exists.
+    /// Translatable - render with `tm()`.
+    pub message: Msg,
+    /// A command the user can run to resolve it, where one exists. A shell
+    /// command, quoted verbatim - not translated.
     pub fix: Option<String>,
 }
 
@@ -92,7 +96,8 @@ pub struct Plan {
     pub strategy: Option<Strategy>,
     pub steps: Vec<Step>,
     pub blockers: Vec<Blocker>,
-    pub warnings: Vec<String>,
+    /// Translatable - render each with `tm()`.
+    pub warnings: Vec<Msg>,
     /// True when the daemon must be running as root to carry this out.
     pub needs_root: bool,
 }
@@ -131,36 +136,44 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
     // say that it isn't needed. Manual fan control went upstream in 6.20,
     // and replacing the stock driver on such a kernel is a downgrade.
     if env.fan_control_available {
-        warnings.push(
+        warnings.push(msg!(
+            "installer.warn.alreadyWorks",
             "Fan control already works on this machine (pwm1 is present), so the patched \
              driver would add nothing."
-                .to_string(),
-        );
+        ));
         if !options.force {
             blockers.push(Blocker {
                 id: "already-working".to_string(),
-                message: "Fan control is already available; nothing to install.".to_string(),
+                message: msg!(
+                    "installer.blocker.alreadyWorking",
+                    "Fan control is already available; nothing to install."
+                ),
                 fix: None,
             });
         }
     } else if env.kernel.has_upstream_fan_control {
-        warnings.push(format!(
-            "Kernel {} already ships manual fan control upstream (since {}.{}), so the patch \
-             is probably unnecessary. It is only worth installing if your board is missing \
-             from the stock driver's tables.",
-            env.kernel.release,
-            crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.0,
-            crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.1,
+        warnings.push(msg!(
+            "installer.warn.upstream",
+            {
+                "kernel" => env.kernel.release.clone(),
+                "major" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.0,
+                "minor" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.1,
+            },
+            "Kernel {kernel} already ships manual fan control upstream (since {major}.{minor}), \
+             so the patch is probably unnecessary. It is only worth installing if your board \
+             is missing from the stock driver's tables."
         ));
     }
 
     let Some(driver_source) = env.driver_source.clone() else {
         blockers.push(Blocker {
             id: "no-driver-source".to_string(),
-            message: "The patched hp-wmi sources were not found. They are not bundled with \
-                      pyren; point PYREN_DRIVER_DIR at a checkout of omen-fan-control's \
-                      data/driver directory, or install them to /usr/share/pyren/driver."
-                .to_string(),
+            message: msg!(
+                "installer.blocker.noDriverSource",
+                "The patched hp-wmi sources were not found. They are not bundled with pyren; \
+                 point PYREN_DRIVER_DIR at a checkout of omen-fan-control's data/driver \
+                 directory, or install them to /usr/share/pyren/driver."
+            ),
             fix: None,
         });
         return Plan {
@@ -176,16 +189,21 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
     if !env.headers.usable {
         blockers.push(Blocker {
             id: "kernel-headers".to_string(),
-            message: "Kernel headers for the running kernel are missing or incomplete, so the \
-                      module cannot be compiled."
-                .to_string(),
+            message: msg!(
+                "installer.blocker.kernelHeaders",
+                "Kernel headers for the running kernel are missing or incomplete, so the \
+                 module cannot be compiled."
+            ),
             fix: env.headers.fix_hint.clone(),
         });
     }
     if !env.has_make || !env.has_compiler {
         blockers.push(Blocker {
             id: "build-tools".to_string(),
-            message: "A C compiler and make are required to build the module.".to_string(),
+            message: msg!(
+                "installer.blocker.buildTools",
+                "A C compiler and make are required to build the module."
+            ),
             fix: Some("install your distribution's base development tools".to_string()),
         });
     }
@@ -197,28 +215,38 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
     };
 
     if strategy == Strategy::Hooks && env.hook_flavour == HookFlavour::None {
-        warnings.push(
-            "This distribution has no recognised kernel-hook mechanism, so the module will be \
-             built for the running kernel only and will need reinstalling after a kernel \
+        warnings.push(msg!(
+            "installer.warn.noHook",
+            "This distribution has no recognised kernel-hook mechanism, so the module will \
+             be built for the running kernel only and will need reinstalling after a kernel \
              upgrade."
-                .to_string(),
-        );
+        ));
     }
 
     let dkms_src = format!("/usr/src/{DKMS_NAME}-{DKMS_VERSION}");
     let mut steps = vec![
         Step::internal(
             "patch-source",
-            "Patch the driver source (fan ceilings, and any experimental board id)",
+            msg!(
+                "installer.step.patch-source",
+                "Patch the driver source (fan ceilings, and any experimental board id)"
+            ),
         ),
         Step::internal(
             "stage-source",
-            &format!("Copy the driver sources and dkms.conf to {dkms_src}"),
+            msg!(
+                "installer.step.stage-source",
+                { "path" => dkms_src.clone() },
+                "Copy the driver sources and dkms.conf to {path}"
+            ),
         ),
         Step::internal(
             "backup-driver",
-            "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so depmod \
-             picks the new one unambiguously",
+            msg!(
+                "installer.step.backup-driver",
+                "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so \
+                 depmod picks the new one unambiguously"
+            ),
         ),
     ];
 
@@ -228,7 +256,10 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
                 steps.push(
                     Step::command(
                         "dkms-remove-old",
-                        "Remove the previously registered DKMS module",
+                        msg!(
+                            "installer.step.dkms-remove-old",
+                            "Remove the previously registered DKMS module"
+                        ),
                         &["dkms", "remove", &format!("{DKMS_NAME}/{DKMS_VERSION}"), "--all"],
                     )
                     .optional(),
@@ -236,29 +267,32 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
             }
             steps.push(Step::command(
                 "dkms-add",
-                "Register the module with DKMS",
+                msg!("installer.step.dkms-add", "Register the module with DKMS"),
                 &["dkms", "add", "-m", DKMS_NAME, "-v", DKMS_VERSION],
             ));
             steps.push(Step::command(
                 "dkms-build",
-                "Build the module",
+                msg!("installer.step.dkms-build", "Build the module"),
                 &["dkms", "build", "-m", DKMS_NAME, "-v", DKMS_VERSION],
             ));
             steps.push(Step::command(
                 "dkms-install",
-                "Install the built module",
+                msg!("installer.step.dkms-install", "Install the built module"),
                 &["dkms", "install", "-m", DKMS_NAME, "-v", DKMS_VERSION],
             ));
         }
         Strategy::Hooks => {
             steps.push(Step::command(
                 "make",
-                "Build the module for the running kernel",
+                msg!("installer.step.make", "Build the module for the running kernel"),
                 &["make", "-C", &format!("{dkms_src}/src/hp-wmi-omen")],
             ));
             steps.push(Step::internal(
                 "install-module",
-                "Install hp-wmi.ko into /lib/modules/<kernel>/kernel/drivers/platform/x86/hp",
+                msg!(
+                    "installer.step.install-module",
+                    "Install hp-wmi.ko into /lib/modules/<kernel>/kernel/drivers/platform/x86/hp"
+                ),
             ));
             if let Some(hook) = hook_step(env.hook_flavour) {
                 steps.push(hook);
@@ -266,7 +300,7 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
             steps.push(
                 Step::command(
                     "make-clean",
-                    "Clean the build tree",
+                    msg!("installer.step.make-clean", "Clean the build tree"),
                     &["make", "-C", &format!("{dkms_src}/src/hp-wmi-omen"), "clean"],
                 )
                 .optional(),
@@ -274,12 +308,24 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         }
     }
 
-    steps.push(Step::command("depmod", "Rebuild module dependencies", &["depmod", "-a"]));
+    steps.push(Step::command(
+        "depmod",
+        msg!("installer.step.depmod", "Rebuild module dependencies"),
+        &["depmod", "-a"],
+    ));
     steps.push(
-        Step::command("modprobe-remove", "Unload the current hp-wmi", &["modprobe", "-r", "hp-wmi"])
-            .optional(),
+        Step::command(
+            "modprobe-remove",
+            msg!("installer.step.modprobe-remove", "Unload the current hp-wmi"),
+            &["modprobe", "-r", "hp-wmi"],
+        )
+        .optional(),
     );
-    steps.push(Step::command("modprobe", "Load the patched hp-wmi", &["modprobe", "hp-wmi"]));
+    steps.push(Step::command(
+        "modprobe",
+        msg!("installer.step.modprobe-patched", "Load the patched hp-wmi"),
+        &["modprobe", "hp-wmi"],
+    ));
 
     if let Some(step) = initramfs_step(env) {
         steps.push(step);
@@ -300,15 +346,24 @@ fn hook_step(flavour: HookFlavour) -> Option<Step> {
     let (id, description) = match flavour {
         HookFlavour::Pacman => (
             "install-hook-pacman",
-            "Install the pacman hook that rebuilds the module on kernel upgrades",
+            msg!(
+                "installer.step.install-hook-pacman",
+                "Install the pacman hook that rebuilds the module on kernel upgrades"
+            ),
         ),
         HookFlavour::KernelPostinst => (
             "install-hook-postinst",
-            "Install the /etc/kernel/postinst.d hook that rebuilds on kernel upgrades",
+            msg!(
+                "installer.step.install-hook-postinst",
+                "Install the /etc/kernel/postinst.d hook that rebuilds on kernel upgrades"
+            ),
         ),
         HookFlavour::KernelInstall => (
             "install-hook-kernel-install",
-            "Install the /etc/kernel/install.d hook that rebuilds on kernel upgrades",
+            msg!(
+                "installer.step.install-hook-kernel-install",
+                "Install the /etc/kernel/install.d hook that rebuilds on kernel upgrades"
+            ),
         ),
         HookFlavour::None => return None,
     };
@@ -325,7 +380,14 @@ fn initramfs_step(env: &Environment) -> Option<Step> {
     };
     // Known to fail on some EFI layouts without breaking the install, so
     // it must not abort the run.
-    Some(Step::command("initramfs", "Regenerate the initramfs", &command).optional())
+    Some(
+        Step::command(
+            "initramfs",
+            msg!("installer.step.initramfs", "Regenerate the initramfs"),
+            &command,
+        )
+        .optional(),
+    )
 }
 
 fn plan_restore_driver(env: &Environment) -> Plan {
@@ -335,7 +397,7 @@ fn plan_restore_driver(env: &Environment) -> Plan {
         steps.push(
             Step::command(
                 "dkms-remove",
-                "Deregister the DKMS module",
+                msg!("installer.step.dkms-remove", "Deregister the DKMS module"),
                 &["dkms", "remove", &format!("{DKMS_NAME}/{DKMS_VERSION}"), "--all"],
             )
             .optional(),
@@ -343,21 +405,41 @@ fn plan_restore_driver(env: &Environment) -> Plan {
     }
     steps.push(Step::internal(
         "remove-sources",
-        &format!("Delete /usr/src/{DKMS_NAME}-{DKMS_VERSION}"),
+        msg!(
+            "installer.step.remove-sources",
+            { "name" => DKMS_NAME, "version" => DKMS_VERSION },
+            "Delete /usr/src/{name}-{version}"
+        ),
     ));
     steps.push(Step::internal(
         "remove-hooks",
-        "Delete any installed kernel-upgrade hook",
+        msg!("installer.step.remove-hooks", "Delete any installed kernel-upgrade hook"),
     ));
     steps.push(Step::internal(
         "restore-backups",
-        "Rename every hp-wmi.ko.bak back to hp-wmi.ko, restoring the stock driver",
+        msg!(
+            "installer.step.restore-backups",
+            "Rename every hp-wmi.ko.bak back to hp-wmi.ko, restoring the stock driver"
+        ),
     ));
-    steps.push(Step::command("depmod", "Rebuild module dependencies", &["depmod", "-a"]));
+    steps.push(Step::command(
+        "depmod",
+        msg!("installer.step.depmod", "Rebuild module dependencies"),
+        &["depmod", "-a"],
+    ));
     steps.push(
-        Step::command("modprobe-remove", "Unload hp-wmi", &["modprobe", "-r", "hp-wmi"]).optional(),
+        Step::command(
+            "modprobe-remove",
+            msg!("installer.step.modprobe-remove-plain", "Unload hp-wmi"),
+            &["modprobe", "-r", "hp-wmi"],
+        )
+        .optional(),
     );
-    steps.push(Step::command("modprobe", "Load the stock hp-wmi", &["modprobe", "hp-wmi"]));
+    steps.push(Step::command(
+        "modprobe",
+        msg!("installer.step.modprobe-stock", "Load the stock hp-wmi"),
+        &["modprobe", "hp-wmi"],
+    ));
     if let Some(step) = initramfs_step(env) {
         steps.push(step);
     }
@@ -375,7 +457,10 @@ fn plan_restore_driver(env: &Environment) -> Plan {
 fn plan_install_service(env: &Environment) -> Plan {
     let mut warnings = Vec::new();
     if env.service_installed {
-        warnings.push("The service unit is already installed; it will be replaced.".to_string());
+        warnings.push(msg!(
+            "installer.warn.serviceInstalled",
+            "The service unit is already installed; it will be replaced."
+        ));
     }
 
     // The daemon is root and its socket is the trust boundary, so the socket
@@ -383,7 +468,9 @@ fn plan_install_service(env: &Environment) -> Plan {
     // group has to exist before the daemon first binds, or nobody but root
     // can connect. See `pyren_core::socket`.
     let group = pyren_core::socket_group();
-    warnings.push(format!(
+    warnings.push(msg!(
+        "installer.warn.joinGroup",
+        { "group" => group.clone() },
         "Add each user who should control this machine to the '{group}' group: \
          sudo usermod -aG {group} $USER (then log out and back in)."
     ));
@@ -394,21 +481,28 @@ fn plan_install_service(env: &Environment) -> Plan {
         steps: vec![
             Step::command(
                 "create-group",
-                &format!("Create the '{group}' group that may reach the daemon"),
+                msg!(
+                    "installer.step.create-group",
+                    { "group" => group.clone() },
+                    "Create the '{group}' group that may reach the daemon"
+                ),
                 &["groupadd", "-f", &group],
             ),
             Step::internal(
                 "write-unit",
-                "Write /etc/systemd/system/pyren-daemon.service",
+                msg!(
+                    "installer.step.write-unit",
+                    "Write /etc/systemd/system/pyren-daemon.service"
+                ),
             ),
             Step::command(
                 "daemon-reload",
-                "Reload systemd units",
+                msg!("installer.step.daemon-reload", "Reload systemd units"),
                 &["systemctl", "daemon-reload"],
             ),
             Step::command(
                 "enable",
-                "Enable and start the daemon at boot",
+                msg!("installer.step.enable", "Enable and start the daemon at boot"),
                 &["systemctl", "enable", "--now", "pyren-daemon.service"],
             ),
         ],
@@ -425,14 +519,17 @@ fn plan_remove_service(_env: &Environment) -> Plan {
         steps: vec![
             Step::command(
                 "disable",
-                "Stop the daemon and remove it from boot",
+                msg!("installer.step.disable", "Stop the daemon and remove it from boot"),
                 &["systemctl", "disable", "--now", "pyren-daemon.service"],
             )
             .optional(),
-            Step::internal("remove-unit", "Delete the systemd unit file"),
+            Step::internal(
+                "remove-unit",
+                msg!("installer.step.remove-unit", "Delete the systemd unit file"),
+            ),
             Step::command(
                 "daemon-reload",
-                "Reload systemd units",
+                msg!("installer.step.daemon-reload", "Reload systemd units"),
                 &["systemctl", "daemon-reload"],
             ),
         ],
@@ -492,6 +589,21 @@ mod tests {
         assert_eq!(plan.strategy, Some(Strategy::Dkms));
         assert!(ids(&plan).contains(&"dkms-build"));
         assert!(!ids(&plan).contains(&"make"));
+    }
+
+    /// The wizard shows the plan in the user's language: each step's
+    /// description carries a catalog key alongside its English text.
+    #[test]
+    fn steps_and_warnings_are_translatable() {
+        let env = Environment { kernel: KernelInfo { has_upstream_fan_control: true, ..ready_env().kernel }, ..ready_env() };
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+
+        let stage = plan.steps.iter().find(|s| s.id == "stage-source").unwrap();
+        assert_eq!(stage.description.key, "installer.step.stage-source");
+        assert!(stage.description.text.contains("dkms.conf"));
+
+        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.upstream"
+            && w.params["kernel"] == "6.12.4-arch1-1"));
     }
 
     #[test]

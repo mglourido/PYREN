@@ -13,9 +13,9 @@
   import InfoTip from "$lib/components/InfoTip.svelte";
   import Panel from "$lib/components/Panel.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
-  import { daemon, type FanDiagnosis, type CheckStatus } from "$lib/api/daemon";
+  import { daemon, errorText, type FanDiagnosis, type CheckStatus } from "$lib/api/daemon";
   import { admin, type AdminAction, type AdminStatus } from "$lib/api/admin";
-  import { t } from "$lib/i18n/index.svelte";
+  import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { onMount } from "svelte";
 
@@ -30,7 +30,7 @@
     try {
       diagnosis = await daemon.fanDiagnose(allowWrites);
     } catch (e) {
-      error = String(e);
+      error = errorText(e);
       diagnosis = null;
     } finally {
       running = false;
@@ -60,7 +60,7 @@
     } catch (e) {
       // Kept apart from grantError: failing to *read* the state and failing
       // to *change* it are different problems with different remedies.
-      statusError = String(e);
+      statusError = errorText(e);
     }
   }
 
@@ -73,7 +73,7 @@
       if (result.applied && action === "joinGroup") reloginNeeded = true;
       await refreshPrivileges();
     } catch (e) {
-      grantError = String(e);
+      grantError = errorText(e);
     } finally {
       granting = null;
     }
@@ -265,14 +265,14 @@
         />
         <div>
           <strong>{t(`diagnostics.verdict.${diagnosis.verdict}`)}</strong>
-          <p>{diagnosis.summary}</p>
+          <p>{tm(diagnosis.summary)}</p>
         </div>
       </div>
 
       <!-- The point of the whole page: when control is missing, say what
            could fix it, rather than silently offering to install anything. -->
       {#if diagnosis.driverNotice}
-        <p class="notice warn">{diagnosis.driverNotice}</p>
+        <p class="notice warn">{tm(diagnosis.driverNotice)}</p>
       {/if}
       {#if diagnosis.wroteToHardware}
         <p class="notice">{t("diagnostics.wroteToHardware")}</p>
@@ -285,12 +285,12 @@
           <li class={check.status}>
             <Icon name={icons[check.status]} size={15} />
             <div class="body">
-              <span class="check-title">{check.title}</span>
-              <span class="detail">{check.detail}</span>
+              <span class="check-title">{tm(check.title)}</span>
+              <span class="detail">{tm(check.detail)}</span>
               {#if check.remedy}
                 <span class="remedy">
                   <strong>{t("diagnostics.remedy")}:</strong>
-                  {check.remedy}
+                  {tm(check.remedy)}
                 </span>
               {/if}
             </div>

@@ -58,6 +58,7 @@ Exactly one of `result` / `error` is present:
 ```json
 { "id": 1, "result": { "...": "..." } }
 { "id": 1, "error": { "kind": "permissionDenied", "message": "writing /sys/…/pwm1_enable needs root: Permission denied (os error 13)" } }
+{ "id": 1, "error": { "kind": "notCapable", "message": "Clock offsets can be set. This card's clocks cannot be pinned.", "key": "overclock.gpu.nvidia.settable.noLock", "params": {} } }
 ```
 
 **Branch on `kind`, show `message`.** The message is written for a person
@@ -97,6 +98,41 @@ Refusing to parse a refusal is worse than showing it. For the same reason a
 client should still accept a bare-string `error` — that is a daemon from
 before this format — rather than reading an unparseable error as *absent*,
 which would turn a refusal into a silent success.
+
+### Translatable messages (`Msg`)
+
+Any user-facing sentence — an `error` above, or a prose field in a result
+(`detail`, `note`, …) — may arrive as a **`Msg`** instead of a bare string:
+
+```json
+{ "key": "overclock.gpu.nvidia.readable.noLock", "params": { "mhz": 3090 }, "text": "Clock offsets are readable. This card's clocks cannot be pinned." }
+```
+
+- `text` — the English wording, already interpolated. **Authoritative for
+  any consumer that does not localise** (the CLI, `--json` bug reports, the
+  log). Always present.
+- `key` — a stable catalog key. A client that ships a translation catalog
+  (the desktop app, `app/src/lib/i18n/locales/*.json`) renders `key` +
+  `params` in the user's language; a client without the key shows `text`.
+  Empty string (or absent) means "prose only, show `text`".
+- `params` — `{name}` values for the translated string; omitted when empty.
+  A joined message carries `params.parts`, a list of `Msg` to translate and
+  re-join.
+
+On an `error`, `key`/`params` sit beside `kind`/`message` (the `message` is
+the same string as `text`). Raw operating-system error text — the tail of a
+failed `exec`, an `io::Error` — is passed through inside a `param` and is
+**not** translated.
+
+A client that predates this shows `message`/`text` and loses nothing.
+
+**Through the desktop app's Tauri shell.** A Tauri command's error is a
+`String`, so `daemon_error` in `app/src-tauri` forwards a keyed refusal as
+its whole `{ kind, message, key, params }` object serialised to JSON; the
+frontend's `call()` parses that back into a `DaemonRefusal` and
+`errorText()` renders it with the catalog. A refusal with no `key`, and a
+bare-string transport failure, cross as the plain message as before. The
+dev-server bridge (`vite dev`) passes the object through directly.
 
 `pyren_core::client` does all of this already, and is the copy to follow:
 `ClientError::Daemon { kind, message }`, with `needs_root()` for the
@@ -241,10 +277,14 @@ UI be developed and tested away from an OMEN laptop, and it answers the
   "compatibility": "controllable",
   "controls": { "fanMode": false, "fanSpeed": false, "powerMode": true },
   "supported": true,
-  "reason": "this machine accepts: power modes",
+  "reason": { "key": "system.reason.accepts", "params": { "list": "power modes" }, "text": "this machine accepts: power modes" },
   "privileges": { "root": true, "perfEvents": true }
 }
 ```
+
+`reason` is a **`Msg` object** (see *Translatable messages* above). The
+`tools/pyren-check.sh` reference script emits it as the plain English
+string; the wording is what the parity test holds to, not the shape.
 
 `privileges` describes the **daemon**, not the machine: what it was started
 with, fixed at startup. `perfEvents` is whether the i915 perf PMU opened,
@@ -517,7 +557,10 @@ because it is already smoothed: a mode switch spins fans up or down and is
 very visible, so only *sustained* load should trigger one.
 
 `getState` also reports `autoOverrideSecondsLeft` and `lastAutoSwitch` so
-the UI can explain why the supervisor is or isn't acting.
+the UI can explain why the supervisor is or isn't acting. `lastAutoSwitch`
+is a **`Msg` object** (the reason the mode last moved — "battery at 15%",
+"plugged in"), and a `setMode` / `setTuning` refusal carries `key`/`params`
+beside its `message`.
 
 ### Persistence
 
@@ -575,6 +618,14 @@ of `/drivers`, which renders the plan's steps and their commands and keeps
 "apply" disabled until a dry run of those exact options has come back —
 see `docs/03-frontend.md`. `pyren-ctl` has no installer subcommand; the
 wizard and `--install-service` are the two ways in.
+
+Each step's `description`, every `blockers[].message`, every `warnings[]`
+entry, and a report step's `description` are **`Msg` objects** (see
+*Translatable messages* above) — `key` + `text`. A blocker's `fix` and a
+step's `command` are shell text, quoted verbatim, not translated. A report
+step's `detail` is a `Msg` too: for a planned or skipped step it carries a
+`key`; for a real run it is `Msg::literal` wrapping the command's own
+output, so it has no `key`.
 
 #### Installing the service cannot go through IPC
 
@@ -782,15 +833,24 @@ it.
 ```json
 {
   "verdict": "fullControl" | "monitoringOnly" | "unsupported",
-  "summary": "…",
-  "driverNotice": "…" | null,
+  "summary": { "key": "diagnostics.summary.monitoringOnly", "text": "…" },
+  "driverNotice": { "key": "diagnostics.driverNotice.noPwm", "params": { "hint": "…" }, "text": "…" } | null,
   "wroteToHardware": false,
   "checks": [
-    { "id": "pwm1", "title": "PWM channel", "status": "pass",
-      "detail": "pwm1 = 128 (0-255)", "remedy": null }
+    { "id": "pwm1",
+      "title":  { "key": "diagnostics.checks.pwm1.title", "text": "PWM channel" },
+      "status": "pass",
+      "detail": { "key": "diagnostics.checks.pwm1.ok", "params": { "value": 128 }, "text": "pwm1 = 128 (0-255)" },
+      "remedy": null }
   ]
 }
 ```
+
+`summary`, `driverNotice` and every check's `title` / `detail` / `remedy`
+are **`Msg` objects** (see *Translatable messages* above) — a client that
+localises renders the `key`; one that does not shows `text`. `verdict`,
+`id` and `status` stay bare enum strings. A `kernel-log` check's `detail`
+is the kernel's own words, quoted verbatim, so it carries no `key`.
 
 Checks cover the hp-wmi platform device, the hwmon node, both fan inputs
 (decoding the reverse-spin encoding rather than reporting a 15200 "rpm"),
@@ -838,6 +898,10 @@ that or `[r, g, b]`, so a script does not have to build a hex string to
 say 255,0,0. Components outside 0-255 are clamped rather than refused: a
 caller that sent 300 meant "as much red as there is", not "reject my whole
 request".
+
+`getStatus.error` (the last write failure) is a **`Msg` object**, and a
+refusal from a `set*` call carries `key`/`params` beside its `message` —
+including the shared `acpi.*` keys when the cause is a missing `acpi_call`.
 
 `brightness` is a **percentage**, not a 0-255 level — that is what the
 protocol takes, and calling it brightness while meaning a level is how a
@@ -993,6 +1057,13 @@ Nothing is ever asked for that the driver has not advertised: the ranges in
 request outside them is clamped, and the clamp is reported in `note`
 rather than applied silently.
 
+`getState`'s prose fields — every GPU's `detail`, the top-level `detail`,
+`note` and `error` — are **`Msg` objects** (see *Translatable messages*
+above), not bare strings: `{ key, params?, text }`. A `notCapable` /
+`failed` refusal from `apply` likewise carries `key`/`params` beside its
+`message`. `consent.text` stays a bare string — it is a legal record, not a
+UI label, and the app shows a translation of its own keyed on the version.
+
 ### 3. A revert timer, disarmed by hand
 
 `apply` arms `pending`, and the daemon undoes the change by itself when
@@ -1097,6 +1168,12 @@ The laptop's own performance key — Fn+P on an OMEN — heard by the daemon.
 `getStatus` also carries `label`: the bound shortcut written the way a
 person would, `"Ctrl+Alt+P"`, or `null` when nothing is bound. It is for
 showing, not for parsing — `triggers` is the machine-readable form.
+
+`getStatus.detail` — the one sentence that says why nothing happens when
+nothing does (not root, no key bound, switched off) — is a **`Msg` object**
+(see *Translatable messages* above), and a `setTriggers` refusal carries
+`key`/`params` beside its `message`. `label` and `press.describe` stay bare
+strings: a shortcut name and a `keycode N` diagnostic are not translated.
 
 ### A shortcut can be a combination
 

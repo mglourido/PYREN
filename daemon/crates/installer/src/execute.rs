@@ -16,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use pyren_core::{msg, Msg};
 use serde::Serialize;
 
 use crate::detect::{Environment, HookFlavour};
@@ -35,9 +36,13 @@ pub struct ExecuteContext {
 #[serde(rename_all = "camelCase")]
 pub struct StepResult {
     pub id: String,
-    pub description: String,
+    /// Translatable - render with `tm()`. Copied from the plan step.
+    pub description: Msg,
     pub status: StepStatus,
-    pub detail: String,
+    /// The step's own words for a planned/skipped step (translatable), or
+    /// the command output / error text of a real run (verbatim, not
+    /// translated).
+    pub detail: Msg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -72,27 +77,33 @@ pub fn execute(
 
     for step in &plan.steps {
         if failed {
-            results.push(result(step, StepStatus::Skipped, "skipped after an earlier failure"));
+            results.push(result(
+                step,
+                StepStatus::Skipped,
+                msg!("installer.exec.skipped", "skipped after an earlier failure"),
+            ));
             continue;
         }
         if dry_run {
             let detail = if step.command.is_empty() {
-                "internal action".to_string()
+                msg!("installer.exec.internalAction", "internal action")
             } else {
-                step.command.join(" ")
+                // A command line, quoted verbatim.
+                Msg::literal(step.command.join(" "))
             };
-            results.push(result(step, StepStatus::Planned, &detail));
+            results.push(result(step, StepStatus::Planned, detail));
             continue;
         }
 
         let outcome = run_step(step, env, context);
         match outcome {
-            Ok(detail) => results.push(result(step, StepStatus::Ok, &detail)),
+            // Real-run detail is command output / OS text: shown verbatim.
+            Ok(detail) => results.push(result(step, StepStatus::Ok, Msg::literal(detail))),
             Err(e) if step.optional => {
-                results.push(result(step, StepStatus::Warned, &e));
+                results.push(result(step, StepStatus::Warned, Msg::literal(e)));
             }
             Err(e) => {
-                results.push(result(step, StepStatus::Failed, &e));
+                results.push(result(step, StepStatus::Failed, Msg::literal(e)));
                 failed = true;
             }
         }
@@ -101,13 +112,8 @@ pub fn execute(
     ExecutionReport { dry_run, succeeded: !failed, results }
 }
 
-fn result(step: &Step, status: StepStatus, detail: &str) -> StepResult {
-    StepResult {
-        id: step.id.clone(),
-        description: step.description.clone(),
-        status,
-        detail: detail.to_string(),
-    }
+fn result(step: &Step, status: StepStatus, detail: Msg) -> StepResult {
+    StepResult { id: step.id.clone(), description: step.description.clone(), status, detail }
 }
 
 fn run_step(step: &Step, env: &Environment, context: &ExecuteContext) -> Result<String, String> {

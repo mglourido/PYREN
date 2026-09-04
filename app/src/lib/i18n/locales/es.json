@@ -105,7 +105,8 @@
   "performance": {
     "warning": "Los ajustes de rendimiento son anulados por la configuración predeterminada del sistema cuando funciona con batería o con adaptador de CA de baja potencia. El rendimiento de tu sistema volverá a la normalidad una vez que se conecte un adaptador de CA compatible.",
     "powerMode": "Modo de alimentación",
-    "hotkey": "Tecla de acceso rápido: Fn + P",
+    "hotkey": "Tecla de acceso rápido: {shortcut}",
+    "hotkeyUnset": "Tecla de acceso rápido: sin asignar",
     "autoModeSettings": "Ajustes de modo de energía automáticos",
     "applyToOsPowerProfile": "Aplicar al perfil de energía del sistema",
     "modes": {
@@ -140,7 +141,12 @@
     "autoPaused": "Cambio automático en pausa {seconds} s tras tu cambio manual.",
     "lastAutoSwitch": "Último cambio automático: {detail}",
     "onBattery": "Con batería",
-    "onMains": "Con adaptador de CA"
+    "onMains": "Con adaptador de CA",
+    "applyToOsProfileHint": "Refleja el modo seleccionado en el perfil de energía del sistema (power-profiles-daemon / platform_profile), para que las aplicaciones que lo leen se mantengan sincronizadas.",
+    "fanReverse": "inverso",
+    "pl1Hint": "Límite de potencia sostenida de la CPU, en vatios. Este es el que notan los ventiladores.",
+    "pl2Hint": "Límite de aumento a corto plazo, en vatios.",
+    "smartBoostHint": "Vatiaje adicional que el firmware puede añadir por encima del límite base."
   },
   "advanced": {
     "gpuOverclocking": "Overclocking de la GPU",
@@ -156,6 +162,7 @@
     "speed": "Reloj",
     "utilisation": "Uso",
     "disclaimer": "El overclocking puede desestabilizar el sistema y puede anular la garantía. Los cambios no se aplican hasta que pulses Aplicar.",
+    "consentText": "El overclocking hace funcionar esta GPU fuera de los ajustes con los que se distribuyó. Un desplazamiento que aguanta una prueba de rendimiento aún puede colgar la máquina en un juego, y cuando ocurre no hay ningún mensaje de error: la pantalla se detiene y todo lo que no hayas guardado se pierde. Nada de esto está cubierto por la garantía del fabricante. Todo cambio se revierte automáticamente salvo que lo confirmes, y ninguno se restaura tras un reinicio salvo que lo pidas por separado.",
     "consentTitle": "Lee esto antes de cambiar nada",
     "consentAccept": "Lo entiendo: activar el overclocking",
     "pending": "¿Mantener estos ajustes? Se deshacen en {seconds} s si no dices nada.",
@@ -203,7 +210,9 @@
     "block": "Bloquear",
     "high": "Alta",
     "medium": "Media",
-    "low": "Baja"
+    "low": "Baja",
+    "doubleForce": "Forzado doble",
+    "doubleForceHint": "Aplica las reglas de prioridad también a las conexiones ya establecidas."
   },
   "keys": {
     "selectKey": "Selecciona una tecla para empezar:",
@@ -328,7 +337,35 @@
     "laptop": "Portátil",
     "desktop": "Sobremesa",
     "monitoringOnly": "Solo monitorización",
-    "biosDate": "Fecha de BIOS"
+    "biosDate": "Fecha de BIOS",
+    "threads": "{n} hilos",
+    "reason": {
+      "monitoringOnly": "la interfaz hp-wmi está presente pero nada aquí aceptó el control; las velocidades de los ventiladores y las temperaturas todavía se pueden leer",
+      "unsupported": "no hay interfaz hp-wmi ni ningún mecanismo de modo de energía; la monitorización funciona, el control de hardware no",
+      "accepts": "este equipo acepta: {list}"
+    },
+    "can": {
+      "fanSpeed": "velocidad del ventilador",
+      "fanMode": "modo de ventilador (solo automático/máximo)",
+      "powerModes": "modos de energía",
+      "lightbar": "color de la barra de luz"
+    }
+  },
+  "acpi": {
+    "notLoaded": "el módulo del kernel acpi_call no está cargado, así que {path} no existe; {hint}",
+    "needsRoot": "escribir {path} necesita root",
+    "io": "{path}: {error}"
+  },
+  "rgb": {
+    "lightbar": {
+      "refused": "el firmware rechazó la llamada a la barra de luz (respondió: {answer})",
+      "unreadable": "el firmware respondió {answer}, que no es una respuesta de barra de luz"
+    },
+    "err": {
+      "zonesRequired": "params.zones es obligatorio: cuatro colores, '#rrggbb' o [r, g, b]",
+      "zonesCount": "params.zones admite de 1 a {max} colores, no {got}",
+      "colorRequired": "params.color es obligatorio: '#rrggbb' o [r, g, b]"
+    }
   },
   "diagnostics": {
     "title": "Comprobación de hardware",
@@ -345,7 +382,159 @@
     "remedy": "Qué hacer",
     "neverRun": "Todavía no se ha ejecutado la comprobación.",
     "cliHint": "La misma comprobación se ejecuta sin la app: <code>cargo run -p pyren-check</code> (añade <code>--json</code> para un reporte de fallo).",
-    "wroteToHardware": "Esta ejecución escribió en el hardware y restauró el estado anterior."
+    "wroteToHardware": "Esta ejecución escribió en el hardware y restauró el estado anterior.",
+    "summary": {
+      "fullControlTested": "El control de ventiladores funciona: las velocidades se pueden leer y el canal PWM aceptó una escritura.",
+      "fullControlUntested": "El control de ventiladores parece disponible: el canal PWM está presente. Vuelve a ejecutar con las escrituras activadas para confirmar que el hardware las acepta.",
+      "monitoringOnly": "Las velocidades de los ventiladores se pueden leer, pero este controlador no expone ningún canal PWM, así que la velocidad no se puede fijar.",
+      "unsupportedWithTemp": "Este equipo no expone ninguna interfaz de control de ventiladores de HP. La temperatura todavía se puede leer, así que la monitorización funciona.",
+      "unsupportedNoTemp": "Este equipo no expone ninguna interfaz de control de ventiladores de HP. No se encontró ninguna interfaz de ventilador de HP ni ningún sensor de temperatura utilizable."
+    },
+    "driverNotice": {
+      "noPwm": "El hp-wmi del kernel no tiene pwm1 para esta placa. Los kernels recientes traen control manual del ventilador de serie, así que actualizar el kernel es lo primero que probar. Si eso falla, existe un controlador parcheado fuera del árbol: {hint}. Instalarlo reemplaza un módulo del kernel, así que es un paso deliberado, no algo que esta app haga por ti.",
+      "noHpWmi": "No hay ningún dispositivo hp-wmi. En un portátil HP OMEN o Victus, carga el módulo hp_wmi; en otro hardware esto es lo esperado y el control de ventiladores no aplica."
+    },
+    "checks": {
+      "notExposed": "no expuesto por este controlador",
+      "notANumberAt": "{path} contiene algo que no es un número",
+      "readError": "{path}: {error}",
+      "genericError": "{error}",
+      "hp-wmi": {
+        "title": "Controlador de plataforma hp-wmi",
+        "present": "/sys/devices/platform/hp-wmi está presente",
+        "absent": "/sys/devices/platform/hp-wmi no existe",
+        "remedy": "Esto es normal en hardware no HP. En un portátil HP, comprueba que el módulo hp_wmi está cargado (`modprobe hp_wmi`) y que la BIOS expone WMI."
+      },
+      "hwmon": {
+        "title": "Nodo hwmon",
+        "found": "encontrado en {path}",
+        "absent": "no hay directorio hwmon bajo /sys/devices/platform/hp-wmi/hwmon"
+      },
+      "fan1": { "title": "Velocidad del ventilador 1" },
+      "fan2": { "title": "Velocidad del ventilador 2" },
+      "fan": {
+        "reverse": "{raw} en bruto -> {actual} rpm, girando en sentido inverso (limpiador de ventilador activo)",
+        "tooHigh": "{raw} rpm es inverosímilmente alto",
+        "rpm": "{raw} rpm"
+      },
+      "cpu-temp": {
+        "title": "Temperatura de la CPU",
+        "ok": "{celsius} °C",
+        "implausible": "{celsius} °C es inverosímil"
+      },
+      "pwm1": {
+        "title": "Canal PWM",
+        "notExposed": "pwm1 no está expuesto, así que la velocidad del ventilador no se puede fijar",
+        "remedyNotice": "Necesita un kernel cuyo hp-wmi admita esta placa (ver el aviso de abajo).",
+        "missing": "{path} falta",
+        "remedy": "Necesita un kernel cuyo hp-wmi admita esta placa.",
+        "ok": "pwm1 = {value} (0-255)",
+        "outOfRange": "pwm1 = {value}, fuera del rango documentado 0-255",
+        "notANumber": "pwm1 no es un número"
+      },
+      "pwm1_enable": {
+        "title": "Modo de control del ventilador",
+        "notExposed": "pwm1_enable no está expuesto",
+        "mode0": "0 - máximo (firmware forzado a velocidad completa)",
+        "mode1": "1 - manual (pwm1 está en efecto)",
+        "mode2": "2 - automático (curva del firmware)",
+        "modeUnknown": "{value} - modo desconocido"
+      },
+      "pwm-write": {
+        "title": "PWM acepta escrituras",
+        "noChannel": "no hay canal PWM al que escribir",
+        "notAttempted": "no intentado; activa las escrituras para probarlo",
+        "noMode": "no se pudo leer el modo actual",
+        "noValue": "no se pudo leer el valor PWM actual",
+        "ok": "se escribió y releyó pwm1 = {value} sin cambiar la velocidad del ventilador",
+        "mismatch": "se escribió {wrote} pero se releyó {readback}; el controlador puede cuantizar o ignorar valores",
+        "denied": "permiso denegado; ejecuta como root para probar las escrituras",
+        "notRestored": "{detail} - AVISO: no se pudo restaurar el modo de ventilador original; ponlo manualmente o reinicia"
+      },
+      "hwmon-attrs": {
+        "title": "Atributos hwmon",
+        "noNode": "no hay nodo hwmon",
+        "unreadable": "{path} no se puede leer",
+        "empty": "el nodo hwmon está vacío"
+      },
+      "kernel-log": {
+        "title": "Mensajes del kernel de hp-wmi",
+        "noDmesg": "dmesg no está disponible",
+        "notReadable": "el registro del kernel no se puede leer; ejecuta como root, o pega `dmesg | grep -i hp.wmi`",
+        "none": "no hay mensajes de hp-wmi"
+      },
+      "platform-profile": {
+        "title": "Perfil de plataforma ACPI",
+        "ok": "{current} (disponibles: {choices})",
+        "absent": "no expuesto; los modos de energía recurren a power-profiles-daemon o a la pista EPP de la CPU"
+      },
+      "acpi-call": {
+        "title": "Módulo acpi_call",
+        "ok": "/proc/acpi/call está disponible",
+        "absent": "/proc/acpi/call no encontrado; la barra RGB y el limpiador de ventilador lo necesitan",
+        "remedy": "Instala acpi_call-dkms (Arch), acpi-call-dkms (Debian) o akmod-acpi_call (Fedora), luego `modprobe acpi_call`."
+      }
+    }
+  },
+  "fan": {
+    "control": {
+      "unsupported": "el controlador de este equipo no admite {what} (falta {missing})",
+      "needsRoot": "escribir {path} necesita root: {error}",
+      "io": "escribiendo {path}: {error}"
+    },
+    "caps": {
+      "both": "pwm1 y pwm1_enable, los dos",
+      "switchOnly": "pwm1_enable pero no pwm1, así que solo son posibles automático y máximo",
+      "speedOnly": "pwm1 pero no pwm1_enable",
+      "none": "ninguna interfaz de control de ventilador"
+    },
+    "err": {
+      "cannotDoMode": "este equipo no puede hacer '{mode}': el controlador hp-wmi expone {exposes}. Ejecuta fan.diagnose para ver los detalles.",
+      "cannotCalibrate": "la calibración pone los ventiladores al máximo y los observa, lo que este equipo no puede hacer: el controlador hp-wmi expone {exposes}. Ejecuta fan.diagnose para ver los detalles.",
+      "noCpuTemp": "no hay sensor de temperatura de la CPU, así que no se puede seguir una curva",
+      "curveEmpty": "la curva no tiene puntos",
+      "curveNoPoints": "params.curve debe tener al menos un punto",
+      "curvePointNotFinite": "el punto de curva ({temp}, {percent}) no es un número finito",
+      "calibrating": "ya hay una calibración en curso"
+    }
+  },
+  "hotkey": {
+    "unavailable": {
+      "noDevices": "no hay dispositivos de teclado en /dev/input, así que no se puede escuchar ningún atajo aquí",
+      "needsRoot": "leer /dev/input necesita root; la unidad de systemd ejecuta el daemon como root"
+    },
+    "detail": {
+      "noKeyBound": "todavía no hay ninguna tecla asignada; pulsa la tuya durante 'hotkey learn' para asignarla",
+      "disabled": "hay una tecla asignada y el atajo está desactivado",
+      "watching": "escuchando {count} teclados en busca de la tecla asignada"
+    },
+    "err": {
+      "watcherDown": "el vigilante de atajos no está en marcha, así que no se puede escuchar ninguna tecla",
+      "learnBusy": "algo más ya está esperando una pulsación de tecla",
+      "noAction": "este daemon no tiene ninguna acción de atajo configurada",
+      "vagueTrigger": "un disparador necesita un keycode o un scancode; se recibió {trigger}",
+      "buttonTrigger": "el keycode {keycode} es un botón de ratón o de touchpad, no una tecla; asignarlo lanzaría el widget en pantalla en cada clic",
+      "modifierTrigger": "el keycode {keycode} es un modificador, que nunca es un atajo por sí solo; asígnalo junto con otra tecla"
+    }
+  },
+  "power": {
+    "autoReason": {
+      "toBattery": "se pasó a batería",
+      "pluggedIn": "se conectó la corriente",
+      "sustainedLoad": "carga sostenida ({percent}% por núcleo)",
+      "batteryLow": "batería al {percent}%",
+      "idle": "inactivo"
+    },
+    "autoSwitch": {
+      "failed": "{mode} falló: {failed}"
+    },
+    "err": {
+      "badMode": "params.mode debe ser uno de eco, balanced, performance, unlimited",
+      "applyFailed": "no se pudo aplicar ningún mecanismo de energía: {detail}",
+      "enabledBool": "params.enabled debe ser un booleano",
+      "noPackageLimit": "este equipo no expone ningún límite de potencia de paquete, así que no hay nada que ajustar",
+      "wattsPositive": "los límites de potencia deben ser un número positivo de vatios"
+    }
   },
   "installer": {
     "title": "Controlador del kernel",
@@ -417,7 +606,58 @@
     "report": "Lo que se hizo",
     "succeeded": "Correcto",
     "failed": "Falló",
-    "rebootHint": "El módulo fue reemplazado. Reinicia, o recarga hp-wmi, antes de que el nuevo esté en uso."
+    "rebootHint": "El módulo fue reemplazado. Reinicia, o recarga hp-wmi, antes de que el nuevo esté en uso.",
+    "step": {
+      "patch-source": "Parchear el código del controlador (topes del ventilador, y cualquier id de placa experimental)",
+      "stage-source": "Copiar el código del controlador y dkms.conf a {path}",
+      "backup-driver": "Hacer una copia del hp-wmi.ko de serie junto a él como .bak, luego quitarlo para que depmod elija el nuevo sin ambigüedad",
+      "dkms-remove-old": "Quitar el módulo DKMS registrado anteriormente",
+      "dkms-add": "Registrar el módulo con DKMS",
+      "dkms-build": "Compilar el módulo",
+      "dkms-install": "Instalar el módulo compilado",
+      "make": "Compilar el módulo para el kernel en ejecución",
+      "install-module": "Instalar hp-wmi.ko en /lib/modules/<kernel>/kernel/drivers/platform/x86/hp",
+      "install-hook-pacman": "Instalar el hook de pacman que recompila el módulo en las actualizaciones del kernel",
+      "install-hook-postinst": "Instalar el hook de /etc/kernel/postinst.d que recompila en las actualizaciones del kernel",
+      "install-hook-kernel-install": "Instalar el hook de /etc/kernel/install.d que recompila en las actualizaciones del kernel",
+      "make-clean": "Limpiar el árbol de compilación",
+      "depmod": "Reconstruir las dependencias de módulos",
+      "modprobe-remove": "Descargar el hp-wmi actual",
+      "modprobe-remove-plain": "Descargar hp-wmi",
+      "modprobe-patched": "Cargar el hp-wmi parcheado",
+      "modprobe-stock": "Cargar el hp-wmi de serie",
+      "initramfs": "Regenerar el initramfs",
+      "dkms-remove": "Dar de baja el módulo DKMS",
+      "remove-sources": "Borrar /usr/src/{name}-{version}",
+      "remove-hooks": "Borrar cualquier hook de actualización del kernel instalado",
+      "restore-backups": "Renombrar cada hp-wmi.ko.bak de vuelta a hp-wmi.ko, restaurando el controlador de serie",
+      "create-group": "Crear el grupo «{group}» que puede alcanzar el daemon",
+      "write-unit": "Escribir /etc/systemd/system/pyren-daemon.service",
+      "daemon-reload": "Recargar las unidades de systemd",
+      "enable": "Activar e iniciar el daemon al arrancar",
+      "disable": "Parar el daemon y quitarlo del arranque",
+      "remove-unit": "Borrar el archivo de unidad de systemd"
+    },
+    "warn": {
+      "alreadyWorks": "El control de ventiladores ya funciona en este equipo (pwm1 está presente), así que el controlador parcheado no añadiría nada.",
+      "upstream": "El kernel {kernel} ya trae control manual del ventilador de serie (desde {major}.{minor}), así que el parche probablemente sea innecesario. Solo merece la pena instalarlo si tu placa falta en las tablas del controlador de serie.",
+      "noHook": "Esta distribución no tiene ningún mecanismo de hook de kernel reconocido, así que el módulo se compilará solo para el kernel en ejecución y habrá que reinstalarlo tras una actualización del kernel.",
+      "serviceInstalled": "La unidad del servicio ya está instalada; se reemplazará.",
+      "joinGroup": "Añade a cada usuario que deba controlar este equipo al grupo «{group}»: sudo usermod -aG {group} $USER (luego cierra sesión y vuelve a entrar)."
+    },
+    "blocker": {
+      "alreadyWorking": "El control de ventiladores ya está disponible; nada que instalar.",
+      "noDriverSource": "No se encontró el código del hp-wmi parcheado. No viene incluido con pyren; apunta PYREN_DRIVER_DIR a una copia del directorio data/driver de omen-fan-control, o instálalo en /usr/share/pyren/driver.",
+      "kernelHeaders": "Las cabeceras del kernel en ejecución faltan o están incompletas, así que el módulo no se puede compilar.",
+      "buildTools": "Se necesitan un compilador de C y make para compilar el módulo."
+    },
+    "exec": {
+      "skipped": "omitido tras un fallo anterior",
+      "internalAction": "acción interna"
+    },
+    "err": {
+      "planNotRunnable": "este plan no se puede ejecutar: {reasons}"
+    }
   },
   "admin": {
     "title": "Permisos",
@@ -448,5 +688,83 @@
     "rootNo": "Corriendo sin privilegios. Las lecturas que necesitan root — la utilización de la GPU integrada — no están disponibles. Instala el servicio de arriba para arreglarlo de forma permanente.",
     "rootShadowed": "Hay un servicio con privilegios instalado y en marcha, pero la app está conectada a otro daemon sin privilegios en {path}. Para ese otro — y si la fila del grupo de arriba te pide cerrar sesión, hazlo antes, porque al socket del servicio solo se llega con el grupo.",
     "rootUnknown": "Se sabrá cuando se pueda alcanzar el daemon."
+  },
+  "overclock": {
+    "clamp": {
+      "coreOutOfRange": "el desplazamiento del núcleo de {requested} MHz está fuera de lo que anuncia el controlador ({min} a {max} MHz); se usa {used} MHz",
+      "noCoreOffset": "esta GPU no expone desplazamiento del reloj del núcleo, así que esa parte se ignoró",
+      "memOutOfRange": "el desplazamiento de memoria de {requested} MHz está fuera de lo que anuncia el controlador ({min} a {max} MHz); se usa {used} MHz",
+      "noMemOffset": "esta GPU no expone desplazamiento de memoria, así que esa parte se ignoró",
+      "lockOutOfRange": "el bloqueo de reloj {reqMin}-{reqMax} MHz está fuera de lo que admite esta GPU ({min} a {max} MHz); se usa {usedMin}-{usedMax} MHz",
+      "noClockLock": "esta GPU no puede fijar sus relojes, así que esa parte se ignoró"
+    },
+    "probe": {
+      "noGpu": "no se encontró ninguna GPU a la que preguntar",
+      "tunable": "ajustable: {names}",
+      "nothingTunable": "se encontró una GPU, y no se puede cambiar nada de ella en este equipo"
+    },
+    "gpu": {
+      "unknownDriver": "no se conoce ninguna interfaz de ajuste para el controlador {driver}",
+      "nvidia": {
+        "settable": {
+          "lock": "Los desplazamientos de reloj se pueden fijar. Los relojes se pueden fijar entre {min} y {max} MHz, lo que necesita root y se mantiene dentro de lo que la tarjeta ya admite.",
+          "ceiling": "Los desplazamientos de reloj se pueden fijar. La tarjeta indica un máximo de {mhz} MHz y no enumera los relojes que admite, así que fijarlos no se ofrece.",
+          "noLock": "Los desplazamientos de reloj se pueden fijar. Los relojes de esta tarjeta no se pueden fijar."
+        },
+        "coolbits": {
+          "lock": "Los desplazamientos de reloj son legibles pero no se pueden fijar; la pantalla X necesita Coolbits antes de que el controlador acepte uno. Los relojes se pueden fijar entre {min} y {max} MHz, lo que necesita root y se mantiene dentro de lo que la tarjeta ya admite.",
+          "ceiling": "Los desplazamientos de reloj son legibles pero no se pueden fijar; la pantalla X necesita Coolbits antes de que el controlador acepte uno. La tarjeta indica un máximo de {mhz} MHz y no enumera los relojes que admite, así que fijarlos no se ofrece.",
+          "noLock": "Los desplazamientos de reloj son legibles pero no se pueden fijar; la pantalla X necesita Coolbits antes de que el controlador acepte uno. Los relojes de esta tarjeta no se pueden fijar."
+        },
+        "readable": {
+          "lock": "Los desplazamientos de reloj son legibles. Los relojes se pueden fijar entre {min} y {max} MHz, lo que necesita root y se mantiene dentro de lo que la tarjeta ya admite.",
+          "ceiling": "Los desplazamientos de reloj son legibles. La tarjeta indica un máximo de {mhz} MHz y no enumera los relojes que admite, así que fijarlos no se ofrece.",
+          "noLock": "Los desplazamientos de reloj son legibles. Los relojes de esta tarjeta no se pueden fijar."
+        }
+      },
+      "amd": {
+        "overdriveOn": "AMD Overdrive está activado en esta tarjeta y pyren todavía no lo controla: nunca se ha probado en hardware AMD, y una escritura no probada aquí no es de las que fallan con un mensaje de error",
+        "overdriveOff": "esta tarjeta expone pp_od_clk_voltage sin una tabla OD_SCLK, así que Overdrive está desactivado (amdgpu.ppfeaturemask lo activa)",
+        "noInterface": "no hay pp_od_clk_voltage en esta tarjeta, así que el kernel no ofrece ninguna interfaz de Overdrive"
+      },
+      "intel": {
+        "ceiling": "Los gráficos Intel exponen un techo de frecuencia ({mhz} MHz aquí), no un desplazamiento: no se puede subir por encima de lo que el chip ya ejecuta, así que no hay nada que hacer overclock en esta tarjeta",
+        "ceilingUnknown": "Los gráficos Intel exponen un techo de frecuencia, no un desplazamiento, y este kernel no publica ningún máximo para él"
+      }
+    },
+    "nvidia": {
+      "notInstalled": "{tool} no está instalado",
+      "unreadable": "no se pudo leer {what}: {detail}",
+      "smiNeedsRoot": "nvidia-smi rechazó la operación: {message}",
+      "smiRefused": "nvidia-smi rechazó la operación: {message}",
+      "noSocket": "nvidia-settings no tiene ninguna pantalla X con la que hablar: no hay socket en {path}",
+      "refused": "nvidia-settings no tiene ninguna pantalla X con la que hablar: el servidor X en {display} rechazó este proceso. Admite al usuario que es su dueño, y un daemon que corre como root no es ese usuario, así que o bien ese usuario nos deja entrar desde dentro de su sesión (xhost +si:localuser:root), o PYREN_X_DISPLAY y PYREN_XAUTHORITY nos apuntan a una pantalla que podamos abrir. Puede que no haya ningún archivo de cookie al que apuntar: el Xwayland de un compositor Wayland suele arrancarse sin uno",
+      "noSession": "nvidia-settings no tiene ninguna pantalla X con la que hablar: no se pudo abrir {display} ({whose}). No había ninguna sesión de escritorio en marcha cuando se preguntó — un daemon arrancado al encender mira antes de que nadie haya iniciado sesión — así que vuelve a preguntar con overclock.probe ahora que hay una",
+      "noDisplayHint": {
+        "withCookie": "nvidia-settings no tiene ninguna pantalla X con la que hablar: no se pudo abrir {display} ({whose}) con {path}. Un daemon que corre como root no está en la sesión de nadie; apúntalo a una con PYREN_X_DISPLAY y PYREN_XAUTHORITY, o fija los desplazamientos desde un proceso que ya esté dentro de esa sesión",
+        "noCookie": "nvidia-settings no tiene ninguna pantalla X con la que hablar: no se pudo abrir {display} ({whose}) sin ningún archivo de cookie con el que autenticarse. Un daemon que corre como root no está en la sesión de nadie; apúntalo a una con PYREN_X_DISPLAY y PYREN_XAUTHORITY, o fija los desplazamientos desde un proceso que ya esté dentro de esa sesión"
+      },
+      "coolbits": "{message} - esto es lo que dice una pantalla X sin Coolbits, y root no lo cambia: la pantalla necesita Option \"Coolbits\" \"28\" en su configuración de X, y una sesión sin pantalla X propia no tiene ninguna que configurar"
+    },
+    "note": {
+      "unconfirmedAtStart": "el último overclock nunca se confirmó, así que este arranque empieza en los valores de fábrica y no se restauró nada",
+      "kept": "se mantuvo el cambio en {gpu}",
+      "backToStock": "de vuelta a los relojes con los que salió de fábrica",
+      "nothingToUndo": "nada que deshacer: este daemon no ha movido estos relojes",
+      "revertedUnconfirmed": "el cambio en {gpu} no se confirmó, así que se deshizo",
+      "revertedUndone": "el cambio en {gpu} se deshizo"
+    },
+    "err": {
+      "perGpu": "{id}: {error}",
+      "couldNotUndo": "no se pudo deshacer el overclock: {error}",
+      "context": "{context}: {detail}",
+      "notConsented": "no se ha dado el consentimiento para el overclocking en este equipo; llama a overclock.setConsent con el texto de overclock.getState primero",
+      "pending": "el último cambio en {gpu} todavía está esperando a confirmarse o deshacerse",
+      "nothingToTune": "no hay nada que ajustar aquí: {detail}",
+      "nothingPending": "no hay nada esperando a confirmarse",
+      "gpuGone": "{gpu} ya no está",
+      "verifyCore": "el controlador indica un desplazamiento del núcleo de {got} MHz tras haber pedido {asked} MHz",
+      "verifyMem": "el controlador indica un desplazamiento de memoria de {got} MHz tras haber pedido {asked} MHz"
+    }
   }
 }

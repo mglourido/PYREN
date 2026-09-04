@@ -57,6 +57,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+use pyren_core::{msg, Msg};
+
 use crate::plan::{ClockLock, Range};
 
 /// `nvidia-settings` attribute for the core-clock offset, applied to every
@@ -81,16 +83,38 @@ pub enum NvidiaError {
     /// `nvidia-settings` speaks to an X server, and a daemon started by
     /// systemd is not in anybody's session. Its own kind because the fix is
     /// neither "install something" nor "become root" - running as root is
-    /// in fact how a daemon *gets* into this state.
-    #[error("nvidia-settings has no X display to talk to: {0}")]
-    NoDisplay(String),
-    /// The tool ran and the driver said no. The message is the driver's.
+    /// in fact how a daemon *gets* into this state. The message is a full
+    /// translatable hint built by [`Nvidia::refused_hint`] / [`display_hint`].
     #[error("{0}")]
-    Refused(String),
+    NoDisplay(Msg),
+    /// The tool ran and the driver said no. The message is the driver's,
+    /// sometimes with a translatable explanation appended by [`explain`].
     #[error("{0}")]
-    NeedsRoot(String),
+    Refused(Msg),
+    #[error("{0}")]
+    NeedsRoot(Msg),
     #[error("could not read {what}: {detail}")]
     Unreadable { what: &'static str, detail: String },
+}
+
+impl NvidiaError {
+    /// The sentence a client should show, translatable where the meaning is
+    /// ours rather than the driver's or the kernel's.
+    pub fn to_msg(&self) -> Msg {
+        match self {
+            Self::NotInstalled(tool) => msg!(
+                "overclock.nvidia.notInstalled",
+                { "tool" => *tool },
+                "{tool} is not installed"
+            ),
+            Self::NoDisplay(m) | Self::Refused(m) | Self::NeedsRoot(m) => m.clone(),
+            Self::Unreadable { what, detail } => msg!(
+                "overclock.nvidia.unreadable",
+                { "what" => *what, "detail" => detail.clone() },
+                "could not read {what}: {detail}"
+            ),
+        }
+    }
 }
 
 /// One card as `nvidia-smi` lists it.
@@ -176,9 +200,17 @@ impl Nvidia {
         // nvidia-smi says "Insufficient Permissions" for the one failure a
         // UI should offer to fix rather than report as a dead end.
         if message.to_lowercase().contains("permission") {
-            return Err(NvidiaError::NeedsRoot(format!("nvidia-smi refused: {message}")));
+            return Err(NvidiaError::NeedsRoot(msg!(
+                "overclock.nvidia.smiNeedsRoot",
+                { "message" => message },
+                "nvidia-smi refused: {message}"
+            )));
         }
-        Err(NvidiaError::Refused(format!("nvidia-smi refused: {message}")))
+        Err(NvidiaError::Refused(msg!(
+            "overclock.nvidia.smiRefused",
+            { "message" => message },
+            "nvidia-smi refused: {message}"
+        )))
     }
 
     // --- nvidia-settings: the offsets -----------------------------------
@@ -223,7 +255,11 @@ impl Nvidia {
             return Err(NvidiaError::NotInstalled("nvidia-settings"));
         }
         let display = self.display.as_ref().ok_or_else(|| {
-            NvidiaError::NoDisplay(format!("no socket in {X11_SOCKETS}"))
+            NvidiaError::NoDisplay(msg!(
+                "overclock.nvidia.noSocket",
+                { "path" => X11_SOCKETS },
+                "nvidia-settings has no X display to talk to: no socket in {path}"
+            ))
         })?;
         let mut command = Command::new("nvidia-settings");
         command.env("DISPLAY", &display.name);
@@ -279,48 +315,68 @@ impl Nvidia {
     /// falls back to admitting the uid that owns it. `PYREN_XAUTHORITY`
     /// cannot help with a cookie that does not exist; one line typed inside
     /// the session can.
-    fn refused_hint(&self) -> String {
+    fn refused_hint(&self) -> Msg {
         let display = self.display.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "?".into());
-        format!(
-            "the X server at {display} refused this process. It admits the user that owns it, \
-             and a daemon running as root is not that user - so either that user lets us in \
-             from inside their session (xhost +si:localuser:root), or PYREN_X_DISPLAY and \
-             PYREN_XAUTHORITY point us at a display we may open. There may be no cookie file \
-             to point at: a Wayland compositor's Xwayland is often started without one"
+        msg!(
+            "overclock.nvidia.refused",
+            { "display" => display },
+            "nvidia-settings has no X display to talk to: the X server at {display} refused \
+             this process. It admits the user that owns it, and a daemon running as root is \
+             not that user - so either that user lets us in from inside their session \
+             (xhost +si:localuser:root), or PYREN_X_DISPLAY and PYREN_XAUTHORITY point us at \
+             a display we may open. There may be no cookie file to point at: a Wayland \
+             compositor's Xwayland is often started without one"
         )
     }
 
     /// Which display was tried, whose it is, and what to do about it. The
     /// case where nvidia-settings found nothing it could open at all, as
     /// opposed to [`Self::refused_hint`], where it found one that said no.
-    fn display_hint(&self) -> String {
+    fn display_hint(&self) -> Msg {
         let Some(display) = &self.display else {
-            return format!("no socket in {X11_SOCKETS}");
+            return msg!(
+                "overclock.nvidia.noSocket",
+                { "path" => X11_SOCKETS },
+                "nvidia-settings has no X display to talk to: no socket in {path}"
+            );
         };
         // The case that looks permanent and is not: a daemon started by
         // systemd probes at boot, when the only X server on the machine is
         // the display manager's and nobody has logged in yet. Saying so is
         // the difference between "this machine cannot" and "ask again".
         if display.owner_uid == 0 {
-            return format!(
-                "could not open {} ({}). No desktop session was running when this was asked - \
-                 a daemon started at boot looks before anybody has logged in - so ask again \
-                 with overclock.probe now that one is up",
-                display.name,
-                whose(display.owner_uid),
+            return msg!(
+                "overclock.nvidia.noSession",
+                { "display" => display.name.clone(), "whose" => whose(display.owner_uid) },
+                "nvidia-settings has no X display to talk to: could not open {display} \
+                 ({whose}). No desktop session was running when this was asked - a daemon \
+                 started at boot looks before anybody has logged in - so ask again with \
+                 overclock.probe now that one is up"
             );
         }
-        let cookie = match &display.xauthority {
-            Some(path) => format!("with {}", path.display()),
-            None => "with no cookie file to authenticate with".to_string(),
-        };
-        format!(
-            "could not open {} ({}) {cookie}. A daemon running as root is not in anybody's \
-             session; point it at one with PYREN_X_DISPLAY and PYREN_XAUTHORITY, or set the \
-             offsets from a process that is already inside that session",
-            display.name,
-            whose(display.owner_uid),
-        )
+        match &display.xauthority {
+            Some(path) => msg!(
+                "overclock.nvidia.noDisplayHint.withCookie",
+                {
+                    "display" => display.name.clone(),
+                    "whose" => whose(display.owner_uid),
+                    "path" => path.display().to_string(),
+                },
+                "nvidia-settings has no X display to talk to: could not open {display} \
+                 ({whose}) with {path}. A daemon running as root is not in anybody's \
+                 session; point it at one with PYREN_X_DISPLAY and PYREN_XAUTHORITY, or set \
+                 the offsets from a process that is already inside that session"
+            ),
+            None => msg!(
+                "overclock.nvidia.noDisplayHint.noCookie",
+                { "display" => display.name.clone(), "whose" => whose(display.owner_uid) },
+                "nvidia-settings has no X display to talk to: could not open {display} \
+                 ({whose}) with no cookie file to authenticate with. A daemon running as \
+                 root is not in anybody's session; point it at one with PYREN_X_DISPLAY and \
+                 PYREN_XAUTHORITY, or set the offsets from a process that is already inside \
+                 that session"
+            ),
+        }
     }
 
     fn read_attribute(
@@ -431,11 +487,14 @@ fn parse_range(line: &str) -> Option<Range> {
 /// privilege problem and is not one: running as root does not fix it. It is
 /// what an X screen with no `Coolbits` says, and sending somebody to `sudo`
 /// over it costs them an afternoon.
-fn explain(message: String) -> String {
+fn explain(message: String) -> Msg {
     if !message.to_lowercase().contains("permission") {
-        return message;
+        // The driver's own words, which are not ours to translate.
+        return Msg::literal(message);
     }
-    format!(
+    msg!(
+        "overclock.nvidia.coolbits",
+        { "message" => message },
         "{message} - this is what an X screen with no Coolbits says, and root does not \
          change it: the screen needs Option \"Coolbits\" \"28\" in its X configuration, \
          and a session with no X screen of its own has none to configure"
@@ -683,7 +742,7 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
         let explained = explain(first_error(REFUSED).unwrap());
         assert!(explained.contains("Coolbits"));
         assert!(explained.contains("root does not"));
-        assert_eq!(explain("no such attribute".to_string()), "no such attribute");
+        assert_eq!(explain("no such attribute".to_string()).text, "no such attribute");
     }
 
     fn nvidia_with(display: Option<XDisplay>) -> Nvidia {

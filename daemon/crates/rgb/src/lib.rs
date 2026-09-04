@@ -38,7 +38,7 @@
 use std::sync::{Arc, Mutex};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{Module, ModuleError, ModuleResult};
+use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -78,7 +78,7 @@ struct State {
     /// something is written, so `getStatus` never claims a colour the
     /// firmware chose as one we set.
     owned: bool,
-    last_error: Option<String>,
+    last_error: Option<Msg>,
     last_save_error: Option<String>,
 }
 
@@ -146,7 +146,7 @@ impl RgbModule {
             drop(state);
             if let Err(e) = lightbar::set_colors(&zones, brightness) {
                 eprintln!("pyren-daemon: could not restore the lightbar: {e}");
-                lock(&module.state).last_error = Some(e.to_string());
+                lock(&module.state).last_error = Some(e.to_msg());
             }
         }
 
@@ -193,8 +193,7 @@ impl RgbModule {
                 persist(&self.store, &mut state);
             }
             Err(e) => {
-                let message = e.to_string();
-                lock(&self.state).last_error = Some(message);
+                lock(&self.state).last_error = Some(e.to_msg());
                 return Err(lightbar_error(e));
             }
         }
@@ -243,18 +242,25 @@ impl Module for RgbModule {
 
             "setZones" => {
                 let zones = params.get("zones").cloned().ok_or_else(|| {
-                    ModuleError::InvalidParams(
-                        "params.zones is required: four colours, '#rrggbb' or [r, g, b]".into(),
+                    ModuleError::localised(
+                        ErrorKind::InvalidParams,
+                        msg!(
+                            "rgb.err.zonesRequired",
+                            "params.zones is required: four colours, '#rrggbb' or [r, g, b]"
+                        ),
                     )
                 })?;
                 let zones: Vec<Rgb> = serde_json::from_value(zones)
                     .map_err(|e| ModuleError::InvalidParams(format!("invalid zones: {e}")))?;
                 if zones.is_empty() || zones.len() > lightbar::ZONES {
-                    return Err(ModuleError::InvalidParams(format!(
-                        "params.zones takes 1 to {} colours, not {}",
-                        lightbar::ZONES,
-                        zones.len()
-                    )));
+                    return Err(ModuleError::localised(
+                        ErrorKind::InvalidParams,
+                        msg!(
+                            "rgb.err.zonesCount",
+                            { "max" => lightbar::ZONES, "got" => zones.len() },
+                            "params.zones takes 1 to {max} colours, not {got}"
+                        ),
+                    ));
                 }
                 let brightness = self.brightness_from(&params);
                 // Short is padded here rather than in the payload builder,
@@ -266,8 +272,12 @@ impl Module for RgbModule {
 
             "setStatic" => {
                 let color = params.get("color").cloned().ok_or_else(|| {
-                    ModuleError::InvalidParams(
-                        "params.color is required: '#rrggbb' or [r, g, b]".into(),
+                    ModuleError::localised(
+                        ErrorKind::InvalidParams,
+                        msg!(
+                            "rgb.err.colorRequired",
+                            "params.color is required: '#rrggbb' or [r, g, b]"
+                        ),
                     )
                 })?;
                 let color: Rgb = serde_json::from_value(color)
@@ -305,18 +315,16 @@ impl Module for RgbModule {
 /// plain failure whose message names the package.
 fn lightbar_error(e: lightbar::LightbarError) -> ModuleError {
     use pyren_core::acpi::AcpiError;
-    let message = e.to_string();
-    match e {
-        lightbar::LightbarError::Acpi(AcpiError::NotLoaded) => ModuleError::Failed(message),
-        lightbar::LightbarError::Acpi(AcpiError::PermissionDenied) => {
-            ModuleError::PermissionDenied(message)
-        }
-        lightbar::LightbarError::Acpi(AcpiError::Io(_)) => ModuleError::Io(message),
+    let kind = match e {
+        lightbar::LightbarError::Acpi(AcpiError::NotLoaded) => ErrorKind::Failed,
+        lightbar::LightbarError::Acpi(AcpiError::PermissionDenied) => ErrorKind::PermissionDenied,
+        lightbar::LightbarError::Acpi(AcpiError::Io(_)) => ErrorKind::Io,
         // The call worked and the firmware said no. That is the machine
         // saying it has no light strip, which no privilege changes.
-        lightbar::LightbarError::Refused(_) => ModuleError::NotCapable(message),
-        lightbar::LightbarError::Unreadable(_) => ModuleError::Failed(message),
-    }
+        lightbar::LightbarError::Refused(_) => ErrorKind::NotCapable,
+        lightbar::LightbarError::Unreadable(_) => ErrorKind::Failed,
+    };
+    ModuleError::localised(kind, e.to_msg())
 }
 
 fn persist(store: &ConfigStore, state: &mut State) {

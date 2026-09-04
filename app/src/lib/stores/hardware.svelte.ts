@@ -11,6 +11,7 @@
 
 import {
   daemon,
+  errorText,
   onDaemonEvent,
   type ApplyReport,
   type AutoConfig,
@@ -18,6 +19,7 @@ import {
   type PowerConfigReply,
   type PowerState,
 } from "$lib/api/daemon";
+import { tm } from "$lib/i18n/index.svelte";
 import { DiskBacked } from "./persistence";
 
 /** Coalesces a slider drag or a dragged curve point into one daemon call. */
@@ -117,6 +119,13 @@ class HardwareStore {
   lastApply = $state<ApplyReport | null>(null);
   /** Live power state from the daemon; null while it is unreachable. */
   power = $state<PowerState | null>(null);
+  /**
+   * `Date.now()` at the last successful power-state read. The daemon's
+   * `autoOverrideSecondsLeft` is a snapshot, not a ticking value - the UI
+   * ages it against this so the countdown counts down instead of sitting
+   * frozen at ~599 until the next mode change re-reads it.
+   */
+  powerReadAt = $state(0);
   /** Live fan state from the daemon; null while it is unreachable. */
   fan = $state<FanStatus | null>(null);
 
@@ -153,6 +162,7 @@ class HardwareStore {
     try {
       const power = await daemon.powerState();
       this.power = power;
+      this.powerReadAt = Date.now();
       this.state = {
         ...this.state,
         powerMode: power.mode,
@@ -201,7 +211,7 @@ class HardwareStore {
       // pick up the override countdown it now reports.
       void this.syncFromDaemon();
     } catch (e) {
-      this.lastError = String(e);
+      this.lastError = errorText(e);
       this.lastApply = null;
     }
   }
@@ -235,7 +245,7 @@ class HardwareStore {
       });
       this.applyConfigReply(reply);
     } catch (e) {
-      this.lastError = String(e);
+      this.lastError = errorText(e);
     }
   }
 
@@ -244,7 +254,7 @@ class HardwareStore {
     try {
       this.applyConfigReply(await daemon.setRestoreOnStart(enabled));
     } catch (e) {
-      this.lastError = String(e);
+      this.lastError = errorText(e);
     }
   }
 
@@ -300,7 +310,7 @@ class HardwareStore {
       this.power = await daemon.setApplyToOsProfile(enabled);
       this.lastError = null;
     } catch (e) {
-      this.lastError = String(e);
+      this.lastError = errorText(e);
     }
   }
 
@@ -320,7 +330,7 @@ class HardwareStore {
           this.power = await daemon.setPowerTuning(tuning);
           this.lastError = null;
         } catch (e) {
-          this.lastError = String(e);
+          this.lastError = errorText(e);
         }
       })();
     }, FAN_PUSH_DEBOUNCE_MS);
@@ -352,9 +362,9 @@ class HardwareStore {
       // machine that cannot do manual says so here rather than leaving the
       // UI showing a mode nothing is honouring.
       this.state = { ...this.state, fanMode: this.fan.mode };
-      this.lastError = this.fan.error ?? null;
+      this.lastError = this.fan.error ? tm(this.fan.error) : null;
     } catch (e) {
-      this.lastError = String(e);
+      this.lastError = errorText(e);
     }
   }
 

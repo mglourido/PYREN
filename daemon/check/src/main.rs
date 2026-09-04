@@ -126,11 +126,11 @@ fn print_report(
         print_check(check);
     }
     println!("  {} passed, {} failed", diagnosis.passed(), diagnosis.failed());
-    for line in wrap(&diagnosis.summary, 72) {
+    for line in wrap(&diagnosis.summary.text, 72) {
         println!("  {line}");
     }
     if let Some(notice) = &diagnosis.driver_notice {
-        for line in wrap(notice, 72) {
+        for line in wrap(&notice.text, 72) {
             println!("  ! {line}");
         }
     }
@@ -141,7 +141,7 @@ fn print_report(
     // The one line this whole tool exists to print, so it goes last and
     // says what it is rather than being another summary among four.
     println!("\ncompatibility");
-    for line in wrap(&identity.reason, 72) {
+    for line in wrap(&identity.reason.text, 72) {
         println!("  {line}");
     }
 
@@ -161,9 +161,9 @@ fn print_section(title: &str, section: &compat::Section) {
 }
 
 fn print_check(check: &Check) {
-    println!("  {}  {:<28} {}", marker(check.status), check.title, check.detail);
+    println!("  {}  {:<28} {}", marker(check.status), check.title.text, check.detail.text);
     if let Some(remedy) = &check.remedy {
-        for line in wrap(remedy, 68) {
+        for line in wrap(&remedy.text, 68) {
             println!("        {line}");
         }
     }

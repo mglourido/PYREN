@@ -55,7 +55,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{Module, ModuleError, ModuleResult};
+use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -155,11 +155,11 @@ struct State {
     /// confirm it. Nothing is restored on such a boot, and the state says
     /// so rather than silently doing less than `restoreOnStart` promised.
     unconfirmed_at_start: bool,
-    last_error: Option<String>,
+    last_error: Option<Msg>,
     /// The last thing that happened by itself, in words: a revert that
     /// nobody asked for is the one event a user has to be able to see an
     /// explanation of after the fact.
-    last_note: Option<String>,
+    last_note: Option<Msg>,
     last_save_error: Option<String>,
 }
 
@@ -222,9 +222,11 @@ impl OverclockModule {
                 unconfirmed_at_start,
                 last_error: None,
                 last_note: unconfirmed_at_start.then(|| {
-                    "the last overclock was never confirmed, so this boot starts at stock \
-                     and nothing was restored"
-                        .to_string()
+                    msg!(
+                        "overclock.note.unconfirmedAtStart",
+                        "the last overclock was never confirmed, so this boot starts at \
+                         stock and nothing was restored"
+                    )
                 }),
                 last_save_error: None,
             })),
@@ -280,7 +282,7 @@ impl OverclockModule {
                 }
                 Err(e) => {
                     eprintln!("pyren-daemon: could not restore the overclock on {id}: {e}");
-                    lock(&self.state).last_error = Some(e.to_string());
+                    lock(&self.state).last_error = Some(e.as_msg());
                 }
             }
         }
@@ -309,7 +311,7 @@ impl OverclockModule {
             let Some(pending) = due else { continue };
 
             let gpu = pending.gpu.clone();
-            match revert(&state, &probe, &store, pending, "was not confirmed") {
+            match revert(&state, &probe, &store, pending, RevertReason::NotConfirmed) {
                 Ok(()) => eprintln!("pyren-daemon: overclock on {gpu} was never confirmed; reverted"),
                 // The one failure with nothing left to try. Say it loudly:
                 // the card is running something nobody confirmed and this
@@ -416,22 +418,29 @@ impl OverclockModule {
         {
             let state = lock(&self.state);
             if !state.config.consent.is_some_and(|c| c.current()) {
-                return Err(ModuleError::InvalidParams(
-                    "overclocking has not been consented to on this machine; \
-                     call overclock.setConsent with the text from overclock.getState first"
-                        .into(),
+                return Err(ModuleError::localised(
+                    ErrorKind::InvalidParams,
+                    msg!(
+                        "overclock.err.notConsented",
+                        "overclocking has not been consented to on this machine; call \
+                         overclock.setConsent with the text from overclock.getState first"
+                    ),
                 ));
             }
             if let Some(pending) = &state.pending {
-                return Err(ModuleError::Busy(format!(
-                    "the last change to {} is still waiting to be confirmed or undone",
-                    pending.gpu
-                )));
+                return Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!(
+                        "overclock.err.pending",
+                        { "gpu" => pending.gpu.clone() },
+                        "the last change to {gpu} is still waiting to be confirmed or undone"
+                    ),
+                ));
             }
         }
 
         if !gpu.drivable() {
-            return Err(ModuleError::NotCapable(gpu.detail.clone()));
+            return Err(ModuleError::localised(ErrorKind::NotCapable, gpu.detail.clone()));
         }
 
         let from = self.current(&gpu.id);
@@ -443,7 +452,7 @@ impl OverclockModule {
         // nothing.
         if clamped.target == from {
             let mut state = lock(&self.state);
-            state.last_note = (!clamped.notes.is_empty()).then(|| clamped.notes.join("; "));
+            state.last_note = Msg::join(clamped.notes.clone(), "; ");
             drop(state);
             return Ok(self.status());
         }
@@ -453,7 +462,7 @@ impl OverclockModule {
                 let mut state = lock(&self.state);
                 state.applied.insert(gpu.id.clone(), clamped.target);
                 state.last_error = None;
-                state.last_note = (!clamped.notes.is_empty()).then(|| clamped.notes.join("; "));
+                state.last_note = Msg::join(clamped.notes.clone(), "; ");
                 // Stock needs no confirming: it is where a revert would put
                 // the card anyway.
                 if clamped.target.is_stock() {
@@ -477,7 +486,7 @@ impl OverclockModule {
                 // leaves the card where it was rather than at whichever
                 // step stopped answering.
                 let mut state = lock(&self.state);
-                state.last_error = Some(e.to_string());
+                state.last_error = Some(e.as_msg());
                 drop(state);
                 Err(e)
             }
@@ -487,14 +496,19 @@ impl OverclockModule {
     fn confirm(&self) -> ModuleResult {
         let mut state = lock(&self.state);
         let Some(pending) = state.pending.take() else {
-            return Err(ModuleError::InvalidParams(
-                "there is nothing waiting to be confirmed".into(),
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!("overclock.err.nothingPending", "there is nothing waiting to be confirmed"),
             ));
         };
         let applied = state.applied.get(&pending.gpu).copied().unwrap_or_default();
         state.config.targets.insert(pending.gpu.clone(), applied);
         state.config.armed_gpu = None;
-        state.last_note = Some(format!("kept the change to {}", pending.gpu));
+        state.last_note = Some(msg!(
+            "overclock.note.kept",
+            { "gpu" => pending.gpu.clone() },
+            "kept the change to {gpu}"
+        ));
         persist(&self.store, &mut state);
         drop(state);
         Ok(self.status())
@@ -508,11 +522,12 @@ impl OverclockModule {
     fn cancel(&self) -> ModuleResult {
         let pending = lock(&self.state).pending.clone();
         let Some(pending) = pending else {
-            return Err(ModuleError::InvalidParams(
-                "there is nothing waiting to be confirmed".into(),
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!("overclock.err.nothingPending", "there is nothing waiting to be confirmed"),
             ));
         };
-        revert(&self.state, &self.probe, &self.store, pending, "was undone")?;
+        revert(&self.state, &self.probe, &self.store, pending, RevertReason::Undone)?;
         Ok(self.status())
     }
 
@@ -562,10 +577,18 @@ impl OverclockModule {
         }
 
         if !failures.is_empty() {
-            let detail: Vec<String> =
-                failures.iter().map(|(id, e)| format!("{id}: {e}")).collect();
+            let notes: Vec<Msg> = failures
+                .iter()
+                .map(|(id, e)| {
+                    msg!(
+                        "overclock.err.perGpu",
+                        { "id" => id.clone(), "error" => e.to_string() },
+                        "{id}: {error}"
+                    )
+                })
+                .collect();
             let mut state = lock(&self.state);
-            state.last_error = Some(detail.join("; "));
+            state.last_error = Msg::join(notes, "; ");
             drop(state);
             let (_, first) = failures.remove(0);
             return Err(keep_kind(first, "could not go back to stock"));
@@ -574,9 +597,15 @@ impl OverclockModule {
         let mut state = lock(&self.state);
         state.last_error = None;
         state.last_note = Some(if written > 0 {
-            "back to the clocks the firmware shipped".to_string()
+            msg!(
+                "overclock.note.backToStock",
+                "back to the clocks the firmware shipped"
+            )
         } else {
-            "nothing to undo: this daemon has not moved these clocks".to_string()
+            msg!(
+                "overclock.note.nothingToUndo",
+                "nothing to undo: this daemon has not moved these clocks"
+            )
         });
         drop(state);
         Ok(self.status())
@@ -616,7 +645,14 @@ impl OverclockModule {
                 .cloned()
                 .ok_or_else(|| ModuleError::InvalidParams(format!("no GPU with id '{id}'"))),
             None => probe.default_gpu().cloned().ok_or_else(|| {
-                ModuleError::NotCapable(format!("nothing here can be tuned: {}", probe.detail))
+                ModuleError::localised(
+                    ErrorKind::NotCapable,
+                    msg!(
+                        "overclock.err.nothingToTune",
+                        { "detail" => probe.detail.text.clone() },
+                        "nothing here can be tuned: {detail}"
+                    ),
+                )
             }),
         }
     }
@@ -741,17 +777,46 @@ impl Module for OverclockModule {
 /// apply. Shared by the watchdog and by `overclock.cancel`, because "the
 /// timer ran out" and "the user pressed undo" must not be two code paths
 /// that can disagree about what going back means.
+/// Why a pending change is being undone - decides the note the state shows.
+#[derive(Clone, Copy)]
+enum RevertReason {
+    /// The confirm window ran out.
+    NotConfirmed,
+    /// The user pressed "undo".
+    Undone,
+}
+
+impl RevertReason {
+    fn note(self, gpu: &str) -> Msg {
+        match self {
+            Self::NotConfirmed => msg!(
+                "overclock.note.revertedUnconfirmed",
+                { "gpu" => gpu },
+                "the change to {gpu} was not confirmed, so it was undone"
+            ),
+            Self::Undone => msg!(
+                "overclock.note.revertedUndone",
+                { "gpu" => gpu },
+                "the change to {gpu} was undone"
+            ),
+        }
+    }
+}
+
 fn revert(
     state: &Arc<Mutex<State>>,
     probe: &Arc<Mutex<Probe>>,
     store: &ConfigStore,
     pending: Pending,
-    reason: &str,
+    reason: RevertReason,
 ) -> Result<(), ModuleError> {
     let gpu = lock(probe).gpu(&pending.gpu).cloned();
     let outcome = match &gpu {
         Some(gpu) => write_target(gpu, pending.revert_to),
-        None => Err(ModuleError::Failed(format!("{} is gone", pending.gpu))),
+        None => Err(ModuleError::localised(
+            ErrorKind::Failed,
+            msg!("overclock.err.gpuGone", { "gpu" => pending.gpu.clone() }, "{gpu} is gone"),
+        )),
     };
 
     let mut guard = lock(state);
@@ -760,10 +825,15 @@ fn revert(
     match &outcome {
         Ok(()) => {
             guard.applied.insert(pending.gpu.clone(), pending.revert_to);
-            guard.last_note =
-                Some(format!("the change to {} {reason}, so it was undone", pending.gpu));
+            guard.last_note = Some(reason.note(&pending.gpu));
         }
-        Err(e) => guard.last_error = Some(format!("could not undo the overclock: {e}")),
+        Err(e) => {
+            guard.last_error = Some(msg!(
+                "overclock.err.couldNotUndo",
+                { "error" => e.to_string() },
+                "could not undo the overclock: {error}"
+            ))
+        }
     }
     persist(store, &mut guard);
     outcome
@@ -778,7 +848,7 @@ fn write_target(gpu: &GpuProbe, target: Target) -> Result<(), ModuleError> {
     match gpu.vendor {
         Vendor::Nvidia => write_nvidia(gpu, target),
         // Detected and deliberately not driven; `probe` says why in words.
-        _ => Err(ModuleError::NotCapable(gpu.detail.clone())),
+        _ => Err(ModuleError::localised(ErrorKind::NotCapable, gpu.detail.clone())),
     }
 }
 
@@ -834,19 +904,27 @@ fn verify(gpu: &GpuProbe, expected: Target) -> Result<(), ModuleError> {
     if gpu.core_offset.is_some() {
         let (value, _) = nvidia.core_offset(index).map_err(nvidia_error)?;
         if value != expected.core_offset_mhz {
-            return Err(ModuleError::Failed(format!(
-                "the driver reports a core offset of {value} MHz after being asked for {} MHz",
-                expected.core_offset_mhz
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::Failed,
+                msg!(
+                    "overclock.err.verifyCore",
+                    { "got" => value, "asked" => expected.core_offset_mhz },
+                    "the driver reports a core offset of {got} MHz after being asked for {asked} MHz"
+                ),
+            ));
         }
     }
     if gpu.mem_offset.is_some() {
         let (value, _) = nvidia.mem_offset(index).map_err(nvidia_error)?;
         if value != expected.mem_offset_mhz {
-            return Err(ModuleError::Failed(format!(
-                "the driver reports a memory offset of {value} MHz after being asked for {} MHz",
-                expected.mem_offset_mhz
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::Failed,
+                msg!(
+                    "overclock.err.verifyMem",
+                    { "got" => value, "asked" => expected.mem_offset_mhz },
+                    "the driver reports a memory offset of {got} MHz after being asked for {asked} MHz"
+                ),
+            ));
         }
     }
     Ok(())
@@ -866,14 +944,13 @@ fn nvidia_index(gpu: &GpuProbe) -> Result<u32, ModuleError> {
 /// line in an X configuration file, and reporting it as `notCapable` would
 /// tell a UI to hide a page that one edit would light up.
 fn nvidia_error(e: NvidiaError) -> ModuleError {
-    let message = e.to_string();
-    match e {
-        NvidiaError::NotInstalled(_) => ModuleError::NotCapable(message),
-        NvidiaError::NoDisplay(_) => ModuleError::Failed(message),
-        NvidiaError::Refused(_) => ModuleError::Failed(message),
-        NvidiaError::NeedsRoot(_) => ModuleError::PermissionDenied(message),
-        NvidiaError::Unreadable { .. } => ModuleError::Io(message),
-    }
+    let kind = match e {
+        NvidiaError::NotInstalled(_) => ErrorKind::NotCapable,
+        NvidiaError::NoDisplay(_) | NvidiaError::Refused(_) => ErrorKind::Failed,
+        NvidiaError::NeedsRoot(_) => ErrorKind::PermissionDenied,
+        NvidiaError::Unreadable { .. } => ErrorKind::Io,
+    };
+    ModuleError::localised(kind, e.to_msg())
 }
 
 /// Names the step that failed, because "the apply failed" is useless to
@@ -907,6 +984,14 @@ fn keep_kind(e: ModuleError, context: &str) -> ModuleError {
         ModuleError::Io(m) => ModuleError::Io(format!("{context}: {m}")),
         ModuleError::Busy(m) => ModuleError::Busy(format!("{context}: {m}")),
         ModuleError::Unsupported => ModuleError::Unsupported,
+        ModuleError::Localised { kind, msg } => ModuleError::localised(
+            kind,
+            msg!(
+                "overclock.err.context",
+                { "context" => context, "detail" => msg.text },
+                "{context}: {detail}"
+            ),
+        ),
         other => ModuleError::Failed(format!("{context}: {other}")),
     }
 }
@@ -987,8 +1072,8 @@ mod tests {
         // hardware instead, which is also a refusal - what must never
         // happen is an offset being written.
         assert!(matches!(
-            error,
-            ModuleError::InvalidParams(_) | ModuleError::NotCapable(_)
+            error.kind(),
+            ErrorKind::InvalidParams | ErrorKind::NotCapable
         ));
     }
 
@@ -1014,10 +1099,10 @@ mod tests {
     #[test]
     fn confirming_nothing_is_a_refusal_rather_than_a_no_op() {
         let module = OverclockModule::with_store(store("confirm-nothing"));
-        assert!(matches!(
-            module.call("confirm", Value::Null),
-            Err(ModuleError::InvalidParams(_))
-        ));
+        assert_eq!(
+            module.call("confirm", Value::Null).unwrap_err().kind(),
+            ErrorKind::InvalidParams
+        );
     }
 
     /// Undo and confirm are the same shape: both refuse when there is
@@ -1025,10 +1110,10 @@ mod tests {
     #[test]
     fn cancelling_nothing_is_a_refusal_too() {
         let module = OverclockModule::with_store(store("cancel-nothing"));
-        assert!(matches!(
-            module.call("cancel", Value::Null),
-            Err(ModuleError::InvalidParams(_))
-        ));
+        assert_eq!(
+            module.call("cancel", Value::Null).unwrap_err().kind(),
+            ErrorKind::InvalidParams
+        );
     }
 
     #[test]
@@ -1059,7 +1144,7 @@ mod tests {
         let state = module.call("getState", Value::Null).expect("a state");
         assert_eq!(state["unconfirmedAtStart"], true);
         assert!(lock(&module.state).applied.is_empty(), "nothing may be written on such a boot");
-        assert!(state["note"].as_str().unwrap().contains("never confirmed"));
+        assert!(state["note"]["text"].as_str().unwrap().contains("never confirmed"));
     }
 
     /// ...and the armed flag must not survive that boot, or the machine

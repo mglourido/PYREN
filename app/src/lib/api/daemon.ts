@@ -12,6 +12,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { tm, type Msg } from "$lib/i18n/index.svelte";
+
+export type { Msg };
 
 /** False when the page is served by Vite in a normal browser, not Tauri. */
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -43,8 +46,9 @@ export type FanStatus = {
   interpolation: "smooth" | "discrete";
   restoreModeOnStart: boolean;
   fanMaxRpm: number | null;
-  /** Last failure from the control loop, e.g. a write that needed root. */
-  error: string | null;
+  /** Last failure from the control loop, e.g. a write that needed root.
+   *  Translatable - render with `tm()`. */
+  error: Msg | null;
   saved: boolean;
   saveError: string | null;
 };
@@ -87,7 +91,8 @@ export type SystemInfo = {
   compatibility: Compatibility;
   controls: Controls;
   supported: boolean;
-  reason: string;
+  /** Why that compatibility verdict. Translatable - render with `tm()`. */
+  reason: Msg;
   /** What the *daemon* was started with, as opposed to what the machine
    *  can do. Some readings are gated on privilege, not on hardware. */
   privileges: { root: boolean; perfEvents: boolean };
@@ -218,7 +223,8 @@ export type PowerState = {
    *  (power-profiles-daemon), or only the laptop's own firmware profile. */
   applyToOsProfile: boolean;
   autoOverrideSecondsLeft: number | null;
-  lastAutoSwitch: string | null;
+  /** Why the supervisor last moved the mode. Translatable - render with `tm()`. */
+  lastAutoSwitch: Msg | null;
   /** Where the daemon keeps this module's settings. */
   configPath: string;
   /** Set when the daemon could not write its config file. */
@@ -240,10 +246,13 @@ export type CheckStatus = "pass" | "fail" | "warn" | "skip";
 
 export type FanCheck = {
   id: string;
-  title: string;
+  /** Translatable - render with `tm()`. */
+  title: Msg;
   status: CheckStatus;
-  detail: string;
-  remedy: string | null;
+  /** Translatable - render with `tm()`. */
+  detail: Msg;
+  /** Translatable - render with `tm()`. */
+  remedy: Msg | null;
 };
 
 /** Overall conclusion of the fan-control self-test. */
@@ -251,9 +260,10 @@ export type FanVerdict = "fullControl" | "monitoringOnly" | "unsupported";
 
 export type FanDiagnosis = {
   verdict: FanVerdict;
-  summary: string;
-  /** Set when a driver that might help exists but isn't in use. */
-  driverNotice: string | null;
+  /** Translatable - render with `tm()`. */
+  summary: Msg;
+  /** Set when a driver that might help exists but isn't in use. Translatable. */
+  driverNotice: Msg | null;
   checks: FanCheck[];
   wroteToHardware: boolean;
 };
@@ -299,8 +309,9 @@ export type OcGpu = {
   /** Whether the offsets can be *set*, which reading them does not answer.
    *  `null` until a probe with `allowWrites` has asked. */
   offsetsWritable: boolean | null;
-  /** What can be done to this card, or why nothing can, in a sentence. */
-  detail: string;
+  /** What can be done to this card, or why nothing can, in a sentence.
+   *  Translatable - render with `tm()`. */
+  detail: Msg;
   /** What a human confirmed, as opposed to what is on the card this second. */
   confirmed: OcTarget;
   applied: OcTarget | null;
@@ -308,7 +319,8 @@ export type OcGpu = {
 
 export type OverclockState = {
   supported: boolean;
-  detail: string;
+  /** Translatable - render with `tm()`. */
+  detail: Msg;
   gpus: OcGpu[];
   defaultGpu: string | null;
   /** The warning, in the daemon's words. Shown as it arrives: the app does
@@ -323,8 +335,10 @@ export type OverclockState = {
   restoredOnStart: boolean;
   /** The last change was never confirmed, so this boot restored nothing. */
   unconfirmedAtStart: boolean;
-  note: string | null;
-  error: string | null;
+  /** Translatable - render with `tm()`. */
+  note: Msg | null;
+  /** Translatable - render with `tm()`. */
+  error: Msg | null;
   configPath: string;
   saved: boolean;
   saveError: string | null;
@@ -395,19 +409,22 @@ export type InstallerInspection = {
 /** An empty `command` is a step the daemon carries out itself. */
 export type InstallStep = {
   id: string;
-  description: string;
+  /** Translatable - render with `tm()`. */
+  description: Msg;
   command: string[];
   optional: boolean;
 };
 
-export type InstallBlocker = { id: string; message: string; fix: string | null };
+/** `message` is translatable (`tm()`); `fix` is a shell command, verbatim. */
+export type InstallBlocker = { id: string; message: Msg; fix: string | null };
 
 export type InstallPlan = {
   action: InstallerAction;
   strategy: InstallStrategy | null;
   steps: InstallStep[];
   blockers: InstallBlocker[];
-  warnings: string[];
+  /** Translatable - render each with `tm()`. */
+  warnings: Msg[];
   needsRoot: boolean;
 };
 
@@ -415,9 +432,11 @@ export type StepStatus = "ok" | "warned" | "failed" | "skipped" | "planned";
 
 export type StepResult = {
   id: string;
-  description: string;
+  /** Translatable - render with `tm()`. */
+  description: Msg;
   status: StepStatus;
-  detail: string;
+  /** Planned/skipped: translatable. Real run: command output, verbatim. */
+  detail: Msg;
 };
 
 export type ExecutionReport = {
@@ -455,6 +474,66 @@ export type InstallerRequest = {
 export type ApplyResult = { plan: InstallPlan; report: ExecutionReport };
 
 export class DaemonUnavailable extends Error {}
+
+/**
+ * A refusal the daemon sent back: `{ kind, message }`, and - when the
+ * sentence is in the translation catalog - `key` / `params` so the UI can
+ * show it in the user's language. `.message` is always the English text.
+ * Use `errorText()` to render one (translated where possible).
+ */
+export class DaemonRefusal extends Error {
+  kind?: string;
+  key?: string;
+  params?: Record<string, string | number | unknown>;
+  constructor(fields: {
+    message: string;
+    kind?: string;
+    key?: string;
+    params?: Record<string, string | number | unknown>;
+  }) {
+    super(fields.message);
+    this.name = "DaemonRefusal";
+    this.kind = fields.kind;
+    this.key = fields.key;
+    this.params = fields.params;
+  }
+}
+
+/**
+ * Text for a caught error, in the user's language where the daemon gave us
+ * a catalog key. Anything that is not a `DaemonRefusal` (a transport
+ * failure, a thrown string) falls back to its own string form.
+ */
+export function errorText(e: unknown): string {
+  if (e instanceof DaemonRefusal && e.key) {
+    return tm({ key: e.key, params: e.params, text: e.message });
+  }
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
+
+/**
+ * The Tauri bridge forwards a keyed refusal as a JSON string (see
+ * `daemon_error` in `src-tauri`). Parse it back, or `null` if this is just
+ * a plain message.
+ */
+function parseRefusal(raw: string): DaemonRefusal | null {
+  if (!raw.startsWith("{")) return null;
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    if (o && typeof o === "object" && typeof o.message === "string" && typeof o.key === "string") {
+      return new DaemonRefusal({
+        message: o.message,
+        kind: typeof o.kind === "string" ? o.kind : undefined,
+        key: o.key,
+        params: (o.params as Record<string, unknown>) ?? undefined,
+      });
+    }
+  } catch {
+    /* not JSON - a plain message that happened to start with "{" */
+  }
+  return null;
+}
 
 /**
  * One thing that happened to the daemon, forwarded by the Tauri shell.
@@ -577,17 +656,29 @@ async function callViaDevBridge<T>(
   }
 
   // Two shapes arrive here. The daemon's own refusals are
-  // `{ kind, message }` - see `docs/01-ipc-protocol.md` - while the bridge
-  // reports its own failures (no daemon, timeout) as a plain string.
+  // `{ kind, message, key?, params? }` - see `docs/01-ipc-protocol.md` -
+  // while the bridge reports its own failures (no daemon, timeout) as a
+  // plain string.
   const reply = (await response.json().catch(() => null)) as
-    | { result?: T; error?: string | { kind?: string; message?: string } }
+    | {
+        result?: T;
+        error?:
+          | string
+          | { kind?: string; message?: string; key?: string; params?: Record<string, unknown> };
+      }
     | null;
   if (!reply) throw new DaemonUnavailable("malformed reply from the dev bridge");
   if (reply.error !== undefined && reply.error !== null) {
-    const message =
-      typeof reply.error === "string"
-        ? reply.error
-        : (reply.error.message ?? "the daemon refused without saying why");
+    if (typeof reply.error === "string") throw new DaemonUnavailable(reply.error);
+    const message = reply.error.message ?? "the daemon refused without saying why";
+    if (reply.error.key) {
+      throw new DaemonRefusal({
+        message,
+        kind: reply.error.kind,
+        key: reply.error.key,
+        params: reply.error.params,
+      });
+    }
     throw new DaemonUnavailable(message);
   }
   return reply.result as T;
@@ -621,8 +712,9 @@ export type HotkeyStatus = {
   enabled: boolean;
   /** Whether the daemon can hear a key at all. False when it is not root. */
   watching: boolean;
-  /** One sentence saying why nothing happens, when nothing does. */
-  detail: string;
+  /** One sentence saying why nothing happens, when nothing does.
+   *  Translatable - render with `tm()`. */
+  detail: Msg;
   devices: string[];
   triggers: HotkeyTrigger[];
   /** The shortcut written the way a person would: `Ctrl+Alt+P`. Null when
@@ -657,7 +749,10 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   try {
     return await invoke<T>(command, args);
   } catch (e) {
-    throw new DaemonUnavailable(String(e));
+    // A Tauri command's error is a string; a keyed daemon refusal arrives
+    // as JSON inside it (see `daemon_error` in src-tauri).
+    const raw = String(e);
+    throw parseRefusal(raw) ?? new DaemonUnavailable(raw);
   }
 }
 

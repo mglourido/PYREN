@@ -38,6 +38,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use pyren_core::{msg, Msg};
 use serde::{Deserialize, Serialize};
 
 /// Event types we care about, from `linux/input-event-codes.h`.
@@ -337,14 +338,17 @@ pub enum Unavailable {
 }
 
 impl Unavailable {
-    pub fn message(&self) -> &'static str {
+    /// Why no keyboard could be opened, in the words the caller should show.
+    pub fn to_msg(&self) -> Msg {
         match self {
-            Self::NoDevices => {
+            Self::NoDevices => msg!(
+                "hotkey.unavailable.noDevices",
                 "no keyboard devices in /dev/input, so no hotkey can be heard here"
-            }
-            Self::NeedsRoot => {
+            ),
+            Self::NeedsRoot => msg!(
+                "hotkey.unavailable.needsRoot",
                 "reading /dev/input needs root; the systemd unit runs the daemon as root"
-            }
+            ),
         }
     }
 }

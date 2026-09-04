@@ -7,6 +7,7 @@
 use std::fs;
 use std::process::Command;
 
+use pyren_core::{msg, Msg};
 use serde::Serialize;
 
 const DMI: &str = "/sys/class/dmi/id";
@@ -82,7 +83,8 @@ pub struct SystemIdentity {
     /// Convenience flag for the UI: true unless `Unsupported`.
     pub supported: bool,
     /// Short human-readable justification, shown next to the flag.
-    pub reason: String,
+    /// Why that verdict, in one sentence. Translatable - render with `tm()`.
+    pub reason: Msg,
 }
 
 impl SystemIdentity {
@@ -186,41 +188,53 @@ fn hp_wmi_present() -> bool {
     std::path::Path::new(HP_WMI).is_dir()
 }
 
-fn classify(controls: Controls, hp_wmi: bool) -> (Compatibility, String) {
+fn classify(controls: Controls, hp_wmi: bool) -> (Compatibility, Msg) {
     if !controls.any() {
         return if hp_wmi {
             (
                 Compatibility::MonitoringOnly,
-                "the hp-wmi interface is present but nothing here accepted control; \
-                 fan speeds and temperatures can still be read"
-                    .to_string(),
+                msg!(
+                    "system.reason.monitoringOnly",
+                    "the hp-wmi interface is present but nothing here accepted control; \
+                     fan speeds and temperatures can still be read"
+                ),
             )
         } else {
             (
                 Compatibility::Unsupported,
-                "no hp-wmi interface and no power-mode mechanism; monitoring works, \
-                 hardware control does not"
-                    .to_string(),
+                msg!(
+                    "system.reason.unsupported",
+                    "no hp-wmi interface and no power-mode mechanism; monitoring works, \
+                     hardware control does not"
+                ),
             )
         };
     }
 
-    let mut works = Vec::new();
+    let mut works: Vec<Msg> = Vec::new();
     if controls.fan_speed {
-        works.push("fan speed");
+        works.push(msg!("system.can.fanSpeed", "fan speed"));
     } else if controls.fan_mode {
         // Worth spelling out: it is the common case on a board the driver
         // has no entry for, and "fans" alone would overpromise.
-        works.push("fan mode (auto/max only)");
+        works.push(msg!("system.can.fanMode", "fan mode (auto/max only)"));
     }
     if controls.power_mode {
-        works.push("power modes");
+        works.push(msg!("system.can.powerModes", "power modes"));
     }
     if controls.lightbar {
-        works.push("lightbar colour");
+        works.push(msg!("system.can.lightbar", "lightbar colour"));
     }
 
-    (Compatibility::Controllable, format!("this machine accepts: {}", works.join(", ")))
+    let list = Msg::join(works, ", ").unwrap_or_else(|| Msg::literal(""));
+    (
+        Compatibility::Controllable,
+        msg!(
+            "system.reason.accepts",
+            { "list" => list.text },
+            "this machine accepts: {list}"
+        ),
+    )
 }
 
 fn kernel_release() -> Option<String> {
@@ -365,6 +379,9 @@ mod tests {
         let (compat, reason) = classify(Controls::default(), false);
         assert_eq!(compat, Compatibility::Unsupported);
         assert!(reason.contains("monitoring works"));
+        // ...and it is shown in the user's language: a catalog key beside
+        // the English text.
+        assert_eq!(reason.key, "system.reason.unsupported");
     }
 
     /// Board 8D2F: the interface is there, and none of it is writable.

@@ -17,6 +17,7 @@ use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 
+use pyren_core::{msg, Msg};
 use serde::Serialize;
 
 use crate::FanPaths;
@@ -43,28 +44,39 @@ pub enum CheckStatus {
 #[serde(rename_all = "camelCase")]
 pub struct Check {
     pub id: String,
-    pub title: String,
+    /// Translatable - render with `tm()`.
+    pub title: Msg,
     pub status: CheckStatus,
-    pub detail: String,
-    /// What to do about it, when there is something to do.
-    pub remedy: Option<String>,
+    /// Translatable - render with `tm()`.
+    pub detail: Msg,
+    /// What to do about it, when there is something to do. Translatable.
+    pub remedy: Option<Msg>,
 }
 
 impl Check {
     /// Public because `pyren-check` builds the power and lighting sections
     /// of its compatibility report out of the same shape - one check type,
     /// one renderer, one JSON schema, rather than three that drift.
-    pub fn new(id: &str, title: &str, status: CheckStatus, detail: impl Into<String>) -> Self {
+    ///
+    /// `title` and `detail` take `impl Into<Msg>`, so a `&str`/`String` still
+    /// works (as a key-less, untranslated `Msg`) while a call site that has a
+    /// catalog key passes `msg!(...)`.
+    pub fn new(
+        id: &str,
+        title: impl Into<Msg>,
+        status: CheckStatus,
+        detail: impl Into<Msg>,
+    ) -> Self {
         Self {
             id: id.to_string(),
-            title: title.to_string(),
+            title: title.into(),
             status,
             detail: detail.into(),
             remedy: None,
         }
     }
 
-    pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
+    pub fn with_remedy(mut self, remedy: impl Into<Msg>) -> Self {
         self.remedy = Some(remedy.into());
         self
     }
@@ -86,9 +98,11 @@ pub enum Verdict {
 #[serde(rename_all = "camelCase")]
 pub struct Diagnosis {
     pub verdict: Verdict,
-    pub summary: String,
+    /// Translatable - render with `tm()`.
+    pub summary: Msg,
     /// Present when a driver that might help exists but isn't in use.
-    pub driver_notice: Option<String>,
+    /// Translatable.
+    pub driver_notice: Option<Msg>,
     pub checks: Vec<Check>,
     pub wrote_to_hardware: bool,
 }
@@ -109,47 +123,63 @@ pub(crate) fn diagnose(paths: &FanPaths, allow_writes: bool) -> Diagnosis {
     let mut checks = Vec::new();
 
     let hp_wmi = Path::new("/sys/devices/platform/hp-wmi").exists();
+    let hp_wmi_title = msg!("diagnostics.checks.hp-wmi.title", "hp-wmi platform driver");
     checks.push(if hp_wmi {
         Check::new(
             "hp-wmi",
-            "hp-wmi platform driver",
+            hp_wmi_title,
             CheckStatus::Pass,
-            "/sys/devices/platform/hp-wmi is present",
+            msg!("diagnostics.checks.hp-wmi.present", "/sys/devices/platform/hp-wmi is present"),
         )
     } else {
         Check::new(
             "hp-wmi",
-            "hp-wmi platform driver",
+            hp_wmi_title,
             CheckStatus::Fail,
-            "/sys/devices/platform/hp-wmi does not exist",
+            msg!("diagnostics.checks.hp-wmi.absent", "/sys/devices/platform/hp-wmi does not exist"),
         )
-        .with_remedy(
+        .with_remedy(msg!(
+            "diagnostics.checks.hp-wmi.remedy",
             "This is normal on non-HP hardware. On an HP laptop, check that the hp_wmi module \
-             is loaded (`modprobe hp_wmi`) and that the BIOS exposes WMI.",
-        )
+             is loaded (`modprobe hp_wmi`) and that the BIOS exposes WMI."
+        ))
     });
 
+    let hwmon_title = msg!("diagnostics.checks.hwmon.title", "hwmon node");
     checks.push(match &paths.hwmon_dir {
         Some(dir) => Check::new(
             "hwmon",
-            "hwmon node",
+            hwmon_title,
             CheckStatus::Pass,
-            format!("found at {}", dir.display()),
+            msg!(
+                "diagnostics.checks.hwmon.found",
+                { "path" => dir.display().to_string() },
+                "found at {path}"
+            ),
         ),
         None => Check::new(
             "hwmon",
-            "hwmon node",
+            hwmon_title,
             CheckStatus::Fail,
-            "no hwmon directory under /sys/devices/platform/hp-wmi/hwmon",
+            msg!(
+                "diagnostics.checks.hwmon.absent",
+                "no hwmon directory under /sys/devices/platform/hp-wmi/hwmon"
+            ),
         ),
     });
 
-    checks.push(check_readable_number("fan1", "Fan 1 speed", paths.fan1_input.as_deref(), |rpm| {
-        describe_rpm(rpm)
-    }));
-    checks.push(check_readable_number("fan2", "Fan 2 speed", paths.fan2_input.as_deref(), |rpm| {
-        describe_rpm(rpm)
-    }));
+    checks.push(check_readable_number(
+        "fan1",
+        msg!("diagnostics.checks.fan1.title", "Fan 1 speed"),
+        paths.fan1_input.as_deref(),
+        describe_rpm,
+    ));
+    checks.push(check_readable_number(
+        "fan2",
+        msg!("diagnostics.checks.fan2.title", "Fan 2 speed"),
+        paths.fan2_input.as_deref(),
+        describe_rpm,
+    ));
 
     checks.push(check_pwm(paths.pwm1.as_deref()));
     checks.push(check_pwm_enable(paths.pwm1_enable.as_deref()));
@@ -201,85 +231,112 @@ fn conclude(
     hp_wmi: bool,
     paths: &FanPaths,
     write_tested: bool,
-) -> (String, Option<String>) {
+) -> (Msg, Option<Msg>) {
     match verdict {
         Verdict::FullControl => {
             let summary = if write_tested {
-                "Fan control works: speeds can be read and the PWM channel accepted a write."
-                    .to_string()
+                msg!(
+                    "diagnostics.summary.fullControlTested",
+                    "Fan control works: speeds can be read and the PWM channel accepted a write."
+                )
             } else {
-                "Fan control looks available: the PWM channel is present. Re-run with writes \
-                 enabled to confirm the hardware accepts them."
-                    .to_string()
+                msg!(
+                    "diagnostics.summary.fullControlUntested",
+                    "Fan control looks available: the PWM channel is present. Re-run with \
+                     writes enabled to confirm the hardware accepts them."
+                )
             };
             (summary, None)
         }
         Verdict::MonitoringOnly => (
-            "Fan speeds can be read, but this driver exposes no PWM channel, so speed cannot \
-             be set."
-                .to_string(),
+            msg!(
+                "diagnostics.summary.monitoringOnly",
+                "Fan speeds can be read, but this driver exposes no PWM channel, so speed \
+                 cannot be set."
+            ),
             // This is the case the patched driver exists for: hp-wmi is
             // there, but the running kernel's copy has no fan control for
             // this board.
             hp_wmi.then(|| {
-                format!(
-                    "The kernel's hp-wmi has no pwm1 for this board. Recent kernels ship manual \
-                     fan control upstream, so upgrading the kernel is the first thing to try. \
-                     Failing that, a patched out-of-tree driver exists: {SUPPORTED_BOARD_HINT}. \
+                msg!(
+                    "diagnostics.driverNotice.noPwm",
+                    { "hint" => SUPPORTED_BOARD_HINT },
+                    "The kernel's hp-wmi has no pwm1 for this board. Recent kernels ship \
+                     manual fan control upstream, so upgrading the kernel is the first thing \
+                     to try. Failing that, a patched out-of-tree driver exists: {hint}. \
                      Installing it replaces a kernel module, so it is a deliberate step, not \
                      something this app does for you."
                 )
             }),
         ),
         Verdict::Unsupported => {
-            let detail = if paths.cpu_temp.is_some() {
-                "Temperature can still be read, so monitoring works."
+            let summary = if paths.cpu_temp.is_some() {
+                msg!(
+                    "diagnostics.summary.unsupportedWithTemp",
+                    "This machine exposes no HP fan-control interface. Temperature can still \
+                     be read, so monitoring works."
+                )
             } else {
-                "No HP fan interface and no usable temperature sensor were found."
+                msg!(
+                    "diagnostics.summary.unsupportedNoTemp",
+                    "This machine exposes no HP fan-control interface. No HP fan interface \
+                     and no usable temperature sensor were found."
+                )
             };
             (
-                format!("This machine exposes no HP fan-control interface. {detail}"),
+                summary,
                 (!hp_wmi).then(|| {
-                    "No hp-wmi device at all. On an HP OMEN or Victus laptop, load the hp_wmi \
-                     module; on other hardware this is expected and fan control is not \
-                     applicable."
-                        .to_string()
+                    msg!(
+                        "diagnostics.driverNotice.noHpWmi",
+                        "No hp-wmi device at all. On an HP OMEN or Victus laptop, load the \
+                         hp_wmi module; on other hardware this is expected and fan control \
+                         is not applicable."
+                    )
                 }),
             )
         }
     }
 }
 
-fn describe_rpm(raw: i64) -> (CheckStatus, String) {
+fn describe_rpm(raw: i64) -> (CheckStatus, Msg) {
     // hp-wmi encodes fan-cleaner reverse-spin in the value itself; see
     // docs/02-kernel-driver.md in the source project.
     if raw >= 12800 {
         let actual = ((raw / 100) & 0x7F) * 100;
         return (
             CheckStatus::Warn,
-            format!("{raw} raw -> {actual} rpm, spinning in reverse (fan cleaner active)"),
+            msg!(
+                "diagnostics.checks.fan.reverse",
+                { "raw" => raw, "actual" => actual },
+                "{raw} raw -> {actual} rpm, spinning in reverse (fan cleaner active)"
+            ),
         );
     }
     if raw > 25000 {
-        return (CheckStatus::Warn, format!("{raw} rpm is implausibly high"));
+        return (
+            CheckStatus::Warn,
+            msg!("diagnostics.checks.fan.tooHigh", { "raw" => raw }, "{raw} rpm is implausibly high"),
+        );
     }
-    (CheckStatus::Pass, format!("{raw} rpm"))
+    (CheckStatus::Pass, msg!("diagnostics.checks.fan.rpm", { "raw" => raw }, "{raw} rpm"))
 }
 
 fn check_readable_number(
     id: &str,
-    title: &str,
+    title: Msg,
     path: Option<&Path>,
-    describe: impl Fn(i64) -> (CheckStatus, String),
+    describe: impl Fn(i64) -> (CheckStatus, Msg),
 ) -> Check {
+    let not_exposed =
+        || msg!("diagnostics.checks.notExposed", "not exposed by this driver");
     let Some(path) = path else {
-        return Check::new(id, title, CheckStatus::Skip, "not exposed by this driver");
+        return Check::new(id, title, CheckStatus::Skip, not_exposed());
     };
     // Discovery fills in a path as soon as an hwmon node exists, so the
     // file behind it may not. A missing fan2_input means the machine has
     // one fan, which is normal - not a failure.
     if !path.exists() {
-        return Check::new(id, title, CheckStatus::Skip, "not exposed by this driver");
+        return Check::new(id, title, CheckStatus::Skip, not_exposed());
     }
     match fs::read_to_string(path) {
         Ok(text) => match text.trim().parse::<i64>() {
@@ -291,72 +348,133 @@ fn check_readable_number(
                 id,
                 title,
                 CheckStatus::Fail,
-                format!("{} contains something that is not a number", path.display()),
+                msg!(
+                    "diagnostics.checks.notANumberAt",
+                    { "path" => path.display().to_string() },
+                    "{path} contains something that is not a number"
+                ),
             ),
         },
-        Err(e) => Check::new(id, title, CheckStatus::Fail, format!("{}: {e}", path.display())),
+        Err(e) => Check::new(
+            id,
+            title,
+            CheckStatus::Fail,
+            msg!(
+                "diagnostics.checks.readError",
+                { "path" => path.display().to_string(), "error" => e.to_string() },
+                "{path}: {error}"
+            ),
+        ),
     }
 }
 
 fn check_pwm(path: Option<&Path>) -> Check {
+    let title = || msg!("diagnostics.checks.pwm1.title", "PWM channel");
     let Some(path) = path else {
         return Check::new(
             "pwm1",
-            "PWM channel",
+            title(),
             CheckStatus::Fail,
-            "pwm1 is not exposed, so fan speed cannot be set",
+            msg!(
+                "diagnostics.checks.pwm1.notExposed",
+                "pwm1 is not exposed, so fan speed cannot be set"
+            ),
         )
-        .with_remedy("Needs a kernel whose hp-wmi supports this board (see the notice below).");
+        .with_remedy(msg!(
+            "diagnostics.checks.pwm1.remedyNotice",
+            "Needs a kernel whose hp-wmi supports this board (see the notice below)."
+        ));
     };
     if !path.exists() {
-        return Check::new("pwm1", "PWM channel", CheckStatus::Fail, format!("{} is missing", path.display()))
-            .with_remedy("Needs a kernel whose hp-wmi supports this board.");
+        return Check::new(
+            "pwm1",
+            title(),
+            CheckStatus::Fail,
+            msg!(
+                "diagnostics.checks.pwm1.missing",
+                { "path" => path.display().to_string() },
+                "{path} is missing"
+            ),
+        )
+        .with_remedy(msg!(
+            "diagnostics.checks.pwm1.remedy",
+            "Needs a kernel whose hp-wmi supports this board."
+        ));
     }
 
     match fs::read_to_string(path) {
         Ok(text) => match text.trim().parse::<u32>() {
             Ok(value) if value <= 255 => Check::new(
                 "pwm1",
-                "PWM channel",
+                title(),
                 CheckStatus::Pass,
-                format!("pwm1 = {value} (0-255)"),
+                msg!("diagnostics.checks.pwm1.ok", { "value" => value }, "pwm1 = {value} (0-255)"),
             ),
             Ok(value) => Check::new(
                 "pwm1",
-                "PWM channel",
+                title(),
                 CheckStatus::Warn,
-                format!("pwm1 = {value}, outside the documented 0-255 range"),
+                msg!(
+                    "diagnostics.checks.pwm1.outOfRange",
+                    { "value" => value },
+                    "pwm1 = {value}, outside the documented 0-255 range"
+                ),
             ),
-            Err(_) => Check::new("pwm1", "PWM channel", CheckStatus::Fail, "pwm1 is not a number"),
+            Err(_) => Check::new(
+                "pwm1",
+                title(),
+                CheckStatus::Fail,
+                msg!("diagnostics.checks.pwm1.notANumber", "pwm1 is not a number"),
+            ),
         },
-        Err(e) => Check::new("pwm1", "PWM channel", CheckStatus::Fail, format!("{e}")),
+        Err(e) => Check::new(
+            "pwm1",
+            title(),
+            CheckStatus::Fail,
+            msg!("diagnostics.checks.genericError", { "error" => e.to_string() }, "{error}"),
+        ),
     }
 }
 
 /// `pwm1_enable`: 0 = max, 1 = manual, 2 = automatic (firmware curve).
 fn check_pwm_enable(path: Option<&Path>) -> Check {
+    let title = || msg!("diagnostics.checks.pwm1_enable.title", "Fan control mode");
     let Some(path) = path else {
         return Check::new(
             "pwm1_enable",
-            "Fan control mode",
+            title(),
             CheckStatus::Fail,
-            "pwm1_enable is not exposed",
+            msg!("diagnostics.checks.pwm1_enable.notExposed", "pwm1_enable is not exposed"),
         );
     };
     match fs::read_to_string(path) {
         Ok(text) => {
             let value = text.trim();
-            let meaning = match value {
-                "0" => "max (firmware overridden to full speed)",
-                "1" => "manual (pwm1 is in effect)",
-                "2" => "automatic (firmware curve)",
-                _ => "unknown mode",
+            let detail = match value {
+                "0" => msg!(
+                    "diagnostics.checks.pwm1_enable.mode0",
+                    "0 - max (firmware overridden to full speed)"
+                ),
+                "1" => msg!("diagnostics.checks.pwm1_enable.mode1", "1 - manual (pwm1 is in effect)"),
+                "2" => {
+                    msg!("diagnostics.checks.pwm1_enable.mode2", "2 - automatic (firmware curve)")
+                }
+                _ => msg!(
+                    "diagnostics.checks.pwm1_enable.modeUnknown",
+                    { "value" => value },
+                    "{value} - unknown mode"
+                ),
             };
             let status =
                 if matches!(value, "0" | "1" | "2") { CheckStatus::Pass } else { CheckStatus::Warn };
-            Check::new("pwm1_enable", "Fan control mode", status, format!("{value} - {meaning}"))
+            Check::new("pwm1_enable", title(), status, detail)
         }
-        Err(e) => Check::new("pwm1_enable", "Fan control mode", CheckStatus::Fail, format!("{e}")),
+        Err(e) => Check::new(
+            "pwm1_enable",
+            title(),
+            CheckStatus::Fail,
+            msg!("diagnostics.checks.genericError", { "error" => e.to_string() }, "{error}"),
+        ),
     }
 }
 
@@ -367,25 +485,43 @@ fn check_pwm_enable(path: Option<&Path>) -> Check {
 /// fails, which is why the restore is not conditional on success.
 fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
     const ID: &str = "pwm-write";
-    const TITLE: &str = "PWM accepts writes";
+    let title = || msg!("diagnostics.checks.pwm-write.title", "PWM accepts writes");
 
     let (Some(pwm), Some(enable)) = (paths.pwm1.as_deref(), paths.pwm1_enable.as_deref()) else {
-        return Check::new(ID, TITLE, CheckStatus::Skip, "no PWM channel to write to");
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!("diagnostics.checks.pwm-write.noChannel", "no PWM channel to write to"),
+        );
     };
     if !allow_writes {
         return Check::new(
             ID,
-            TITLE,
+            title(),
             CheckStatus::Skip,
-            "not attempted; enable writes to test this",
+            msg!(
+                "diagnostics.checks.pwm-write.notAttempted",
+                "not attempted; enable writes to test this"
+            ),
         );
     }
 
     let Ok(original_mode) = fs::read_to_string(enable) else {
-        return Check::new(ID, TITLE, CheckStatus::Fail, "could not read the current mode");
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Fail,
+            msg!("diagnostics.checks.pwm-write.noMode", "could not read the current mode"),
+        );
     };
     let Ok(original_pwm) = fs::read_to_string(pwm) else {
-        return Check::new(ID, TITLE, CheckStatus::Fail, "could not read the current PWM value");
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Fail,
+            msg!("diagnostics.checks.pwm-write.noValue", "could not read the current PWM value"),
+        );
     };
     let (original_mode, original_pwm) = (original_mode.trim(), original_pwm.trim());
 
@@ -399,35 +535,50 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
     let _ = fs::write(pwm, original_pwm);
     let restored = fs::write(enable, original_mode);
 
-    let mut check = match result {
-        Ok(readback) if readback.trim() == original_pwm => Check::new(
-            ID,
-            TITLE,
+    let (status, detail) = match result {
+        Ok(readback) if readback.trim() == original_pwm => (
             CheckStatus::Pass,
-            format!("wrote and read back pwm1 = {original_pwm} without changing fan speed"),
-        ),
-        Ok(readback) => Check::new(
-            ID,
-            TITLE,
-            CheckStatus::Warn,
-            format!(
-                "wrote {original_pwm} but read back {}; the driver may quantise or ignore values",
-                readback.trim()
+            msg!(
+                "diagnostics.checks.pwm-write.ok",
+                { "value" => original_pwm },
+                "wrote and read back pwm1 = {value} without changing fan speed"
             ),
         ),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            Check::new(ID, TITLE, CheckStatus::Skip, "permission denied; run as root to test writes")
-        }
-        Err(e) => Check::new(ID, TITLE, CheckStatus::Fail, format!("{e}")),
+        Ok(readback) => (
+            CheckStatus::Warn,
+            msg!(
+                "diagnostics.checks.pwm-write.mismatch",
+                { "wrote" => original_pwm, "readback" => readback.trim() },
+                "wrote {wrote} but read back {readback}; the driver may quantise or ignore values"
+            ),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => (
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.pwm-write.denied",
+                "permission denied; run as root to test writes"
+            ),
+        ),
+        Err(e) => (
+            CheckStatus::Fail,
+            msg!("diagnostics.checks.genericError", { "error" => e.to_string() }, "{error}"),
+        ),
     };
 
     if restored.is_err() {
-        check.detail.push_str(
-            " - WARNING: the original fan mode could not be restored; set it manually or reboot",
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Warn,
+            msg!(
+                "diagnostics.checks.pwm-write.notRestored",
+                { "detail" => detail.text },
+                "{detail} - WARNING: the original fan mode could not be restored; set it \
+                 manually or reboot"
+            ),
         );
-        check.status = CheckStatus::Warn;
     }
-    check
+    Check::new(ID, title(), status, detail)
 }
 
 /// Lists what the hwmon node actually exposes.
@@ -437,13 +588,27 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
 /// diagnosing a partially-supported board needs to know.
 fn check_hwmon_attributes(hwmon_dir: Option<&Path>) -> Check {
     const ID: &str = "hwmon-attrs";
-    const TITLE: &str = "hwmon attributes";
+    let title = || msg!("diagnostics.checks.hwmon-attrs.title", "hwmon attributes");
 
     let Some(dir) = hwmon_dir else {
-        return Check::new(ID, TITLE, CheckStatus::Skip, "no hwmon node");
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!("diagnostics.checks.hwmon-attrs.noNode", "no hwmon node"),
+        );
     };
     let Ok(entries) = fs::read_dir(dir) else {
-        return Check::new(ID, TITLE, CheckStatus::Skip, format!("{} is unreadable", dir.display()));
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.hwmon-attrs.unreadable",
+                { "path" => dir.display().to_string() },
+                "{path} is unreadable"
+            ),
+        );
     };
 
     let mut names: Vec<String> = entries
@@ -456,29 +621,43 @@ fn check_hwmon_attributes(hwmon_dir: Option<&Path>) -> Check {
     names.sort();
 
     if names.is_empty() {
-        return Check::new(ID, TITLE, CheckStatus::Warn, "the hwmon node is empty");
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Warn,
+            msg!("diagnostics.checks.hwmon-attrs.empty", "the hwmon node is empty"),
+        );
     }
-    Check::new(ID, TITLE, CheckStatus::Pass, names.join(" "))
+    // A bare list of attribute names - not a sentence, nothing to translate.
+    Check::new(ID, title(), CheckStatus::Pass, names.join(" "))
 }
 
 /// hp-wmi's own kernel messages, which usually say why a board came up
 /// with reduced functionality.
 fn check_kernel_log() -> Check {
     const ID: &str = "kernel-log";
-    const TITLE: &str = "hp-wmi kernel messages";
+    let title = || msg!("diagnostics.checks.kernel-log.title", "hp-wmi kernel messages");
 
     // Via `dmesg` rather than /dev/kmsg: reading that device directly can
     // block waiting for new messages, and it is root-only wherever
     // kernel.dmesg_restrict is set.
     let Ok(output) = std::process::Command::new("dmesg").output() else {
-        return Check::new(ID, TITLE, CheckStatus::Skip, "dmesg is not available");
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!("diagnostics.checks.kernel-log.noDmesg", "dmesg is not available"),
+        );
     };
     if !output.status.success() {
         return Check::new(
             ID,
-            TITLE,
+            title(),
             CheckStatus::Skip,
-            "kernel log not readable; run as root, or paste `dmesg | grep -i hp.wmi`",
+            msg!(
+                "diagnostics.checks.kernel-log.notReadable",
+                "kernel log not readable; run as root, or paste `dmesg | grep -i hp.wmi`"
+            ),
         );
     }
     let log = String::from_utf8_lossy(&output.stdout);
@@ -492,9 +671,15 @@ fn check_kernel_log() -> Check {
         .collect();
 
     if lines.is_empty() {
-        return Check::new(ID, TITLE, CheckStatus::Pass, "no hp-wmi messages");
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Pass,
+            msg!("diagnostics.checks.kernel-log.none", "no hp-wmi messages"),
+        );
     }
     // Only the message text matters; the priority/timestamp prefix is noise.
+    // These are the kernel's own words, quoted verbatim - not translated.
     let cleaned: Vec<String> = lines
         .iter()
         .rev()
@@ -502,55 +687,90 @@ fn check_kernel_log() -> Check {
         .rev()
         .map(|line| line.trim().to_string())
         .collect();
-    Check::new(ID, TITLE, CheckStatus::Warn, cleaned.join(" | "))
+    Check::new(ID, title(), CheckStatus::Warn, cleaned.join(" | "))
 }
 
 fn check_platform_profile() -> Check {
     const PATH: &str = "/sys/firmware/acpi/platform_profile";
     const CHOICES: &str = "/sys/firmware/acpi/platform_profile_choices";
 
+    let title = || msg!("diagnostics.checks.platform-profile.title", "ACPI platform profile");
     match (fs::read_to_string(PATH), fs::read_to_string(CHOICES)) {
         (Ok(current), Ok(choices)) => Check::new(
             "platform-profile",
-            "ACPI platform profile",
+            title(),
             CheckStatus::Pass,
-            format!("{} (available: {})", current.trim(), choices.trim()),
+            msg!(
+                "diagnostics.checks.platform-profile.ok",
+                { "current" => current.trim(), "choices" => choices.trim() },
+                "{current} (available: {choices})"
+            ),
         ),
         _ => Check::new(
             "platform-profile",
-            "ACPI platform profile",
+            title(),
             CheckStatus::Warn,
-            "not exposed; power modes fall back to power-profiles-daemon or the CPU EPP hint",
+            msg!(
+                "diagnostics.checks.platform-profile.absent",
+                "not exposed; power modes fall back to power-profiles-daemon or the CPU EPP hint"
+            ),
         ),
     }
 }
 
 fn check_cpu_temp(path: Option<&Path>) -> Check {
-    check_readable_number("cpu-temp", "CPU temperature", path, |millidegrees| {
-        let celsius = millidegrees / 1000;
-        if (0..=125).contains(&celsius) {
-            (CheckStatus::Pass, format!("{celsius} °C"))
-        } else {
-            (CheckStatus::Warn, format!("{celsius} °C is implausible"))
-        }
-    })
+    check_readable_number(
+        "cpu-temp",
+        msg!("diagnostics.checks.cpu-temp.title", "CPU temperature"),
+        path,
+        |millidegrees| {
+            let celsius = millidegrees / 1000;
+            if (0..=125).contains(&celsius) {
+                (
+                    CheckStatus::Pass,
+                    msg!("diagnostics.checks.cpu-temp.ok", { "celsius" => celsius }, "{celsius} °C"),
+                )
+            } else {
+                (
+                    CheckStatus::Warn,
+                    msg!(
+                        "diagnostics.checks.cpu-temp.implausible",
+                        { "celsius" => celsius },
+                        "{celsius} °C is implausible"
+                    ),
+                )
+            }
+        },
+    )
 }
 
 /// Two things need this now, not one: the dust-removal fan cleaner (not
 /// ported yet) and the RGB lightbar. Naming only the fan cleaner made a
 /// warning look optional to anyone who does not want it.
 fn check_acpi_call() -> Check {
-    const TITLE: &str = "acpi_call module";
+    let title = || msg!("diagnostics.checks.acpi-call.title", "acpi_call module");
     if Path::new(&pyren_core::acpi::call_path()).exists() {
-        Check::new("acpi-call", TITLE, CheckStatus::Pass, "/proc/acpi/call is available")
+        Check::new(
+            "acpi-call",
+            title(),
+            CheckStatus::Pass,
+            msg!("diagnostics.checks.acpi-call.ok", "/proc/acpi/call is available"),
+        )
     } else {
         Check::new(
             "acpi-call",
-            TITLE,
+            title(),
             CheckStatus::Warn,
-            "/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it",
+            msg!(
+                "diagnostics.checks.acpi-call.absent",
+                "/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it"
+            ),
         )
-        .with_remedy("Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call (Fedora), then `modprobe acpi_call`.")
+        .with_remedy(msg!(
+            "diagnostics.checks.acpi-call.remedy",
+            "Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call \
+             (Fedora), then `modprobe acpi_call`."
+        ))
     }
 }
 
@@ -730,8 +950,9 @@ mod tests {
         let notice = notice.expect("an HP machine with no pwm should get the notice");
         // Upgrading the kernel comes first: fan control is upstream now, so
         // replacing a kernel module should be the fallback, not the advice.
-        let kernel_hint = notice.find("upgrading the kernel").expect("should suggest the kernel");
-        let driver_hint = notice.find("patched").expect("should mention the patched driver");
+        let kernel_hint =
+            notice.text.find("upgrading the kernel").expect("should suggest the kernel");
+        let driver_hint = notice.text.find("patched").expect("should mention the patched driver");
         assert!(kernel_hint < driver_hint);
     }
 
@@ -754,6 +975,24 @@ mod tests {
         let (summary, notice) = conclude(Verdict::Unsupported, false, &FanPaths::default(), false);
         assert!(summary.contains("no HP fan-control interface"));
         assert!(notice.unwrap().contains("hp_wmi"));
+    }
+
+    /// The self-test is shown in the user's language: a check and the
+    /// summary must carry a catalog key alongside the English text.
+    #[test]
+    fn checks_and_the_summary_are_translatable() {
+        let dir = fixture("i18n");
+        write(&dir, "fan1_input", "2400\n");
+        write(&dir, "pwm1", "128\n");
+        write(&dir, "pwm1_enable", "2\n");
+
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        assert_eq!(diagnosis.summary.key, "diagnostics.summary.fullControlUntested");
+        let pwm1 = check(&diagnosis, "pwm1");
+        assert_eq!(pwm1.title.key, "diagnostics.checks.pwm1.title");
+        assert_eq!(pwm1.detail.key, "diagnostics.checks.pwm1.ok");
+        assert_eq!(pwm1.detail.params["value"], 128);
+        assert_eq!(pwm1.detail.text, "pwm1 = 128 (0-255)");
     }
 
     #[test]

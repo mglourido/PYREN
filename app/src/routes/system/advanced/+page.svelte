@@ -23,8 +23,8 @@
   import Slider from "$lib/components/Slider.svelte";
   import Sparkline from "$lib/components/Sparkline.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
-  import { daemon, type OcGpu, type OverclockState } from "$lib/api/daemon";
-  import { t } from "$lib/i18n/index.svelte";
+  import { daemon, errorText, type OcGpu, type OverclockState } from "$lib/api/daemon";
+  import { t, tm } from "$lib/i18n/index.svelte";
   import { formatTemp } from "$lib/stores/settings.svelte";
   import { telemetry, type Series } from "$lib/stores/telemetry.svelte";
   import { onMount } from "svelte";
@@ -93,7 +93,7 @@
 
   function adopt(state: OverclockState) {
     oc = state;
-    error = state.error;
+    error = state.error ? tm(state.error) : null;
     if (!selectedId || !state.gpus.some((g) => g.id === selectedId)) {
       selectedId = state.defaultGpu ?? state.gpus[0]?.id ?? null;
     }
@@ -107,7 +107,7 @@
     try {
       adopt(await call());
     } catch (e) {
-      error = String(e);
+      error = errorText(e);
     } finally {
       busy = false;
     }
@@ -174,7 +174,7 @@
   <section class="panel">
     <h1 class="title">
       {t("advanced.gpuOverclocking")}
-      <InfoTip>{oc?.consent.text ?? t("advanced.disclaimer")}</InfoTip>
+      <InfoTip>{oc ? t("advanced.consentText") : t("advanced.disclaimer")}</InfoTip>
     </h1>
 
     {#if !oc}
@@ -191,7 +191,9 @@
            been told the warning was read. -->
       <div class="consent">
         <h2><Icon name="warning" size={18} /> {t("advanced.consentTitle")}</h2>
-        <p>{oc.consent.text}</p>
+        <!-- The daemon serves the canonical wording (oc.consent.text) and
+             owns the acceptance record; we show the user a translated copy. -->
+        <p>{t("advanced.consentText")}</p>
         <div class="actions">
           <button
             class="primary"
@@ -202,13 +204,13 @@
           </button>
         </div>
         {#if !oc.supported}
-          <p class="muted">{oc.detail}</p>
+          <p class="muted">{tm(oc.detail)}</p>
         {/if}
       </div>
     {/if}
 
     {#if oc && gpu && !gpu.drivable}
-      <p class="muted detail">{gpu.detail}</p>
+      <p class="muted detail">{tm(gpu.detail)}</p>
     {/if}
 
     {#if oc?.consent.accepted && gpu?.drivable}
@@ -280,7 +282,7 @@
           {/if}
 
           {#if !canOffset}
-            <p class="muted detail">{gpu.detail}</p>
+            <p class="muted detail">{tm(gpu.detail)}</p>
           {/if}
 
           {#if gpu.clockLock}
@@ -376,7 +378,7 @@
     {/if}
 
     {#if oc?.note}
-      <p class="muted note">{oc.note}</p>
+      <p class="muted note">{tm(oc.note)}</p>
     {/if}
     {#if error}
       <p class="banner error"><Icon name="warning" size={16} /> {error}</p>

@@ -12,6 +12,7 @@
 use std::fs;
 use std::path::Path;
 
+use pyren_core::{msg, Msg};
 use serde::Serialize;
 
 use crate::nvidia::Nvidia;
@@ -53,7 +54,7 @@ pub struct GpuProbe {
     /// so `overclock.probe` only asks when told to.
     pub offsets_writable: Option<bool>,
     /// Everything a person needs to know about this line, in a sentence.
-    pub detail: String,
+    pub detail: Msg,
 }
 
 impl GpuProbe {
@@ -79,7 +80,7 @@ pub struct Probe {
     /// Whether any card has any knob. What `core.capabilities` reports for
     /// this module, and what a UI should hide the page on.
     pub supported: bool,
-    pub detail: String,
+    pub detail: Msg,
 }
 
 impl Probe {
@@ -103,13 +104,16 @@ pub fn probe(allow_writes: bool) -> Probe {
 
     let supported = gpus.iter().any(GpuProbe::drivable);
     let detail = if gpus.is_empty() {
-        "no GPU was found to ask about".to_string()
+        msg!("overclock.probe.noGpu", "no GPU was found to ask about")
     } else if supported {
-        let names: Vec<&str> =
-            gpus.iter().filter(|g| g.drivable()).map(|g| g.name.as_str()).collect();
-        format!("tunable: {}", names.join(", "))
+        let names =
+            gpus.iter().filter(|g| g.drivable()).map(|g| g.name.as_str()).collect::<Vec<_>>().join(", ");
+        msg!("overclock.probe.tunable", { "names" => names }, "tunable: {names}")
     } else {
-        "a GPU was found, and nothing about it can be changed on this machine".to_string()
+        msg!(
+            "overclock.probe.nothingTunable",
+            "a GPU was found, and nothing about it can be changed on this machine"
+        )
     };
 
     Probe { gpus, supported, detail }
@@ -132,11 +136,9 @@ fn probe_nvidia(allow_writes: bool) -> Vec<GpuProbe> {
 
             let core = nvidia.core_offset(gpu.index);
             let mem = nvidia.mem_offset(gpu.index);
-            let (core_offset, mem_offset, offset_detail) = match (&core, &mem) {
-                (Ok((_, core_range)), Ok((_, mem_range))) => {
-                    (*core_range, *mem_range, String::from("clock offsets are readable"))
-                }
-                (Err(e), _) | (_, Err(e)) => (None, None, format!("no clock offsets: {e}")),
+            let (core_offset, mem_offset, offset_error): (_, _, Option<Msg>) = match (&core, &mem) {
+                (Ok((_, core_range)), Ok((_, mem_range))) => (*core_range, *mem_range, None),
+                (Err(e), _) | (_, Err(e)) => (None, None, Some(e.to_msg())),
             };
 
             // Only asked when the offsets exist at all: writing back an
@@ -146,8 +148,13 @@ fn probe_nvidia(allow_writes: bool) -> Vec<GpuProbe> {
                 _ => None,
             };
 
-            let detail =
-                describe_nvidia(&offset_detail, offsets_writable, clock_lock, gpu.max_core_mhz);
+            let offsets = match (&offset_error, offsets_writable) {
+                (Some(m), _) => OffsetState::Unreadable(m.clone()),
+                (None, Some(true)) => OffsetState::Settable,
+                (None, Some(false)) => OffsetState::Coolbits,
+                (None, None) => OffsetState::Readable,
+            };
+            let detail = describe_nvidia(offsets, clock_lock, gpu.max_core_mhz);
             GpuProbe {
                 id: format!("nvidia:{}", gpu.index),
                 name: gpu.name,
@@ -165,31 +172,74 @@ fn probe_nvidia(allow_writes: bool) -> Vec<GpuProbe> {
         .collect()
 }
 
-fn describe_nvidia(
-    offset_detail: &str,
-    writable: Option<bool>,
-    clock_lock: Option<Range>,
-    max_core_mhz: Option<i32>,
-) -> String {
-    let offsets = match writable {
-        Some(true) => "clock offsets can be set".to_string(),
-        Some(false) => "clock offsets are readable but not settable; the X screen needs \
-                        Coolbits before the driver will take one"
-            .to_string(),
-        None => offset_detail.to_string(),
+/// What was learned about this card's clock offsets, before the clock-lock
+/// clause is added.
+enum OffsetState {
+    /// An offset can be written.
+    Settable,
+    /// Readable, but the X screen needs Coolbits before a write is taken.
+    Coolbits,
+    /// Readable; not write-probed this run.
+    Readable,
+    /// Not even readable - the sentence (an X-display hint, already
+    /// translatable) is the whole story and stands on its own.
+    Unreadable(Msg),
+}
+
+const LEAD_SETTABLE: &str = "Clock offsets can be set.";
+const LEAD_COOLBITS: &str = "Clock offsets are readable but not settable; the X screen needs \
+                             Coolbits before the driver will take one.";
+const LEAD_READABLE: &str = "Clock offsets are readable.";
+
+fn describe_nvidia(offsets: OffsetState, clock_lock: Option<Range>, max_core_mhz: Option<i32>) -> Msg {
+    // Three offset states (unreadable stands alone) times three clock states,
+    // as nine catalog keys each holding one whole sentence.
+    let (base, lead) = match offsets {
+        OffsetState::Unreadable(m) => return m,
+        OffsetState::Settable => ("settable", LEAD_SETTABLE),
+        OffsetState::Coolbits => ("coolbits", LEAD_COOLBITS),
+        OffsetState::Readable => ("readable", LEAD_READABLE),
     };
     match clock_lock {
-        Some(range) => format!(
-            "{offsets}. Clocks can be pinned between {} and {} MHz, which needs root and \
-             stays inside what the card already supports",
-            range.min, range.max
-        ),
+        Some(range) => {
+            let key = match base {
+                "settable" => "overclock.gpu.nvidia.settable.lock",
+                "coolbits" => "overclock.gpu.nvidia.coolbits.lock",
+                _ => "overclock.gpu.nvidia.readable.lock",
+            };
+            msg!(
+                key,
+                { "min" => range.min, "max" => range.max },
+                &format!(
+                    "{lead} Clocks can be pinned between {{min}} and {{max}} MHz, which needs \
+                     root and stays inside what the card already supports."
+                )
+            )
+        }
         None => match max_core_mhz {
-            Some(mhz) => format!(
-                "{offsets}. The card reports a maximum of {mhz} MHz and will not enumerate \
-                 the clocks it supports, so pinning them is not offered"
-            ),
-            None => format!("{offsets}. This card's clocks cannot be pinned"),
+            Some(mhz) => {
+                let key = match base {
+                    "settable" => "overclock.gpu.nvidia.settable.ceiling",
+                    "coolbits" => "overclock.gpu.nvidia.coolbits.ceiling",
+                    _ => "overclock.gpu.nvidia.readable.ceiling",
+                };
+                msg!(
+                    key,
+                    { "mhz" => mhz },
+                    &format!(
+                        "{lead} The card reports a maximum of {{mhz}} MHz and will not \
+                         enumerate the clocks it supports, so pinning them is not offered."
+                    )
+                )
+            }
+            None => {
+                let key = match base {
+                    "settable" => "overclock.gpu.nvidia.settable.noLock",
+                    "coolbits" => "overclock.gpu.nvidia.coolbits.noLock",
+                    _ => "overclock.gpu.nvidia.readable.noLock",
+                };
+                msg!(key, &format!("{lead} This card's clocks cannot be pinned."))
+            }
         },
     }
 }
@@ -238,7 +288,11 @@ fn probe_drm() -> Vec<GpuProbe> {
                     mem_offset: None,
                     clock_lock: None,
                     offsets_writable: None,
-                    detail: format!("no tuning interface is known for the {driver} driver"),
+                    detail: msg!(
+                        "overclock.gpu.unknownDriver",
+                        { "driver" => driver.clone() },
+                        "no tuning interface is known for the {driver} driver"
+                    ),
                 },
             })
         })
@@ -256,18 +310,22 @@ fn probe_drm() -> Vec<GpuProbe> {
 fn amd(id: String, driver: &str, device: &Path) -> GpuProbe {
     let od = device.join("pp_od_clk_voltage");
     let detail = match fs::read_to_string(&od) {
-        Ok(contents) if contents.contains("OD_SCLK") => {
+        Ok(contents) if contents.contains("OD_SCLK") => msg!(
+            "overclock.gpu.amd.overdriveOn",
             "AMD Overdrive is enabled on this card and pyren does not drive it yet: \
              it has never been tested on AMD hardware, and an untested write here \
              is not the kind that fails with an error message"
-                .to_string()
-        }
-        Ok(_) => "this card exposes pp_od_clk_voltage without an OD_SCLK table, \
-                  so Overdrive is off (amdgpu.ppfeaturemask enables it)"
-            .to_string(),
-        Err(_) => "no pp_od_clk_voltage on this card, so the kernel is offering no \
-                   Overdrive interface at all"
-            .to_string(),
+        ),
+        Ok(_) => msg!(
+            "overclock.gpu.amd.overdriveOff",
+            "this card exposes pp_od_clk_voltage without an OD_SCLK table, \
+             so Overdrive is off (amdgpu.ppfeaturemask enables it)"
+        ),
+        Err(_) => msg!(
+            "overclock.gpu.amd.noInterface",
+            "no pp_od_clk_voltage on this card, so the kernel is offering no \
+             Overdrive interface at all"
+        ),
     };
     GpuProbe {
         id,
@@ -294,14 +352,18 @@ fn intel(id: String, driver: &str, card: &Path) -> GpuProbe {
         .find_map(|name| fs::read_to_string(card.join(name)).ok())
         .and_then(|text| text.trim().parse::<i32>().ok());
     let detail = match rp0 {
-        Some(mhz) => format!(
+        Some(mhz) => msg!(
+            "overclock.gpu.intel.ceiling",
+            { "mhz" => mhz },
             "Intel graphics expose a frequency ceiling ({mhz} MHz here), not an offset: \
              it cannot be raised above what the chip already runs at, so there is \
              nothing on this card to overclock"
         ),
-        None => "Intel graphics expose a frequency ceiling, not an offset, and this \
-                 kernel publishes no maximum for it"
-            .to_string(),
+        None => msg!(
+            "overclock.gpu.intel.ceilingUnknown",
+            "Intel graphics expose a frequency ceiling, not an offset, and this \
+             kernel publishes no maximum for it"
+        ),
     };
     GpuProbe {
         id,
@@ -345,8 +407,28 @@ mod tests {
             mem_offset: None,
             clock_lock: None,
             offsets_writable: None,
-            detail: String::new(),
+            detail: Msg::literal(""),
         };
         assert!(!gpu.drivable());
+    }
+
+    /// The nvidia line is nine keyed sentences; a client that localises
+    /// needs both halves interpolated into `text` and a stable `key`.
+    #[test]
+    fn a_settable_card_with_a_lockable_range_reads_as_one_whole_sentence() {
+        let m = describe_nvidia(OffsetState::Settable, Some(Range::new(210, 3090)), None);
+        assert_eq!(m.key, "overclock.gpu.nvidia.settable.lock");
+        assert_eq!(m.params["min"], 210);
+        assert!(m.text.starts_with("Clock offsets can be set. Clocks can be pinned between 210 and 3090 MHz"));
+        assert!(!m.text.contains('{'), "every placeholder must be filled: {}", m.text);
+    }
+
+    /// When the offsets cannot even be read, the X-display hint is the whole
+    /// story and stands on its own - key and all, so it too can be translated.
+    #[test]
+    fn an_unreadable_card_passes_its_hint_through_untouched() {
+        let hint = msg!("overclock.nvidia.noSocket", { "path" => "/tmp/.X11-unix" }, "no socket in {path}");
+        let m = describe_nvidia(OffsetState::Unreadable(hint.clone()), Some(Range::new(1, 2)), None);
+        assert_eq!(m, hint);
     }
 }

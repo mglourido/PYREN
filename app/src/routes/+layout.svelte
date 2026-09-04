@@ -12,7 +12,7 @@
   import { settings } from "$lib/stores/settings.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { t, tm } from "$lib/i18n/index.svelte";
   import { goto } from "$app/navigation";
 
   let { children }: { children: Snippet } = $props();
@@ -114,7 +114,9 @@
           dismissible
           ondismiss={() => (unsupportedNoticeDismissed = true)}
         >
-          {telemetry.systemInfo?.reason ?? t("notices.unsupportedBody")}
+          {telemetry.systemInfo?.reason
+            ? tm(telemetry.systemInfo.reason)
+            : t("notices.unsupportedBody")}
         </Banner>
       {/if}
 

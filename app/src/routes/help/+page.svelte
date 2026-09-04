@@ -6,7 +6,7 @@
    */
   import Icon from "$lib/components/Icon.svelte";
   import Panel from "$lib/components/Panel.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import {
     APP_VERSION,
@@ -68,7 +68,7 @@
       <dt>{t("system.kernel")}</dt>
       <dd>{info?.kernel ?? unknown}</dd>
       <dt>{t("system.cpu")}</dt>
-      <dd>{info?.cpu ?? unknown}{info?.cpuCores ? ` (${info.cpuCores} threads)` : ""}</dd>
+      <dd>{info?.cpu ?? unknown}{info?.cpuCores ? ` (${t("system.threads", { n: info.cpuCores })})` : ""}</dd>
       <dt>{t("system.gpu")}</dt>
       <dd>{info?.gpus?.join(", ") || unknown}</dd>
     </dl>
@@ -85,7 +85,7 @@
         {:else if info?.compatibility === "monitoringOnly"}{t("system.monitoringOnly")}
         {:else}{t("system.incompatible")}{/if}
       </span>
-      {#if info?.reason}<span class="reason">— {info.reason}</span>{/if}
+      {#if info?.reason}<span class="reason">— {tm(info.reason)}</span>{/if}
     </p>
   </Panel>
 

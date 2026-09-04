@@ -105,7 +105,8 @@
   "performance": {
     "warning": "Performance settings are overridden by system defaults when running on battery or on a low-power AC adapter. Your system's performance returns to normal once a compatible AC adapter is connected.",
     "powerMode": "Power mode",
-    "hotkey": "Hotkey: Fn + P",
+    "hotkey": "Hotkey: {shortcut}",
+    "hotkeyUnset": "Hotkey: not set",
     "autoModeSettings": "Automatic power mode settings",
     "applyToOsPowerProfile": "Apply to the OS power profile",
     "modes": {
@@ -140,7 +141,12 @@
     "autoPaused": "Automatic switching paused for {seconds} s after your manual change.",
     "lastAutoSwitch": "Last automatic switch: {detail}",
     "onBattery": "On battery",
-    "onMains": "On AC power"
+    "onMains": "On AC power",
+    "applyToOsProfileHint": "Mirrors the selected mode onto the OS power profile (power-profiles-daemon / platform_profile), so applications that read it stay in sync.",
+    "fanReverse": "reverse",
+    "pl1Hint": "Sustained CPU power limit, in watts. This is the one the fans feel.",
+    "pl2Hint": "Short-term boost limit, in watts.",
+    "smartBoostHint": "Extra wattage the firmware may add on top of the base limit."
   },
   "advanced": {
     "gpuOverclocking": "GPU overclocking",
@@ -156,6 +162,7 @@
     "speed": "Clock",
     "utilisation": "Utilization",
     "disclaimer": "Overclocking can make your system unstable and may void your warranty. Changes are not applied until you press Apply.",
+    "consentText": "Overclocking runs this GPU outside the settings it was shipped with. An offset that survives a benchmark can still hang the machine in a game, and when it does there is no error message: the screen stops, and anything unsaved is gone. Nothing here is covered by the manufacturer's warranty. Every change is reverted automatically unless you confirm it, and none is restored after a reboot unless you ask for that separately.",
     "consentTitle": "Read this before you change anything",
     "consentAccept": "I understand - enable overclocking",
     "pending": "Keep these settings? They are undone in {seconds} s if you say nothing.",
@@ -203,7 +210,9 @@
     "block": "Block",
     "high": "High",
     "medium": "Medium",
-    "low": "Low"
+    "low": "Low",
+    "doubleForce": "Double force",
+    "doubleForceHint": "Applies the priority rules to already-established connections too."
   },
   "keys": {
     "selectKey": "Select a key to get started:",
@@ -328,7 +337,35 @@
     "laptop": "Laptop",
     "desktop": "Desktop",
     "monitoringOnly": "Monitoring only",
-    "biosDate": "BIOS date"
+    "biosDate": "BIOS date",
+    "threads": "{n} threads",
+    "reason": {
+      "monitoringOnly": "the hp-wmi interface is present but nothing here accepted control; fan speeds and temperatures can still be read",
+      "unsupported": "no hp-wmi interface and no power-mode mechanism; monitoring works, hardware control does not",
+      "accepts": "this machine accepts: {list}"
+    },
+    "can": {
+      "fanSpeed": "fan speed",
+      "fanMode": "fan mode (auto/max only)",
+      "powerModes": "power modes",
+      "lightbar": "lightbar colour"
+    }
+  },
+  "acpi": {
+    "notLoaded": "the acpi_call kernel module is not loaded, so {path} does not exist; {hint}",
+    "needsRoot": "writing {path} needs root",
+    "io": "{path}: {error}"
+  },
+  "rgb": {
+    "lightbar": {
+      "refused": "the firmware refused the lightbar call (it answered: {answer})",
+      "unreadable": "the firmware answered {answer}, which is not a lightbar reply"
+    },
+    "err": {
+      "zonesRequired": "params.zones is required: four colours, '#rrggbb' or [r, g, b]",
+      "zonesCount": "params.zones takes 1 to {max} colours, not {got}",
+      "colorRequired": "params.color is required: '#rrggbb' or [r, g, b]"
+    }
   },
   "diagnostics": {
     "title": "Hardware check",
@@ -345,7 +382,159 @@
     "remedy": "What to do",
     "neverRun": "The check has not been run yet.",
     "cliHint": "The same check runs without the app: <code>cargo run -p pyren-check</code> (add <code>--json</code> for a bug report).",
-    "wroteToHardware": "This run wrote to the hardware and restored the previous state."
+    "wroteToHardware": "This run wrote to the hardware and restored the previous state.",
+    "summary": {
+      "fullControlTested": "Fan control works: speeds can be read and the PWM channel accepted a write.",
+      "fullControlUntested": "Fan control looks available: the PWM channel is present. Re-run with writes enabled to confirm the hardware accepts them.",
+      "monitoringOnly": "Fan speeds can be read, but this driver exposes no PWM channel, so speed cannot be set.",
+      "unsupportedWithTemp": "This machine exposes no HP fan-control interface. Temperature can still be read, so monitoring works.",
+      "unsupportedNoTemp": "This machine exposes no HP fan-control interface. No HP fan interface and no usable temperature sensor were found."
+    },
+    "driverNotice": {
+      "noPwm": "The kernel's hp-wmi has no pwm1 for this board. Recent kernels ship manual fan control upstream, so upgrading the kernel is the first thing to try. Failing that, a patched out-of-tree driver exists: {hint}. Installing it replaces a kernel module, so it is a deliberate step, not something this app does for you.",
+      "noHpWmi": "No hp-wmi device at all. On an HP OMEN or Victus laptop, load the hp_wmi module; on other hardware this is expected and fan control is not applicable."
+    },
+    "checks": {
+      "notExposed": "not exposed by this driver",
+      "notANumberAt": "{path} contains something that is not a number",
+      "readError": "{path}: {error}",
+      "genericError": "{error}",
+      "hp-wmi": {
+        "title": "hp-wmi platform driver",
+        "present": "/sys/devices/platform/hp-wmi is present",
+        "absent": "/sys/devices/platform/hp-wmi does not exist",
+        "remedy": "This is normal on non-HP hardware. On an HP laptop, check that the hp_wmi module is loaded (`modprobe hp_wmi`) and that the BIOS exposes WMI."
+      },
+      "hwmon": {
+        "title": "hwmon node",
+        "found": "found at {path}",
+        "absent": "no hwmon directory under /sys/devices/platform/hp-wmi/hwmon"
+      },
+      "fan1": { "title": "Fan 1 speed" },
+      "fan2": { "title": "Fan 2 speed" },
+      "fan": {
+        "reverse": "{raw} raw -> {actual} rpm, spinning in reverse (fan cleaner active)",
+        "tooHigh": "{raw} rpm is implausibly high",
+        "rpm": "{raw} rpm"
+      },
+      "cpu-temp": {
+        "title": "CPU temperature",
+        "ok": "{celsius} °C",
+        "implausible": "{celsius} °C is implausible"
+      },
+      "pwm1": {
+        "title": "PWM channel",
+        "notExposed": "pwm1 is not exposed, so fan speed cannot be set",
+        "remedyNotice": "Needs a kernel whose hp-wmi supports this board (see the notice below).",
+        "missing": "{path} is missing",
+        "remedy": "Needs a kernel whose hp-wmi supports this board.",
+        "ok": "pwm1 = {value} (0-255)",
+        "outOfRange": "pwm1 = {value}, outside the documented 0-255 range",
+        "notANumber": "pwm1 is not a number"
+      },
+      "pwm1_enable": {
+        "title": "Fan control mode",
+        "notExposed": "pwm1_enable is not exposed",
+        "mode0": "0 - max (firmware overridden to full speed)",
+        "mode1": "1 - manual (pwm1 is in effect)",
+        "mode2": "2 - automatic (firmware curve)",
+        "modeUnknown": "{value} - unknown mode"
+      },
+      "pwm-write": {
+        "title": "PWM accepts writes",
+        "noChannel": "no PWM channel to write to",
+        "notAttempted": "not attempted; enable writes to test this",
+        "noMode": "could not read the current mode",
+        "noValue": "could not read the current PWM value",
+        "ok": "wrote and read back pwm1 = {value} without changing fan speed",
+        "mismatch": "wrote {wrote} but read back {readback}; the driver may quantise or ignore values",
+        "denied": "permission denied; run as root to test writes",
+        "notRestored": "{detail} - WARNING: the original fan mode could not be restored; set it manually or reboot"
+      },
+      "hwmon-attrs": {
+        "title": "hwmon attributes",
+        "noNode": "no hwmon node",
+        "unreadable": "{path} is unreadable",
+        "empty": "the hwmon node is empty"
+      },
+      "kernel-log": {
+        "title": "hp-wmi kernel messages",
+        "noDmesg": "dmesg is not available",
+        "notReadable": "kernel log not readable; run as root, or paste `dmesg | grep -i hp.wmi`",
+        "none": "no hp-wmi messages"
+      },
+      "platform-profile": {
+        "title": "ACPI platform profile",
+        "ok": "{current} (available: {choices})",
+        "absent": "not exposed; power modes fall back to power-profiles-daemon or the CPU EPP hint"
+      },
+      "acpi-call": {
+        "title": "acpi_call module",
+        "ok": "/proc/acpi/call is available",
+        "absent": "/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it",
+        "remedy": "Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call (Fedora), then `modprobe acpi_call`."
+      }
+    }
+  },
+  "fan": {
+    "control": {
+      "unsupported": "this machine's driver does not support {what} (missing {missing})",
+      "needsRoot": "writing {path} needs root: {error}",
+      "io": "writing {path}: {error}"
+    },
+    "caps": {
+      "both": "both pwm1 and pwm1_enable",
+      "switchOnly": "pwm1_enable but no pwm1, so only auto and max are possible",
+      "speedOnly": "pwm1 but no pwm1_enable",
+      "none": "no fan control interface at all"
+    },
+    "err": {
+      "cannotDoMode": "this machine cannot do '{mode}': the hp-wmi driver exposes {exposes}. Run fan.diagnose for the details.",
+      "cannotCalibrate": "calibration puts the fans at max and watches them, which this machine cannot do: the hp-wmi driver exposes {exposes}. Run fan.diagnose for the details.",
+      "noCpuTemp": "no CPU temperature sensor, so a curve cannot be followed",
+      "curveEmpty": "the curve has no points",
+      "curveNoPoints": "params.curve must have at least one point",
+      "curvePointNotFinite": "curve point ({temp}, {percent}) is not a finite number",
+      "calibrating": "a calibration run is already in progress"
+    }
+  },
+  "hotkey": {
+    "unavailable": {
+      "noDevices": "no keyboard devices in /dev/input, so no hotkey can be heard here",
+      "needsRoot": "reading /dev/input needs root; the systemd unit runs the daemon as root"
+    },
+    "detail": {
+      "noKeyBound": "no key bound yet; press yours during 'hotkey learn' to bind it",
+      "disabled": "a key is bound and the hotkey is switched off",
+      "watching": "watching {count} keyboards for the bound key"
+    },
+    "err": {
+      "watcherDown": "the hotkey watcher is not running, so no key can be heard",
+      "learnBusy": "something else is already waiting for a key press",
+      "noAction": "this daemon has no hotkey action wired up",
+      "vagueTrigger": "a trigger needs a keycode or a scancode; got {trigger}",
+      "buttonTrigger": "keycode {keycode} is a mouse or touchpad button, not a key; binding it would throw the widget on screen on every click",
+      "modifierTrigger": "keycode {keycode} is a modifier, which is never a shortcut on its own; bind it together with another key"
+    }
+  },
+  "power": {
+    "autoReason": {
+      "toBattery": "switched to battery",
+      "pluggedIn": "plugged in",
+      "sustainedLoad": "sustained load ({percent}% per core)",
+      "batteryLow": "battery at {percent}%",
+      "idle": "idle"
+    },
+    "autoSwitch": {
+      "failed": "{mode} failed: {failed}"
+    },
+    "err": {
+      "badMode": "params.mode must be one of eco, balanced, performance, unlimited",
+      "applyFailed": "no power mechanism could be applied: {detail}",
+      "enabledBool": "params.enabled must be a boolean",
+      "noPackageLimit": "this machine exposes no package power limit, so there is nothing to tune",
+      "wattsPositive": "power limits must be a positive number of watts"
+    }
   },
   "installer": {
     "title": "Kernel driver",
@@ -417,7 +606,58 @@
     "report": "What was done",
     "succeeded": "Succeeded",
     "failed": "Failed",
-    "rebootHint": "The module was replaced. Reboot, or reload hp-wmi, before the new one is in use."
+    "rebootHint": "The module was replaced. Reboot, or reload hp-wmi, before the new one is in use.",
+    "step": {
+      "patch-source": "Patch the driver source (fan ceilings, and any experimental board id)",
+      "stage-source": "Copy the driver sources and dkms.conf to {path}",
+      "backup-driver": "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so depmod picks the new one unambiguously",
+      "dkms-remove-old": "Remove the previously registered DKMS module",
+      "dkms-add": "Register the module with DKMS",
+      "dkms-build": "Build the module",
+      "dkms-install": "Install the built module",
+      "make": "Build the module for the running kernel",
+      "install-module": "Install hp-wmi.ko into /lib/modules/<kernel>/kernel/drivers/platform/x86/hp",
+      "install-hook-pacman": "Install the pacman hook that rebuilds the module on kernel upgrades",
+      "install-hook-postinst": "Install the /etc/kernel/postinst.d hook that rebuilds on kernel upgrades",
+      "install-hook-kernel-install": "Install the /etc/kernel/install.d hook that rebuilds on kernel upgrades",
+      "make-clean": "Clean the build tree",
+      "depmod": "Rebuild module dependencies",
+      "modprobe-remove": "Unload the current hp-wmi",
+      "modprobe-remove-plain": "Unload hp-wmi",
+      "modprobe-patched": "Load the patched hp-wmi",
+      "modprobe-stock": "Load the stock hp-wmi",
+      "initramfs": "Regenerate the initramfs",
+      "dkms-remove": "Deregister the DKMS module",
+      "remove-sources": "Delete /usr/src/{name}-{version}",
+      "remove-hooks": "Delete any installed kernel-upgrade hook",
+      "restore-backups": "Rename every hp-wmi.ko.bak back to hp-wmi.ko, restoring the stock driver",
+      "create-group": "Create the '{group}' group that may reach the daemon",
+      "write-unit": "Write /etc/systemd/system/pyren-daemon.service",
+      "daemon-reload": "Reload systemd units",
+      "enable": "Enable and start the daemon at boot",
+      "disable": "Stop the daemon and remove it from boot",
+      "remove-unit": "Delete the systemd unit file"
+    },
+    "warn": {
+      "alreadyWorks": "Fan control already works on this machine (pwm1 is present), so the patched driver would add nothing.",
+      "upstream": "Kernel {kernel} already ships manual fan control upstream (since {major}.{minor}), so the patch is probably unnecessary. It is only worth installing if your board is missing from the stock driver's tables.",
+      "noHook": "This distribution has no recognised kernel-hook mechanism, so the module will be built for the running kernel only and will need reinstalling after a kernel upgrade.",
+      "serviceInstalled": "The service unit is already installed; it will be replaced.",
+      "joinGroup": "Add each user who should control this machine to the '{group}' group: sudo usermod -aG {group} $USER (then log out and back in)."
+    },
+    "blocker": {
+      "alreadyWorking": "Fan control is already available; nothing to install.",
+      "noDriverSource": "The patched hp-wmi sources were not found. They are not bundled with pyren; point PYREN_DRIVER_DIR at a checkout of omen-fan-control's data/driver directory, or install them to /usr/share/pyren/driver.",
+      "kernelHeaders": "Kernel headers for the running kernel are missing or incomplete, so the module cannot be compiled.",
+      "buildTools": "A C compiler and make are required to build the module."
+    },
+    "exec": {
+      "skipped": "skipped after an earlier failure",
+      "internalAction": "internal action"
+    },
+    "err": {
+      "planNotRunnable": "this plan cannot run: {reasons}"
+    }
   },
   "admin": {
     "title": "Permissions",
@@ -448,5 +688,83 @@
     "rootNo": "Running unprivileged. Readings that need root — integrated-GPU utilisation — are unavailable. Install the service above to fix this permanently.",
     "rootShadowed": "A privileged service is installed and running, but the app is connected to a different, unprivileged daemon on {path}. Stop that one — and if the group row above asks you to log out, do that first, since the service's socket is only reachable with the group.",
     "rootUnknown": "Unknown until the daemon can be reached."
+  },
+  "overclock": {
+    "clamp": {
+      "coreOutOfRange": "core offset {requested} MHz is outside what the driver advertises ({min} to {max} MHz); using {used} MHz",
+      "noCoreOffset": "this GPU exposes no core-clock offset, so that part was ignored",
+      "memOutOfRange": "memory offset {requested} MHz is outside what the driver advertises ({min} to {max} MHz); using {used} MHz",
+      "noMemOffset": "this GPU exposes no memory offset, so that part was ignored",
+      "lockOutOfRange": "clock lock {reqMin}-{reqMax} MHz is outside what this GPU supports ({min} to {max} MHz); using {usedMin}-{usedMax} MHz",
+      "noClockLock": "this GPU cannot have its clocks pinned, so that part was ignored"
+    },
+    "probe": {
+      "noGpu": "no GPU was found to ask about",
+      "tunable": "tunable: {names}",
+      "nothingTunable": "a GPU was found, and nothing about it can be changed on this machine"
+    },
+    "gpu": {
+      "unknownDriver": "no tuning interface is known for the {driver} driver",
+      "nvidia": {
+        "settable": {
+          "lock": "Clock offsets can be set. Clocks can be pinned between {min} and {max} MHz, which needs root and stays inside what the card already supports.",
+          "ceiling": "Clock offsets can be set. The card reports a maximum of {mhz} MHz and will not enumerate the clocks it supports, so pinning them is not offered.",
+          "noLock": "Clock offsets can be set. This card's clocks cannot be pinned."
+        },
+        "coolbits": {
+          "lock": "Clock offsets are readable but not settable; the X screen needs Coolbits before the driver will take one. Clocks can be pinned between {min} and {max} MHz, which needs root and stays inside what the card already supports.",
+          "ceiling": "Clock offsets are readable but not settable; the X screen needs Coolbits before the driver will take one. The card reports a maximum of {mhz} MHz and will not enumerate the clocks it supports, so pinning them is not offered.",
+          "noLock": "Clock offsets are readable but not settable; the X screen needs Coolbits before the driver will take one. This card's clocks cannot be pinned."
+        },
+        "readable": {
+          "lock": "Clock offsets are readable. Clocks can be pinned between {min} and {max} MHz, which needs root and stays inside what the card already supports.",
+          "ceiling": "Clock offsets are readable. The card reports a maximum of {mhz} MHz and will not enumerate the clocks it supports, so pinning them is not offered.",
+          "noLock": "Clock offsets are readable. This card's clocks cannot be pinned."
+        }
+      },
+      "amd": {
+        "overdriveOn": "AMD Overdrive is enabled on this card and pyren does not drive it yet: it has never been tested on AMD hardware, and an untested write here is not the kind that fails with an error message",
+        "overdriveOff": "this card exposes pp_od_clk_voltage without an OD_SCLK table, so Overdrive is off (amdgpu.ppfeaturemask enables it)",
+        "noInterface": "no pp_od_clk_voltage on this card, so the kernel is offering no Overdrive interface at all"
+      },
+      "intel": {
+        "ceiling": "Intel graphics expose a frequency ceiling ({mhz} MHz here), not an offset: it cannot be raised above what the chip already runs at, so there is nothing on this card to overclock",
+        "ceilingUnknown": "Intel graphics expose a frequency ceiling, not an offset, and this kernel publishes no maximum for it"
+      }
+    },
+    "nvidia": {
+      "notInstalled": "{tool} is not installed",
+      "unreadable": "could not read {what}: {detail}",
+      "smiNeedsRoot": "nvidia-smi refused: {message}",
+      "smiRefused": "nvidia-smi refused: {message}",
+      "noSocket": "nvidia-settings has no X display to talk to: no socket in {path}",
+      "refused": "nvidia-settings has no X display to talk to: the X server at {display} refused this process. It admits the user that owns it, and a daemon running as root is not that user - so either that user lets us in from inside their session (xhost +si:localuser:root), or PYREN_X_DISPLAY and PYREN_XAUTHORITY point us at a display we may open. There may be no cookie file to point at: a Wayland compositor's Xwayland is often started without one",
+      "noSession": "nvidia-settings has no X display to talk to: could not open {display} ({whose}). No desktop session was running when this was asked - a daemon started at boot looks before anybody has logged in - so ask again with overclock.probe now that one is up",
+      "noDisplayHint": {
+        "withCookie": "nvidia-settings has no X display to talk to: could not open {display} ({whose}) with {path}. A daemon running as root is not in anybody's session; point it at one with PYREN_X_DISPLAY and PYREN_XAUTHORITY, or set the offsets from a process that is already inside that session",
+        "noCookie": "nvidia-settings has no X display to talk to: could not open {display} ({whose}) with no cookie file to authenticate with. A daemon running as root is not in anybody's session; point it at one with PYREN_X_DISPLAY and PYREN_XAUTHORITY, or set the offsets from a process that is already inside that session"
+      },
+      "coolbits": "{message} - this is what an X screen with no Coolbits says, and root does not change it: the screen needs Option \"Coolbits\" \"28\" in its X configuration, and a session with no X screen of its own has none to configure"
+    },
+    "note": {
+      "unconfirmedAtStart": "the last overclock was never confirmed, so this boot starts at stock and nothing was restored",
+      "kept": "kept the change to {gpu}",
+      "backToStock": "back to the clocks the firmware shipped",
+      "nothingToUndo": "nothing to undo: this daemon has not moved these clocks",
+      "revertedUnconfirmed": "the change to {gpu} was not confirmed, so it was undone",
+      "revertedUndone": "the change to {gpu} was undone"
+    },
+    "err": {
+      "perGpu": "{id}: {error}",
+      "couldNotUndo": "could not undo the overclock: {error}",
+      "context": "{context}: {detail}",
+      "notConsented": "overclocking has not been consented to on this machine; call overclock.setConsent with the text from overclock.getState first",
+      "pending": "the last change to {gpu} is still waiting to be confirmed or undone",
+      "nothingToTune": "nothing here can be tuned: {detail}",
+      "nothingPending": "there is nothing waiting to be confirmed",
+      "gpuGone": "{gpu} is gone",
+      "verifyCore": "the driver reports a core offset of {got} MHz after being asked for {asked} MHz",
+      "verifyMem": "the driver reports a memory offset of {got} MHz after being asked for {asked} MHz"
+    }
   }
 }

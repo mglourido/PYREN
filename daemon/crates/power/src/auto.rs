@@ -39,6 +39,7 @@
 
 use std::fs;
 
+use pyren_core::{msg, Msg};
 use serde::{Deserialize, Serialize};
 
 use crate::PowerMode;
@@ -133,8 +134,8 @@ fn load_ratio() -> f64 {
 pub struct AutoDecision {
     pub mode: PowerMode,
     /// Shown in the UI and the log, so an unexplained mode change never
-    /// looks like the daemon acting on its own.
-    pub reason: String,
+    /// looks like the daemon acting on its own. Translatable.
+    pub reason: Msg,
     /// True for an answer to the power source changing. Those are immediate
     /// and are not suppressed by a manual override, because plugging the
     /// machine in is the user speaking too.
@@ -222,9 +223,9 @@ impl AutoSwitcher {
                 return Some(AutoDecision {
                     mode,
                     reason: if on_battery {
-                        "switched to battery".to_string()
+                        msg!("power.autoReason.toBattery", "switched to battery")
                     } else {
-                        "plugged in".to_string()
+                        msg!("power.autoReason.pluggedIn", "plugged in")
                     },
                     from_transition: true,
                 });
@@ -265,15 +266,23 @@ impl AutoSwitcher {
         if count >= config.samples_to_switch.max(1) {
             self.pending = None;
             let reason = if inputs.load_ratio >= config.load_high {
-                format!("sustained load ({:.0}% per core)", inputs.load_ratio * 100.0)
+                msg!(
+                    "power.autoReason.sustainedLoad",
+                    { "percent" => format!("{:.0}", inputs.load_ratio * 100.0) },
+                    "sustained load ({percent}% per core)"
+                )
             } else if on_battery
                 && inputs
                     .battery_percent
                     .is_some_and(|p| p <= config.battery_low_percent)
             {
-                format!("battery at {:.0}%", inputs.battery_percent.unwrap_or_default())
+                msg!(
+                    "power.autoReason.batteryLow",
+                    { "percent" => format!("{:.0}", inputs.battery_percent.unwrap_or_default()) },
+                    "battery at {percent}%"
+                )
             } else {
-                "idle".to_string()
+                msg!("power.autoReason.idle", "idle")
             };
             return Some(AutoDecision { mode: target, reason, from_transition: false });
         }

@@ -84,8 +84,11 @@ fn compare(tag: &str, files: &[(&str, &str)]) {
         rust.report["system"]["compatibility"], shell.report["system"]["compatibility"],
         "{tag}: compatibility differs"
     );
+    // `pyren-check`'s `reason` is a translatable `Msg` object (`{ key,
+    // params, text }`); the shell script emits the plain English string. The
+    // wording is what must not drift, so compare that.
     assert_eq!(
-        rust.report["system"]["reason"], shell.report["system"]["reason"],
+        rust.report["system"]["reason"]["text"], shell.report["system"]["reason"],
         "{tag}: the reason behind the verdict differs"
     );
     assert_eq!(

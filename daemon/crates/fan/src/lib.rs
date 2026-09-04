@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{Module, ModuleError, ModuleResult};
+use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -127,7 +127,7 @@ struct State {
     /// run would measure the ramp back down.
     calibrating: bool,
     last_target_pwm: Option<u8>,
-    last_control_error: Option<String>,
+    last_control_error: Option<Msg>,
     last_save_error: Option<String>,
 }
 
@@ -280,12 +280,15 @@ impl FanModule {
 
     fn set_mode(&self, mode: FanMode, pwm: Option<u8>) -> ModuleResult {
         if !self.caps.supports(mode) {
-            return Err(ModuleError::NotCapable(format!(
-                "this machine cannot do '{}': the hp-wmi driver exposes {}. \
-                 Run fan.diagnose for the details.",
-                mode.as_str(),
-                describe(self.caps)
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::NotCapable,
+                msg!(
+                    "fan.err.cannotDoMode",
+                    { "mode" => mode.as_str(), "exposes" => describe(self.caps).text },
+                    "this machine cannot do '{mode}': the hp-wmi driver exposes {exposes}. \
+                     Run fan.diagnose for the details."
+                ),
+            ));
         }
 
         {
@@ -310,13 +313,20 @@ impl FanModule {
 
     fn set_curve(&self, curve: Vec<CurvePoint>, interpolation: Option<Interpolation>) -> ModuleResult {
         if curve.is_empty() {
-            return Err(ModuleError::InvalidParams("params.curve must have at least one point".into()));
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!("fan.err.curveNoPoints", "params.curve must have at least one point"),
+            ));
         }
         if let Some(bad) = curve.iter().find(|p| !p.temp_c.is_finite() || !p.percent.is_finite()) {
-            return Err(ModuleError::InvalidParams(format!(
-                "curve point ({}, {}) is not a finite number",
-                bad.temp_c, bad.percent
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!(
+                    "fan.err.curvePointNotFinite",
+                    { "temp" => bad.temp_c, "percent" => bad.percent },
+                    "curve point ({temp}, {percent}) is not a finite number"
+                ),
+            ));
         }
 
         {
@@ -346,19 +356,24 @@ impl FanModule {
     /// the run happens outside it.
     fn calibrate(&self, seconds: u64) -> ModuleResult {
         if !self.caps.supports(FanMode::Max) {
-            return Err(ModuleError::NotCapable(format!(
-                "calibration puts the fans at max and watches them, which this \
-                 machine cannot do: the hp-wmi driver exposes {}. \
-                 Run fan.diagnose for the details.",
-                describe(self.caps)
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::NotCapable,
+                msg!(
+                    "fan.err.cannotCalibrate",
+                    { "exposes" => describe(self.caps).text },
+                    "calibration puts the fans at max and watches them, which this machine \
+                     cannot do: the hp-wmi driver exposes {exposes}. Run fan.diagnose for \
+                     the details."
+                ),
+            ));
         }
 
         {
             let mut state = lock(&self.state);
             if state.calibrating {
-                return Err(ModuleError::Busy(
-                    "a calibration run is already in progress".into(),
+                return Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!("fan.err.calibrating", "a calibration run is already in progress"),
                 ));
             }
             state.calibrating = true;
@@ -375,8 +390,7 @@ impl FanModule {
         let calibration = match outcome {
             Ok(calibration) => calibration,
             Err(e) => {
-                let message = e.to_string();
-                state.last_control_error = Some(message.clone());
+                state.last_control_error = Some(e.to_msg());
                 return Err(control_error(e));
             }
         };
@@ -442,8 +456,10 @@ impl FanModule {
             FanMode::Manual => Some(state.config.manual_pwm),
             FanMode::Curve => {
                 let Some(temp_c) = temp_c else {
-                    state.last_control_error =
-                        Some("no CPU temperature sensor, so a curve cannot be followed".into());
+                    state.last_control_error = Some(msg!(
+                        "fan.err.noCpuTemp",
+                        "no CPU temperature sensor, so a curve cannot be followed"
+                    ));
                     return Ok(());
                 };
                 let avg = state.smoother.push(temp_c as f64);
@@ -451,7 +467,8 @@ impl FanModule {
                 match curve::target_pwm(&state.config.curve, avg, interpolation) {
                     Some(pwm) => Some(pwm),
                     None => {
-                        state.last_control_error = Some("the curve has no points".into());
+                        state.last_control_error =
+                            Some(msg!("fan.err.curveEmpty", "the curve has no points"));
                         return Ok(());
                     }
                 }
@@ -487,8 +504,7 @@ impl FanModule {
                 Ok(())
             }
             Err(e) => {
-                let message = e.to_string();
-                state.last_control_error = Some(message.clone());
+                state.last_control_error = Some(e.to_msg());
                 Err(control_error(e))
             }
         }
@@ -618,22 +634,25 @@ impl Module for FanModule {
 /// apart either hides a control that would work or offers one that never
 /// will.
 fn control_error(e: control::ControlError) -> ModuleError {
-    let message = e.to_string();
-    match e {
-        control::ControlError::Unsupported(_, _) => ModuleError::NotCapable(message),
-        control::ControlError::PermissionDenied(_, _) => ModuleError::PermissionDenied(message),
-        control::ControlError::Io(_, _) => ModuleError::Io(message),
-    }
+    let kind = match e {
+        control::ControlError::Unsupported(_, _) => ErrorKind::NotCapable,
+        control::ControlError::PermissionDenied(_, _) => ErrorKind::PermissionDenied,
+        control::ControlError::Io(_, _) => ErrorKind::Io,
+    };
+    ModuleError::localised(kind, e.to_msg())
 }
 
 /// Human-readable version of what the driver offers, for an error the user
 /// will actually read.
-fn describe(caps: Capabilities) -> &'static str {
+fn describe(caps: Capabilities) -> Msg {
     match (caps.switch_mode, caps.set_speed) {
-        (true, true) => "both pwm1 and pwm1_enable",
-        (true, false) => "pwm1_enable but no pwm1, so only auto and max are possible",
-        (false, true) => "pwm1 but no pwm1_enable",
-        (false, false) => "no fan control interface at all",
+        (true, true) => msg!("fan.caps.both", "both pwm1 and pwm1_enable"),
+        (true, false) => msg!(
+            "fan.caps.switchOnly",
+            "pwm1_enable but no pwm1, so only auto and max are possible"
+        ),
+        (false, true) => msg!("fan.caps.speedOnly", "pwm1 but no pwm1_enable"),
+        (false, false) => msg!("fan.caps.none", "no fan control interface at all"),
     }
 }
 

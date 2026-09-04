@@ -104,6 +104,31 @@ pub enum ControlError {
     Io(String, String),
 }
 
+impl ControlError {
+    /// The translatable sentence a client should show. The `{1}` operating-
+    /// system error text is passed through as a param, not translated.
+    pub fn to_msg(&self) -> pyren_core::Msg {
+        use pyren_core::msg;
+        match self {
+            Self::Unsupported(what, missing) => msg!(
+                "fan.control.unsupported",
+                { "what" => *what, "missing" => *missing },
+                "this machine's driver does not support {what} (missing {missing})"
+            ),
+            Self::PermissionDenied(path, error) => msg!(
+                "fan.control.needsRoot",
+                { "path" => path.clone(), "error" => error.clone() },
+                "writing {path} needs root: {error}"
+            ),
+            Self::Io(path, error) => msg!(
+                "fan.control.io",
+                { "path" => path.clone(), "error" => error.clone() },
+                "writing {path}: {error}"
+            ),
+        }
+    }
+}
+
 fn write_sysfs(path: &Path, value: &str) -> Result<(), ControlError> {
     let shown = path.display().to_string();
     fs::write(path, format!("{value}\n")).map_err(|e| match e.kind() {

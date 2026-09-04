@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{EventBus, Module, ModuleError, ModuleResult};
+use pyren_core::{msg, ErrorKind, EventBus, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -198,7 +198,7 @@ struct State {
     /// When the user last set a mode by hand; the supervisor stays out of
     /// the way for `manual_override_secs` after that.
     manual_override_at: Option<Instant>,
-    last_auto_switch: Option<String>,
+    last_auto_switch: Option<Msg>,
     /// Set when the last write to disk failed, so the UI can say the
     /// setting will not survive a restart instead of quietly losing it.
     last_save_error: Option<String>,
@@ -460,9 +460,12 @@ impl Module for PowerModule {
                     .and_then(Value::as_str)
                     .and_then(PowerMode::parse)
                     .ok_or_else(|| {
-                        ModuleError::InvalidParams(
-                            "params.mode must be one of eco, balanced, performance, unlimited"
-                                .to_string(),
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!(
+                                "power.err.badMode",
+                                "params.mode must be one of eco, balanced, performance, unlimited"
+                            ),
                         )
                     })?;
 
@@ -471,7 +474,14 @@ impl Module for PowerModule {
                     // Every mechanism needs root; an unprivileged daemon
                     // failing here is the expected case in development, so
                     // say which one and why rather than a bare "failed".
-                    return Err(ModuleError::PermissionDenied(report.failed.join("; ")));
+                    return Err(ModuleError::localised(
+                        ErrorKind::PermissionDenied,
+                        msg!(
+                            "power.err.applyFailed",
+                            { "detail" => report.failed.join("; ") },
+                            "no power mechanism could be applied: {detail}"
+                        ),
+                    ));
                 }
                 serde_json::to_value(report).map_err(|e| ModuleError::Internal(e.to_string()))
             }
@@ -524,7 +534,10 @@ impl Module for PowerModule {
 
             "setApplyToOsProfile" => {
                 let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled must be a boolean".to_string())
+                    ModuleError::localised(
+                        ErrorKind::InvalidParams,
+                        msg!("power.err.enabledBool", "params.enabled must be a boolean"),
+                    )
                 })?;
                 let mode = {
                     let mut state = lock(&self.state);
@@ -541,7 +554,10 @@ impl Module for PowerModule {
 
             "setRestoreOnStart" => {
                 let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled must be a boolean".to_string())
+                    ModuleError::localised(
+                        ErrorKind::InvalidParams,
+                        msg!("power.err.enabledBool", "params.enabled must be a boolean"),
+                    )
                 })?;
                 let mut state = lock(&self.state);
                 state.config.restore_mode_on_start = enabled;
@@ -611,9 +627,8 @@ fn spawn_supervisor(
             let mut guard = lock(&state);
             if !report.is_empty() {
                 guard.mode = mode;
-                guard.last_auto_switch =
-                    Some(format!("{mode:?}: {} ({})", decision.reason, report.applied.join(", ")));
                 println!("pyren-daemon: power auto-switch -> {mode:?} ({})", decision.reason);
+                guard.last_auto_switch = Some(decision.reason);
                 // Only worth a disk write when the mode is meant to survive
                 // a reboot; otherwise the supervisor would rewrite the file
                 // every time conditions change.
@@ -628,7 +643,11 @@ fn spawn_supervisor(
                 drop(guard);
                 announce.publish(mode, "auto");
             } else {
-                guard.last_auto_switch = Some(format!("{mode:?} failed: {}", report.failed.join("; ")));
+                guard.last_auto_switch = Some(msg!(
+                    "power.autoSwitch.failed",
+                    { "mode" => format!("{mode:?}"), "failed" => report.failed.join("; ") },
+                    "{mode} failed: {failed}"
+                ));
                 eprintln!(
                     "pyren-daemon: power auto-switch to {mode:?} failed: {}",
                     report.failed.join("; ")
@@ -743,12 +762,19 @@ fn current_mode() -> Option<PowerMode> {
 /// percentage of nothing would be applied as a limit of nothing.
 fn percent_of(watts: f64, stock_uw: Option<u64>) -> Result<u8, ModuleError> {
     let stock_uw = stock_uw.ok_or_else(|| {
-        ModuleError::NotCapable(
-            "this machine exposes no package power limit, so there is nothing to tune".to_string(),
+        ModuleError::localised(
+            ErrorKind::NotCapable,
+            msg!(
+                "power.err.noPackageLimit",
+                "this machine exposes no package power limit, so there is nothing to tune"
+            ),
         )
     })?;
     if !watts.is_finite() || watts <= 0.0 {
-        return Err(ModuleError::InvalidParams("power limits must be a positive number of watts".into()));
+        return Err(ModuleError::localised(
+            ErrorKind::InvalidParams,
+            msg!("power.err.wattsPositive", "power limits must be a positive number of watts"),
+        ));
     }
     let percent = (watts * 1_000_000.0 / stock_uw as f64 * 100.0).round();
     Ok(percent.clamp(1.0, 100.0) as u8)

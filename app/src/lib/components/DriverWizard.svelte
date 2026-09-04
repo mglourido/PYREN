@@ -36,7 +36,7 @@
     type StepStatus,
   } from "$lib/api/daemon";
   import { hardware } from "$lib/stores/hardware.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { t, tm } from "$lib/i18n/index.svelte";
 
   let open = $state(false);
 
@@ -426,7 +426,7 @@
                 <li class="fail">
                   <Icon name="close" size={15} />
                   <div class="body">
-                    <span class="check-title">{blocker.message}</span>
+                    <span class="check-title">{tm(blocker.message)}</span>
                     {#if blocker.fix}<code>{blocker.fix}</code>{/if}
                   </div>
                 </li>
@@ -442,7 +442,7 @@
               {#each plan.warnings as warning, i (i)}
                 <li class="warn">
                   <Icon name="warning" size={15} />
-                  <div class="body"><span class="check-title">{warning}</span></div>
+                  <div class="body"><span class="check-title">{tm(warning)}</span></div>
                 </li>
               {/each}
             </ul>
@@ -464,7 +464,7 @@
               {#each plan.steps as step (step.id)}
                 <li>
                   <span class="check-title">
-                    {step.description}
+                    {tm(step.description)}
                     {#if step.optional}<span class="tag">{t("installer.optional")}</span>{/if}
                   </span>
                   <code>
@@ -492,8 +492,8 @@
               <li class={result.status}>
                 <Icon name={stepIcons[result.status]} size={15} />
                 <div class="body">
-                  <span class="check-title">{result.description}</span>
-                  {#if result.detail}<span class="detail">{result.detail}</span>{/if}
+                  <span class="check-title">{tm(result.description)}</span>
+                  {#if result.detail}<span class="detail">{tm(result.detail)}</span>{/if}
                 </div>
               </li>
             {/each}

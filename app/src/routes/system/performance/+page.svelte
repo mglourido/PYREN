@@ -8,6 +8,7 @@
    * on Windows: only "Unlimited" exposes manual power limits and manual
    * fan control, everything else hands the curve back to the firmware.
    */
+  import { onMount } from "svelte";
   import Banner from "$lib/components/Banner.svelte";
   import FanCurve from "$lib/components/FanCurve.svelte";
   import Icon from "$lib/components/Icon.svelte";
@@ -17,7 +18,8 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { daemon, type HotkeyStatus } from "$lib/api/daemon";
+  import { t, tm } from "$lib/i18n/index.svelte";
   import { formatTemp } from "$lib/stores/settings.svelte";
   import { telemetry, tempColor } from "$lib/stores/telemetry.svelte";
   import { LIMITS, hardware, type FanMode, type PowerMode } from "$lib/stores/hardware.svelte";
@@ -30,6 +32,31 @@
   ];
 
   let subTab = $state<"temp" | "power">("temp");
+
+  /**
+   * The bound shortcut, as the daemon has it - the same value Settings
+   * shows and lets the user rebind. Asked once on open (and again whenever
+   * the page is revisited), because only the daemon can hear a key and
+   * "Fn + P" is just this machine's factory guess. `null` while there is no
+   * daemon to ask; `label` is `null` when nothing is bound.
+   */
+  let hotkey = $state<HotkeyStatus | null>(null);
+  onMount(() => {
+    void daemon
+      .hotkeyStatus()
+      .then((status) => (hotkey = status))
+      .catch(() => (hotkey = null));
+  });
+
+  // No daemon to ask means the shortcut is unknowable from here - better to
+  // drop the hint than to keep asserting a factory guess that may be wrong.
+  const hotkeyText = $derived(
+    hotkey === null
+      ? null
+      : hotkey.label
+        ? t("performance.hotkey", { shortcut: hotkey.label })
+        : t("performance.hotkeyUnset"),
+  );
 
   const mode = $derived(hardware.state.powerMode);
   /** Manual power limits and manual fan control are Unlimited-only. */
@@ -119,6 +146,42 @@
   const showCurve = $derived(
     canSetSpeed && (hardware.state.fanMode === "manual" || hardware.state.fanMode === "curve"),
   );
+
+  /**
+   * The daemon's supervisor stays out of the way for a while after a manual
+   * mode change, and reports how long it has left. That figure is a
+   * snapshot from the last power-state read, not a live counter - left
+   * alone it would sit at ~599 in every mode until the next read. Age it
+   * against the wall clock here so it actually counts down, and drop the
+   * line once it - or the auto-switch feature itself - is gone.
+   */
+  let clockTick = $state(Date.now());
+  $effect(() => {
+    if (!hardware.power?.auto.enabled || !hardware.power?.autoOverrideSecondsLeft) return;
+    const id = setInterval(() => (clockTick = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+
+  const autoOverrideSecondsLeft = $derived.by(() => {
+    if (!hardware.power?.auto.enabled) return 0;
+    const snapshot = hardware.power.autoOverrideSecondsLeft;
+    if (!snapshot) return 0;
+    const elapsed = Math.max(0, Math.floor((clockTick - hardware.powerReadAt) / 1000));
+    return Math.max(0, snapshot - elapsed);
+  });
+
+  // When a shown countdown runs out, re-read once so the supervisor's
+  // resumed state (and anything it switched) replaces the stale snapshot.
+  // Gated on the line having been visible, so a sync can't re-arm itself.
+  let countingDown = false;
+  $effect(() => {
+    if (autoOverrideSecondsLeft > 0) {
+      countingDown = true;
+    } else if (countingDown) {
+      countingDown = false;
+      void hardware.syncFromDaemon();
+    }
+  });
 </script>
 
 <div class="page">
@@ -131,7 +194,9 @@
       <InfoTip>
         {t("performance.modeDesc.balanced")}
       </InfoTip>
-      <span class="hotkey">{t("performance.hotkey")}</span>
+      {#if hotkeyText}
+        <span class="hotkey">{hotkeyText}</span>
+      {/if}
 
       <label class="auto-select">
         <select
@@ -181,15 +246,15 @@
       </p>
     {/if}
 
-    {#if hardware.power?.autoOverrideSecondsLeft}
+    {#if autoOverrideSecondsLeft > 0}
       <p class="feedback">
-        {t("performance.autoPaused", { seconds: hardware.power.autoOverrideSecondsLeft })}
+        {t("performance.autoPaused", { seconds: autoOverrideSecondsLeft })}
       </p>
     {/if}
 
     {#if hardware.power?.lastAutoSwitch}
       <p class="feedback">
-        {t("performance.lastAutoSwitch", { detail: hardware.power.lastAutoSwitch })}
+        {t("performance.lastAutoSwitch", { detail: tm(hardware.power.lastAutoSwitch) })}
       </p>
     {/if}
 
@@ -200,10 +265,7 @@
         onchange={(e) => hardware.setApplyToOsProfile(e.currentTarget.checked)}
       />
       {t("performance.applyToOsPowerProfile")}
-      <InfoTip>
-        Mirrors the selected mode onto the OS power profile (power-profiles-daemon /
-        platform_profile), so applications that read it stay in sync.
-      </InfoTip>
+      <InfoTip>{t("performance.applyToOsProfileHint")}</InfoTip>
     </label>
 
     <hr class="rule" />
@@ -245,7 +307,7 @@
         <div class="rpm">
           <span class="digital">{telemetry.fanRpm} RPM</span>
           {#if telemetry.fanReverse}
-            <span class="reverse"><Icon name="refresh" size={14} /> reverse</span>
+            <span class="reverse"><Icon name="refresh" size={14} /> {t("performance.fanReverse")}</span>
           {/if}
         </div>
 
@@ -290,9 +352,7 @@
                 <span class="limit-label">
                   {label}
                   <InfoTip>
-                    {key === "pl1"
-                      ? "Sustained CPU power limit, in watts. This is the one the fans feel."
-                      : "Short-term boost limit, in watts."}
+                    {key === "pl1" ? t("performance.pl1Hint") : t("performance.pl2Hint")}
                   </InfoTip>
                 </span>
                 <Slider
@@ -330,7 +390,7 @@
           <div class="limit">
             <span class="limit-label">
               {t("performance.smartBoost")}
-              <InfoTip>Extra wattage the firmware may add on top of the base limit.</InfoTip>
+              <InfoTip>{t("performance.smartBoostHint")}</InfoTip>
             </span>
             <Toggle
               checked={hardware.state.smartBoostEnabled}

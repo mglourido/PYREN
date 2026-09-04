@@ -52,7 +52,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{Module, ModuleError, ModuleResult};
+use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -404,19 +404,27 @@ impl HotkeyModule {
             if let Some(reason) = &state.unavailable {
                 return Err(match reason {
                     Unavailable::NeedsRoot => {
-                        ModuleError::PermissionDenied(reason.message().into())
+                        ModuleError::localised(ErrorKind::PermissionDenied, reason.to_msg())
                     }
                     Unavailable::NoDevices => ModuleError::Unsupported,
                 });
             }
             if !state.watching {
-                return Err(ModuleError::Failed(
-                    "the hotkey watcher is not running, so no key can be heard".into(),
+                return Err(ModuleError::localised(
+                    ErrorKind::Failed,
+                    msg!(
+                        "hotkey.err.watcherDown",
+                        "the hotkey watcher is not running, so no key can be heard"
+                    ),
                 ));
             }
             if state.learning.open {
-                return Err(ModuleError::Busy(
-                    "something else is already waiting for a key press".into(),
+                return Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!(
+                        "hotkey.err.learnBusy",
+                        "something else is already waiting for a key press"
+                    ),
                 ));
             }
             state.learning = Learning { open: true, caught: None };
@@ -485,38 +493,58 @@ impl HotkeyModule {
     /// One sentence a CLI or a settings page can show without composing it
     /// from four booleans - and, when the answer is "nothing happens", the
     /// reason it is.
-    fn detail(&self, state: &State) -> String {
+    fn detail(&self, state: &State) -> Msg {
         if let Some(reason) = &state.unavailable {
-            return reason.message().to_string();
+            return reason.to_msg();
         }
         if state.config.triggers.is_empty() {
-            return "no key bound yet; press yours during 'hotkey learn' to bind it".into();
+            return msg!(
+                "hotkey.detail.noKeyBound",
+                "no key bound yet; press yours during 'hotkey learn' to bind it"
+            );
         }
         if !state.config.enabled {
-            return "a key is bound and the hotkey is switched off".into();
+            return msg!("hotkey.detail.disabled", "a key is bound and the hotkey is switched off");
         }
-        format!("watching {} keyboards for the bound key", state.devices.len())
+        msg!(
+            "hotkey.detail.watching",
+            { "count" => state.devices.len() },
+            "watching {count} keyboards for the bound key"
+        )
     }
 
     fn set_triggers(&self, triggers: Vec<Trigger>) -> ModuleResult {
         if let Some(vague) = triggers.iter().find(|t| !t.is_specific()) {
-            return Err(ModuleError::InvalidParams(format!(
-                "a trigger needs a keycode or a scancode; got {vague:?}"
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!(
+                    "hotkey.err.vagueTrigger",
+                    { "trigger" => format!("{vague:?}") },
+                    "a trigger needs a keycode or a scancode; got {trigger}"
+                ),
+            ));
         }
         if let Some(button) = triggers.iter().find(|t| t.is_button()) {
-            return Err(ModuleError::InvalidParams(format!(
-                "keycode {} is a mouse or touchpad button, not a key; \
-                 binding it would throw the widget on screen on every click",
-                button.keycode.unwrap_or_default()
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!(
+                    "hotkey.err.buttonTrigger",
+                    { "keycode" => button.keycode.unwrap_or_default() },
+                    "keycode {keycode} is a mouse or touchpad button, not a key; binding it \
+                     would throw the widget on screen on every click"
+                ),
+            ));
         }
         if let Some(modifier) = triggers.iter().find(|t| t.is_modifier_alone()) {
-            return Err(ModuleError::InvalidParams(format!(
-                "keycode {} is a modifier, which is never a shortcut on its own; \
-                 bind it together with another key",
-                modifier.keycode.unwrap_or_default()
-            )));
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!(
+                    "hotkey.err.modifierTrigger",
+                    { "keycode" => modifier.keycode.unwrap_or_default() },
+                    "keycode {keycode} is a modifier, which is never a shortcut on its own; \
+                     bind it together with another key"
+                ),
+            ));
         }
         let mut state = self.lock();
         state.config.triggers = triggers;
@@ -552,8 +580,9 @@ impl HotkeyModule {
                 action(&press);
                 Ok(json!({ "fired": true }))
             }
-            None => Err(ModuleError::Failed(
-                "this daemon has no hotkey action wired up".into(),
+            None => Err(ModuleError::localised(
+                ErrorKind::Failed,
+                msg!("hotkey.err.noAction", "this daemon has no hotkey action wired up"),
             )),
         }
     }
@@ -701,7 +730,10 @@ mod tests {
         );
 
         match refused {
-            Err(ModuleError::InvalidParams(why)) => assert!(why.contains("modifier"), "{why}"),
+            Err(e) => {
+                assert_eq!(e.kind(), ErrorKind::InvalidParams);
+                assert!(e.to_string().contains("modifier"), "{e}");
+            }
             other => panic!("expected a refusal, got {other:?}"),
         }
     }
@@ -785,12 +817,19 @@ mod tests {
         let module = HotkeyModule::with_store(store("detail"));
         let status = module.call("getStatus", Value::Null).unwrap();
 
-        let detail = status["detail"].as_str().unwrap().to_string();
+        let detail = status["detail"]["text"].as_str().unwrap().to_string();
         // Either no key is bound yet, or this machine will not let a test
         // process read /dev/input. Both are sentences with a fix in them.
         assert!(
             detail.contains("no key bound") || detail.contains("root") || detail.contains("/dev/input"),
             "unhelpful detail: {detail}"
+        );
+        // ...and it is shown in the user's language: the sentence carries a
+        // catalog key beside its English text.
+        assert!(
+            status["detail"]["key"].as_str().unwrap().starts_with("hotkey."),
+            "detail must be a translatable Msg: {}",
+            status["detail"]
         );
         assert_eq!(status["fired"], 0);
     }

@@ -114,27 +114,34 @@ fn call_daemon(module: &str, method: &str, params: Value) -> Result<Value, Strin
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
-/// The daemon answers a refusal with `{ kind, message }` - `kind` being a
-/// closed set the UI can branch on, `message` being prose for a person.
+/// The daemon answers a refusal with `{ kind, message, key?, params? }` -
+/// `kind` a closed set the UI can branch on, `message` the English prose,
+/// and `key`/`params` present when the sentence is in the translation
+/// catalog (`pyren_core::Msg`).
 ///
-/// Only the message crosses into the frontend today, because a Tauri
-/// command's error is a string and nothing on the other side branches yet.
-/// The kind is where admin mode should look when it does: `permissionDenied`
-/// is a daemon running unprivileged, and `notCapable` is hardware that will
-/// never do it however it is asked - offering to elevate for the second is
-/// the mistake this field exists to prevent.
-///
-/// A bare string is a daemon older than that format, and is passed through
-/// rather than dropped: reading an unparseable error as *absent* would turn
-/// a refusal into a silent success.
+/// A Tauri command's error is a `String`, so a structured refusal is
+/// forwarded as a **JSON string**: when `key` is set, the whole error
+/// object is serialised and the frontend's `call()` parses it back into a
+/// `DaemonRefusal` it can localise. A refusal with no `key`, and a
+/// bare-string error from an older daemon, are passed through as the plain
+/// message - reading an unparseable error as *absent* would turn a refusal
+/// into a silent success.
 fn daemon_error(error: &Value) -> String {
     match error {
         Value::String(message) => message.clone(),
-        _ => error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("the daemon refused without saying why")
-            .to_string(),
+        _ => {
+            let has_key = error.get("key").and_then(Value::as_str).is_some_and(|k| !k.is_empty());
+            if has_key {
+                if let Ok(json) = serde_json::to_string(error) {
+                    return json;
+                }
+            }
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the daemon refused without saying why")
+                .to_string()
+        }
     }
 }
 

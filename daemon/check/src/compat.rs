@@ -260,7 +260,10 @@ mod tests {
         blocked.lightbar.unreachable = Some("writing /proc/acpi/call needs root".into());
         let blocked = lighting(&blocked);
         assert_eq!(status_of(&blocked, "lighting-lightbar"), CheckStatus::Skip);
-        assert!(blocked.checks[1].remedy.as_deref().unwrap_or_default().contains("root"));
+        assert!(blocked.checks[1]
+            .remedy
+            .as_ref()
+            .is_some_and(|r| r.contains("root")));
     }
 
     /// Both paths appear whatever the machine has, because which one it

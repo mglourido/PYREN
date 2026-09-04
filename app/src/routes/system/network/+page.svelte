@@ -79,15 +79,15 @@
     {#if editable}
       <div class="force">
         <span class="force-label">
-          Double force
-          <InfoTip align="right">Applies the priority rules to already-established connections too.</InfoTip>
+          {t("network.doubleForce")}
+          <InfoTip align="right">{t("network.doubleForceHint")}</InfoTip>
         </span>
         <Toggle
           checked={doubleForce}
           onchange={(v) => (doubleForce = v)}
           labelOff={t("common.off")}
           labelOn={t("common.on")}
-          ariaLabel="double force"
+          ariaLabel={t("network.doubleForce")}
         />
       </div>
     {/if}

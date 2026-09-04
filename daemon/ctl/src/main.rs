@@ -630,8 +630,24 @@ fn row(label: &str, value: impl std::fmt::Display) {
 fn text(value: &Value, key: &str) -> String {
     match value.get(key) {
         Some(Value::String(s)) => s.clone(),
+        // A translatable `Msg` (`{ key, params, text }`) - the CLI shows the
+        // English `text` it always carries.
+        Some(Value::Object(o)) if o.contains_key("text") => {
+            o.get("text").and_then(Value::as_str).unwrap_or("-").to_string()
+        }
         Some(Value::Null) | None => "-".to_string(),
         Some(other) => other.to_string(),
+    }
+}
+
+/// The English text of a `Msg` field, or `None` when the field is absent
+/// or null. For the optional lines (`note`, `error`) that used to be
+/// `Option<String>`.
+fn msg_line(value: &Value, key: &str) -> Option<String> {
+    match value.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(v) => v.get("text").and_then(Value::as_str).map(str::to_string),
     }
 }
 
@@ -742,7 +758,7 @@ fn print_power(state: &Value) {
             },
         );
     }
-    if let Some(last) = state.get("lastAutoSwitch").and_then(Value::as_str) {
+    if let Some(last) = msg_line(state, "lastAutoSwitch") {
         row("last auto", last);
     }
 }
@@ -852,7 +868,7 @@ fn print_fan(status: &Value) {
             None => "not calibrated - run 'fan calibrate'".to_string(),
         },
     );
-    if let Some(error) = status.get("error").and_then(Value::as_str) {
+    if let Some(error) = msg_line(status, "error") {
         println!("  ! {error}");
     }
 }
@@ -907,7 +923,7 @@ fn print_diagnosis(diagnosis: &Value) {
             text(check, "detail")
         );
     }
-    if let Some(notice) = diagnosis.get("driverNotice").and_then(Value::as_str) {
+    if let Some(notice) = msg_line(diagnosis, "driverNotice") {
         println!("\n  {notice}");
     }
 }
@@ -1014,10 +1030,10 @@ fn print_oc(state: &Value) {
             ),
         );
     }
-    if let Some(note) = state.get("note").and_then(Value::as_str) {
+    if let Some(note) = msg_line(state, "note") {
         println!("  - {note}");
     }
-    if let Some(error) = state.get("error").and_then(Value::as_str) {
+    if let Some(error) = msg_line(state, "error") {
         println!("  ! {error}");
     }
 }
@@ -1056,7 +1072,7 @@ fn print_rgb(status: &Value) {
             _ => "nothing yet - these are the stored colours, not the hardware's",
         },
     );
-    if let Some(error) = status.get("error").and_then(Value::as_str) {
+    if let Some(error) = msg_line(status, "error") {
         println!("  ! {error}");
     }
 }
