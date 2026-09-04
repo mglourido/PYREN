@@ -115,20 +115,47 @@ pub fn lighting(probe: &Probe) -> Section {
     // Both paths, always, even when neither is here. Which one a machine
     // has is not decided by its model name, so "no lighting" as a single
     // line answers the question for neither of them.
-    let checks = vec![per_key_check(probe), lightbar_check(probe)];
+    let mut checks = vec![per_key_check(probe)];
+    // And one check per dialect, because there is no single OMEN lighting
+    // protocol: a machine that refuses all three is a different report
+    // from one where two were never asked.
+    checks.extend(probe.lighting.dialects.iter().map(dialect_check));
 
-    let summary = match (probe.lightbar.present, probe.per_key.present) {
-        (true, _) => "The 4-zone lightbar answered and can be driven.".to_string(),
-        (false, true) => "A per-key RGB keyboard is attached; this build does not drive it."
-            .to_string(),
-        (false, false) => {
-            "No lighting this project can drive was found. See the lightbar check for \
+    let driven: Vec<&str> =
+        probe.lighting.dialects.iter().filter(|d| d.available).map(|d| d.id).collect();
+    let summary = match (driven.as_slice(), probe.per_key.present) {
+        ([first, ..], _) => format!("The lights answered on '{first}' and can be driven."),
+        ([], true) => {
+            "A per-key RGB keyboard is attached; this build does not drive it.".to_string()
+        }
+        ([], false) => {
+            "No lighting this project can drive was found. See the per-dialect checks for \
              whether that was established or merely not asked."
                 .to_string()
         }
     };
 
     Section { summary, checks }
+}
+
+fn dialect_check(dialect: &pyren_rgb::dialect::DialectProbe) -> Check {
+    let title = format!("Lighting dialect: {}", dialect.id);
+    let id = format!("lighting-{}", dialect.id);
+
+    if dialect.available {
+        return Check::new(&id, title, CheckStatus::Pass, dialect.detail.clone());
+    }
+    if !dialect.asked {
+        // Never asked. Reporting this as "no lighting" would be claiming
+        // something nobody established.
+        return Check::new(&id, title, CheckStatus::Skip, dialect.detail.clone());
+    }
+    // Asked, and told no. A fact about this dialect, not about the
+    // machine - which is the whole reason there is more than one.
+    Check::new(&id, title, CheckStatus::Warn, dialect.detail.clone()).with_remedy(
+        "This is one of several ways of talking to these lights; the others are checked \
+         separately. 'pyren-ctl rgb dialect <id>' forces one by hand.",
+    )
 }
 
 fn per_key_check(probe: &Probe) -> Check {
@@ -156,53 +183,6 @@ fn per_key_check(probe: &Probe) -> Check {
     }
 }
 
-fn lightbar_check(probe: &Probe) -> Check {
-    const ID: &str = "lighting-lightbar";
-    const TITLE: &str = "4-zone lightbar";
-    let bar = &probe.lightbar;
-
-    match bar.answered {
-        Some(true) => Check::new(ID, TITLE, CheckStatus::Pass, "the firmware answered a lightbar read"),
-        // Asked, and told no. A fact about the hardware, not a fault -
-        // most OMEN models have no light strip.
-        Some(false) => Check::new(
-            ID,
-            TITLE,
-            CheckStatus::Warn,
-            "the firmware was asked and refused, so there is no light strip here",
-        ),
-        // Never asked. Reporting any of these as "no lightbar" would be
-        // claiming something nobody established.
-        //
-        // The interface is there and the call failed anyway - which is
-        // what an unprivileged run of this tool looks like. Emphatically
-        // not a refusal: the fix is sudo, not different hardware.
-        None if bar.unreachable.is_some() => Check::new(
-            ID,
-            TITLE,
-            CheckStatus::Skip,
-            "/proc/acpi/call could not be used, so the firmware was not asked",
-        )
-        .with_remedy("Writing /proc/acpi/call needs root; re-run this as root."),
-        None if !bar.hp_wmi => {
-            Check::new(ID, TITLE, CheckStatus::Skip, "no hp-wmi interface, so there is nothing to ask")
-        }
-        None if bar.acpi_call_installed => Check::new(
-            ID,
-            TITLE,
-            CheckStatus::Warn,
-            "acpi_call is installed but not loaded, so the firmware was not asked",
-        )
-        .with_remedy("modprobe acpi_call, then run this again."),
-        None => Check::new(
-            ID,
-            TITLE,
-            CheckStatus::Warn,
-            "/proc/acpi/call is missing, so the firmware was not asked",
-        )
-        .with_remedy(pyren_core::acpi::INSTALL_HINT),
-    }
-}
 
 // --- shared ------------------------------------------------------------
 
@@ -227,52 +207,43 @@ mod tests {
 
     /// The distinction the whole lighting section exists for: not being
     /// able to ask is not the same as having been told no, and a tool that
-    /// prints "no lightbar" for both is telling the user something nobody
+    /// prints "no lighting" for both is telling the user something nobody
     /// established.
     #[test]
-    fn a_lightbar_that_was_never_asked_about_is_not_reported_as_absent() {
-        // hp-wmi is here, acpi_call is not: the question could not be put,
-        // and there is something the user can do about that.
-        let not_asked = lighting(&probe_with(None, true, false));
-        assert_eq!(status_of(&not_asked, "lighting-lightbar"), CheckStatus::Warn);
-        assert!(not_asked.checks[1].remedy.is_some(), "not asked comes with a way to ask");
+    fn a_dialect_that_was_never_asked_about_is_not_reported_as_absent() {
+        // Skipped for want of an interface: a `Skip`, and the detail must
+        // not say the firmware refused anything.
+        let not_asked = lighting(&probe_with([("fourZone", false, false)]));
+        assert_eq!(status_of(&not_asked, "lighting-fourZone"), CheckStatus::Skip);
         assert!(!not_asked.checks[1].detail.contains("refused"));
+        assert!(not_asked.checks[1].remedy.is_none(), "there is nothing to do about a skip");
 
-        // No hp-wmi at all: nothing to ask, and nothing to install either,
-        // so this is a skip rather than a warning with no remedy.
-        let nothing_to_ask = lighting(&probe_with(None, false, false));
-        assert_eq!(status_of(&nothing_to_ask, "lighting-lightbar"), CheckStatus::Skip);
-        assert!(nothing_to_ask.checks[1].remedy.is_none());
+        // Asked, and told no. A fact about *this dialect* - so it carries
+        // the remedy that matters, which is to try another.
+        let refused = lighting(&probe_with([("fourZone", true, false)]));
+        assert_eq!(status_of(&refused, "lighting-fourZone"), CheckStatus::Warn);
+        assert!(refused.checks[1].remedy.is_some(), "a refusal names the other dialects");
 
-        // Asked, and told no. A fact about the hardware, with no remedy.
-        let refused = lighting(&probe_with(Some(false), true, true));
-        assert_eq!(status_of(&refused, "lighting-lightbar"), CheckStatus::Warn);
-        assert!(refused.checks[1].detail.contains("refused"));
-        assert!(refused.checks[1].remedy.is_none(), "a refusal has no remedy");
-
-        let answered = lighting(&probe_with(Some(true), true, true));
-        assert_eq!(status_of(&answered, "lighting-lightbar"), CheckStatus::Pass);
-
-        // The interface is there and the write failed: an unprivileged
-        // run. The remedy is sudo, and the status must not be the one that
-        // reads as a verdict on the hardware.
-        let mut blocked = probe_with(None, true, true);
-        blocked.lightbar.unreachable = Some("writing /proc/acpi/call needs root".into());
-        let blocked = lighting(&blocked);
-        assert_eq!(status_of(&blocked, "lighting-lightbar"), CheckStatus::Skip);
-        assert!(blocked.checks[1]
-            .remedy
-            .as_ref()
-            .is_some_and(|r| r.contains("root")));
+        let answered = lighting(&probe_with([("fourZone", true, true)]));
+        assert_eq!(status_of(&answered, "lighting-fourZone"), CheckStatus::Pass);
+        assert!(answered.summary.contains("fourZone"), "got: {}", answered.summary);
     }
 
-    /// Both paths appear whatever the machine has, because which one it
-    /// has is exactly the question.
+    /// Every dialect appears whatever the machine has, because *which* one
+    /// it speaks is exactly the question - and because the ids in this
+    /// list are what `pyren-ctl rgb dialect <id>` takes.
     #[test]
-    fn both_lighting_paths_are_always_reported() {
-        let section = lighting(&probe_with(None, false, false));
+    fn every_dialect_is_always_reported() {
+        let section = lighting(&probe_with([
+            ("kernelZones", false, false),
+            ("fourZone", true, false),
+            ("lightbar", true, false),
+        ]));
         let ids: Vec<&str> = section.checks.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["lighting-per-key", "lighting-lightbar"]);
+        assert_eq!(
+            ids,
+            ["lighting-per-key", "lighting-kernelZones", "lighting-fourZone", "lighting-lightbar"]
+        );
     }
 
     #[test]
@@ -308,21 +279,39 @@ mod tests {
         assert!(section.checks[0].detail.contains("balanced"));
     }
 
-    fn probe_with(answered: Option<bool>, hp_wmi: bool, acpi_call: bool) -> Probe {
+    /// `(id, asked, available)` per dialect.
+    fn probe_with<const N: usize>(dialects: [(&'static str, bool, bool); N]) -> Probe {
+        let dialects: Vec<pyren_rgb::dialect::DialectProbe> = dialects
+            .into_iter()
+            .map(|(id, asked, available)| pyren_rgb::dialect::DialectProbe {
+                id,
+                transport: "fixture",
+                available,
+                asked,
+                detail: if available {
+                    "answered a read of all four zones".into()
+                } else if asked {
+                    "the firmware refused".into()
+                } else {
+                    "skipped: nothing to ask through".into()
+                },
+            })
+            .collect();
         Probe {
-            supported: answered == Some(true),
+            supported: dialects.iter().any(|d| d.available),
             per_key: pyren_rgb::probe::PerKey {
                 present: false,
                 usb_id: "0d62:54bf",
                 ported: false,
                 detail: "none".into(),
             },
-            lightbar: pyren_rgb::probe::Lightbar {
-                present: answered == Some(true),
-                hp_wmi,
-                acpi_call,
-                acpi_call_installed: acpi_call,
-                answered,
+            lighting: pyren_rgb::probe::Lighting {
+                present: dialects.iter().any(|d| d.available),
+                hp_wmi: true,
+                acpi_call: true,
+                acpi_call_installed: true,
+                dialects,
+                command_answers: None,
                 unreachable: None,
                 detail: "fixture".into(),
             },

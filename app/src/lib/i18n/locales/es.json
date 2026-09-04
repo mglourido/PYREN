@@ -220,16 +220,46 @@
     }
   },
   "lighting": {
+    "title": "Iluminación",
+    "lead": "La barra de luz de cuatro zonas del borde frontal, gobernada por el firmware a través de ACPI. El protocolo solo transporta colores y un brillo, así que aquí no hay efectos de respiración ni de onda: un interruptor que no hiciera nada sería peor que no tenerlo.",
     "mode": "Modo",
-    "static": "Estático",
-    "breathing": "Respiración",
-    "wave": "Onda",
-    "off": "Desactivado",
+    "static": "Un color",
+    "zones": "Por zonas",
+    "off": "Apagada",
     "brightness": "Brillo",
-    "selectZone": "Selecciona una zona para asignar un color",
+    "colour": "Color",
+    "colourHint": "Se aplica al cerrar el selector.",
+    "selectZone": "Pulsa una zona de la barra de arriba para apuntar el selector de color hacia ella.",
+    "staticHint": "Las cuatro zonas toman el mismo color. Cambia a «Por zonas» para diferenciarlas.",
     "zone": "Zona {n}",
     "allZones": "Todas las zonas",
-    "presets": "Predefinidos"
+    "presets": "Ajustes",
+    "hardware": "Hardware",
+    "restoreOnStart": "Restaurar al arrancar",
+    "restoreOnStartHint": "Desactivado por defecto: encender las luces al arrancar porque estaban encendidas la semana pasada es decisión tuya, no del demonio. Activado, el demonio reenvía estos colores al iniciarse.",
+    "readBack": "Lo que dice el firmware",
+    "readBackHint": "Pregunta al firmware por los colores de las cuatro zonas: son cuatro llamadas ACPI de ida y vuelta, por eso es un botón y no un sondeo. Además es la única comprobación de que el payload se entendió, y no solo de que se aceptó.",
+    "read": "Leer zonas",
+    "probe": "Detección",
+    "reprobe": "Volver a sondear",
+    "owned": "Estos colores los ha puesto este demonio.",
+    "notOwned": "Aún no se ha escrito nada, así que la barra muestra lo que eligiera el firmware.",
+    "perKeyPresent": "Hay conectado un HP Gaming Keyboard II (RGB por tecla). Es otro dispositivo en otro bus y esta versión no lo gobierna: estos controles son solo para la barra de luz.",
+    "notSaved": "Los colores se enviaron pero no se pudieron guardar, así que no volverán tras un reinicio: {error}",
+    "noWmi": "Esta máquina no tiene interfaz hp-wmi, así que no hay a quién preguntar por una barra de luz.",
+    "refused": "Se preguntó al firmware en los tres protocolos y rechazó los tres, así que esta máquina no tiene iluminación a la que lleguen estos protocolos.",
+    "notInstalled": "El módulo del kernel acpi_call no está instalado, así que no se puede preguntar al firmware. Esto no es un veredicto sobre tu portátil: instala el paquete de tu distribución y luego usa «Volver a sondear».",
+    "notLoaded": "acpi_call está instalado pero no cargado. «sudo modprobe acpi_call» y luego «Volver a sondear».",
+    "unreachable": "/proc/acpi/call existe pero no se pudo usar, así que nunca se preguntó al firmware. Casi siempre es un demonio sin root, no algo del hardware.",
+    "protocol": "Protocolo",
+    "protocolLead": "No hay un único protocolo de iluminación OMEN. Existen tres formas distintas de hablar con estas luces, y el modelo del portátil no dice cuál habla el tuyo, así que se prueban las tres y se usa la primera que responde.",
+    "dialect": "Qué protocolo",
+    "dialectHint": "El automático usa el primer protocolo que responde a una lectura. Elige uno a mano cuando el automático se equivoque: un protocolo fijado se usa responda o no, porque tú ves las luces y esta aplicación solo puede preguntar.",
+    "autoUsing": "Automático — usando {dialect}",
+    "autoNothing": "Automático — no respondió ninguno",
+    "noAnswer": "sin respuesta",
+    "wrongDialect": "Tu firmware tiene un comando de iluminación, y ninguno de los tres protocolos que conoce esta versión es el que quiere. Es una máquina con luces con las que la aplicación aún no sabe hablar, no una máquina sin ellas: fijar un protocolo a mano aquí abajo es lo siguiente que probar.",
+    "zoneFourUnreadable": "La zona 4 siempre se lee negra con este protocolo. El color que se le envía es real —las luces lo muestran— pero acpi_call corta la respuesta del firmware un byte antes de donde empieza la zona 4, así que no se puede leer de vuelta. Instalar un driver del kernel que publique las zonas como ficheros quita el límite."
   },
   "graphics": {
     "title": "Seleccionar un modo de GPU",
@@ -402,14 +432,19 @@
     "io": "{path}: {error}"
   },
   "rgb": {
-    "lightbar": {
-      "refused": "el firmware rechazó la llamada a la barra de luz (respondió: {answer})",
-      "unreadable": "el firmware respondió {answer}, que no es una respuesta de barra de luz"
+    "dialect": {
+      "refused": "el firmware rechazó este protocolo de iluminación (respondió: {answer})",
+      "returnCode": "el firmware devolvió el código {code}: {meaning}",
+      "unreadable": "el firmware respondió {answer}, que no es una respuesta de color",
+      "needsRoot": "escribir los ficheros de zonas del kernel requiere root",
+      "io": "{error}"
     },
     "err": {
       "zonesRequired": "params.zones es obligatorio: cuatro colores, '#rrggbb' o [r, g, b]",
-      "zonesCount": "params.zones admite de 1 a {max} colores, no {got}",
-      "colorRequired": "params.color es obligatorio: '#rrggbb' o [r, g, b]"
+      "zonesCount": "params.zones acepta de 1 a {max} colores, no {got}",
+      "colorRequired": "params.color es obligatorio: '#rrggbb' o [r, g, b]",
+      "dialectRequired": "params.dialect es obligatorio: 'auto', o uno de los ids de getCapabilities",
+      "dialectUnknown": "no existe ningún protocolo de iluminación llamado {got}"
     }
   },
   "diagnostics": {

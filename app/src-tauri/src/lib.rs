@@ -237,6 +237,64 @@ fn power_set_tuning(tuning: Value) -> Result<Value, String> {
     call_daemon("power", "setTuning", tuning)
 }
 
+/// The 4-zone lightbar. Every write needs root *and* the `acpi_call`
+/// kernel module, and the three ways it can be unavailable - no `hp-wmi`,
+/// no `acpi_call`, a firmware that refuses - are different problems with
+/// different fixes, so the page reads them off `getCapabilities` rather
+/// than being handed one boolean (`docs/01-ipc-protocol.md` §"`rgb`
+/// module").
+#[tauri::command]
+fn rgb_get_status() -> Result<Value, String> {
+    call_daemon("rgb", "getStatus", Value::Null)
+}
+
+/// A **fresh** probe, unlike the one in `getStatus`. This is what makes
+/// "install acpi_call, then ask again" a complete workflow without
+/// restarting the daemon, so the page calls it after an install.
+#[tauri::command]
+fn rgb_get_capabilities() -> Result<Value, String> {
+    call_daemon("rgb", "getCapabilities", Value::Null)
+}
+
+/// `color` goes out as `"#rrggbb"`; `brightness` is a percentage, and
+/// omitting it keeps whatever the daemon has stored.
+#[tauri::command]
+fn rgb_set_static(color: String, brightness: Option<u8>) -> Result<Value, String> {
+    call_daemon("rgb", "setStatic", json!({ "color": color, "brightness": brightness }))
+}
+
+#[tauri::command]
+fn rgb_set_zones(zones: Value, brightness: Option<u8>) -> Result<Value, String> {
+    call_daemon("rgb", "setZones", json!({ "zones": zones, "brightness": brightness }))
+}
+
+#[tauri::command]
+fn rgb_off() -> Result<Value, String> {
+    call_daemon("rgb", "off", Value::Null)
+}
+
+/// Asks the firmware what the zones are, which is four ACPI round trips -
+/// hence a button and not a poll. It is also the only check that the
+/// payload was *understood* rather than merely accepted.
+#[tauri::command]
+fn rgb_read_zones() -> Result<Value, String> {
+    call_daemon("rgb", "readZones", Value::Null)
+}
+
+/// Pins one of the lighting dialects, or `auto` to go back to picking the
+/// first that answers. Exists because auto can only ever choose a dialect
+/// this build can *read*, and the person at the keyboard can see whether
+/// the lights actually changed.
+#[tauri::command]
+fn rgb_set_dialect(dialect: String) -> Result<Value, String> {
+    call_daemon("rgb", "setDialect", json!({ "dialect": dialect }))
+}
+
+#[tauri::command]
+fn rgb_set_restore_on_start(enabled: bool) -> Result<Value, String> {
+    call_daemon("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))
+}
+
 /// GPU overclocking. The one module whose calls can leave the machine
 /// running outside what the firmware shipped, so three of its five
 /// commands exist purely to make that hard to do by accident: the consent,
@@ -663,6 +721,14 @@ pub fn run() {
             overclock_cancel,
             overclock_reset,
             overclock_set_restore_on_start,
+            rgb_get_status,
+            rgb_get_capabilities,
+            rgb_set_static,
+            rgb_set_zones,
+            rgb_off,
+            rgb_read_zones,
+            rgb_set_dialect,
+            rgb_set_restore_on_start,
             installer_inspect,
             installer_autodetect,
             installer_plan,

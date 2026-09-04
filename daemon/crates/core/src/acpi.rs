@@ -24,7 +24,7 @@
 //! outside it, and nothing short of the kernel could fix that.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -39,13 +39,34 @@ pub const INSTALL_HINT: &str = "install the acpi_call kernel module: \
      'sudo apt install acpi_call-dkms' on Debian/Ubuntu, \
      'sudo dnf install akmod-acpi_call' on Fedora";
 
+/// What to tell a user whose machine *has* the module and has not loaded
+/// it. A different sentence from [`INSTALL_HINT`] because it is a
+/// different fix, and offering a package install to somebody who already
+/// ran it is how a two-minute problem becomes an evening.
+pub const MODPROBE_HINT: &str = "the acpi_call module is installed but not loaded: \
+     'sudo modprobe acpi_call' (a daemon running as root loads it itself)";
+
+/// The remedy for a missing `/proc/acpi/call` **on this machine**, which is
+/// the package or the `modprobe` depending on what is already here.
+///
+/// Costs one `modinfo`, and is only ever reached on an error path. Every
+/// other place in this project that reports a missing interface already
+/// tells the two apart; this exists so the error type does too.
+pub fn missing_hint() -> &'static str {
+    if is_module_installed() {
+        MODPROBE_HINT
+    } else {
+        INSTALL_HINT
+    }
+}
+
 /// Serialises the write/read pair. See the module docs.
 static GATE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcpiError {
     /// `/proc/acpi/call` is not there. Installable, not permanent.
-    #[error("the acpi_call kernel module is not loaded, so {CALL_PATH} does not exist; {INSTALL_HINT}")]
+    #[error("the acpi_call kernel module is not loaded, so {} does not exist; {}", CALL_PATH, missing_hint())]
     NotLoaded,
     /// The file exists and this process may not write to it.
     #[error("writing {CALL_PATH} needs root")]
@@ -61,7 +82,7 @@ impl AcpiError {
         match self {
             Self::NotLoaded => crate::msg!(
                 "acpi.notLoaded",
-                { "path" => CALL_PATH, "hint" => INSTALL_HINT },
+                { "path" => CALL_PATH, "hint" => missing_hint() },
                 "the acpi_call kernel module is not loaded, so {path} does not exist; {hint}"
             ),
             Self::PermissionDenied => crate::msg!(
@@ -153,10 +174,56 @@ pub fn call(method: &str, args: &str) -> Result<String, AcpiError> {
     file.write_all(request.as_bytes()).map_err(|e| map_io_error(&e))?;
     drop(file);
 
-    let response = fs::read_to_string(&path).map_err(|e| map_io_error(&e))?;
+    let response = read_reply(&path)?;
     // acpi_call terminates its reply with a NUL, which `trim` does not
     // remove and `str::parse` chokes on.
     Ok(response.trim_matches(|c: char| c == '\0' || c.is_whitespace()).to_string())
+}
+
+/// How big a first read to ask for. Comfortably past `acpi_call`'s own
+/// result buffer, which is a few hundred bytes.
+const REPLY_CAPACITY: usize = 8192;
+
+/// Reads the reply `acpi_call` has waiting.
+///
+/// **Not `fs::read_to_string`, and that is the whole point of this
+/// function.** `/proc/acpi/call` reports a size of zero, like most of
+/// procfs, so `read_to_string` has no hint to size its buffer with and
+/// opens by probing with a very small one. This interface answers a small
+/// read with *nothing at all* rather than with the first few bytes, so
+/// `read_to_string` sees zero bytes, reads that as end-of-file, and returns
+/// an empty string - for a call the firmware answered perfectly well.
+///
+/// Every symptom of that is a lie about the hardware: an empty reply is not
+/// `PASS`, so it is reported as the firmware refusing, and a refusal reads
+/// as "this machine cannot do it". It cost this project a wrong entry in
+/// `dev/FINDINGS.md` about a lightbar, and the fan cleaner - which speaks
+/// through the same file - was reporting "this machine has no fan cleaner"
+/// for the same reason.
+///
+/// So: one big read, and keep reading only while bytes keep arriving.
+fn read_reply(path: &str) -> Result<String, AcpiError> {
+    let mut file = fs::File::open(path).map_err(map_open_error)?;
+    let mut buffer = vec![0u8; REPLY_CAPACITY];
+    let mut filled = 0;
+
+    loop {
+        if filled == buffer.len() {
+            buffer.resize(buffer.len() * 2, 0);
+        }
+        match file.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(map_io_error(&e)),
+        }
+    }
+
+    buffer.truncate(filled);
+    // Lossy on purpose: the reply is ASCII, and a stray byte in it is worth
+    // reporting as a bad reply rather than as an I/O failure - the two send
+    // a reader to different places.
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 /// HP's WMI buffer protocol, as the hex argument `acpi_call` takes.
@@ -184,6 +251,48 @@ pub fn wmi_request(command: u32, command_type: u32, size: usize, payload: &[u8])
         hex.push_str(&format!("{byte:02x}"));
     }
     hex
+}
+
+/// The ACPI method every HP WMI BIOS call goes through.
+///
+/// One method, called with an instance and a *numbered* method id: the
+/// firmware exposes several `WMAA` entry points that differ only in how
+/// much they are willing to hand back, and picking the wrong one is a
+/// refusal rather than a short read.
+pub const WMI_METHOD: &str = "\\_SB.WMID.WMAA";
+
+/// Which numbered WMI method to call for a given expected output size.
+///
+/// This is the kernel driver's own `encode_outsize_for_pvsz`, byte for
+/// byte (`drivers/platform/x86/hp/hp-wmi.c`). It is not a detail worth
+/// re-deriving per caller: a write that expects nothing back is method 1,
+/// and asking for method 3 - which promises up to 128 bytes - is a
+/// different request as far as the firmware is concerned.
+pub fn method_for_outsize(outsize: usize) -> u32 {
+    match outsize {
+        0 => 1,
+        1..=4 => 2,
+        5..=128 => 3,
+        129..=1024 => 4,
+        _ => 5,
+    }
+}
+
+/// One HP WMI BIOS call: build the buffer, pick the method, send it.
+///
+/// `insize` is the `datasize` header field - what the firmware is told the
+/// payload is - and `outsize` is how much of an answer is expected, which
+/// is what chooses the method. Both come from the reference driver for the
+/// call being made; they are not free parameters.
+pub fn wmi_call(
+    command: u32,
+    command_type: u32,
+    payload: &[u8],
+    insize: usize,
+    outsize: usize,
+) -> Result<String, AcpiError> {
+    let request = wmi_request(command, command_type, insize, payload);
+    call(WMI_METHOD, &format!("0 {} {request}", method_for_outsize(outsize)))
 }
 
 /// The ASCII signature every one of these buffers starts with. It is the
@@ -284,6 +393,35 @@ fn map_io_error(e: &std::io::Error) -> AcpiError {
 
 #[cfg(test)]
 mod tests {
+
+    /// The bug that cost this project a wrong finding about its hardware.
+    ///
+    /// `/proc/acpi/call` answers a small read with nothing at all, and
+    /// `fs::read_to_string` opens by probing with a small buffer because
+    /// procfs reports a size of zero. The result was an empty reply for a
+    /// call the firmware had answered - reported, all the way up, as the
+    /// machine refusing. A redirected file cannot reproduce the kernel's
+    /// half of that, so what this pins is the half that is ours: the reply
+    /// comes back whole, however big it is.
+    #[test]
+    fn a_reply_longer_than_a_probe_read_comes_back_whole() {
+        let dir = std::env::temp_dir().join(format!("pyren-acpi-reply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir is writable");
+        let path = dir.join("call");
+
+        // Longer than REPLY_CAPACITY, so the growth path is exercised too.
+        let reply: String =
+            std::iter::repeat_n("{0x50, 0x41, 0x53, 0x53}", 1000).collect();
+        std::fs::write(&path, &reply).expect("a temp file is writable");
+
+        let got = read_reply(path.to_str().unwrap()).expect("a readable file");
+        assert_eq!(got.len(), reply.len(), "the reply must not be cut short");
+        assert_eq!(got, reply);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// One test, not three: `PYREN_ACPI_CALL` is process-global and the

@@ -171,7 +171,7 @@ fn main() {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
         power_mode: power.is_supported(),
-        lightbar: rgb.probe().lightbar.present,
+        lightbar: rgb.probe().lighting.present,
     };
 
     // Built here, wired to the power module further down: what a key does
@@ -216,9 +216,17 @@ fn main() {
     // Saying which lighting was found - and, when none was, which of the
     // three reasons applies - is the difference between "no lighting page"
     // and "no lighting page because acpi_call is not installed".
-    println!("  lights: {}", rgb.probe().lightbar.detail);
-    if rgb.probe().per_key.present {
-        println!("  note:   {}", rgb.probe().per_key.detail);
+    let lighting = rgb.probe();
+    println!("  lights: {}", lighting.lighting.detail);
+    // One line per dialect, for the same reason the GPUs get one each:
+    // "the lighting page is empty" is answered by *which* of the three
+    // ways of talking to these lights this machine refused, and that is
+    // three different next steps.
+    for dialect in &lighting.lighting.dialects {
+        println!("    {}: {}", dialect.id, dialect.detail);
+    }
+    if lighting.per_key.present {
+        println!("  note:   {}", lighting.per_key.detail);
     }
 
     // One line per card, because "the overclocking page is empty" is

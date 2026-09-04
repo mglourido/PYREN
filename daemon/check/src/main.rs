@@ -83,7 +83,7 @@ fn main() -> ExitCode {
         fan_mode: fan.capabilities().switch_mode,
         fan_speed: fan.capabilities().set_speed,
         power_mode: !power.mechanisms.is_empty(),
-        lightbar: lighting.lightbar.present,
+        lightbar: lighting.lighting.present,
     });
     let diagnosis = fan.diagnose(allow_writes);
     let power_section = compat::power(&power);

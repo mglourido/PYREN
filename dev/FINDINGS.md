@@ -526,3 +526,75 @@ unconditionally. On Arch-family systems a compatibility shim by that name
 is often installed next to the real `mkinitcpio` — as on the development
 machine. The port picks the generator matching the distribution family
 first.
+
+## The lights work, and what was in the way was our own read
+
+Settled on 2026-09-04, on the laptop, with `acpi_call` finally installed
+and loaded. Three separate things had to be untangled, and only one of them
+was about the hardware.
+
+### 1. `fs::read_to_string` on `/proc/acpi/call` returns nothing
+
+This is the one that cost the most, and it had nothing to do with HP.
+
+| how the reply was read | what came back |
+|---|---|
+| `fs::read_to_string` | **0 bytes** |
+| one explicit `read()` into an 8 KiB buffer | **253 bytes, `PASS`, return code 0** |
+
+Identical request bytes, same file, same process, run as root; the kernel
+accepted all 308 bytes of the write in both cases. `/proc/acpi/call`
+reports a size of zero like most of procfs, so `read_to_string` has no hint
+to size its buffer with and opens by probing with a very small one — and
+this interface answers a small read with *nothing at all* rather than with
+the first few bytes. `read_to_string` reads that zero as end-of-file and
+hands back an empty string.
+
+Every symptom of it was a lie about the machine. An empty reply is not
+`PASS`, so it was reported as the firmware refusing, and a refusal reads as
+"this laptop cannot do it". It is why every lighting dialect was reported
+refused, and — through the same file — why the fan cleaner reported "this
+machine has no fan cleaner". Fixed in `pyren_core::acpi::read_reply`, with
+the reasoning in a comment there so nobody reaches for `read_to_string`
+again.
+
+**The general lesson:** a procfs file that reports size 0 cannot be read
+with `read_to_string` unless you know its read handler tolerates a small
+buffer.
+
+### 2. This machine is `fourZone`, and `lightbar` is a false positive
+
+Once replies arrived, the raw `FOURZONE_COLOR_GET` answer had the
+keyboard's actual colours in it, at exactly the offset both reference
+kernel drivers give (25 + 3 × zone):
+
+```
+state[25..28] = 0f 84 fa   zone 0   blue
+state[28..31] = 71 0f fa   zone 1   purple
+state[31..34] = f9 35 0f   zone 2   orange
+```
+
+The `lightbar` dialect — the one this module was originally ported as —
+**also answers `PASS` on this machine and does nothing**: writes are
+accepted, the lights do not change, and its read reports all four zones
+black. So "the firmware accepted it" is not evidence that a dialect works,
+which is the argument for trying more than one and for the manual override.
+`fourZone` is tried first of the two for this reason.
+
+### 3. `acpi_call` truncates the reply, and zone 4 is the casualty
+
+`acpi_call` renders a buffer reply as the text `{0x50, 0x41, …}` into a
+fixed result buffer of a few hundred bytes, so the firmware's 128-byte
+answer arrives as its first **34** bytes. Zones 0–2 fit; zone 3 starts at
+byte 34 and does not. Consequences, all of them live:
+
+- `rgb read` always reports zone 4 as black. The colour written to it is
+  real — the lights show it — but it cannot be read back.
+- A write pads the unseen tail with zeros. Bounded, but a guess: everything
+  visible before the colours is zero apart from `state[0] = 3`.
+
+The way out is the `kernelZones` dialect (`/sys/devices/platform/hp-wmi/
+rgb_zones/zone00…03`), which needs no `acpi_call` and has no such limit.
+This kernel's `hp-wmi` does not publish those files; `OmenLinux/omen-rgb-keyboard`
+is an out-of-tree module that would, and the dialect is already implemented
+and would be picked automatically.
