@@ -399,6 +399,12 @@ export type InstallerEnvironment = {
   acpiCallAvailable: boolean;
   driverSource: string | null;
   serviceInstalled: boolean;
+  /**
+   * Whether *our* patched driver is what is installed. Without it,
+   * `fanControlAvailable` conflates a stock driver that supports this
+   * board with a previous install of ours already doing the work.
+   */
+  patchedDriverInstalled: boolean;
 };
 
 export type InstallerInspection = {
@@ -428,7 +434,15 @@ export type InstallPlan = {
   needsRoot: boolean;
 };
 
-export type StepStatus = "ok" | "warned" | "failed" | "skipped" | "planned";
+export type StepStatus =
+  | "ok"
+  | "warned"
+  | "failed"
+  /** Not attempted, because an earlier required step failed. */
+  | "skipped"
+  /** Optional, and the caller asked for it not to run. */
+  | "declined"
+  | "planned";
 
 export type StepResult = {
   id: string;
@@ -465,13 +479,78 @@ export type InstallerRequest = {
   force?: boolean;
   /** Anything but `true` leaves `apply` a dry run. */
   confirm?: boolean;
+  /**
+   * Fill in anything left unset below from what the machine says about
+   * itself - the board id from DMI, the tables from the driver's own
+   * source, the fan ceilings from the last calibration. Explicit values
+   * still win, so the manual fields override the detection rather than
+   * competing with it.
+   */
+  auto?: boolean;
   cpuMaxRpm?: number | null;
   gpuMaxRpm?: number | null;
   experimentalBoard?: string | null;
   boardTable?: BoardTable | null;
+  /**
+   * Ids of steps not to run. Only steps the plan marked `optional` may be
+   * named — `apply` refuses anything else rather than ignoring it, so a
+   * caller cannot believe it opted out of `depmod`.
+   */
+  skipSteps?: string[];
 };
 
-export type ApplyResult = { plan: InstallPlan; report: ExecutionReport };
+/** Which HP gaming family DMI says this is; decides the board params. */
+export type BoardFamily = "omen" | "victus" | "unknown";
+
+/** Where a suggested fan ceiling came from. */
+export type RpmSource = "calibrated" | "driverFallback";
+
+/**
+ * Everything the install would otherwise have asked the user to type,
+ * worked out from the machine - plus `notes`, the reasoning behind each
+ * answer, which is the part that makes it reviewable rather than magic.
+ *
+ * Mirrors `daemon/crates/installer/src/autodetect.rs`.
+ */
+export type Autodetected = {
+  dmi: {
+    boardName: string | null;
+    productName: string | null;
+    productFamily: string | null;
+    sysVendor: string | null;
+  };
+  family: BoardFamily;
+  /** The driver already lists this board, so nothing needs injecting. */
+  boardKnown: boolean;
+  experimentalBoard: string | null;
+  boardTable: BoardTable | null;
+  /**
+   * Whether the board-params variant changes anything on this board. All
+   * four share one fan profile, and a board already on the OMEN or Victus
+   * thermal-profile path never has its variant's EC offset read — so on
+   * most boards the choice is inert, and saying so beats a caveat.
+   */
+  paramsEffect: "inertOmenPath" | "inertVictusPath" | "decidesReadback";
+  /** What the embedded controller said, when it was asked. */
+  ec:
+    | { state: "read"; victusS: number; omen: number }
+    | { state: "moduleNotLoaded" }
+    | { state: "unavailable"; reason: string }
+    | { state: "notPermitted" }
+    | { state: "notProbed" };
+  cpuMaxRpm: number | null;
+  gpuMaxRpm: number | null;
+  rpmSource: RpmSource;
+  /** Translatable - render each with `tm()`. */
+  notes: Msg[];
+};
+
+export type ApplyResult = {
+  plan: InstallPlan;
+  report: ExecutionReport;
+  /** Only present for an `auto` request: what it decided to send. */
+  autodetected?: Autodetected | null;
+};
 
 export class DaemonUnavailable extends Error {}
 
@@ -625,6 +704,11 @@ const DAEMON_ROUTES: Record<
   overclock_reset: { module: "overclock", method: "reset" },
   overclock_set_restore_on_start: { module: "overclock", method: "setRestoreOnStart" },
   installer_inspect: { module: "installer", method: "inspect" },
+  installer_autodetect: {
+    module: "installer",
+    method: "autodetect",
+    params: (a) => a.request,
+  },
   installer_plan: { module: "installer", method: "plan", params: (a) => a.request },
   installer_apply: { module: "installer", method: "apply", params: (a) => a.request },
 };
@@ -809,6 +893,9 @@ export const daemon = {
     call<OverclockState>("overclock_set_restore_on_start", { enabled }),
   /** What this machine has, and whether the patched driver is needed. */
   installerInspect: () => call<InstallerInspection>("installer_inspect"),
+  /** Reads DMI, the driver's tables and the fan config; changes nothing. */
+  installerAutodetect: (probeEc = false) =>
+    call<Autodetected>("installer_autodetect", { request: { probeEc } }),
   /** Pure: works out the steps without touching anything. */
   installerPlan: (request: InstallerRequest) => call<InstallPlan>("installer_plan", { request }),
   /** A dry run unless the request carries `confirm: true`. */

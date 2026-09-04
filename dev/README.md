@@ -33,6 +33,7 @@ daemon/                 Rust workspace (the daemon and its two CLIs)
     └── installer/      driver/service installer (inspect → plan → apply)
 app/                    Tauri app: SvelteKit frontend + src-tauri shell
 tools/pyren-check.sh     dependency-free shell twin of pyren-check
+driver/                 the patched hp-wmi module, verbatim from upstream (never edited here)
 docs/                   design, IPC protocol, development, frontend, RGB review
 ```
 
@@ -48,10 +49,11 @@ starts `../omen-fan-control-main` actually resolves to:
 ```
 
 The one to read first is `docs/04-fan-control-logic.md` in the fan project
-(the behavioural spec) and
-`src/omen_fan_control/data/driver/hp-wmi-omen/hp-wmi.c` (the driver itself,
-which is plain upstream — the patching happens at install time, so the
-`.orig` beside it is byte-identical).
+(the behavioural spec). The driver itself no longer needs the stick: it is
+copied into this repository at `driver/`, with its provenance in
+`driver/README.md`. It is plain upstream — the patching happens at install
+time, on a copy staged under `/usr/src`, so `hp-wmi.c` and the `.orig`
+beside it stay byte-identical here.
 
 ## Running everything
 

@@ -378,22 +378,6 @@
       "monitoringOnly": "Monitoring only — fan speed cannot be set",
       "unsupported": "No fan-control interface on this machine"
     },
-    "checks": "Checks",
-    "remedy": "What to do",
-    "neverRun": "The check has not been run yet.",
-    "cliHint": "The same check runs without the app: <code>cargo run -p pyren-check</code> (add <code>--json</code> for a bug report).",
-    "wroteToHardware": "This run wrote to the hardware and restored the previous state.",
-    "summary": {
-      "fullControlTested": "Fan control works: speeds can be read and the PWM channel accepted a write.",
-      "fullControlUntested": "Fan control looks available: the PWM channel is present. Re-run with writes enabled to confirm the hardware accepts them.",
-      "monitoringOnly": "Fan speeds can be read, but this driver exposes no PWM channel, so speed cannot be set.",
-      "unsupportedWithTemp": "This machine exposes no HP fan-control interface. Temperature can still be read, so monitoring works.",
-      "unsupportedNoTemp": "This machine exposes no HP fan-control interface. No HP fan interface and no usable temperature sensor were found."
-    },
-    "driverNotice": {
-      "noPwm": "The kernel's hp-wmi has no pwm1 for this board. Recent kernels ship manual fan control upstream, so upgrading the kernel is the first thing to try. Failing that, a patched out-of-tree driver exists: {hint}. Installing it replaces a kernel module, so it is a deliberate step, not something this app does for you.",
-      "noHpWmi": "No hp-wmi device at all. On an HP OMEN or Victus laptop, load the hp_wmi module; on other hardware this is expected and fan control is not applicable."
-    },
     "checks": {
       "notExposed": "not exposed by this driver",
       "notANumberAt": "{path} contains something that is not a number",
@@ -410,8 +394,12 @@
         "found": "found at {path}",
         "absent": "no hwmon directory under /sys/devices/platform/hp-wmi/hwmon"
       },
-      "fan1": { "title": "Fan 1 speed" },
-      "fan2": { "title": "Fan 2 speed" },
+      "fan1": {
+        "title": "Fan 1 speed"
+      },
+      "fan2": {
+        "title": "Fan 2 speed"
+      },
       "fan": {
         "reverse": "{raw} raw -> {actual} rpm, spinning in reverse (fan cleaner active)",
         "tooHigh": "{raw} rpm is implausibly high",
@@ -461,7 +449,8 @@
         "title": "hp-wmi kernel messages",
         "noDmesg": "dmesg is not available",
         "notReadable": "kernel log not readable; run as root, or paste `dmesg | grep -i hp.wmi`",
-        "none": "no hp-wmi messages"
+        "none": "no hp-wmi messages",
+        "selfBuilt": "Nothing wrong here. The 'module verification failed' line is the kernel noting that a module built outside your distribution's kernel package was loaded, and tainting itself to record that - which is exactly what installing the patched hp-wmi does, so it is expected rather than a fault: {lines}"
       },
       "platform-profile": {
         "title": "ACPI platform profile",
@@ -474,6 +463,21 @@
         "absent": "/proc/acpi/call not found; the RGB lightbar and the fan cleaner both need it",
         "remedy": "Install acpi_call-dkms (Arch), acpi-call-dkms (Debian) or akmod-acpi_call (Fedora), then `modprobe acpi_call`."
       }
+    },
+    "remedy": "What to do",
+    "neverRun": "The check has not been run yet.",
+    "cliHint": "The same check runs without the app: <code>cargo run -p pyren-check</code> (add <code>--json</code> for a bug report).",
+    "wroteToHardware": "This run wrote to the hardware and restored the previous state.",
+    "summary": {
+      "fullControlTested": "Fan control works: speeds can be read and the PWM channel accepted a write.",
+      "fullControlUntested": "Fan control looks available: the PWM channel is present. Re-run with writes enabled to confirm the hardware accepts them.",
+      "monitoringOnly": "Fan speeds can be read, but this driver exposes no PWM channel, so speed cannot be set.",
+      "unsupportedWithTemp": "This machine exposes no HP fan-control interface. Temperature can still be read, so monitoring works.",
+      "unsupportedNoTemp": "This machine exposes no HP fan-control interface. No HP fan interface and no usable temperature sensor were found."
+    },
+    "driverNotice": {
+      "noPwm": "The kernel's hp-wmi has no pwm1 for this board. Recent kernels ship manual fan control upstream, so upgrading the kernel is the first thing to try. Failing that, a patched out-of-tree driver exists: {hint}. Installing it replaces a kernel module, so it is a deliberate step, not something this app does for you.",
+      "noHpWmi": "No hp-wmi device at all. On an HP OMEN or Victus laptop, load the hp_wmi module; on other hardware this is expected and fan control is not applicable."
     }
   },
   "fan": {
@@ -556,6 +560,22 @@
     "strategyLabel": "Rebuild mechanism",
     "initramfs": "Initramfs tool",
     "service": "pyren-daemon service",
+    "mode": "How to install",
+    "modes": {
+      "automatic": "Automatic",
+      "manual": "Manual"
+    },
+    "manualHint": "Fill the fields in yourself. Anything left blank keeps the driver's own value — which for the fan ceiling is a guess, and for the board table means the board is not added at all.",
+    "autoHint": "Works out everything an install needs from this machine — the board id from DMI, which of the driver's tables it belongs in, and the fan ceilings from the last calibration — then dry-runs the plan. Nothing is changed until you confirm.",
+    "autoButton": "Work it out and dry-run",
+    "autoWorking": "Reading this machine...",
+    "detectedBoard": "Board id",
+    "detectedModel": "Model",
+    "detectedTable": "Board table",
+    "detectedNoPatch": "already listed — no patch needed",
+    "detectedUndecided": "not decided — choose below",
+    "detectedCeilings": "Fan ceilings",
+    "detectedCeilingsValue": "{cpu} / {gpu} rpm",
     "action": "Action",
     "actions": {
       "installDriver": "Install patched driver",
@@ -595,20 +615,28 @@
     "dryRun": "Dry run",
     "running": "Running...",
     "apply": "Apply for real",
+    "applyAuto": "Confirm and install",
     "dryRunFirst": "Run it as a dry run first: applying stays disabled until the exact plan above has been run without touching anything.",
     "blockers": "Blocking this plan",
     "warnings": "Warnings",
     "steps": "Steps ({count})",
     "needsRoot": "needs root",
     "optional": "optional",
+    "willSkip": "will not run",
+    "stepsHint": "Optional steps can be switched off — the plan tolerates them failing, so it can do without them. Everything else has to run, and has no switch.",
     "internalStep": "carried out by the daemon itself",
     "dryRunReport": "Dry run — what would have happened",
     "report": "What was done",
     "succeeded": "Succeeded",
     "failed": "Failed",
-    "rebootHint": "The module was replaced. Reboot, or reload hp-wmi, before the new one is in use.",
+    "afterInstall": {
+      "working": "It worked — pwm1 is there, so the patched module is the one in use. One step is left: the daemon looked for its fan paths when it started, before pwm1 existed, so it still reports that a speed cannot be set. Restart it (or reboot) and the fan page can command a speed:",
+      "needsReload": "The patched module is installed on disk, but pwm1 is still missing — the kernel is very likely still running the module it loaded at boot, because it could not be unloaded while something was using it. Reboot, or run this and reopen this page:",
+      "ifStillNothing": "If pwm1 is still missing after a reboot, the module loaded but this board's firmware did not answer the fan query. Nothing is broken and nothing is left behind: \"Restore stock driver\" puts back the module that was backed up during the install.",
+      "restored": "The stock module is back on disk. Reboot, or run this, for the kernel to actually go back to it:"
+    },
     "step": {
-      "patch-source": "Patch the driver source (fan ceilings, and any experimental board id)",
+      "patch-source": "Patch the staged source under {path} (fan ceilings, and any experimental board id)",
       "stage-source": "Copy the driver sources and dkms.conf to {path}",
       "backup-driver": "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so depmod picks the new one unambiguously",
       "dkms-remove-old": "Remove the previously registered DKMS module",
@@ -639,24 +667,42 @@
       "remove-unit": "Delete the systemd unit file"
     },
     "warn": {
-      "alreadyWorks": "Fan control already works on this machine (pwm1 is present), so the patched driver would add nothing.",
-      "upstream": "Kernel {kernel} already ships manual fan control upstream (since {major}.{minor}), so the patch is probably unnecessary. It is only worth installing if your board is missing from the stock driver's tables.",
+      "alreadyInstalled": "Fan control works here because the patched driver is already installed. Reinstalling rebuilds and reinstates it, which is what a kernel upgrade needs if no hook rebuilt it automatically. To go back to the distribution's own driver, use \"restore\" instead.",
+      "alreadyWorks": "Fan control already works on this machine (pwm1 is present) and it is not this installer's doing, so the stock driver supports this board and the patched one would add nothing.",
       "noHook": "This distribution has no recognised kernel-hook mechanism, so the module will be built for the running kernel only and will need reinstalling after a kernel upgrade.",
       "serviceInstalled": "The service unit is already installed; it will be replaced.",
-      "joinGroup": "Add each user who should control this machine to the '{group}' group: sudo usermod -aG {group} $USER (then log out and back in)."
+      "joinGroup": "Add each user who should control this machine to the '{group}' group: sudo usermod -aG {group} $USER (then log out and back in).",
+      "boardMissing": "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), and hp-wmi is loaded here - yet there is no pwm1. The stock driver did not recognise this board, which is exactly the case the patched driver plus your board's id in the right table exists for. Whether the firmware then honours a fan write is something only trying it can answer.",
+      "noHpWmi": "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), but hp-wmi is not loaded at all here, so there is nothing to say this is one of the laptops either driver is for. Installing is unlikely to help."
     },
     "blocker": {
       "alreadyWorking": "Fan control is already available; nothing to install.",
-      "noDriverSource": "The patched hp-wmi sources were not found. They are not bundled with pyren; point PYREN_DRIVER_DIR at a checkout of omen-fan-control's data/driver directory, or install them to /usr/share/pyren/driver.",
+      "noDriverSource": "The patched hp-wmi sources were not found. Pyren ships them in its own driver/ directory; a packaged build has to install that to /usr/share/pyren/driver, or PYREN_DRIVER_DIR has to point at a copy.",
       "kernelHeaders": "Kernel headers for the running kernel are missing or incomplete, so the module cannot be compiled.",
       "buildTools": "A C compiler and make are required to build the module."
     },
     "exec": {
       "skipped": "skipped after an earlier failure",
-      "internalAction": "internal action"
+      "internalAction": "carried out by the daemon itself",
+      "declined": "not run, at your request"
     },
     "err": {
       "planNotRunnable": "this plan cannot run: {reasons}"
+    },
+    "auto": {
+      "noBoardId": "This machine's firmware does not publish a DMI board name, so no board can be added to the driver's tables.",
+      "noDriverSource": "Board {board} was found, but without the driver sources there is no way to tell whether the driver already lists it.",
+      "boardKnown": "Board {board} is already in the driver's feature table, so no board patch is needed.",
+      "boardNew": "Board {board} is not in the driver's feature table; it will be added with the {params} parameters.",
+      "unknownFamily": "Board {board} is not in the driver's tables, and this machine does not identify itself as an OMEN or a Victus, so which parameters it wants cannot be guessed. Choose them by hand below.",
+      "rpmCalibrated": "Fan ceilings taken from the last calibration run: {cpu} (CPU), {gpu} (GPU).",
+      "rpmNotCalibrated": "No fan calibration has been run here, so the driver keeps its own ceiling - it asks the firmware for one first, and only falls back to a compiled-in number if that fails. Run the fan calibration and install again to pin down measured values.",
+      "paramsInert": "This choice does not affect this board. It is already in the driver's {table}, so the driver takes that thermal-profile path and never reads the variant's own EC offset - and all four variants share one fan profile, so none of them changes fan control either.",
+      "paramsVictus": "Victus boards have one parameter set in this driver, and upstream marks its EC offset unknown - so the thermal profile is remembered rather than read back. Nothing to measure.",
+      "paramsMeasuredOmen": "Measured, not guessed: EC offset 0x95 is holding a value the OMEN thermal profile uses, so that is where this board keeps it. omen_v1_legacy is the variant that reads there.",
+      "paramsMeasuredVictusS": "Measured, not guessed: EC offset 0x59 is holding a value the OMEN thermal profile uses, so that is where this board keeps it. omen_v1 is the variant that reads there.",
+      "paramsNoOffset": "The embedded controller was read and holds a thermal profile at neither offset the driver knows, so this board keeps it somewhere else. omen_v1_no_ec is the variant that reads none - which is the right answer here, not a fallback: the driver remembers the profile it set instead.",
+      "paramsUnmeasured": "The embedded controller could not be read, so which EC offset holds the thermal profile is unknown. omen_v1_no_ec reads none of them, which is the safe half of that choice - the driver remembers the profile it set. Only the readback is affected; setting a profile goes over WMI either way."
     }
   },
   "admin": {

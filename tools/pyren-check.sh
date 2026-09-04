@@ -308,12 +308,29 @@ elif ! klog="$(dmesg 2>/dev/null)"; then
 	record skip kernel-log "hp-wmi kernel messages" \
 		"kernel log not readable; run as root, or paste \`dmesg | grep -i hp.wmi\`"
 else
-	hp_lines="$(printf '%s\n' "$klog" | grep -i -e 'hp-wmi' -e 'hp_wmi' | tail -4 |
+	hp_all="$(printf '%s\n' "$klog" | grep -i -e 'hp-wmi' -e 'hp_wmi')"
+	hp_lines="$(printf '%s\n' "$hp_all" | tail -4 |
 		sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '\n' '|' | sed 's/|$//;s/|/ | /g')"
-	if [ -z "$hp_lines" ]; then
+	# Mirrors is_concerning()/is_unsigned_module_notice() in
+	# crates/fan/src/diagnostics.rs, and the parity test compares the status
+	# these produce - so the two lists have to stay identical.
+	#
+	# The taint notice is dropped before the search for trouble because it
+	# contains the word "failed": loading a module the distribution did not
+	# sign is what the driver installer does, so it is expected, and matching
+	# on it gave a working machine a yellow row with nothing wrong in it.
+	hp_bad="$(printf '%s\n' "$hp_all" |
+		grep -iv -e 'module verification failed' -e 'tainting kernel' |
+		grep -iE 'fail|error|unknown ec layout|cannot|unable|not supported|reduced')"
+	if [ -z "$hp_all" ]; then
 		record pass kernel-log "hp-wmi kernel messages" "no hp-wmi messages"
-	else
+	elif [ -n "$hp_bad" ]; then
 		record warn kernel-log "hp-wmi kernel messages" "$hp_lines"
+	elif printf '%s\n' "$hp_all" | grep -qi -e 'module verification failed' -e 'tainting kernel'; then
+		record pass kernel-log "hp-wmi kernel messages" \
+			"Nothing wrong here. The 'module verification failed' line is the kernel noting that a module built outside your distribution's kernel package was loaded, and tainting itself to record that - which is exactly what installing the patched hp-wmi does, so it is expected rather than a fault: $hp_lines"
+	else
+		record pass kernel-log "hp-wmi kernel messages" "$hp_lines"
 	fi
 fi
 

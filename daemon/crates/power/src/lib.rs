@@ -241,7 +241,8 @@ impl PowerModule {
             }
             LoadOutcome::TooNew { found } => {
                 eprintln!(
-                    "pyren-daemon: power config is version {found}, newer than this build                      understands; using defaults and leaving the file alone"
+                    "pyren-daemon: power config is version {found}, newer than this \
+                     build understands; using defaults and leaving the file alone"
                 );
             }
         }

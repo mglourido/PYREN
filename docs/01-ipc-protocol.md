@@ -594,10 +594,12 @@ which a discharging mouse makes a desktop look like an unplugged laptop.
 Ports the source project's `install_driver.sh` and the install paths in
 `omen_logic.py`.
 
-> **This is no longer the recommended path for the driver.** Manual fan
-> control is upstream in recent kernels, so installing a patched
-> out-of-tree driver is usually a downgrade. Use `fan.diagnose` to verify
-> what the running kernel already does; the driver actions here remain for
+> **This is not the first thing to reach for.** Manual fan control is
+> upstream in recent kernels, so installing a patched out-of-tree driver is
+> usually a downgrade — but not always: a stock driver that comes up
+> *without* `pwm1` did not recognise the board, and then this is the
+> remedy, as it was on the test laptop. Use `fan.diagnose` to verify what
+> the running kernel already does; the driver actions here remain for
 > the case where a board genuinely isn't supported by the stock driver, and
 > `installService`/`removeService` are still the normal way to install the
 > daemon's systemd unit.
@@ -610,14 +612,88 @@ plan is also something that pastes into a bug report.
 | method | params | result | status |
 |---|---|---|---|
 | `installer.inspect` | none | what this machine has, and whether the patch is needed | ✅ implemented |
+| `installer.autodetect` | none | the install's inputs, worked out from the machine | ✅ implemented, read-only |
 | `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings | ✅ implemented |
-| `installer.apply` | as above plus `confirm`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report }` | ⚠️ implemented, **execution untested** |
+| `installer.apply` | as above plus `confirm`, `auto`, `skipSteps`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report, autodetected? }` | ✅ implemented; `installDriver` run for real on 8D2F |
 
-All three are driven from the app by `DriverWizard.svelte` at the bottom
+All four are driven from the app by `DriverWizard.svelte` at the bottom
 of `/drivers`, which renders the plan's steps and their commands and keeps
 "apply" disabled until a dry run of those exact options has come back —
 see `docs/03-frontend.md`. `pyren-ctl` has no installer subcommand; the
 wizard and `--install-service` are the two ways in.
+
+### `autodetect`: the inputs, instead of a form
+
+An install needs four answers that used to be typed by hand — the two fan
+ceilings, the board id, and which of the driver's tables that board belongs
+in. Every one of them is already on the machine, so `autodetect` reads them
+instead of asking:
+
+| answer | read from |
+|---|---|
+| board id, model, family | DMI (`/sys/class/dmi/id`) |
+| whether the driver already knows the board | `hp_wmi_feature_boards[]` in the driver's own `hp-wmi.c.orig` |
+| `cpuMaxRpm` / `gpuMaxRpm` | `fan1MaxRpm` / `fan2MaxRpm` in `fan.json`, i.e. the last `fan.calibrate` run |
+
+```json
+{
+  "dmi": { "boardName": "8D2F", "productName": "OMEN Gaming Laptop 16-am0xxx",
+           "productFamily": "103C_5335M7 HP OMEN", "sysVendor": "HP" },
+  "family": "omen",
+  "boardKnown": false,
+  "experimentalBoard": "8D2F",
+  "boardTable": { "table": "features", "params": "omenV1NoEc" },
+  "cpuMaxRpm": null, "gpuMaxRpm": null, "rpmSource": "driverFallback",
+  "notes": [ { "key": "installer.auto.boardNew", "params": {"board": "8D2F", "params": "omen_v1_no_ec"}, "text": "…" } ]
+}
+```
+
+`notes` are `Msg` objects: the reasoning behind each answer, so the wizard
+can show *why* rather than presenting a filled-in form as fact.
+
+Two things it will not do. It never claims a board-params variant for a
+machine that names neither family (`family: "unknown"` leaves
+`boardTable` null and says so), because the variants write different
+thermal-profile values over WMI. And an uncalibrated machine gets
+`null` ceilings rather than a guess — the driver asks the firmware for one
+and only falls back to a compiled-in number, which is better than a number
+Pyren made up.
+
+#### The board-params variant is measured, not guessed
+
+The four variants differ in one thing DMI cannot say: which EC byte holds
+the thermal profile. `autodetect` settles it by looking, in three steps:
+
+1. **Does it matter?** All four share one fan profile, and a board already
+   in `omen_thermal_profile_boards` or `victus_thermal_profile_boards`
+   takes that thermal-profile path and never reads the variant's offset.
+   `paramsEffect` reports `inertOmenPath` / `inertVictusPath` for those,
+   and saying "this changes nothing here" beats a caveat about a choice
+   with no effect.
+2. **If it does, read the EC.** With `probeEc: true` the daemon loads
+   `ec_sys` (read-only) and reads offsets `0x59` and `0x95`; whichever
+   holds a value `enum hp_thermal_profile_omen_v1` uses names the variant.
+   `ec` carries what it saw, or why it could not look.
+3. **Otherwise say so.** Neither offset holding a profile means the board
+   keeps it elsewhere, and `omenV1NoEc` is then right rather than a
+   fallback; an unreadable EC gets the same variant but a different note,
+   because a guess and a measurement must not read alike.
+
+`probeEc` defaults to **false**: everything else `autodetect` does is a
+read of something already present, and loading a kernel module is not
+that. The wizard passes `true`, because clicking install is the
+authorisation. An `auto` apply probes for the same reason.
+
+`apply` with `"auto": true` runs the same survey and fills in **whatever
+the request left unset**; explicit values always win, so a caller can
+detect most of it and pin one field. The result carries what was actually
+used back as `autodetected`. (The app does not mix the two: its wizard
+offers automatic and manual as separate modes, and sends the manual fields
+only in manual mode — see `docs/03-frontend.md`.) Which board-params
+variant is picked for an unlisted board is a *choice*, not a reading: the
+conservative variant of the right family (`omenV1NoEc` / `victusS`, both of
+which read no thermal profile back from the EC) is used, and the note says
+so.
 
 Each step's `description`, every `blockers[].message`, every `warnings[]`
 entry, and a report step's `description` are **`Msg` objects** (see
@@ -645,6 +721,28 @@ under `pkexec`.
 `action` is one of `installDriver`, `restoreDriver`, `installService`,
 `removeService`.
 
+### `skipSteps`: opting out of the optional ones
+
+A step the plan marks `optional` is one whose *failure* it tolerates —
+regenerating the initramfs (known to break on odd EFI layouts), unloading a
+module that may not be loaded, cleaning a build tree. Those are also the
+only steps it can do without, so they are the only ones `skipSteps` accepts:
+
+```json
+{ "action": "installDriver", "auto": true, "skipSteps": ["initramfs"] }
+```
+
+They come back in the report as `declined`, a status of their own rather
+than `skipped` — one is a decision, the other is the wreckage of an earlier
+failure, and a report that called them the same thing would hide which
+happened.
+
+Naming a **required** step is refused with `invalidParams` (as is naming
+one that is not in the plan) rather than ignored. Silently running a step
+the caller asked to skip and silently skipping `depmod` are both worse than
+an error: the second would leave a module installed that nothing can find
+and report success.
+
 ### Safety rules
 
 - **`apply` is a dry run unless `confirm: true`.** A mis-sent message can
@@ -657,6 +755,14 @@ under `pkexec`.
   present), unless `force` is set. Manual fan control went upstream in
   Linux 6.20, so on a modern kernel replacing the stock driver is usually a
   downgrade — `inspect` reports `patchNeeded: false` there.
+- **A modern kernel with no `pwm1` is warned about as a reason to install,
+  not against it.** That combination means the stock driver came up and did
+  not claim this board, which is the one case the patch is for; the warning
+  (`installer.warn.boardMissing`) says so. Where hp-wmi is not loaded at all
+  there is no evidence this is one of these laptops, and that is a
+  different sentence (`installer.warn.noHpWmi`). An earlier single warning
+  called the patch "probably unnecessary" in both, which contradicted the
+  verdict the app shows directly above it.
 - **The stock module is always backed up before being removed**, and only
   when no `.bak` exists yet, so re-running an install never overwrites the
   pristine backup with an already-patched module.
@@ -682,13 +788,20 @@ One deliberate deviation from the shell script: it picks
 compatibility shim by that name installed next to the real `mkinitcpio`.
 The port picks the generator matching the distribution family first.
 
-### Driver sources are not bundled
+### Where the driver sources come from
 
-`hp-wmi.c` is a modified copy of a GPL-2 kernel driver maintained in the
-`omen-fan-control` project; carrying a fork of it here would mean tracking
-their changes by hand. `inspect` looks for it in `$PYREN_DRIVER_DIR`,
-then `/usr/share/pyren/driver`, then a sibling checkout, and reports a
-`no-driver-source` blocker when it finds none.
+They ship with Pyren, in `driver/` — a verbatim copy of the upstream tree,
+with its provenance in `driver/README.md`. `inspect` looks in
+`$PYREN_DRIVER_DIR`, then `/usr/share/pyren/driver` (where a package must
+install it), then the repository's own `driver/` (resolved at compile time,
+so a development build finds it from any working directory), then a sibling
+checkout of the upstream project; it reports a `no-driver-source` blocker
+only when all four are missing.
+
+Whichever is found is treated as **read-only**. `apply` copies the tree to
+`/usr/src/hp-wmi-omen-1.0/` first and patches *that*, so the snapshot stays
+pristine and a second install never starts from the first one's output —
+which is why `stage-source` comes before `patch-source` in every plan.
 
 ## `fan` module
 

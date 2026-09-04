@@ -135,11 +135,24 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
     // The most useful thing this installer can do on a modern kernel is
     // say that it isn't needed. Manual fan control went upstream in 6.20,
     // and replacing the stock driver on such a kernel is a downgrade.
-    if env.fan_control_available {
+    if env.fan_control_available && env.patched_driver_installed {
+        // Working *because of a previous install*. Calling that "the
+        // patched driver would add nothing" describes the thing doing the
+        // work, and blocking it would refuse the rebuild a kernel upgrade
+        // needs - so this warns and lets the reinstall through.
+        warnings.push(msg!(
+            "installer.warn.alreadyInstalled",
+            "Fan control works here because the patched driver is already installed. \
+             Reinstalling rebuilds and reinstates it, which is what a kernel upgrade needs \
+             if no hook rebuilt it automatically. To go back to the distribution's own \
+             driver, use \"restore\" instead."
+        ));
+    } else if env.fan_control_available {
         warnings.push(msg!(
             "installer.warn.alreadyWorks",
-            "Fan control already works on this machine (pwm1 is present), so the patched \
-             driver would add nothing."
+            "Fan control already works on this machine (pwm1 is present) and it is not this \
+             installer's doing, so the stock driver supports this board and the patched one \
+             would add nothing."
         ));
         if !options.force {
             blockers.push(Blocker {
@@ -152,17 +165,43 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
             });
         }
     } else if env.kernel.has_upstream_fan_control {
-        warnings.push(msg!(
-            "installer.warn.upstream",
-            {
-                "kernel" => env.kernel.release.clone(),
-                "major" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.0,
-                "minor" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.1,
-            },
-            "Kernel {kernel} already ships manual fan control upstream (since {major}.{minor}), \
-             so the patch is probably unnecessary. It is only worth installing if your board \
-             is missing from the stock driver's tables."
-        ));
+        // Reaching here means the kernel *has* manual fan control and this
+        // machine still has no `pwm1`. That is not "the patch is probably
+        // unnecessary" - it is the one case where it is necessary, and
+        // saying otherwise contradicts the verdict shown above it.
+        //
+        // Which of the two it is depends on whether the driver is even
+        // loaded: a bound hp-wmi that produced no pwm1 did not recognise
+        // this board (see `dev/FINDINGS.md` - on the test laptop the driver
+        // logs none of the lines it emits when it finds fan hardware, so it
+        // never enters the code path at all).
+        if env.hp_wmi_loaded {
+            warnings.push(msg!(
+                "installer.warn.boardMissing",
+                {
+                    "kernel" => env.kernel.release.clone(),
+                    "major" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.0,
+                    "minor" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.1,
+                },
+                "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), \
+                 and hp-wmi is loaded here - yet there is no pwm1. The stock driver did not \
+                 recognise this board, which is exactly the case the patched driver plus \
+                 your board's id in the right table exists for. Whether the firmware then \
+                 honours a fan write is something only trying it can answer."
+            ));
+        } else {
+            warnings.push(msg!(
+                "installer.warn.noHpWmi",
+                {
+                    "kernel" => env.kernel.release.clone(),
+                    "major" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.0,
+                    "minor" => crate::detect::UPSTREAM_FAN_CONTROL_KERNEL.1,
+                },
+                "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), \
+                 but hp-wmi is not loaded at all here, so there is nothing to say this is one \
+                 of the laptops either driver is for. Installing is unlikely to help."
+            ));
+        }
     }
 
     let Some(driver_source) = env.driver_source.clone() else {
@@ -170,9 +209,9 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
             id: "no-driver-source".to_string(),
             message: msg!(
                 "installer.blocker.noDriverSource",
-                "The patched hp-wmi sources were not found. They are not bundled with pyren; \
-                 point PYREN_DRIVER_DIR at a checkout of omen-fan-control's data/driver \
-                 directory, or install them to /usr/share/pyren/driver."
+                "The patched hp-wmi sources were not found. Pyren ships them in its own \
+                 driver/ directory; a packaged build has to install that to \
+                 /usr/share/pyren/driver, or PYREN_DRIVER_DIR has to point at a copy."
             ),
             fix: None,
         });
@@ -224,20 +263,26 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
     }
 
     let dkms_src = format!("/usr/src/{DKMS_NAME}-{DKMS_VERSION}");
+    // Staging comes first so that everything after it works on the copy
+    // under /usr/src: the tree the sources are read from - this repository's
+    // `driver/`, or an installed /usr/share/pyren/driver - is never written
+    // to, so it stays a pristine snapshot of upstream and a second install
+    // never starts from the first one's output.
     let mut steps = vec![
-        Step::internal(
-            "patch-source",
-            msg!(
-                "installer.step.patch-source",
-                "Patch the driver source (fan ceilings, and any experimental board id)"
-            ),
-        ),
         Step::internal(
             "stage-source",
             msg!(
                 "installer.step.stage-source",
                 { "path" => dkms_src.clone() },
                 "Copy the driver sources and dkms.conf to {path}"
+            ),
+        ),
+        Step::internal(
+            "patch-source",
+            msg!(
+                "installer.step.patch-source",
+                { "path" => dkms_src.clone() },
+                "Patch the staged source under {path} (fan ceilings, and any experimental board id)"
             ),
         ),
         Step::internal(
@@ -575,6 +620,7 @@ mod tests {
             acpi_call_available: false,
             driver_source: Some(PathBuf::from("/usr/share/pyren/driver")),
             service_installed: false,
+            patched_driver_installed: false,
         }
     }
 
@@ -602,7 +648,7 @@ mod tests {
         assert_eq!(stage.description.key, "installer.step.stage-source");
         assert!(stage.description.text.contains("dkms.conf"));
 
-        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.upstream"
+        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.boardMissing"
             && w.params["kernel"] == "6.12.4-arch1-1"));
     }
 
@@ -643,6 +689,27 @@ mod tests {
         assert!(plan.blockers.iter().any(|b| b.id == "already-working"));
     }
 
+    /// Reinstalling on top of a previous install is a legitimate thing to
+    /// want - it is how the module comes back after a kernel upgrade that
+    /// no hook covered. It must not be refused as "already working", and
+    /// must not be described as adding nothing.
+    #[test]
+    fn reinstalling_over_our_own_driver_is_allowed_and_says_why() {
+        let env = Environment {
+            fan_control_available: true,
+            patched_driver_installed: true,
+            ..ready_env()
+        };
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+
+        assert!(plan.is_runnable(), "a rebuild must not need --force");
+        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.alreadyInstalled"));
+        assert!(
+            !plan.warnings.iter().any(|w| w.contains("would add nothing")),
+            "the patched driver is what is doing the work here"
+        );
+    }
+
     #[test]
     fn that_refusal_can_be_overridden_deliberately() {
         let env = Environment { fan_control_available: true, ..ready_env() };
@@ -653,10 +720,14 @@ mod tests {
         assert!(plan.warnings.iter().any(|w| w.contains("already works")));
     }
 
+    /// The test laptop, and the case the whole driver path exists for: a
+    /// kernel new enough to have fan control of its own, hp-wmi bound, and
+    /// still no `pwm1` - meaning the stock driver did not recognise the
+    /// board. The warning must say that, not "probably unnecessary": the
+    /// panel's own verdict one line above already says the patch is the
+    /// remedy here, and two sentences disagreeing is worse than either.
     #[test]
-    fn a_modern_kernel_warns_without_blocking() {
-        // Upstream has fan control, but this board isn't in its tables, so
-        // the patch is still a legitimate thing to want.
+    fn a_modern_kernel_with_no_pwm1_says_the_board_is_the_reason() {
         let env = Environment {
             kernel: KernelInfo {
                 release: "7.2.2-1-cachyos".into(),
@@ -664,11 +735,35 @@ mod tests {
                 minor: 2,
                 has_upstream_fan_control: true,
             },
+            hp_wmi_loaded: true,
+            fan_control_available: false,
             ..ready_env()
         };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         assert!(plan.is_runnable());
-        assert!(plan.warnings.iter().any(|w| w.contains("upstream")));
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|w| w.key == "installer.warn.boardMissing")
+            .expect("the board-missing warning");
+        assert!(warning.contains("did not recognise this board"));
+        assert!(
+            !plan.warnings.iter().any(|w| w.contains("probably unnecessary")),
+            "nothing here should call the patch unnecessary"
+        );
+    }
+
+    /// Without hp-wmi bound there is no evidence this is one of these
+    /// laptops at all, and that is a different sentence.
+    #[test]
+    fn a_machine_with_no_hp_wmi_is_told_the_patch_probably_will_not_help() {
+        let env = Environment {
+            kernel: KernelInfo { has_upstream_fan_control: true, ..ready_env().kernel },
+            hp_wmi_loaded: false,
+            ..ready_env()
+        };
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.noHpWmi"));
     }
 
     #[test]
@@ -694,6 +789,20 @@ mod tests {
         assert!(!plan.is_runnable());
         let blocker = plan.blockers.iter().find(|b| b.id == "kernel-headers").unwrap();
         assert!(blocker.fix.as_deref().unwrap().contains("linux-kbuild"));
+    }
+
+    /// Patching writes to `hp-wmi.c`, so it must happen after the copy into
+    /// /usr/src - otherwise it would edit the read-only source tree the
+    /// snapshot lives in, and the next install would start from a patched
+    /// file rather than from upstream's.
+    #[test]
+    fn the_sources_are_staged_before_they_are_patched() {
+        let plan = plan(&ready_env(), Action::InstallDriver, PlanOptions::default());
+        let steps = ids(&plan);
+        assert!(
+            steps.iter().position(|id| *id == "stage-source")
+                < steps.iter().position(|id| *id == "patch-source")
+        );
     }
 
     #[test]

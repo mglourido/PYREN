@@ -247,7 +247,7 @@ fn overclock_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("overclock", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
 
-/// The driver installer, in the three parts the module is split into.
+/// The driver installer, in the four parts the module is split into.
 ///
 /// `request` is passed through as the daemon's params rather than being
 /// re-typed here: the shape is documented in `docs/01-ipc-protocol.md` and
@@ -257,6 +257,11 @@ fn overclock_set_restore_on_start(enabled: bool) -> Result<Value, String> {
 #[tauri::command]
 fn installer_inspect() -> Result<Value, String> {
     call_daemon("installer", "inspect", Value::Null)
+}
+
+#[tauri::command]
+fn installer_autodetect(request: Value) -> Result<Value, String> {
+    call_daemon("installer", "autodetect", request)
 }
 
 #[tauri::command]
@@ -612,6 +617,7 @@ pub fn run() {
             overclock_reset,
             overclock_set_restore_on_start,
             installer_inspect,
+            installer_autodetect,
             installer_plan,
             installer_apply,
             admin_status,

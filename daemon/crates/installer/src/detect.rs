@@ -78,6 +78,14 @@ pub struct Environment {
     pub driver_source: Option<PathBuf>,
     /// Whether the daemon's own systemd unit is installed.
     pub service_installed: bool,
+    /// Whether *our* patched driver is what is installed here.
+    ///
+    /// Without this, `fan_control_available` is two different situations
+    /// wearing one flag: a stock driver that supports this board, where
+    /// installing really would be a downgrade, and our own patched driver
+    /// already in place, where "the patched driver would add nothing" is
+    /// describing the thing that is doing the work.
+    pub patched_driver_installed: bool,
 }
 
 impl Environment {
@@ -98,6 +106,7 @@ impl Environment {
             hp_wmi_loaded: Path::new("/sys/devices/platform/hp-wmi").exists(),
             acpi_call_available: Path::new("/proc/acpi/call").exists(),
             driver_source: find_driver_source(),
+            patched_driver_installed: patched_driver_installed(&kernel.release, &distro_id),
             service_installed: Path::new("/etc/systemd/system/pyren-daemon.service").exists()
                 || Path::new("/usr/lib/systemd/system/pyren-daemon.service").exists(),
             dkms_status,
@@ -271,27 +280,83 @@ fn fan_control_available() -> bool {
         .any(|entry| entry.path().join("pwm1").exists())
 }
 
+/// Where the vendored driver sources live in this repository, resolved at
+/// compile time so a development build finds them from any working
+/// directory. Absent from an installed binary's machine, which is what
+/// `/usr/share/pyren/driver` is for.
+pub const REPO_DRIVER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../driver");
+
 /// Locates the patched driver sources.
 ///
-/// They are **not vendored into this repository** - `hp-wmi.c` is a
-/// modified copy of a GPL-2 kernel driver maintained in the upstream
-/// `omen-fan-control` project, and carrying a fork of it here would mean
-/// tracking their changes by hand. The installer therefore looks for an
-/// installed copy first and falls back to a sibling checkout for
-/// development.
+/// `driver/` in this repository is the reference copy: a verbatim,
+/// unmodified snapshot of upstream `omen-fan-control`'s tree (see
+/// `driver/README.md` for its provenance). It is never built or patched in
+/// place - the installer stages a copy under `/usr/src` first - so the
+/// checkout and an installed `/usr/share/pyren/driver` are both read-only
+/// inputs and can be searched in either order.
 fn find_driver_source() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(dir) = std::env::var("PYREN_DRIVER_DIR") {
         candidates.push(PathBuf::from(dir));
     }
     candidates.push(PathBuf::from("/usr/share/pyren/driver"));
+    candidates.push(PathBuf::from(REPO_DRIVER_DIR));
+    // A sibling checkout of the upstream project, for anyone tracking its
+    // main branch rather than the snapshot vendored here.
     candidates.push(PathBuf::from(
         "../omen-fan-control-main/src/omen_fan_control/data/driver",
     ));
 
-    candidates
-        .into_iter()
-        .find(|dir| dir.join("dkms.conf").is_file() && dir.join("hp-wmi-omen/hp-wmi.c").is_file())
+    candidates.into_iter().find(|dir| is_driver_source(dir))
+}
+
+/// What makes a directory a usable driver tree: the DKMS descriptor and the
+/// one file the installer patches.
+pub fn is_driver_source(dir: &Path) -> bool {
+    dir.join("dkms.conf").is_file() && dir.join("hp-wmi-omen/hp-wmi.c").is_file()
+}
+
+/// Whether this machine carries the traces of one of our own installs.
+///
+/// Any one of these is conclusive, and they are checked together because
+/// the two strategies leave different traces: DKMS registers a module,
+/// while the hook strategy leaves the staged sources and a distro hook. A
+/// `.bak` beside a module is the third - it only exists because the
+/// installer moved the distribution's own module out of the way.
+fn patched_driver_installed(kernel_release: &str, distro_id: &str) -> bool {
+    if dkms_status().is_some() || Path::new("/usr/src/hp-wmi-omen-1.0").is_dir() {
+        return true;
+    }
+    let hook = match hook_flavour(distro_id) {
+        HookFlavour::Pacman => "/etc/pacman.d/hooks/90-hp-wmi-omen.hook",
+        HookFlavour::KernelPostinst => "/etc/kernel/postinst.d/zz-hp-wmi-omen",
+        HookFlavour::KernelInstall => "/etc/kernel/install.d/99-hp-wmi-omen.install",
+        HookFlavour::None => "",
+    };
+    if !hook.is_empty() && Path::new(hook).exists() {
+        return true;
+    }
+    let module_dir =
+        PathBuf::from(format!("/lib/modules/{kernel_release}/kernel/drivers/platform/x86/hp"));
+    let Ok(entries) = fs::read_dir(module_dir) else { return false };
+    let modules: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with("hp-wmi.ko"))
+        .collect();
+
+    // A `.bak` only exists because the installer moved the distribution's
+    // own module aside.
+    if modules.iter().any(|name| name.ends_with(".bak")) {
+        return true;
+    }
+    // Two live modules in one directory is not something a distribution
+    // ships - it is our uncompressed `hp-wmi.ko` sitting beside the
+    // compressed one, and `depmod` resolves that in our favour. It is the
+    // state a restore used to leave behind, and the only trace of us that
+    // survives it.
+    let live: Vec<&String> = modules.iter().filter(|name| !name.ends_with(".bak")).collect();
+    live.len() > 1 && live.iter().any(|name| name.as_str() == "hp-wmi.ko")
 }
 
 fn which(binary: &str) -> bool {
@@ -335,6 +400,17 @@ mod tests {
         if let Some(tool) = initramfs_tool("cachyos") {
             assert!(which(&tool));
         }
+    }
+
+    /// The driver stopped being something the user had to check out
+    /// separately; if this fails the vendored tree has been moved or
+    /// renamed and every install would report `no-driver-source`.
+    #[test]
+    fn the_vendored_driver_tree_is_where_the_installer_looks() {
+        assert!(
+            is_driver_source(Path::new(REPO_DRIVER_DIR)),
+            "{REPO_DRIVER_DIR} is not a driver tree"
+        );
     }
 
     #[test]

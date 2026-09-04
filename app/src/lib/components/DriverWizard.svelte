@@ -19,13 +19,32 @@
    *   screen is always the plan that would run.
    * - A plan with blockers is not offered at all; the blockers are shown
    *   with the command that fixes each one instead.
+   *
+   * Installing is offered as a **choice of two modes**, not one path with
+   * an escape hatch:
+   *
+   * - **Automatic** asks the daemon what this machine is
+   *   (`installer.autodetect` - the board id from DMI, the tables from the
+   *   driver's own source, the fan ceilings from the last calibration) and
+   *   dry-runs the plan those answers produce. It removes the *typing*,
+   *   not the reading: what was detected, the reasoning behind each answer,
+   *   and the steps all appear before anything is authorised.
+   * - **Manual** is the same plan from values typed in, for someone who
+   *   knows their board and disagrees with what was detected.
+   *
+   * The mode is part of the request, so switching it throws away a dry run
+   * like any other option would, and the manual fields are not sent while
+   * they are off screen - a value the user cannot see must not decide what
+   * runs.
    */
   import Icon from "$lib/components/Icon.svelte";
   import Panel from "$lib/components/Panel.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
+  import { tick } from "svelte";
   import {
     daemon,
+    type Autodetected,
     type BoardParams,
     type BoardTable,
     type ExecutionReport,
@@ -45,6 +64,27 @@
   let inspectError = $state<string | null>(null);
 
   let action = $state<InstallerAction>("installDriver");
+
+  /**
+   * The two ways to install, offered as a choice up front rather than as a
+   * button plus a form underneath it. They are genuinely different jobs -
+   * one asks the machine what it is, the other is for the person who
+   * already knows and disagrees - and showing both at once made the
+   * automatic path look like a shortcut past the fields rather than the
+   * normal way in.
+   */
+  type InstallMode = "automatic" | "manual";
+  let mode = $state<InstallMode>("automatic");
+
+  /**
+   * What the request carries. Derived, not stored: restoring the stock
+   * driver has nothing to detect, so the mode only means anything for an
+   * install.
+   */
+  const auto = $derived(action === "installDriver" && mode === "automatic");
+  let detected = $state<Autodetected | null>(null);
+  let detecting = $state(false);
+  let autoError = $state<string | null>(null);
   let preferHooks = $state(false);
   let force = $state(false);
   let cpuMaxRpm = $state<string>("");
@@ -52,6 +92,16 @@
   let experimentalBoard = $state<string>("");
   let boardTableName = $state<BoardTable["table"]>("features");
   let boardParams = $state<BoardParams>("victusS");
+
+  /**
+   * Optional steps the user has unticked. "Optional" is the plan's own
+   * word for a step whose failure it tolerates - regenerating the
+   * initramfs, unloading a module that may not be loaded - and those are
+   * exactly the ones somebody who knows their own machine may want left
+   * alone. Required steps have no checkbox, and the daemon refuses to skip
+   * one even if asked.
+   */
+  let skipSteps = $state<string[]>([]);
 
   let plan = $state<InstallPlan | null>(null);
   let planning = $state(false);
@@ -83,17 +133,33 @@
     return value.trim() !== "" && Number.isFinite(n) && n > 0 ? Math.round(n) : null;
   }
 
+  // In automatic mode the manual fields are not on screen, so they are not
+  // sent either: a value the user cannot see must not decide what runs.
   const request = $derived.by<InstallerRequest>(() => ({
     action,
+    auto,
     preferHooks,
     force,
-    cpuMaxRpm: rpm(cpuMaxRpm),
-    gpuMaxRpm: rpm(gpuMaxRpm),
-    experimentalBoard: experimentalBoard.trim() || null,
-    boardTable,
+    cpuMaxRpm: auto ? null : rpm(cpuMaxRpm),
+    gpuMaxRpm: auto ? null : rpm(gpuMaxRpm),
+    experimentalBoard: auto ? null : experimentalBoard.trim() || null,
+    boardTable: auto ? null : boardTable,
+    skipSteps,
   }));
 
   const optionsKey = $derived(JSON.stringify(request));
+
+  /**
+   * The subset of the request that decides *what the steps are*. Planning
+   * is pure over these three; everything else only decides what the steps
+   * are given to do, or whether one runs at all.
+   *
+   * Kept apart from `optionsKey` so that unticking an optional step does
+   * not delete the very list the checkboxes live in. It still throws the
+   * dry run away, which is the property that matters: the report on screen
+   * must always be the report for what would now run.
+   */
+  const planKey = $derived(JSON.stringify({ action, preferHooks, force }));
 
   /** A driver action only; the service is installed by the panel above. */
   const isDriverAction = $derived(action === "installDriver" || action === "restoreDriver");
@@ -137,16 +203,28 @@
     if (open && !inspection && !inspecting) inspect();
   }
 
-  // Any change to the request invalidates what is on screen, rather than
-  // leaving a plan next to options that no longer produced it.
+  // A different set of steps means the plan on screen is not this plan.
+  $effect(() => {
+    planKey;
+    plan = null;
+    planError = null;
+    // Steps unticked for a plan that no longer exists mean nothing, and
+    // could silently apply to a step of the same name in the next one.
+    skipSteps = [];
+  });
+
+  // Any change at all disarms the apply: the report on screen must always
+  // be the report for exactly what would run now.
   $effect(() => {
     optionsKey;
-    plan = null;
     report = null;
-    planError = null;
     runError = null;
     dryRunKey = null;
   });
+
+  function toggleStep(id: string, run: boolean) {
+    skipSteps = run ? skipSteps.filter((s) => s !== id) : [...skipSteps, id];
+  }
 
   async function review() {
     planning = true;
@@ -163,6 +241,38 @@
     }
   }
 
+  /**
+   * The install button: survey the machine, then dry-run the plan that
+   * survey produces, in one click.
+   *
+   * The `tick()` matters. Setting `auto` changes the request, and the
+   * effect above throws away any plan on screen when that happens - so the
+   * dry run has to be started *after* that has settled, or it would arm an
+   * apply that the effect then immediately disarms.
+   */
+  async function installAutomatically() {
+    action = "installDriver";
+    mode = "automatic";
+    await tick();
+
+    detecting = true;
+    autoError = null;
+    try {
+      // Probing reads the embedded controller to settle the board-params
+      // variant instead of guessing it, which means loading `ec_sys`
+      // (read-only). Clicking install is what authorises that; the plain
+      // call stays a pure read.
+      detected = await daemon.installerAutodetect(true);
+    } catch (e) {
+      autoError = String(e);
+      detected = null;
+      detecting = false;
+      return;
+    }
+    detecting = false;
+    await run(false);
+  }
+
   async function run(confirm: boolean) {
     running = true;
     runError = null;
@@ -171,6 +281,9 @@
       const result = await daemon.installerApply({ ...request, confirm });
       plan = result.plan;
       report = result.report;
+      // What the daemon actually filled in, which is the authority - the
+      // survey shown on screen was a separate call and could be older.
+      if (result.autodetected) detected = result.autodetected;
       // Only a dry run arms the real one, and only for these options.
       dryRunKey = confirm ? null : key;
       if (confirm) {
@@ -189,6 +302,7 @@
     warned: "warning",
     failed: "close",
     skipped: "info",
+    declined: "info",
     planned: "info",
   };
 
@@ -287,6 +401,152 @@
       </div>
 
       {#if action === "installDriver"}
+        <!-- The two ways in, as a choice rather than a button sitting above
+             a form. Automatic asks the machine what it is; manual is for
+             someone who already knows and disagrees. -->
+        <div class="field">
+          <span class="label">{t("installer.mode")}</span>
+          <Segmented
+            options={[
+              { value: "automatic", label: t("installer.modes.automatic") },
+              { value: "manual", label: t("installer.modes.manual") },
+            ]}
+            value={mode}
+            onchange={(v) => (mode = v as InstallMode)}
+          />
+        </div>
+
+        <p class="hint">
+          {auto ? t("installer.autoHint") : t("installer.manualHint")}
+        </p>
+
+        {#if auto}
+          {#if autoError}<p class="notice err">{autoError}</p>{/if}
+
+          {#if detected}
+            <dl class="facts">
+              <div>
+                <dt>{t("installer.detectedBoard")}</dt>
+                <dd>{detected.dmi.boardName ?? t("common.unavailable")}</dd>
+              </div>
+              <div>
+                <dt>{t("installer.detectedModel")}</dt>
+                <dd>{detected.dmi.productName ?? t("common.unavailable")}</dd>
+              </div>
+              <div>
+                <dt>{t("installer.detectedTable")}</dt>
+                <dd>
+                  {#if detected.boardKnown}
+                    {t("installer.detectedNoPatch")}
+                  {:else if detected.boardTable}
+                    {t(`installer.tables.${detected.boardTable.table}`)}
+                    {detected.boardTable.table === "features"
+                      ? ` — ${t(`installer.params.${detected.boardTable.params}`)}`
+                      : ""}
+                  {:else}
+                    {t("installer.detectedUndecided")}
+                  {/if}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("installer.detectedCeilings")}</dt>
+                <dd>
+                  {detected.cpuMaxRpm || detected.gpuMaxRpm
+                    ? t("installer.detectedCeilingsValue", {
+                        cpu: String(detected.cpuMaxRpm ?? "—"),
+                        gpu: String(detected.gpuMaxRpm ?? "—"),
+                      })
+                    : t("installer.driverDefault")}
+                </dd>
+              </div>
+            </dl>
+
+            <!-- Why each answer is what it is. The point of showing this at
+                 all: a filled-in form presented as fact would be worse than
+                 the questions it replaced. -->
+            <ul class="list">
+              {#each detected.notes as note, i (i)}
+                <li>
+                  <Icon name="info" size={15} />
+                  <div class="body"><span class="check-title">{tm(note)}</span></div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {:else}
+          <div class="options">
+            <div class="rpm">
+              <span class="label">{t("installer.maxRpm")}</span>
+              <em class="sub">
+                {measuredMaxRpm
+                  ? t("installer.maxRpmMeasured", { rpm: String(measuredMaxRpm) })
+                  : t("installer.maxRpmHint")}
+              </em>
+              <div class="row">
+                <label>
+                  <span>{t("installer.cpuMaxRpm")}</span>
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    bind:value={cpuMaxRpm}
+                    placeholder={t("installer.driverDefault")}
+                  />
+                </label>
+                <label>
+                  <span>{t("installer.gpuMaxRpm")}</span>
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    bind:value={gpuMaxRpm}
+                    placeholder={t("installer.driverDefault")}
+                  />
+                </label>
+                {#if measuredMaxRpm}
+                  <button class="ghost" onclick={() => (cpuMaxRpm = String(measuredMaxRpm))}>
+                    {t("installer.useMeasured")}
+                  </button>
+                {/if}
+              </div>
+            </div>
+
+            <div class="rpm">
+              <span class="label">{t("installer.board")}</span>
+              <em class="sub">{t("installer.boardHint")}</em>
+              <div class="row">
+                <label>
+                  <span>{t("installer.boardId")}</span>
+                  <input
+                    type="text"
+                    bind:value={experimentalBoard}
+                    placeholder="8D2F"
+                    spellcheck="false"
+                  />
+                </label>
+                <label>
+                  <span>{t("installer.boardTable")}</span>
+                  <select bind:value={boardTableName} disabled={!experimentalBoard.trim()}>
+                    {#each boardTables as name (name)}
+                      <option value={name}>{t(`installer.tables.${name}`)}</option>
+                    {/each}
+                  </select>
+                </label>
+                {#if boardTableName === "features"}
+                  <label>
+                    <span>{t("installer.boardParams")}</span>
+                    <select bind:value={boardParams} disabled={!experimentalBoard.trim()}>
+                      {#each boardParamsOptions as name (name)}
+                        <option value={name}>{t(`installer.params.${name}`)}</option>
+                      {/each}
+                    </select>
+                  </label>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        <!-- Both modes: how the module survives a kernel upgrade, and
+             whether to proceed where installing is questionable. -->
         <div class="options">
           <label class="switch">
             <Toggle
@@ -301,104 +561,47 @@
           </label>
 
           <label class="switch">
-            <Toggle
-              checked={force}
-              onchange={(v) => (force = v)}
-              ariaLabel={t("installer.force")}
-            />
+            <Toggle checked={force} onchange={(v) => (force = v)} ariaLabel={t("installer.force")} />
             <span>
               <strong>{t("installer.force")}</strong>
               <em>{t("installer.forceHint")}</em>
             </span>
           </label>
-
-          <div class="rpm">
-            <span class="label">{t("installer.maxRpm")}</span>
-            <em class="sub">
-              {measuredMaxRpm
-                ? t("installer.maxRpmMeasured", { rpm: String(measuredMaxRpm) })
-                : t("installer.maxRpmHint")}
-            </em>
-            <div class="row">
-              <label>
-                <span>{t("installer.cpuMaxRpm")}</span>
-                <input
-                  type="text"
-                  inputmode="numeric"
-                  bind:value={cpuMaxRpm}
-                  placeholder={t("installer.driverDefault")}
-                />
-              </label>
-              <label>
-                <span>{t("installer.gpuMaxRpm")}</span>
-                <input
-                  type="text"
-                  inputmode="numeric"
-                  bind:value={gpuMaxRpm}
-                  placeholder={t("installer.driverDefault")}
-                />
-              </label>
-              {#if measuredMaxRpm}
-                <button
-                  class="ghost"
-                  onclick={() => (cpuMaxRpm = String(measuredMaxRpm))}
-                >
-                  {t("installer.useMeasured")}
-                </button>
-              {/if}
-            </div>
-          </div>
-
-          <div class="rpm">
-            <span class="label">{t("installer.board")}</span>
-            <em class="sub">{t("installer.boardHint")}</em>
-            <div class="row">
-              <label>
-                <span>{t("installer.boardId")}</span>
-                <input
-                  type="text"
-                  bind:value={experimentalBoard}
-                  placeholder="8D2F"
-                  spellcheck="false"
-                />
-              </label>
-              <label>
-                <span>{t("installer.boardTable")}</span>
-                <select bind:value={boardTableName} disabled={!experimentalBoard.trim()}>
-                  {#each boardTables as name (name)}
-                    <option value={name}>{t(`installer.tables.${name}`)}</option>
-                  {/each}
-                </select>
-              </label>
-              {#if boardTableName === "features"}
-                <label>
-                  <span>{t("installer.boardParams")}</span>
-                  <select bind:value={boardParams} disabled={!experimentalBoard.trim()}>
-                    {#each boardParamsOptions as name (name)}
-                      <option value={name}>{t(`installer.params.${name}`)}</option>
-                    {/each}
-                  </select>
-                </label>
-              {/if}
-            </div>
-          </div>
         </div>
       {/if}
 
+      <!-- One row of buttons; the mode decides what is in it. Confirming is
+           a separate click in both modes, and stays unreachable until a dry
+           run of these exact options has come back. -->
       <div class="actions">
-        <button class="run" onclick={review} disabled={planning || running}>
-          <Icon name="search" size={15} />
-          {planning ? t("installer.reviewing") : t("installer.review")}
-        </button>
+        {#if auto}
+          <button
+            class="run"
+            onclick={installAutomatically}
+            disabled={detecting || planning || running}
+          >
+            <Icon name="search" size={15} />
+            {detecting
+              ? t("installer.autoWorking")
+              : running && !report
+                ? t("installer.running")
+                : t("installer.autoButton")}
+          </button>
+        {:else}
+          <button class="run" onclick={review} disabled={planning || running}>
+            <Icon name="search" size={15} />
+            {planning ? t("installer.reviewing") : t("installer.review")}
+          </button>
 
-        <button
-          class="run"
-          onclick={() => run(false)}
-          disabled={!runnable || planning || running}
-        >
-          <Icon name="refresh" size={15} />
-          {running && !report ? t("installer.running") : t("installer.dryRun")}
-        </button>
+          <button
+            class="run"
+            onclick={() => run(false)}
+            disabled={!runnable || planning || running}
+          >
+            <Icon name="refresh" size={15} />
+            {running && !report ? t("installer.running") : t("installer.dryRun")}
+          </button>
+        {/if}
 
         <button
           class="run danger"
@@ -406,7 +609,7 @@
           disabled={!runnable || !dryRunCurrent || running}
         >
           <Icon name="download" size={15} />
-          {t("installer.apply")}
+          {auto ? t("installer.applyAuto") : t("installer.apply")}
         </button>
       </div>
 
@@ -460,12 +663,31 @@
                 <span class="tag">{t("installer.needsRoot")}</span>
               {/if}
             </h3>
+            {#if plan.steps.some((step) => step.optional)}
+              <p class="hint step-hint">{t("installer.stepsHint")}</p>
+            {/if}
             <ol class="steps">
               {#each plan.steps as step (step.id)}
-                <li>
+                {@const declined = skipSteps.includes(step.id)}
+                <li class:declined>
                   <span class="check-title">
+                    <!-- Only optional steps get a switch. A required one has
+                         no checkbox at all rather than a disabled one: the
+                         daemon refuses to skip it, so offering the control
+                         would be offering something that cannot happen. -->
+                    {#if step.optional}
+                      <Toggle
+                        checked={!declined}
+                        onchange={(v) => toggleStep(step.id, v)}
+                        ariaLabel={tm(step.description)}
+                      />
+                    {/if}
                     {tm(step.description)}
-                    {#if step.optional}<span class="tag">{t("installer.optional")}</span>{/if}
+                    {#if step.optional}
+                      <span class="tag">
+                        {declined ? t("installer.willSkip") : t("installer.optional")}
+                      </span>
+                    {/if}
                   </span>
                   <code>
                     {step.command.length > 0
@@ -498,8 +720,29 @@
               </li>
             {/each}
           </ul>
+          <!-- What to do next, decided by looking rather than guessing.
+               `inspect` re-runs after a real install, and pwm1's presence
+               is the definitive test of whether the new module is the one
+               in use - the plan's own modprobe usually does the reload, so
+               telling everyone to reboot was asking for something already
+               done. -->
           {#if !report.dryRun && report.succeeded && isDriverAction}
-            <p class="notice warn">{t("installer.rebootHint")}</p>
+            {#if action === "installDriver" && env?.fanControlAvailable}
+              <!-- pwm1 exists, but the fan module found its sysfs paths at
+                   daemon startup and caches them, so until the daemon is
+                   restarted it still reports that no speed can be set.
+                   Saying "done, nothing to do" here would contradict the
+                   fan page the user goes to next. -->
+              <p class="notice ok-notice">{t("installer.afterInstall.working")}</p>
+              <code class="fix">sudo systemctl restart pyren-daemon</code>
+            {:else if action === "installDriver"}
+              <p class="notice warn">{t("installer.afterInstall.needsReload")}</p>
+              <code class="fix">sudo modprobe -r hp-wmi &amp;&amp; sudo modprobe hp-wmi</code>
+              <p class="hint">{t("installer.afterInstall.ifStillNothing")}</p>
+            {:else}
+              <p class="notice warn">{t("installer.afterInstall.restored")}</p>
+              <code class="fix">sudo modprobe -r hp-wmi &amp;&amp; sudo modprobe hp-wmi</code>
+            {/if}
           {/if}
         </div>
       {/if}
@@ -554,6 +797,22 @@
 
   .notice.warn {
     color: var(--warn);
+  }
+
+  .notice.ok-notice {
+    color: var(--ok);
+  }
+
+  /* A command to copy, not one the installer is about to run. */
+  .fix {
+    display: block;
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border-radius: 2px;
+    background: var(--bg-elev, rgba(255, 255, 255, 0.04));
+    color: var(--text-dim);
+    font-size: 12.5px;
+    user-select: text;
   }
 
   .verdict {
@@ -803,8 +1062,19 @@
     color: var(--warn);
   }
   .list li.skipped,
+  .list li.declined,
   .list li.planned {
     color: var(--text-mute);
+  }
+
+  .step-hint {
+    margin: 0 0 10px;
+  }
+
+  /* Unticked in the plan: still listed, visibly not going to happen. */
+  .steps li.declined .check-title,
+  .steps li.declined code {
+    opacity: 0.5;
   }
 
   .body {

@@ -205,6 +205,35 @@ fn find_define(source: &str, define: &str) -> Option<usize> {
     None
 }
 
+/// Byte range of a table's body, between its braces.
+fn table_body(source: &str, table: BoardTable) -> Result<(usize, usize), PatchError> {
+    let array = table.array_name();
+    let Some(array_start) = source.find(array) else {
+        return Err(PatchError::AnchorMissing(array.to_string()));
+    };
+    let Some(open) = source[array_start..].find('{').map(|o| array_start + o) else {
+        return Err(PatchError::AnchorMissing(format!("opening brace of {array}")));
+    };
+    let Some(close) = find_matching_brace(source, open) else {
+        return Err(PatchError::AnchorMissing(format!("closing brace of {array}")));
+    };
+    Ok((open, close))
+}
+
+/// Whether the driver already knows this board in the given table.
+///
+/// This is what decides whether an install needs to patch a board in at
+/// all: a board the driver already lists needs no experimental entry, and
+/// adding one would be a no-op the user was asked to authorise for nothing.
+pub fn board_in_table(
+    source: &str,
+    table: BoardTable,
+    board_name: &str,
+) -> Result<bool, PatchError> {
+    let (open, close) = table_body(source, table)?;
+    Ok(source[open + 1..close].contains(&format!("\"{board_name}\"")))
+}
+
 /// Adds a board id to a thermal-profile table so an untested board takes an
 /// existing code path.
 ///
@@ -215,20 +244,9 @@ pub fn inject_board(
     table: BoardTable,
     board_name: &str,
 ) -> Result<String, PatchError> {
-    let array = table.array_name();
-    let Some(array_start) = source.find(array) else {
-        return Err(PatchError::AnchorMissing(array.to_string()));
-    };
+    let (open, close) = table_body(source, table)?;
 
-    let Some(open) = source[array_start..].find('{').map(|o| array_start + o) else {
-        return Err(PatchError::AnchorMissing(format!("opening brace of {array}")));
-    };
-    let Some(close) = find_matching_brace(source, open) else {
-        return Err(PatchError::AnchorMissing(format!("closing brace of {array}")));
-    };
-
-    let body = &source[open + 1..close];
-    if body.contains(&format!("\"{board_name}\"")) {
+    if board_in_table(source, table, board_name)? {
         return Ok(source.to_string());
     }
 
@@ -269,10 +287,22 @@ fn find_matching_brace(source: &str, open: usize) -> Option<usize> {
     None
 }
 
-/// Offset of the trailing `{}` sentinel inside a dmi_system_id table.
+/// Offset where an entry must be inserted to land before the trailing `{}`
+/// sentinel of a dmi_system_id table: the **start of the sentinel's line**,
+/// not the `{}` itself.
+///
+/// Inserting at the `{}` would splice the new entry into the middle of that
+/// line, after its leading tab - which compiles, but leaves the entry
+/// double-indented and the sentinel with no indentation at all. This file
+/// is upstream kernel code that someone may well read or send back, so it
+/// should come out looking like the entries already in it.
 fn find_sentinel(source: &str, from: usize, to: usize) -> Option<usize> {
     let body = &source[from..to];
-    body.rfind("{}").map(|offset| from + offset)
+    let sentinel = from + body.rfind("{}")?;
+    Some(match source[..sentinel].rfind('\n') {
+        Some(newline) => newline + 1,
+        None => sentinel,
+    })
 }
 
 /// Applies every patch to the driver tree on disk, in place.
@@ -433,6 +463,16 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
     }
 
     #[test]
+    fn a_board_is_recognised_in_the_table_that_lists_it() {
+        assert!(board_in_table(SOURCE, BoardTable::OmenThermalProfile, "8746").unwrap());
+        assert!(!board_in_table(SOURCE, BoardTable::OmenThermalProfile, "8D41").unwrap());
+        // Listed in one table says nothing about another: 8C99 has feature
+        // data but is not an omen thermal-profile board.
+        assert!(board_in_table(SOURCE, BoardTable::Features(BoardParams::VictusS), "8C99").unwrap());
+        assert!(!board_in_table(SOURCE, BoardTable::OmenThermalProfile, "8C99").unwrap());
+    }
+
+    #[test]
     fn an_already_listed_board_is_left_alone() {
         let patched = inject_board(SOURCE, BoardTable::OmenThermalProfile, "8746").unwrap();
         assert_eq!(patched, SOURCE);
@@ -447,6 +487,23 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
         // A dmi_system_id table is scanned until the empty entry, so a board
         // added after it would never be matched.
         assert!(new_entry < sentinel, "the board must come before the {{}} sentinel");
+    }
+
+    /// The injected entry has to look like the ones already there: this is
+    /// upstream kernel source, and a double-indented entry next to a
+    /// de-indented sentinel is the kind of thing that gets noticed when the
+    /// file is pasted into a bug report.
+    #[test]
+    fn an_injected_entry_keeps_the_tables_indentation() {
+        let patched =
+            inject_board(SOURCE, BoardTable::Features(BoardParams::VictusS), "8D2F").unwrap();
+
+        assert!(
+            patched.contains("\t{\n\t\t.matches = {DMI_MATCH(DMI_BOARD_NAME, \"8D2F\")},"),
+            "the entry should open at one tab:\n{patched}"
+        );
+        // ...and the sentinel keeps its own line and its own indentation.
+        assert!(patched.contains("\t},\n\t{},\n"), "sentinel lost its line:\n{patched}");
     }
 
     #[test]
