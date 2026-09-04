@@ -209,11 +209,21 @@ fn handle_connection(stream: UnixStream, registry: &Registry) -> std::io::Result
 mod tests {
     use super::*;
 
+    /// A directory to bind a socket in, with its mode set explicitly.
+    ///
+    /// `bind_restricted` tightens `umask` for the two syscalls around
+    /// `bind()`, and umask is **process-wide** - so a fixture created by
+    /// another test at that exact moment came out `0600`, with no execute
+    /// bit, and binding inside it failed with `EACCES`. Once every few
+    /// runs, and only when the whole crate's tests ran together. Setting
+    /// the mode after creating it is immune to whatever umask was in
+    /// force.
     fn fixture(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir()
             .join(format!("pyren-socket-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         dir
     }
 

@@ -432,6 +432,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pyren-acpi-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("call");
+        // Restored rather than removed at the end: on a machine where
+        // `acpi_call` is loaded, deleting the variable does not put the
+        // test's redirection back, it exposes the real firmware
+        // interface to whatever runs next.
+        let previous = std::env::var_os("PYREN_ACPI_CALL");
         std::env::set_var("PYREN_ACPI_CALL", &path);
 
         // The request is one line, `<method> <args>`, with exactly one
@@ -450,7 +455,10 @@ mod tests {
             "a missing interface is 'not loaded', which names a fix, not a bare io error"
         );
 
-        std::env::remove_var("PYREN_ACPI_CALL");
+        match previous {
+            Some(previous) => std::env::set_var("PYREN_ACPI_CALL", previous),
+            None => std::env::remove_var("PYREN_ACPI_CALL"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -524,6 +524,65 @@ fn lock_probe(probe: &Mutex<Probe>) -> std::sync::MutexGuard<'_, Probe> {
     probe.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Test-only serialisation of `PYREN_ACPI_CALL`.
+///
+/// One test redirects the interface at a writable temp file to read back
+/// exactly what went down the wire; several others ask what this machine
+/// answers. The variable is process-global and the harness runs tests in
+/// parallel threads, so on a machine with `acpi_call` loaded the second
+/// group can run *while* the first has the interface pointed at a plain
+/// file - and a plain file accepts everything, so "nobody was asked" and
+/// "the firmware refused" swap places. Both groups take this lock: one to
+/// redirect, one to be sure nothing is redirected under it.
+#[cfg(test)]
+pub(crate) mod testenv {
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Holds the lock, and puts the variable back the way it was.
+    pub(crate) struct AcpiEnv {
+        // A test that panicked while holding the lock has already failed;
+        // the next one still needs the redirection to work.
+        _guard: MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+        redirected: bool,
+    }
+
+    /// Points `acpi_call` at `path` for as long as the guard lives.
+    pub(crate) fn redirect(path: &Path) -> AcpiEnv {
+        let mut env = real();
+        std::env::set_var("PYREN_ACPI_CALL", path);
+        env.redirected = true;
+        env
+    }
+
+    /// Takes the lock without changing anything - what a test that asks
+    /// the *real* machine needs, so no redirection is in force while it
+    /// runs.
+    pub(crate) fn real() -> AcpiEnv {
+        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        AcpiEnv {
+            _guard: guard,
+            previous: std::env::var_os("PYREN_ACPI_CALL"),
+            redirected: false,
+        }
+    }
+
+    impl Drop for AcpiEnv {
+        fn drop(&mut self) {
+            if !self.redirected {
+                return;
+            }
+            match self.previous.take() {
+                Some(previous) => std::env::set_var("PYREN_ACPI_CALL", previous),
+                None => std::env::remove_var("PYREN_ACPI_CALL"),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
