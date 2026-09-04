@@ -633,11 +633,11 @@ mod tests {
         let presses = device.absorb(&bytes(&[
             // Ctrl down: scancode, keycode, sync. Reports nothing.
             (EV_MSC, MSC_SCAN, 0x1d),
-            (EV_KEY, KEY_LEFTCTRL as u16, 1),
+            (EV_KEY, KEY_LEFTCTRL, 1),
             (EV_SYN, SYN_REPORT, 0),
             // Alt down.
             (EV_MSC, MSC_SCAN, 0x38),
-            (EV_KEY, KEY_LEFTALT as u16, 1),
+            (EV_KEY, KEY_LEFTALT, 1),
             (EV_SYN, SYN_REPORT, 0),
             // P down: the only press in the whole sequence.
             (EV_MSC, MSC_SCAN, 0x19),
@@ -657,8 +657,8 @@ mod tests {
     #[test]
     fn releasing_a_modifier_stops_it_being_held() {
         let mut device = device();
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTCTRL as u16, 1), (EV_SYN, SYN_REPORT, 0)]));
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTCTRL as u16, 0), (EV_SYN, SYN_REPORT, 0)]));
+        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTCTRL, 1), (EV_SYN, SYN_REPORT, 0)]));
+        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTCTRL, 0), (EV_SYN, SYN_REPORT, 0)]));
         let presses = device.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         assert_eq!(presses.len(), 1);
@@ -670,8 +670,8 @@ mod tests {
     #[test]
     fn a_held_modifier_repeating_is_still_held() {
         let mut device = device();
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT as u16, 1), (EV_SYN, SYN_REPORT, 0)]));
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT as u16, 2), (EV_SYN, SYN_REPORT, 0)]));
+        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT, 1), (EV_SYN, SYN_REPORT, 0)]));
+        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT, 2), (EV_SYN, SYN_REPORT, 0)]));
         let presses = device.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         assert!(presses[0].modifiers.shift);
@@ -682,11 +682,11 @@ mod tests {
     #[test]
     fn the_two_sides_of_a_modifier_are_the_same_modifier() {
         let mut left = device();
-        left.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT as u16, 1), (EV_SYN, SYN_REPORT, 0)]));
+        left.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT, 1), (EV_SYN, SYN_REPORT, 0)]));
         let from_left = left.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         let mut right = device();
-        right.absorb(&bytes(&[(EV_KEY, KEY_RIGHTSHIFT as u16, 1), (EV_SYN, SYN_REPORT, 0)]));
+        right.absorb(&bytes(&[(EV_KEY, KEY_RIGHTSHIFT, 1), (EV_SYN, SYN_REPORT, 0)]));
         let from_right = right.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         assert_eq!(from_left[0].modifiers, from_right[0].modifiers);

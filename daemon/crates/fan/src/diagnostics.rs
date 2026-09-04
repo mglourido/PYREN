@@ -687,7 +687,69 @@ fn check_kernel_log() -> Check {
         .rev()
         .map(|line| line.trim().to_string())
         .collect();
-    Check::new(ID, title(), CheckStatus::Warn, cleaned.join(" | "))
+    let quoted = cleaned.join(" | ");
+
+    // The check exists to surface *why a board came up with reduced
+    // functionality*. Warning about every line it finds defeats that: the
+    // driver announcing that it registered successfully is not a problem,
+    // and neither is the taint notice below, so a healthy machine got a
+    // yellow row with nothing wrong in it.
+    if lines.iter().any(|line| is_concerning(line)) {
+        return Check::new(ID, title(), CheckStatus::Warn, quoted);
+    }
+    if lines.iter().any(|line| is_unsigned_module_notice(line)) {
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Pass,
+            msg!(
+                "diagnostics.checks.kernel-log.selfBuilt",
+                { "lines" => quoted },
+                "Nothing wrong here. The 'module verification failed' line is the kernel \
+                 noting that a module built outside your distribution's kernel package was \
+                 loaded, and tainting itself to record that - which is exactly what \
+                 installing the patched hp-wmi does, so it is expected rather than a fault: \
+                 {lines}"
+            ),
+        );
+    }
+    Check::new(ID, title(), CheckStatus::Pass, quoted)
+}
+
+/// The kernel noting that an out-of-tree module was loaded.
+///
+/// Guaranteed on any kernel built with module signing as soon as a module
+/// the distribution did not sign is loaded, which is precisely what Pyren's
+/// own driver installer produces. It is a receipt for something the user
+/// asked for, not a fault, and calling it one sends people hunting for a
+/// problem that is not there.
+fn is_unsigned_module_notice(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("module verification failed") || lower.contains("tainting kernel")
+}
+
+/// Whether a line is the kernel reporting trouble, rather than narrating
+/// something normal.
+///
+/// Deliberately checked *after* the unsigned-module notice is excluded:
+/// that line contains the word "failed" and would otherwise match here,
+/// which is how a working machine ended up with a warning.
+fn is_concerning(line: &str) -> bool {
+    if is_unsigned_module_notice(line) {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    [
+        "fail",
+        "error",
+        "unknown ec layout",
+        "cannot",
+        "unable",
+        "not supported",
+        "reduced",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn check_platform_profile() -> Check {
@@ -791,6 +853,45 @@ fn paths_for_testing(hwmon_dir: PathBuf, cpu_temp: Option<PathBuf>) -> FanPaths 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two lines this machine actually produced after the patched
+    /// driver was installed. Neither is a fault, and the checker used to
+    /// mark both as a warning - which is what sent someone looking for a
+    /// problem that was not there.
+    #[test]
+    fn a_healthy_hp_wmi_log_is_not_a_warning() {
+        for line in [
+            "[ 5849.627625] hp_wmi: module verification failed: signature and/or required key missing - tainting kernel",
+            "[ 5849.820528] hp_wmi: Registered as platform profile handler",
+            "[    5.585175] input: HP WMI hotkeys as /devices/virtual/input/input10",
+        ] {
+            assert!(!super::is_concerning(line), "should not warn about: {line}");
+        }
+    }
+
+    /// "module verification failed" contains "failed": excluding it has to
+    /// happen before the keyword search, or the fix does nothing.
+    #[test]
+    fn the_taint_notice_is_recognised_before_the_word_failed_matches() {
+        let taint = "hp_wmi: module verification failed: signature and/or required key missing - tainting kernel";
+        assert!(super::is_unsigned_module_notice(taint));
+        assert!(!super::is_concerning(taint));
+    }
+
+    /// The lines the check exists for still have to reach the user. The
+    /// first is the driver's own `pr_warn` for a board whose EC layout it
+    /// does not know - which is a live possibility here, since the board
+    /// was added to the table with a params variant chosen by heuristic.
+    #[test]
+    fn a_real_driver_complaint_is_still_a_warning() {
+        for line in [
+            "hp_wmi: Unknown EC layout for board 8D2F. Thermal profile readback will be disabled.",
+            "hp_wmi: query 0x2b returned error 0x5",
+            "hp_wmi: unable to register platform profile",
+        ] {
+            assert!(super::is_concerning(line), "should warn about: {line}");
+        }
+    }
 
     fn fixture(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir()

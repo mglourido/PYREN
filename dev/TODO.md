@@ -9,43 +9,11 @@ root on it, not different hardware.
 
 ## 1. Do next
 
-### 1.1 Try the patched driver on 8D2F **[HP]**
-This is now the *only* thing standing between this laptop and a real fan
-percentage, and the reasoning changed: reading the driver source showed
-that none of the three `pwm1_enable` modes is gated on the board-params
-table, and that `hp_wmi_hwmon_is_visible` returns `0644` for `hwmon_pwm`
-unconditionally. See `FINDINGS.md` §"What the driver actually gates on the
-board table". So installing it should expose `pwm1` here, where the running
-7.2.2 driver does not — and whether the firmware honours the write is then
-an experiment, not an inference.
-
-Everything the daemon needs is already built and refuses to run on this
-hardware only because `pwm1` is absent (`capabilities.setSpeed`), so this
-is a one-variable test:
-
-1. `installer.plan` / `installer.apply` with `experimentalBoard: "8D2F"`
-   and a `boardTable` choice — the variants differ in which EC offset
-   holds the thermal profile, so the wrong one loads and misreads. The
-   driver wizard at the bottom of `/drivers` now drives both, including
-   those two fields, and refuses to apply until the dry run of that exact
-   plan has come back — which is the safer way to do this experiment than
-   hand-written IPC.
-2. `sh tools/pyren-check.sh` and look for `pwm1`.
-3. `fan.setMode` with `{"mode":"manual","pwm":128}` and listen.
-
-*Done when*: `capabilities.setSpeed` is true, or it is established that
-the firmware refuses the query.
-
-**This is also the first run of the installer's execution path**, which has
-never been executed. Take a backup of the stock module first — the plan
-does this itself (`backup-driver`), but knowing where it went matters:
-`hp-wmi.ko.bak` beside the original.
-
-### 1.2 Run `fan.calibrate` on the laptop **[HP]**
+### 1.1 Run `fan.calibrate` on the laptop **[HP]**
 The routine is written, unit-tested and wired into `pyren-ctl`; it has
-**never been run against hardware**, and unlike 1.1 nothing is blocking
-that but a root daemon. It needs only `switchMode`, which this board has,
-so it is the cheapest hardware experiment left:
+**never been run against hardware**, and nothing is blocking that but a
+root daemon. It needs only `switchMode`, which this board had even before
+the driver was patched, so it is the cheapest hardware experiment left:
 
 ```sh
 cd daemon && sudo -E cargo run -p pyren-daemon      # terminal 1
@@ -53,18 +21,18 @@ cargo run -q -p pyren-ctl -- fan calibrate          # terminal 2, loud
 ```
 
 *Done when*: `fanMaxRpm` is a number in `fan.getStatus`, and the sample
-trace in the reply is in `FINDINGS.md` next to the `max`/`auto` one. Worth
-doing **before** 1.1 rather than after: it is the number the installer's
-`cpuMaxRpm`/`gpuMaxRpm` patch wants, and measuring it with the stock driver
-means the patched one can be given a real value on its first build.
+trace in the reply is in `FINDINGS.md` next to the `max`/`auto` one. It is
+also the number the installer's `cpuMaxRpm`/`gpuMaxRpm` patch wants: the
+driver was installed without it, so it is running on whatever ceiling the
+firmware reports. Measuring it and reinstalling would pin a real one.
 
-### 1.3 Ask the firmware about the lightbar **[HP]**
+### 1.2 Ask the firmware about the lightbar **[HP]**
 The `rgb` module is written (`daemon/crates/rgb`) and has **never been run
 against a light strip**, for one installable reason: `/proc/acpi/call` does
 not exist here because `acpi_call` is not installed. Everything that can be
 tested without it is — the 144-byte buffer the port builds, the replies it
 accepts, the probe on a machine with neither path — so this is a
-one-variable test like 1.1:
+one-variable test:
 
 ```sh
 sudo pacman -S acpi_call                          # prebuilt for this kernel
@@ -86,7 +54,7 @@ finding is already confirmed (`FINDINGS.md`).
 
 ---
 
-### 1.4 Bind the real Fn+P and press it **[HP]**
+### 1.3 Bind the real Fn+P and press it **[HP]**
 The whole path is built and tested end to end *except* the one step that
 needs fingers on the laptop: nothing has ever been bound to a real key.
 
@@ -110,7 +78,7 @@ already words them differently:
   `pyren-osd` (launching a second copy shows it), or `pyren-ctl hotkey
   press` from a Hyprland `bind`.
 
-### 1.5 Package `pyren-osd`
+### 1.4 Package `pyren-osd`
 Starting it is done: the app spawns it at launch, and Settings → Services
 has the "start at login" switch, which writes
 `~/.config/systemd/user/pyren-osd.service` pointing at whichever binary was
@@ -123,14 +91,7 @@ reference for a system-wide install.
 
 ## 2. Blocked on a decision or on hardware
 
-### 2.1 Driver sources: vendor, submodule, or fetch?
-Analysis in `FINDINGS.md`. Currently the installer looks for a checkout and
-reports a blocker when it finds none, which is honest but means the driver
-path only works for someone who already has the other repo. **Needs a call
-from the project owner**, and is low priority while fan control is upstream
-anyway.
-
-### 2.2 GPU switching, network booster, key mapping
+### 2.1 GPU switching, network booster, key mapping
 The UI for all three is complete and drives local state only. Each needs a
 real backend decision before any daemon work:
 
@@ -289,6 +250,15 @@ Recorded so nobody "fixes" them by accident:
   not a substitute for probing.
 - **The installer refuses to run when fan control already works**, unless
   forced. Replacing a working stock driver is a downgrade.
+
+- **The fan module does not re-discover its sysfs paths.** `FanModule`
+  finds `pwm1` and friends once, in its constructor, so a driver installed
+  while the daemon is running does not become usable until it restarts -
+  the wizard tells the user to restart it. Making the module re-probe
+  (a `refresh` on `fan.getStatus`, or a signal from the installer) would
+  remove that step, and is worth doing if installing ever becomes common.
+  It stayed out for now because re-probing on every status call is a
+  syscall on a hot path to fix a once-per-install annoyance.
 - **`restoreModeOnStart` defaults to off.** Changing a machine's power
   behaviour at boot should be something the user asked for.
 - **`apply` is a dry run unless `confirm: true`.** A mis-sent IPC message
@@ -313,6 +283,71 @@ Eco and Balanced on its own — is the `power` supervisor.
 Newest first. Kept because the *reasons* are the useful part - several of
 these replaced an earlier version of themselves, and knowing why saves
 someone re-proposing it.
+
+- **The board-params variant is decided, not guessed.** Reading `hp-wmi.c`
+  answered the question the install raised: all four variants share one fan
+  profile, and a board already on the OMEN or Victus thermal-profile path
+  never has its variant's EC offset read - so on most boards, 8D2F
+  included, the choice is **inert**, and `autodetect` now says that instead
+  of offering a caveat about a decision with no effect. Where it is live,
+  it is measured: `ec_sys` read-only, offsets 0x59 and 0x95, whichever
+  holds a value the OMEN v1 profile uses. Deliberately no inference from
+  the Victus S values 0x00/0x01 - two of the commonest bytes in EC space,
+  so matching them would name an offset from noise.
+
+  Two bugs found on the way, both invisible in the source. Six message
+  literals had lost their `\` line continuations and were carrying the
+  source indentation into the sentence ("in the driver's<18 spaces>{table}"),
+  and repairing them without keeping a space in front of the backslash glues
+  the words either side together. `pyren_core::msg`'s
+  `no_message_carries_its_own_source_indentation` now scans every literal in
+  `crates/` for both shapes; it knows a swallowed continuation from
+  deliberate alignment by *position* - a word character on the left and the
+  start of a word on the right - and skips lines using the `\x20` marker
+  the CLI help text aligns with.
+
+- **The patched driver is installed on 8D2F, and it worked** (was §1.1, and
+  the first run of the installer's execution path). `FINDINGS.md` has the
+  evidence. In short: automatic mode read the board out of DMI, added it to
+  `hp_wmi_feature_boards` with `omen_v1_no_ec` params, built via the hooks
+  strategy, and `pwm1`/`pwm2` now exist where the stock 7.2.2 driver
+  produced neither. The inference in `FINDINGS.md` §"What the driver
+  actually gates on the board table" was right: nothing gates the pwm path
+  on anything but board-params being set at all.
+
+  Three things the run taught, all now fixed: **the vendored tree really is
+  left alone** (`git status` on `driver/` is clean after an install - the
+  stage-before-patch order works); **an injected entry has to keep the
+  table's indentation**, since inserting at the `{}` sentinel spliced it
+  into that line; and **the daemon must be restarted afterwards**, because
+  the fan module discovers its sysfs paths once at startup, so it goes on
+  reporting "no pwm1" next to a `/sys` that has one. The wizard now says
+  so, with the command.
+
+- **The driver is vendored, and the installer works out its own inputs**
+  (was §2.1, "vendor, submodule, or fetch?"). `driver/` is now a verbatim
+  copy of upstream's tree; `FINDINGS.md` has the reversal and
+  `driver/README.md` the provenance. What decided it: without the copy, the
+  driver path did nothing on a fresh machine and the blocker told the user
+  to go and clone something else - which is not a smaller cost than a
+  manual sync, it is the feature not existing.
+
+  On top of that, `installer.autodetect` reads the four answers the form
+  used to ask for: the board id and model from DMI, whether the driver
+  already lists that board from `hp_wmi_feature_boards` in its own source,
+  and the fan ceilings from `fan.json`. Decisions worth keeping:
+  **`stage-source` now runs before `patch-source`**, so patching writes to
+  the copy under `/usr/src` and the vendored tree stays pristine - a second
+  install must not start from the first one's output; **the params variant
+  is presented as a choice, not a reading**, because DMI cannot say which
+  EC offset a board uses, so the conservative variant of the right family
+  is picked and the note says it is a guess; **a machine that is neither an
+  OMEN nor a Victus gets nothing filled in**, since the two families write
+  different thermal-profile values and a wrong default is worse than an
+  empty field; and **an uncalibrated machine gets null ceilings**, letting
+  the driver ask the firmware, rather than a number Pyren invented. The
+  wizard offers automatic and manual as two modes rather than a button over
+  a form, and neither will apply without a second, separate confirmation.
 
 - **GPU overclocking** (was §3's "last on purpose"): the `overclock`
   module, plus the page that drives it. The four conditions this file set
@@ -353,8 +388,8 @@ someone re-proposing it.
   "keep the driver's own fallback". The Tauri side passes the request
   through as opaque JSON (`installer_inspect`/`plan`/`apply`), so adding a
   field to the daemon's request does not mean editing three layers.
-  **Still never executed against hardware** — that is 1.1 above, and the
-  wizard is now the way to run it.
+  It has since been **run against hardware, successfully** — see the
+  entry at the top of this section.
 
 - **Structured IPC errors** (was 1.2): a refusal is now
   `{ kind, message }` instead of a sentence, with eleven kinds and one rule
@@ -435,9 +470,9 @@ someone re-proposing it.
   thread, hysteresis, temperature smoothing, and `fan.json` persistence.
   Split so that the arithmetic (`curve.rs`) and the hardware semantics
   (`control.rs`) are testable without an HP laptop, which is most of it.
-  The `pwm1`-dependent modes correctly refuse to run on this board; see
-  1.1 and 1.2 above for what is left, both of which need hardware rather
-  than code.
+  The `pwm1`-dependent modes correctly refused to run on this board while
+  the stock driver was in place; installing the patched one gave it a
+  `pwm1`, so what is left there is calibration, not code.
 - **The Tauri fan commands existed only on the frontend's side.**
   `daemon.setFanMode` called `fan_set_mode`, which was never registered in
   `invoke_handler` — every call failed at the bridge. Now wired, along with

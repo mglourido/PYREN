@@ -62,6 +62,7 @@ fn run_service_action(action: Action) -> ! {
         max_rpm: Default::default(),
         experimental_board: None,
         daemon_binary: std::env::current_exe().ok(),
+        skip_steps: Vec::new(),
     };
     let report = execute(&plan, &env, &context, false);
 

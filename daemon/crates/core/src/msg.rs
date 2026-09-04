@@ -178,6 +178,113 @@ pub fn __msg_interpolate(template: &str, params: &Map<String, Value>) -> String 
 
 #[cfg(test)]
 mod tests {
+
+    /// Every `msg!` in the workspace, checked for the two ways a wrapped
+    /// Rust string literal goes wrong: a lost `\` continuation, which
+    /// leaves the source indentation embedded in the sentence, and a
+    /// continuation with no space before it, which glues two words
+    /// together. Both compile, both reach the user, and neither is visible
+    /// in the source - the run of spaces looks like indentation because it
+    /// *was* indentation.
+    #[test]
+    fn no_message_carries_its_own_source_indentation() {
+        fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n == "target") {
+                        continue;
+                    }
+                    walk(&path, found);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    for (number, line) in text.lines().enumerate() {
+                        if swallowed_indentation(line.trim_start()) {
+                            found.push(format!("{}:{}", path.display(), number + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root")
+            .to_path_buf();
+
+        let mut found = Vec::new();
+        walk(&workspace.join("crates"), &mut found);
+        assert!(found.is_empty(), "string literals carrying source indentation: {found:#?}");
+    }
+
+    /// A run of spaces sitting mid-sentence inside a string literal.
+    ///
+    /// The position is what makes it evidence. Aligned help text and a
+    /// `dmesg` timestamp fixture (`"[    5.585175] input: ..."`) also carry
+    /// runs of spaces, and both are deliberate - but there the run follows
+    /// a bracket or precedes a digit. Requiring a word character on the left
+    /// and the start of a word on the right is what tells a swallowed
+    /// continuation apart from formatting somebody meant.
+    fn swallowed_indentation(line: &str) -> bool {
+        if !line.starts_with('"') {
+            return false;
+        }
+        // How this codebase writes deliberate column alignment inside a
+        // literal (see `usage()` in the daemon): an explicit `\x20` for the
+        // leading space, because plain leading spaces would be eaten by the
+        // continuation. A line using it is aligned on purpose.
+        if line.contains(r"\x20") {
+            return false;
+        }
+        let bytes = line.as_bytes();
+        let mut index = 1;
+        while index < bytes.len() {
+            if bytes[index] != b' ' {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < bytes.len() && bytes[index] == b' ' {
+                index += 1;
+            }
+            if index - start < 3 || start == 1 || index >= bytes.len() {
+                continue;
+            }
+            let before = bytes[start - 1];
+            let after = bytes[index];
+            let ends_a_word = before.is_ascii_lowercase() || matches!(before, b',' | b';' | b'\'');
+            let starts_a_word = after.is_ascii_lowercase() || after == b'{';
+            if ends_a_word && starts_a_word {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn the_indentation_check_knows_a_lost_continuation_from_deliberate_spacing() {
+        // What the bug looks like: the indentation of the next source line,
+        // left inside the sentence.
+        //
+        // Built by concatenation rather than written out, because a literal
+        // carrying the defect is exactly what the scan above looks for -
+        // spelling one here would make this file fail its own check.
+        let gap = " ".repeat(18);
+        assert!(swallowed_indentation(&format!(
+            "\"newer than this build{gap}understands; using defaults\""
+        )));
+        assert!(swallowed_indentation(&format!(
+            "\"in the driver's{gap}{{table}}, so the\""
+        )));
+
+        // What it does not: a dmesg timestamp fixture, and the CLI help
+        // text, which marks its deliberate alignment with `\x20`.
+        assert!(!swallowed_indentation("\"[    5.585175] input: HP WMI hotkeys\""));
+        assert!(!swallowed_indentation("\"\\x20 --help              this text\\n\\\""));
+        assert!(!swallowed_indentation("\"a normal sentence with single spaces\""));
+    }
     use super::*;
 
     #[test]

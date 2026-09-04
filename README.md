@@ -4,9 +4,11 @@ A Tauri-based clone of HP's OMEN Gaming Hub for Linux, built as a
 privileged daemon (Rust) plus an unprivileged desktop app (Tauri +
 SvelteKit), so hardware-control modules can be ported in from separate
 source projects — starting with fan control from
-[`omen-fan-control`](https://github.com/arfelious/omen-fan-control). Those
-source projects are not vendored here; where the checkouts live is in
-[`dev/README.md`](dev/README.md).
+[`omen-fan-control`](https://github.com/arfelious/omen-fan-control). Their
+Python is not vendored here (where those checkouts live is in
+[`dev/README.md`](dev/README.md)); their **kernel driver** is, verbatim, in
+[`driver/`](driver/README.md), because an installer that needs you to go
+and clone something else first is not an installer.
 
 Work still to do, and the findings behind the decisions taken so far, are
 in [`dev/`](dev/README.md).
@@ -26,6 +28,7 @@ thinks the machine can do.
 ```
 daemon/     Rust workspace: pyren-daemon + pyren-ctl + pyren-check + module crates
 app/        Tauri app: SvelteKit frontend + src-tauri shell
+driver/     the patched hp-wmi kernel module, a verbatim copy of upstream's (C, GPL-2)
 docs/       design plan + IPC protocol + development + frontend + RGB review
 dev/        working notes: what is left to do, and what was learned
 tools/      pyren-check.sh, the dependency-free fan self-test
@@ -77,13 +80,20 @@ tools/      pyren-check.sh, the dependency-free fan self-test
   practical (kept in step by a parity test). Verifies what the running kernel
   actually supports instead of installing a patched driver — manual fan
   control is upstream in recent kernels, so on most machines there is
-  nothing to install.
+  nothing to install. Where the stock driver comes up *without* `pwm1`,
+  though, that is the board missing from its tables, and the installer is
+  the remedy rather than a downgrade.
 - `installer` module: ports the driver/service installer as inspect → plan
   → apply, kept for boards the stock driver doesn't support and for the
-  systemd unit. Detection and planning are verified; **the driver execution
-  path has still never been run**, and running it is the top item in
-  `dev/TODO.md` — it is also the experiment that would decide whether the
-  test laptop can be given a real fan percentage.
+  systemd unit. The driver it installs ships in `driver/`, and
+  `installer.autodetect` works out what an install needs rather than asking
+  for it — the board id from DMI, the right driver table from the driver's
+  own source, the fan ceilings from the last calibration — so the app has
+  one install button instead of a form. It has been **run for real**, on
+  the test laptop: board 8D2F was missing from the stock driver's feature
+  table, the patched module was built and installed, and `pwm1` appeared
+  where the stock 7.2.2 driver produced none — see
+  `dev/FINDINGS.md` §"The patched driver works on 8D2F".
 - `fan` module: status, the self-test, and the write path — `setMode`
   (auto/max/manual/curve), `setCurve`, a control loop that follows a curve
   with hysteresis and temperature smoothing, and `fan.json` persistence.

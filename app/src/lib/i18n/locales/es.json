@@ -378,22 +378,6 @@
       "monitoringOnly": "Solo monitorización — no se puede fijar la velocidad",
       "unsupported": "Este equipo no expone interfaz de control de ventiladores"
     },
-    "checks": "Comprobaciones",
-    "remedy": "Qué hacer",
-    "neverRun": "Todavía no se ha ejecutado la comprobación.",
-    "cliHint": "La misma comprobación se ejecuta sin la app: <code>cargo run -p pyren-check</code> (añade <code>--json</code> para un reporte de fallo).",
-    "wroteToHardware": "Esta ejecución escribió en el hardware y restauró el estado anterior.",
-    "summary": {
-      "fullControlTested": "El control de ventiladores funciona: las velocidades se pueden leer y el canal PWM aceptó una escritura.",
-      "fullControlUntested": "El control de ventiladores parece disponible: el canal PWM está presente. Vuelve a ejecutar con las escrituras activadas para confirmar que el hardware las acepta.",
-      "monitoringOnly": "Las velocidades de los ventiladores se pueden leer, pero este controlador no expone ningún canal PWM, así que la velocidad no se puede fijar.",
-      "unsupportedWithTemp": "Este equipo no expone ninguna interfaz de control de ventiladores de HP. La temperatura todavía se puede leer, así que la monitorización funciona.",
-      "unsupportedNoTemp": "Este equipo no expone ninguna interfaz de control de ventiladores de HP. No se encontró ninguna interfaz de ventilador de HP ni ningún sensor de temperatura utilizable."
-    },
-    "driverNotice": {
-      "noPwm": "El hp-wmi del kernel no tiene pwm1 para esta placa. Los kernels recientes traen control manual del ventilador de serie, así que actualizar el kernel es lo primero que probar. Si eso falla, existe un controlador parcheado fuera del árbol: {hint}. Instalarlo reemplaza un módulo del kernel, así que es un paso deliberado, no algo que esta app haga por ti.",
-      "noHpWmi": "No hay ningún dispositivo hp-wmi. En un portátil HP OMEN o Victus, carga el módulo hp_wmi; en otro hardware esto es lo esperado y el control de ventiladores no aplica."
-    },
     "checks": {
       "notExposed": "no expuesto por este controlador",
       "notANumberAt": "{path} contiene algo que no es un número",
@@ -410,8 +394,12 @@
         "found": "encontrado en {path}",
         "absent": "no hay directorio hwmon bajo /sys/devices/platform/hp-wmi/hwmon"
       },
-      "fan1": { "title": "Velocidad del ventilador 1" },
-      "fan2": { "title": "Velocidad del ventilador 2" },
+      "fan1": {
+        "title": "Velocidad del ventilador 1"
+      },
+      "fan2": {
+        "title": "Velocidad del ventilador 2"
+      },
       "fan": {
         "reverse": "{raw} en bruto -> {actual} rpm, girando en sentido inverso (limpiador de ventilador activo)",
         "tooHigh": "{raw} rpm es inverosímilmente alto",
@@ -461,7 +449,8 @@
         "title": "Mensajes del kernel de hp-wmi",
         "noDmesg": "dmesg no está disponible",
         "notReadable": "el registro del kernel no se puede leer; ejecuta como root, o pega `dmesg | grep -i hp.wmi`",
-        "none": "no hay mensajes de hp-wmi"
+        "none": "no hay mensajes de hp-wmi",
+        "selfBuilt": "Aquí no pasa nada malo. La línea «module verification failed» es el kernel anotando que se cargó un módulo compilado fuera del paquete de kernel de tu distribución, y marcándose a sí mismo para dejar constancia — que es justo lo que hace instalar el hp-wmi parcheado, así que es lo esperado y no un fallo: {lines}"
       },
       "platform-profile": {
         "title": "Perfil de plataforma ACPI",
@@ -474,6 +463,21 @@
         "absent": "/proc/acpi/call no encontrado; la barra RGB y el limpiador de ventilador lo necesitan",
         "remedy": "Instala acpi_call-dkms (Arch), acpi-call-dkms (Debian) o akmod-acpi_call (Fedora), luego `modprobe acpi_call`."
       }
+    },
+    "remedy": "Qué hacer",
+    "neverRun": "Todavía no se ha ejecutado la comprobación.",
+    "cliHint": "La misma comprobación se ejecuta sin la app: <code>cargo run -p pyren-check</code> (añade <code>--json</code> para un reporte de fallo).",
+    "wroteToHardware": "Esta ejecución escribió en el hardware y restauró el estado anterior.",
+    "summary": {
+      "fullControlTested": "El control de ventiladores funciona: las velocidades se pueden leer y el canal PWM aceptó una escritura.",
+      "fullControlUntested": "El control de ventiladores parece disponible: el canal PWM está presente. Vuelve a ejecutar con las escrituras activadas para confirmar que el hardware las acepta.",
+      "monitoringOnly": "Las velocidades de los ventiladores se pueden leer, pero este controlador no expone ningún canal PWM, así que la velocidad no se puede fijar.",
+      "unsupportedWithTemp": "Este equipo no expone ninguna interfaz de control de ventiladores de HP. La temperatura todavía se puede leer, así que la monitorización funciona.",
+      "unsupportedNoTemp": "Este equipo no expone ninguna interfaz de control de ventiladores de HP. No se encontró ninguna interfaz de ventilador de HP ni ningún sensor de temperatura utilizable."
+    },
+    "driverNotice": {
+      "noPwm": "El hp-wmi del kernel no tiene pwm1 para esta placa. Los kernels recientes traen control manual del ventilador de serie, así que actualizar el kernel es lo primero que probar. Si eso falla, existe un controlador parcheado fuera del árbol: {hint}. Instalarlo reemplaza un módulo del kernel, así que es un paso deliberado, no algo que esta app haga por ti.",
+      "noHpWmi": "No hay ningún dispositivo hp-wmi. En un portátil HP OMEN o Victus, carga el módulo hp_wmi; en otro hardware esto es lo esperado y el control de ventiladores no aplica."
     }
   },
   "fan": {
@@ -556,6 +560,22 @@
     "strategyLabel": "Mecanismo de recompilación",
     "initramfs": "Herramienta de initramfs",
     "service": "Servicio pyren-daemon",
+    "mode": "Cómo instalarlo",
+    "modes": {
+      "automatic": "Automático",
+      "manual": "Manual"
+    },
+    "manualHint": "Rellena tú los campos. Lo que dejes en blanco conserva el valor del propio controlador: para el techo de ventilador eso es una estimación, y para la tabla de placa significa que la placa no se añade.",
+    "autoHint": "Deduce de esta máquina todo lo que necesita la instalación —el id de placa desde DMI, en qué tabla del controlador encaja y los techos de los ventiladores desde la última calibración— y después simula el plan. No se cambia nada hasta que lo confirmes.",
+    "autoButton": "Deducir y simular",
+    "autoWorking": "Leyendo esta máquina...",
+    "detectedBoard": "Id de placa",
+    "detectedModel": "Modelo",
+    "detectedTable": "Tabla de la placa",
+    "detectedNoPatch": "ya está en la lista — no hace falta parche",
+    "detectedUndecided": "sin decidir — elígela abajo",
+    "detectedCeilings": "Techos de ventilador",
+    "detectedCeilingsValue": "{cpu} / {gpu} rpm",
     "action": "Acción",
     "actions": {
       "installDriver": "Instalar controlador parcheado",
@@ -595,20 +615,28 @@
     "dryRun": "Prueba en seco",
     "running": "Ejecutando...",
     "apply": "Aplicar de verdad",
+    "applyAuto": "Confirmar e instalar",
     "dryRunFirst": "Pruébalo en seco primero: aplicar sigue deshabilitado hasta que el plan exacto de arriba se haya ejecutado sin tocar nada.",
     "blockers": "Impide este plan",
     "warnings": "Advertencias",
     "steps": "Pasos ({count})",
     "needsRoot": "requiere root",
     "optional": "opcional",
+    "willSkip": "no se ejecutará",
+    "stepsHint": "Los pasos opcionales se pueden desactivar: el plan tolera que fallen, así que puede seguir sin ellos. Los demás tienen que ejecutarse y no llevan interruptor.",
     "internalStep": "lo hace el propio demonio",
     "dryRunReport": "Prueba en seco: lo que habría pasado",
     "report": "Lo que se hizo",
     "succeeded": "Correcto",
     "failed": "Falló",
-    "rebootHint": "El módulo fue reemplazado. Reinicia, o recarga hp-wmi, antes de que el nuevo esté en uso.",
+    "afterInstall": {
+      "working": "Funcionó: pwm1 ya está, así que el módulo parcheado es el que está en uso. Queda un paso: el demonio buscó las rutas de los ventiladores al arrancar, cuando pwm1 todavía no existía, así que sigue diciendo que no puede fijar una velocidad. Reinícialo (o reinicia el equipo) y la página de ventiladores ya podrá mandar una velocidad:",
+      "needsReload": "El módulo parcheado está instalado en disco, pero sigue sin haber pwm1: lo más probable es que el kernel siga con el módulo que cargó al arrancar, porque no se pudo descargar mientras algo lo tenía en uso. Reinicia, o ejecuta esto y vuelve a abrir esta página:",
+      "ifStillNothing": "Si tras reiniciar sigue sin aparecer pwm1, el módulo cargó pero el firmware de esta placa no respondió a la consulta del ventilador. No hay nada roto ni nada que quede a medias: «Restaurar controlador de serie» devuelve el módulo del que se hizo copia durante la instalación.",
+      "restored": "El módulo de serie está de vuelta en disco. Reinicia, o ejecuta esto, para que el kernel vuelva realmente a él:"
+    },
     "step": {
-      "patch-source": "Parchear el código del controlador (topes del ventilador, y cualquier id de placa experimental)",
+      "patch-source": "Parchear el código ya copiado en {path} (techos de ventilador y cualquier id de placa experimental)",
       "stage-source": "Copiar el código del controlador y dkms.conf a {path}",
       "backup-driver": "Hacer una copia del hp-wmi.ko de serie junto a él como .bak, luego quitarlo para que depmod elija el nuevo sin ambigüedad",
       "dkms-remove-old": "Quitar el módulo DKMS registrado anteriormente",
@@ -639,24 +667,42 @@
       "remove-unit": "Borrar el archivo de unidad de systemd"
     },
     "warn": {
-      "alreadyWorks": "El control de ventiladores ya funciona en este equipo (pwm1 está presente), así que el controlador parcheado no añadiría nada.",
-      "upstream": "El kernel {kernel} ya trae control manual del ventilador de serie (desde {major}.{minor}), así que el parche probablemente sea innecesario. Solo merece la pena instalarlo si tu placa falta en las tablas del controlador de serie.",
+      "alreadyInstalled": "El control de ventiladores funciona aquí porque el controlador parcheado ya está instalado. Reinstalarlo lo recompila y lo vuelve a poner, que es lo que hace falta tras una actualización de kernel si ningún hook lo recompiló solo. Para volver al controlador de la distribución, usa «restaurar».",
+      "alreadyWorks": "El control de ventiladores ya funciona en este equipo (pwm1 está presente) y no es obra de este instalador, así que el controlador de serie soporta esta placa y el parcheado no añadiría nada.",
       "noHook": "Esta distribución no tiene ningún mecanismo de hook de kernel reconocido, así que el módulo se compilará solo para el kernel en ejecución y habrá que reinstalarlo tras una actualización del kernel.",
       "serviceInstalled": "La unidad del servicio ya está instalada; se reemplazará.",
-      "joinGroup": "Añade a cada usuario que deba controlar este equipo al grupo «{group}»: sudo usermod -aG {group} $USER (luego cierra sesión y vuelve a entrar)."
+      "joinGroup": "Añade a cada usuario que deba controlar este equipo al grupo «{group}»: sudo usermod -aG {group} $USER (luego cierra sesión y vuelve a entrar).",
+      "boardMissing": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}) y aquí hp-wmi está cargado, y aun así no hay pwm1. El controlador de serie no reconoció esta placa, que es justo el caso para el que existen el controlador parcheado y el id de tu placa en la tabla correcta. Si el firmware después acepta una escritura al ventilador solo se sabe probándolo.",
+      "noHpWmi": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}), pero aquí hp-wmi no está cargado siquiera, así que nada indica que este sea uno de los portátiles para los que sirve ninguno de los dos controladores. Es poco probable que instalarlo ayude."
     },
     "blocker": {
       "alreadyWorking": "El control de ventiladores ya está disponible; nada que instalar.",
-      "noDriverSource": "No se encontró el código del hp-wmi parcheado. No viene incluido con pyren; apunta PYREN_DRIVER_DIR a una copia del directorio data/driver de omen-fan-control, o instálalo en /usr/share/pyren/driver.",
+      "noDriverSource": "No se encontraron las fuentes parcheadas de hp-wmi. Pyren las incluye en su propio directorio driver/; un paquete debe instalarlas en /usr/share/pyren/driver, o PYREN_DRIVER_DIR debe apuntar a una copia.",
       "kernelHeaders": "Las cabeceras del kernel en ejecución faltan o están incompletas, así que el módulo no se puede compilar.",
       "buildTools": "Se necesitan un compilador de C y make para compilar el módulo."
     },
     "exec": {
       "skipped": "omitido tras un fallo anterior",
-      "internalAction": "acción interna"
+      "internalAction": "lo hace el propio demonio",
+      "declined": "no ejecutado, a petición tuya"
     },
     "err": {
       "planNotRunnable": "este plan no se puede ejecutar: {reasons}"
+    },
+    "auto": {
+      "noBoardId": "El firmware de esta máquina no publica un nombre de placa DMI, así que no se puede añadir ninguna placa a las tablas del controlador.",
+      "noDriverSource": "Se encontró la placa {board}, pero sin las fuentes del controlador no hay forma de saber si ya está en su lista.",
+      "boardKnown": "La placa {board} ya está en la tabla de características del controlador, así que no hace falta parchear ninguna placa.",
+      "boardNew": "La placa {board} no está en la tabla de características del controlador; se añadirá con los parámetros {params}.",
+      "unknownFamily": "La placa {board} no está en las tablas del controlador, y esta máquina no se identifica como un OMEN ni como un Victus, así que no se pueden adivinar sus parámetros. Elígelos a mano abajo.",
+      "rpmCalibrated": "Techos de ventilador tomados de la última calibración: {cpu} (CPU), {gpu} (GPU).",
+      "rpmNotCalibrated": "Aquí no se ha ejecutado ninguna calibración de ventiladores, así que el controlador mantiene su propio techo: primero se lo pregunta al firmware y solo recurre a un número compilado si eso falla. Ejecuta la calibración y vuelve a instalar para fijar valores medidos.",
+      "paramsInert": "Esta elección no afecta a esta placa. Ya está en la {table} del controlador, así que este toma esa ruta de perfil térmico y nunca lee el offset del EC de la variante — y las cuatro variantes comparten un mismo perfil de ventilador, así que ninguna cambia tampoco el control de ventiladores.",
+      "paramsVictus": "Las placas Victus tienen un solo juego de parámetros en este controlador, y upstream marca su offset del EC como desconocido, así que el perfil térmico se recuerda en vez de releerse. No hay nada que medir.",
+      "paramsMeasuredOmen": "Medido, no adivinado: el offset 0x95 del EC contiene un valor de los que usa el perfil térmico OMEN, así que ahí es donde lo guarda esta placa. omen_v1_legacy es la variante que lee ahí.",
+      "paramsMeasuredVictusS": "Medido, no adivinado: el offset 0x59 del EC contiene un valor de los que usa el perfil térmico OMEN, así que ahí es donde lo guarda esta placa. omen_v1 es la variante que lee ahí.",
+      "paramsNoOffset": "Se leyó el controlador integrado y no tiene un perfil térmico en ninguno de los dos offsets que el controlador conoce, así que esta placa lo guarda en otro sitio. omen_v1_no_ec es la variante que no lee ninguno, y aquí eso es la respuesta correcta, no un recurso: el controlador recuerda el perfil que puso.",
+      "paramsUnmeasured": "No se pudo leer el controlador integrado, así que se desconoce qué offset del EC guarda el perfil térmico. omen_v1_no_ec no lee ninguno, que es la mitad segura de esa decisión: el controlador recuerda el perfil que puso. Solo afecta a la relectura; fijar un perfil va por WMI en cualquier caso."
     }
   },
   "admin": {

@@ -170,8 +170,26 @@ what it runs unloads a kernel module, replaces a file under `/lib/modules`
 and regenerates the initramfs — the steps are shown, with the exact command
 each one would run, before any of them do.
 
-Four rules, all of them about not letting the UI outrun what the user has
-actually read:
+Installing is offered as a **choice of two modes**, not one path with an
+escape hatch:
+
+- **Automatic** runs `installer.autodetect` — the board id from DMI, which
+  of the driver's tables it belongs in from the driver's own source, the
+  fan ceilings from the last calibration — and then dry-runs the plan those
+  answers produce. It removes the *typing*, not the reading: what was
+  detected, the reasoning behind each answer (`notes`, rendered with
+  `tm()`), and the steps all appear before anything is authorised.
+- **Manual** is the same plan built from values typed in, for someone who
+  knows their board and disagrees with what was detected.
+
+The mode is part of the request, so switching it throws a dry run away like
+any other option, and the manual fields are **not sent while they are off
+screen** — a value the user cannot see must not decide what runs. Whichever
+mode is chosen, confirming is a second, separate click and stays
+unreachable until a dry run of those exact options has come back.
+
+Five more rules, all of them about not letting the UI outrun what the user
+has actually read:
 
 - **Closed by default, and the verdict comes first.** On a modern kernel
   manual fan control is upstream, so `inspect`'s `patchNeeded: false` is the
@@ -182,6 +200,14 @@ actually read:
   the plan, the report and that key away. So what is on screen is always
   the plan that would run, never a plan for options that have since
   changed.
+- **Optional steps are the user's call.** Each one in the step list carries
+  a switch; required steps have no switch at all rather than a disabled
+  one, since the daemon refuses to skip them anyway. Unticking one throws
+  the dry run away but *keeps the plan* — the step list is where the
+  switches live, so deleting it on every click would make them unusable.
+  That is why the component tracks two keys: `planKey` (action, hooks,
+  force — what decides the steps) clears the plan, and `optionsKey`
+  (everything) disarms the apply.
 - **A plan with blockers is not offered.** The daemon refuses one anyway
   (`notCapable`), so the button stays disabled and the blockers are listed
   with the command that fixes each — missing kernel headers being the
@@ -193,8 +219,11 @@ actually read:
   fallback".
 
 The board-id fields are the untested-hardware path: adding a board to one
-of the driver's tables also picks which EC offset it reads, so the table
-and its params variant are chosen explicitly and never guessed.
+of the driver's tables also picks which EC offset it reads. Autodetect will
+fill them in for an OMEN or a Victus, choosing the conservative variant of
+that family and saying in a note that the choice is a choice — but on a
+machine that identifies as neither it leaves them empty rather than
+guessing, because the two families write different thermal-profile values.
 
 Installing the *service* is not here — it is a `pkexec` action in the
 Permissions panel above, because a unit that makes the daemon root cannot

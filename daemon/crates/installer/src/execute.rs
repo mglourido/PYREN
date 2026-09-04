@@ -30,6 +30,15 @@ pub struct ExecuteContext {
     pub experimental_board: Option<(BoardTable, String)>,
     /// Path of the pyren-daemon binary, for the systemd unit.
     pub daemon_binary: Option<PathBuf>,
+    /// Ids of steps the caller asked not to run.
+    ///
+    /// Only a step the plan marked `optional` may appear here, and
+    /// `installer.apply` refuses the request otherwise. "Optional" is the
+    /// plan's own word for a step whose failure it tolerates - so it is
+    /// also the only step whose absence it can tolerate. Skipping `depmod`
+    /// or the `modprobe` that loads the new module would leave a half
+    /// install behind and call it a success.
+    pub skip_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +63,11 @@ pub enum StepStatus {
     Failed,
     /// Not attempted because an earlier required step failed.
     Skipped,
+    /// Optional, and the caller asked for it not to be run. Kept apart
+    /// from `Skipped`: one is a consequence of a failure, the other is a
+    /// decision, and a report that called them the same thing would hide
+    /// which of the two happened.
+    Declined,
     /// Dry run: this is what would have happened.
     Planned,
 }
@@ -84,9 +98,21 @@ pub fn execute(
             ));
             continue;
         }
+        if step.optional && context.skip_steps.iter().any(|id| id == &step.id) {
+            results.push(result(
+                step,
+                StepStatus::Declined,
+                msg!("installer.exec.declined", "not run, at your request"),
+            ));
+            continue;
+        }
         if dry_run {
             let detail = if step.command.is_empty() {
-                msg!("installer.exec.internalAction", "internal action")
+                // Deliberately the same sentence as the plan step's
+                // `installer.internalStep`: one concept, one name. A client
+                // with no catalog reads this text, so they have to match
+                // here too, not only in the catalog.
+                msg!("installer.exec.internalAction", "carried out by the daemon itself")
             } else {
                 // A command line, quoted verbatim.
                 Msg::literal(step.command.join(" "))
@@ -162,8 +188,15 @@ fn driver_source(env: &Environment) -> Result<PathBuf, String> {
         .ok_or_else(|| "driver sources are not available".to_string())
 }
 
-fn patch_source(env: &Environment, context: &ExecuteContext) -> Result<String, String> {
-    let dir = driver_source(env)?;
+/// Patches the *staged* copy under `/usr/src`, never the source tree it was
+/// copied from: that tree is a read-only snapshot of upstream, and patching
+/// it in place would both dirty the checkout and make the next install start
+/// from the previous one's output.
+fn patch_source(_env: &Environment, context: &ExecuteContext) -> Result<String, String> {
+    let dir = dkms_src_dir().join("src");
+    if !dir.join("hp-wmi-omen/hp-wmi.c").is_file() {
+        return Err(format!("{} has not been staged", dir.display()));
+    }
     let board = context
         .experimental_board
         .as_ref()
@@ -371,22 +404,95 @@ fn remove_hooks() -> Result<String, String> {
     })
 }
 
+/// Puts the stock module back, and takes the patched one away.
+///
+/// Both halves are needed, and only doing the first is a restore that does
+/// not restore. Distributions ship the module compressed (`hp-wmi.ko.zst`
+/// on Arch), while [`install_module`] writes an uncompressed `hp-wmi.ko` -
+/// so renaming the `.bak` back leaves the two side by side, and `depmod`
+/// resolves that in favour of the patched one. The machine goes on running
+/// the patched driver while the report says the stock one was restored.
 fn restore_backups(kernel_release: &str) -> Result<String, String> {
     let mut restored = Vec::new();
+    let mut removed = Vec::new();
+
     for dir in module_dirs(kernel_release) {
-        for backup in find_modules(&dir, "hp-wmi.ko") {
-            let name = backup.to_string_lossy().to_string();
-            let Some(original) = name.strip_suffix(".bak") else { continue };
-            fs::rename(&backup, original)
-                .map_err(|e| format!("restoring {original}: {e}"))?;
-            restored.push(original.to_string());
-        }
+        let (dir_restored, dir_removed) = restore_in(&dir)?;
+        restored.extend(dir_restored);
+        removed.extend(dir_removed);
     }
-    Ok(if restored.is_empty() {
-        "no backups found; the distribution's own module will be used".to_string()
-    } else {
-        format!("restored {}", restored.join(", "))
+
+    Ok(match (restored.is_empty(), removed.is_empty()) {
+        (true, _) => "no backups found; the distribution's own module will be used".to_string(),
+        (false, true) => format!("restored {}", restored.join(", ")),
+        (false, false) => format!(
+            "restored {}, removed the patched {}",
+            restored.join(", "),
+            removed.join(", ")
+        ),
     })
+}
+
+/// One directory's worth of the restore: what came back, and what was
+/// taken away. Split out so it can be pointed at a temporary directory,
+/// which is the only way to test a function whose whole job is renaming and
+/// deleting kernel modules.
+fn restore_in(dir: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut restored = Vec::new();
+    for backup in find_modules(dir, "hp-wmi.ko") {
+        let name = backup.to_string_lossy().to_string();
+        let Some(original) = name.strip_suffix(".bak") else { continue };
+        fs::rename(&backup, original).map_err(|e| format!("restoring {original}: {e}"))?;
+        restored.push(original.to_string());
+    }
+
+    let mut removed = Vec::new();
+    for module in leftovers(dir, &restored) {
+        let name = module.to_string_lossy().to_string();
+        fs::remove_file(&module).map_err(|e| format!("removing {name}: {e}"))?;
+        removed.push(name);
+    }
+    Ok((restored, removed))
+}
+
+/// Modules in `dir` that this installer put there and that must go, now
+/// that the stock one is back.
+///
+/// Never returns the only module present: with nothing to fall back on,
+/// removing it would leave the machine with no hp-wmi at all, which is
+/// worse than the state being restored from.
+fn leftovers(dir: &Path, restored: &[String]) -> Vec<PathBuf> {
+    let present: Vec<PathBuf> = find_modules(dir, "hp-wmi.ko")
+        .into_iter()
+        .filter(|p| !p.to_string_lossy().ends_with(".bak"))
+        .collect();
+    if present.len() < 2 {
+        return Vec::new();
+    }
+
+    if !restored.is_empty() {
+        // Something came back here, so anything else is ours: the backup
+        // step removes every stock module before the new one lands.
+        return present
+            .into_iter()
+            .filter(|p| !restored.contains(&p.to_string_lossy().to_string()))
+            .collect();
+    }
+
+    // No backup to restore, yet two modules are here. A distribution ships
+    // one, so this is the wreckage of an earlier restore that put the stock
+    // module back without taking ours away - and `depmod` resolves it in
+    // favour of the uncompressed one, which is the one we install.
+    let compressed_present = present
+        .iter()
+        .any(|p| p.file_name().is_some_and(|n| n != "hp-wmi.ko"));
+    if !compressed_present {
+        return Vec::new();
+    }
+    present
+        .into_iter()
+        .filter(|p| p.file_name().is_some_and(|n| n == "hp-wmi.ko"))
+        .collect()
 }
 
 const SERVICE_PATH: &str = "/etc/systemd/system/pyren-daemon.service";
@@ -442,4 +548,207 @@ fn remove_service_unit() -> Result<String, String> {
     }
     fs::remove_file(SERVICE_PATH).map_err(|e| e.to_string())?;
     Ok(format!("removed {SERVICE_PATH}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::{plan, Action, PlanOptions};
+    use crate::detect::{HeadersInfo, KernelInfo};
+    use std::path::PathBuf;
+
+    /// A machine where an install would go ahead, so the plan under test
+    /// has both required and optional steps in it.
+    fn ready_env() -> Environment {
+        Environment {
+            kernel: KernelInfo {
+                release: "6.12.4-arch1-1".into(),
+                major: 6,
+                minor: 12,
+                has_upstream_fan_control: false,
+            },
+            distro_id: "arch".into(),
+            hook_flavour: HookFlavour::Pacman,
+            headers: HeadersInfo {
+                build_dir: Some(PathBuf::from("/lib/modules/6.12.4-arch1-1/build")),
+                has_autoconf: true,
+                has_kbuild_scripts: true,
+                usable: true,
+                fix_hint: None,
+            },
+            has_dkms: true,
+            dkms_installed: false,
+            dkms_status: None,
+            has_make: true,
+            has_compiler: true,
+            initramfs_tool: Some("mkinitcpio".into()),
+            fan_control_available: false,
+            hp_wmi_loaded: true,
+            acpi_call_available: false,
+            driver_source: Some(PathBuf::from("/usr/share/pyren/driver")),
+            service_installed: false,
+            patched_driver_installed: false,
+        }
+    }
+
+    /// Reproduces the layout the restore used to leave behind: a
+    /// compressed stock module put back from its backup, and the
+    /// uncompressed patched one still sitting next to it. `depmod` picks
+    /// the uncompressed one, so the machine kept running the patched
+    /// driver while the report said it had been restored.
+    #[test]
+    fn restoring_takes_the_patched_module_away_as_well() {
+        let dir = std::env::temp_dir().join(format!("pyren-restore-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("hp-wmi.ko"), b"patched").unwrap();
+        fs::write(dir.join("hp-wmi.ko.zst.bak"), b"stock").unwrap();
+
+        let (restored, removed) = restore_in(&dir).unwrap();
+
+        assert!(dir.join("hp-wmi.ko.zst").is_file(), "the stock module comes back");
+        assert!(!dir.join("hp-wmi.ko").exists(), "the patched one must not be left behind");
+        assert!(!dir.join("hp-wmi.ko.zst.bak").exists(), "the backup is consumed");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(removed.len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// With nothing to restore, the module present is all the machine has -
+    /// removing it would leave no hp-wmi at all.
+    #[test]
+    fn with_no_backup_nothing_is_removed() {
+        let dir = std::env::temp_dir().join(format!("pyren-restore-none-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("hp-wmi.ko"), b"whatever is here").unwrap();
+
+        let (restored, removed) = restore_in(&dir).unwrap();
+
+        assert!(restored.is_empty());
+        assert!(removed.is_empty());
+        assert!(dir.join("hp-wmi.ko").is_file(), "the only module stays");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The simple case, where the distribution also ships an uncompressed
+    /// module: the restore overwrites ours by rename and there is nothing
+    /// left over to delete.
+    #[test]
+    fn a_backup_of_the_same_name_simply_replaces_ours() {
+        let dir = std::env::temp_dir().join(format!("pyren-restore-same-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("hp-wmi.ko"), b"patched").unwrap();
+        fs::write(dir.join("hp-wmi.ko.bak"), b"stock").unwrap();
+
+        let (restored, removed) = restore_in(&dir).unwrap();
+
+        assert_eq!(fs::read(dir.join("hp-wmi.ko")).unwrap(), b"stock");
+        assert_eq!(restored.len(), 1);
+        assert!(removed.is_empty(), "nothing is left over to remove");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The state a broken restore left on the test laptop: the stock
+    /// module back, ours still beside it, and no backup left to notice it
+    /// by. Running restore again has to be able to finish the job.
+    #[test]
+    fn a_leftover_patched_module_is_cleaned_up_even_with_no_backup() {
+        let dir = std::env::temp_dir().join(format!("pyren-restore-left-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("hp-wmi.ko"), b"patched").unwrap();
+        fs::write(dir.join("hp-wmi.ko.zst"), b"stock").unwrap();
+
+        let (restored, removed) = restore_in(&dir).unwrap();
+
+        assert!(restored.is_empty(), "there was no backup to restore");
+        assert_eq!(removed.len(), 1, "but the leftover is ours and must go");
+        assert!(!dir.join("hp-wmi.ko").exists());
+        assert!(dir.join("hp-wmi.ko.zst").is_file(), "the stock module stays");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// One module and no backup is a machine we have not touched. Removing
+    /// it would leave no hp-wmi at all.
+    #[test]
+    fn a_lone_module_is_never_removed() {
+        for name in ["hp-wmi.ko", "hp-wmi.ko.zst"] {
+            let dir = std::env::temp_dir()
+                .join(format!("pyren-restore-lone-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(name), b"stock").unwrap();
+
+            let (restored, removed) = restore_in(&dir).unwrap();
+
+            assert!(restored.is_empty() && removed.is_empty());
+            assert!(dir.join(name).is_file(), "{name} must survive");
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    fn status_of(report: &ExecutionReport, id: &str) -> StepStatus {
+        report.results.iter().find(|r| r.id == id).expect(id).status
+    }
+
+    /// The point of the checkbox: regenerating the initramfs is known to
+    /// fail on odd EFI layouts, and someone who knows their own boot setup
+    /// should be able to tell the installer to leave it alone.
+    #[test]
+    fn an_optional_step_the_caller_declined_is_not_run() {
+        let env = ready_env();
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+        let context = ExecuteContext {
+            skip_steps: vec!["initramfs".to_string()],
+            ..ExecuteContext::default()
+        };
+
+        let report = execute(&plan, &env, &context, true);
+        assert_eq!(status_of(&report, "initramfs"), StepStatus::Declined);
+        // ...and nothing else changes: the rest of a dry run is still planned.
+        assert_eq!(status_of(&report, "depmod"), StepStatus::Planned);
+        assert!(report.succeeded, "declining a step is not a failure");
+    }
+
+    /// `Declined` and `Skipped` must stay distinct - one is a decision, the
+    /// other is the wreckage of an earlier failure, and a reader of the
+    /// report needs to know which happened.
+    #[test]
+    fn declining_is_reported_as_its_own_outcome() {
+        let env = ready_env();
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+        let context = ExecuteContext {
+            skip_steps: vec!["modprobe-remove".to_string()],
+            ..ExecuteContext::default()
+        };
+
+        let report = execute(&plan, &env, &context, true);
+        let result = report.results.iter().find(|r| r.id == "modprobe-remove").unwrap();
+        assert_eq!(result.status, StepStatus::Declined);
+        assert_eq!(result.detail.key, "installer.exec.declined");
+        assert!(!report.results.iter().any(|r| r.status == StepStatus::Skipped));
+    }
+
+    /// Belt and braces behind `apply`'s own validation: even handed a
+    /// required step, `execute` runs it. Skipping `depmod` would leave a
+    /// module installed that nothing can find, and report success.
+    #[test]
+    fn a_required_step_is_run_even_if_it_was_named() {
+        let env = ready_env();
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+        let context = ExecuteContext {
+            skip_steps: vec!["depmod".to_string()],
+            ..ExecuteContext::default()
+        };
+
+        let report = execute(&plan, &env, &context, true);
+        assert_eq!(status_of(&report, "depmod"), StepStatus::Planned);
+    }
 }

@@ -81,6 +81,82 @@ messages). The driver is not failing on this board; it simply never enters
 the code path, exactly as a board missing from `hp_wmi_feature_boards`
 would.
 
+## The patched driver works on 8D2F — settled on 2026-09-04
+
+Installed from the wizard's automatic mode, on the laptop, and it is the
+first time the installer's execution path has ever run. It confirms the
+inference in the section below: nothing gates the pwm path on more than
+board-params being set at all.
+
+| before | after |
+|---|---|
+| `fan1_input`, `fan2_input`, `pwm1_enable` | plus **`pwm1`** and **`pwm2`** |
+| `pwm1` absent, so no speed could be commanded | `pwm1=102`, `pwm2=93`, `pwm1_enable=2`, fans reading 2100 / 1900 rpm |
+
+What was actually done: the board came out of DMI (`8D2F`), was found
+missing from `hp_wmi_feature_boards`, and was added to it with
+`omen_v1_no_ec_board_params` — chosen from the model name, and the
+conservative half of that choice because it reads no thermal profile back
+from the EC. No fan ceiling was patched, since nothing had been calibrated;
+the driver asks the firmware instead. The hooks strategy was used (no DKMS
+on this machine), and `/etc/pacman.d/hooks/90-hp-wmi-omen.hook` is in place
+for the next kernel upgrade. The stock module is at
+`hp-wmi.ko.zst.bak` beside where it lived.
+
+The `omen_v1_no_ec` choice turned out to be **inert on this board**, which
+is stronger than "unconfirmed" - see the next section.
+
+Three things the run taught, all fixed the same day:
+
+- **The vendored tree is genuinely read-only.** `git status` on `driver/`
+  is clean after an install: the plan stages into `/usr/src` and patches
+  the copy.
+- **The injected entry was mis-indented.** `find_sentinel` returned the
+  offset of `{}`, so the new entry was spliced into the middle of the
+  sentinel's line, after its tab. It compiled; it looked wrong in a file
+  people paste into bug reports. It now inserts at the start of that line.
+- **The daemon has to be restarted afterwards.** `FanModule` discovers its
+  sysfs paths once, in its constructor, so a daemon that was running during
+  the install goes on reporting "this driver exposes no pwm1" next to a
+  `/sys` that has one. The wizard now says so and gives the command.
+
+## The board-params variant is inert on most boards
+
+Read out of `hp-wmi.c` on 2026-09-04, after the install raised the question
+of whether `omen_v1_no_ec` was the right guess for 8D2F. It mostly is not a
+question:
+
+- **All four variants share one fan profile.** `victus_s_board_params`,
+  `omen_v1_board_params`, `omen_v1_legacy_board_params` and
+  `omen_v1_no_ec_board_params` all set
+  `.fan_profile = &victus_s_fan_profile_params`. So the variant cannot
+  affect fan control - the reason the driver is installed at all.
+- **The thermal-profile half is only read on the Victus S path.**
+  `hp_wmi_platform_profile_setup` tests `is_omen_thermal_profile()` first,
+  then `is_victus_thermal_profile()`, and only then
+  `is_victus_s_thermal_profile()`. A board in either of the first two
+  tables takes that path, which reads EC `0x95` directly, and the variant's
+  `thermal_profile` field is never consulted.
+
+8D2F is in `omen_thermal_profile_boards`, so both apply: the variant
+changes nothing here, and the `Unknown EC layout` warning cannot fire for
+it either - that needs `victus_s_thermal_params`, whose `ec_tp_offset` is
+`HP_EC_OFFSET_UNKNOWN`, and the omen variants use `0x95`, `0x59` and
+"none" respectively.
+
+Where it *is* live - a board in neither thermal table - the offset is now
+**measured rather than guessed**. `installer.autodetect` reads EC `0x59`
+and `0x95` through `ec_sys` and picks the variant whose offset is holding a
+value `enum hp_thermal_profile_omen_v1` uses (`0x30`, `0x31`, `0x50`).
+Neither holding one is a real answer too: the board keeps its profile
+elsewhere, and `omen_v1_no_ec` is then correct rather than a fallback.
+
+Deliberately not inferred from the Victus S values (`0x00`, `0x01`): they
+are two of the commonest bytes in EC space, so matching on them would name
+an offset from noise. And the probe reads only - `ec_sys` loads read-only,
+and an EC register read is what the driver itself does on every profile
+query.
+
 ## What the driver actually gates on the board table
 
 Read from the project's own copy of the driver source
@@ -172,13 +248,26 @@ the code and keeps the documented names as fallbacks.
 Patching by the documented names silently does nothing, which for the
 max-RPM constant means an uncalibrated fan ceiling.
 
-## The driver source is not vendored, on purpose
+## The driver source is vendored, as of 2026-09-04
 
-`hp-wmi.c` is a modified copy of a GPL-2 kernel driver maintained in
-[`omen-fan-control`](https://github.com/arfelious/omen-fan-control).
-Copying it here would mean tracking their changes by hand.
+`driver/` in this repository is now a verbatim copy of upstream's tree, and
+`driver/README.md` carries its provenance. This reverses the earlier
+decision, which is kept below because the reasoning against still stands —
+it was simply outweighed.
 
-Researched alternatives, should this ever need revisiting:
+**The argument against**: `hp-wmi.c` is a modified copy of a GPL-2 kernel
+driver maintained in
+[`omen-fan-control`](https://github.com/arfelious/omen-fan-control), and
+copying it here means tracking their changes by hand.
+
+**What outweighed it**: without it the installer could only work for
+someone who already had the other project checked out. The driver path —
+the whole reason the installer exists — did nothing on a fresh machine, and
+the blocker it reported told the user to go and find a checkout. That is
+not a smaller cost than a manual sync; it is the feature not existing.
+
+The alternatives researched at the time, unchanged and still the better
+end state if this is ever revisited:
 
 - **No distro package exists.** The AUR has nothing for `hp-wmi-omen` or
   `omen-fan-control` (checked directly against the AUR RPC). The project
@@ -192,9 +281,21 @@ Researched alternatives, should this ever need revisiting:
   before and broken archive hashes across the ecosystem. And pin something:
   this is code compiled into the kernel, so an unpinned download is remote
   code execution in ring 0.
-- The copy currently on the developer's disk is **upstream `main`, not any
-  release** (`2eab8333…`, ≠ `v2.0.0`'s `f2c92786…`) — nobody knows which
-  version it is, which is the problem pinning solves.
+- The copy vendored here is **upstream `main`, not any release**
+  (`2eab8333…`, ≠ `v2.0.0`'s `f2c92786…`) — nobody knows which version it
+  is, which is the problem pinning solves. Vendoring at least freezes it:
+  the file is now in git history with a hash, rather than being whatever
+  was on a USB stick that day.
+
+Two rules keep the copy honest:
+
+- **Nothing in Pyren writes to `driver/`.** An install stages the tree into
+  `/usr/src` and patches the copy, so the snapshot stays pristine and a
+  second install never starts from the first one's output.
+- The patcher's tests check **every anchor it relies on against the real
+  file here** (`patch::upstream_source_tests`, `autodetect::vendored_driver_tests`),
+  so a constant or table renamed upstream fails `cargo test` rather than an
+  install.
 
 ## The test laptop has no per-key RGB keyboard
 
@@ -252,7 +353,7 @@ actually ported.
 Two things follow. The stick is not a source of truth and should not be
 cited as one again; and this is the second time the project has been
 bitten by depending on an unpinned copy of somebody else's repository (the
-first is §"The driver source is not vendored, on purpose", where the copy
+first is §"The driver source is vendored, as of 2026-09-04", where the copy
 on disk turned out to be an unidentifiable `main`). The conclusion there —
 pin a release and the sha256 of each extracted file — applies here too, if
 the per-key path is ever ported.
