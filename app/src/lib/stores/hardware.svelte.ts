@@ -15,6 +15,7 @@ import {
   onDaemonEvent,
   type ApplyReport,
   type AutoConfig,
+  type FanReferenceSensor,
   type FanStatus,
   type PowerConfigReply,
   type PowerState,
@@ -50,6 +51,10 @@ export type HardwareState = {
   fanMode: FanMode;
   fanPercent: number;
   fanCurve: CurvePoint[];
+  /** Which sensor the curve follows; `gpu` falls back to the CPU while
+   *  the card is asleep. Mirrored from the daemon, which is the
+   *  authority - this copy only exists so the first frame has a value. */
+  fanReferenceSensor: FanReferenceSensor;
   smartBoostEnabled: boolean;
   smartBoostW: number;
   maxBatteryDrain: number;
@@ -83,6 +88,7 @@ function defaults(): HardwareState {
     autoPerformance: true,
     fanMode: "auto",
     fanPercent: 50,
+    fanReferenceSensor: "cpu",
     fanCurve: [
       { tempC: 40, percent: 0 },
       { tempC: 55, percent: 25 },
@@ -288,7 +294,19 @@ class HardwareStore {
    */
   setFanCurve(curve: CurvePoint[]) {
     this.set("fanCurve", curve);
-    this.pushFanSoon(() => daemon.setFanCurve(curve));
+    this.pushFanSoon(() => daemon.setFanCurve(curve, undefined, this.state.fanReferenceSensor));
+  }
+
+  /**
+   * Which sensor the curve follows. Sent with the curve rather than on its
+   * own, because that is the one call the daemon has for the pair - and it
+   * lands immediately rather than debounced: this is a click, not a drag.
+   */
+  async setFanReferenceSensor(sensor: FanReferenceSensor) {
+    this.set("fanReferenceSensor", sensor);
+    await this.pushFan(() =>
+      daemon.setFanCurve(this.state.fanCurve, undefined, sensor),
+    );
   }
 
   /**
@@ -345,6 +363,9 @@ class HardwareStore {
     this.fan = status;
     if (status.driverInstalled && status.mode !== this.state.fanMode) {
       this.state = { ...this.state, fanMode: status.mode };
+    }
+    if (status.referenceSensor && status.referenceSensor !== this.state.fanReferenceSensor) {
+      this.state = { ...this.state, fanReferenceSensor: status.referenceSensor };
     }
   }
 

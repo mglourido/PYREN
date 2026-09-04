@@ -151,7 +151,12 @@
     "fanReverse": "reverse",
     "pl1Hint": "Sustained CPU power limit, in watts. This is the one the fans feel.",
     "pl2Hint": "Short-term boost limit, in watts.",
-    "smartBoostHint": "Extra wattage the firmware may add on top of the base limit."
+    "smartBoostHint": "Extra wattage the firmware may add on top of the base limit.",
+    "curveSensor": "Curve follows",
+    "curveSensorHint": "Which temperature the curve is read at. The GPU is usually what heats up first under a game; while the card is asleep the curve follows the CPU instead.",
+    "sensorCpu": "CPU",
+    "sensorGpu": "GPU",
+    "curveSensorAsleep": "The graphics card is reporting nothing right now, so the curve is following the CPU."
   },
   "advanced": {
     "gpuOverclocking": "GPU overclocking",

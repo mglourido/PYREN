@@ -7,7 +7,7 @@
 //! | `fan.getStatus` | none | temperature, RPM, mode, what this machine can do |
 //! | `fan.diagnose` | `{ "allowWrites": bool }` | the self-test, see [`diagnostics`] |
 //! | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the new status |
-//! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete" }` | the new status |
+//! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the new status |
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `fan.calibrate` | `{ "seconds"?: 10-120 }` | what full speed measured, see [`calibration`] |
 //! | `fan.cleanerStatus` | `{ "refresh"?: bool }` | what the fan cleaner can do here, see [`cleaner`] |
@@ -49,8 +49,6 @@ pub use control::{Capabilities, FanMode};
 pub use curve::{CurvePoint, Interpolation};
 
 const HWMON_ROOT: &str = "/sys/devices/platform/hp-wmi/hwmon";
-const HWMON_CLASS_ROOT: &str = "/sys/class/hwmon";
-const THERMAL_ZONE0: &str = "/sys/class/thermal/thermal_zone0/temp";
 
 /// How often the control loop looks at the temperature. The original uses
 /// two seconds; nothing here is cheaper for being slower, and a curve that
@@ -68,6 +66,46 @@ pub(crate) struct FanPaths {
     pub(crate) fan1_input: Option<PathBuf>,
     pub(crate) fan2_input: Option<PathBuf>,
     pub(crate) cpu_temp: Option<PathBuf>,
+    /// The discrete GPU's own sensor, when it has one that hwmon
+    /// publishes. `None` is the common case rather than a fault: an
+    /// integrated-only machine has nothing here, and so does one whose
+    /// card is powered down at discovery time.
+    pub(crate) gpu_temp: Option<PathBuf>,
+}
+
+/// Which temperature the curve follows.
+///
+/// The original supports both, and the reason is not preference: on a
+/// laptop the GPU is the part that gets hot first under a game, and a
+/// CPU-only curve spins up after the heat has already spread. The reason
+/// it is not simply "the hotter of the two" is the fallback below - a
+/// sleeping card reads 0, and taking the maximum of a real number and a
+/// meaningless one is fine, but taking a *curve point* from a sleeping
+/// card is not, and the user should be able to see which sensor they are
+/// driving from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReferenceSensor {
+    #[default]
+    Cpu,
+    Gpu,
+}
+
+impl ReferenceSensor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cpu" => Some(Self::Cpu),
+            "gpu" => Some(Self::Gpu),
+            _ => None,
+        }
+    }
 }
 
 /// What is persisted to `fan.json`.
@@ -80,6 +118,11 @@ pub struct FanConfig {
     pub manual_pwm: u8,
     pub curve: Vec<CurvePoint>,
     pub interpolation: Interpolation,
+    /// Which sensor the curve reads. See [`ReferenceSensor`]; a `gpu`
+    /// setting falls back to the CPU rather than failing, because the
+    /// card being asleep is normal and stopping the fan curve while it is
+    /// would be worse than following the other sensor.
+    pub reference_sensor: ReferenceSensor,
     /// Samples of temperature smoothing, ~2 s apart.
     pub ma_window: usize,
     /// Full-speed RPM as measured by `fan.calibrate`, of whichever fan
@@ -113,6 +156,7 @@ impl Default for FanConfig {
             manual_pwm: 128,
             curve: Vec::new(),
             interpolation: Interpolation::default(),
+            reference_sensor: ReferenceSensor::default(),
             ma_window: 5,
             fan_max_rpm: None,
             fan1_max_rpm: None,
@@ -371,6 +415,7 @@ impl FanModule {
 
     fn status(&self) -> Value {
         let cpu_temp_c = self.paths.cpu_temp.as_deref().and_then(read_millideg_c);
+        let gpu_temp_c = self.paths.gpu_temp.as_deref().and_then(read_millideg_c);
         let (fan_rpm, is_reverse) =
             read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
         let state = lock(&self.state);
@@ -379,6 +424,7 @@ impl FanModule {
             "driverInstalled": self.paths.hwmon_dir.is_some(),
             "capabilities": self.caps,
             "cpuTempC": cpu_temp_c,
+            "gpuTempC": gpu_temp_c,
             "fanRpm": fan_rpm,
             "isReverse": is_reverse,
             "mode": state.mode.as_str(),
@@ -387,6 +433,18 @@ impl FanModule {
             "manualPwm": state.config.manual_pwm,
             "curve": state.config.curve,
             "interpolation": state.config.interpolation,
+            "referenceSensor": state.config.reference_sensor.as_str(),
+            // What the curve is *actually* reading right now, which is not
+            // the setting whenever the card is asleep. A UI that showed
+            // only the setting would be telling the user their curve
+            // follows a sensor it has fallen back from.
+            "referenceSensorInUse": reference_temp(
+                cpu_temp_c,
+                gpu_temp_c,
+                state.config.reference_sensor,
+            )
+            .map(|(_, sensor)| sensor.as_str()),
+            "gpuSensorAvailable": self.paths.gpu_temp.is_some(),
             "restoreModeOnStart": state.config.restore_mode_on_start,
             "fanMaxRpm": state.config.fan_max_rpm,
             "fan1MaxRpm": state.config.fan1_max_rpm,
@@ -434,7 +492,12 @@ impl FanModule {
         Ok(self.status())
     }
 
-    fn set_curve(&self, curve: Vec<CurvePoint>, interpolation: Option<Interpolation>) -> ModuleResult {
+    fn set_curve(
+        &self,
+        curve: Vec<CurvePoint>,
+        interpolation: Option<Interpolation>,
+        reference_sensor: Option<ReferenceSensor>,
+    ) -> ModuleResult {
         if curve.is_empty() {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
@@ -457,6 +520,16 @@ impl FanModule {
             state.config.curve = curve;
             if let Some(interpolation) = interpolation {
                 state.config.interpolation = interpolation;
+            }
+            if let Some(sensor) = reference_sensor {
+                if sensor != state.config.reference_sensor {
+                    state.config.reference_sensor = sensor;
+                    // The smoothing window holds ten seconds of the *other*
+                    // sensor's readings, and the two are not the same
+                    // number. Averaging across the change would drive the
+                    // fans from a temperature neither part is at.
+                    state.smoother = curve::TempSmoother::new(state.config.ma_window);
+                }
             }
             // The shape changed under the current target; re-evaluate.
             state.hysteresis.reset();
@@ -821,7 +894,8 @@ impl FanModule {
     /// call takes effect immediately rather than up to [`TICK`] later.
     fn tick_once(&self) -> Result<(), ModuleError> {
         let now_secs = monotonic_secs();
-        let temp_c = self.paths.cpu_temp.as_deref().and_then(read_millideg_c);
+        let cpu_temp_c = self.paths.cpu_temp.as_deref().and_then(read_millideg_c);
+        let gpu_temp_c = self.paths.gpu_temp.as_deref().and_then(read_millideg_c);
         let (rpm, _) =
             read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
 
@@ -850,7 +924,8 @@ impl FanModule {
             FanMode::Max => Some(0),
             FanMode::Manual => Some(state.config.manual_pwm),
             FanMode::Curve => {
-                let Some(temp_c) = temp_c else {
+                let sensor = state.config.reference_sensor;
+                let Some((temp_c, _used)) = reference_temp(cpu_temp_c, gpu_temp_c, sensor) else {
                     state.last_control_error = Some(msg!(
                         "fan.err.noCpuTemp",
                         "no CPU temperature sensor, so a curve cannot be followed"
@@ -998,7 +1073,17 @@ impl Module for FanModule {
                             .map_err(|e| ModuleError::InvalidParams(format!("invalid interpolation: {e}")))?,
                     ),
                 };
-                self.set_curve(points, interpolation)
+                let reference_sensor = match params.get("referenceSensor") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_str().and_then(ReferenceSensor::parse).ok_or_else(|| {
+                            ModuleError::InvalidParams(
+                                "params.referenceSensor must be \"cpu\" or \"gpu\"".into(),
+                            )
+                        })?,
+                    ),
+                };
+                self.set_curve(points, interpolation, reference_sensor)
             }
 
             "setRestoreOnStart" => {
@@ -1173,6 +1258,7 @@ fn discover_paths() -> FanPaths {
     }
 
     paths.cpu_temp = find_cpu_temp_path();
+    paths.gpu_temp = find_gpu_temp_path();
     paths
 }
 
@@ -1196,30 +1282,44 @@ fn find_hp_wmi_hwmon_dir() -> Option<PathBuf> {
 }
 
 /// Mirrors `FanController._find_cpu_temp_path`: prefer `coretemp`/`k10temp`
-/// hwmon drivers, fall back to `thermal_zone0`.
+/// hwmon drivers, fall back to `thermal_zone0`. Lives in
+/// [`pyren_core::sensors`] because the power supervisor wants the same
+/// sensor for its own reason.
 fn find_cpu_temp_path() -> Option<PathBuf> {
-    if let Ok(entries) = fs::read_dir(HWMON_CLASS_ROOT) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let dir = entry.path();
-            let Ok(name) = fs::read_to_string(dir.join("name")) else {
-                continue;
-            };
-            if matches!(name.trim(), "coretemp" | "k10temp") {
-                let temp_path = dir.join("temp1_input");
-                if temp_path.exists() {
-                    return Some(temp_path);
-                }
-            }
+    pyren_core::sensors::cpu_temp_path()
+}
+
+/// The GPU's temperature sensor, when hwmon publishes one - see
+/// [`pyren_core::sensors::gpu_temp_path`] for which drivers count and why
+/// it is a named list rather than "the first temperature I find".
+fn find_gpu_temp_path() -> Option<PathBuf> {
+    pyren_core::sensors::gpu_temp_path()
+}
+
+/// Which temperature a curve should follow, and which sensor it came from.
+///
+/// The fallback is one-directional on purpose. A `gpu` setting means "the
+/// GPU when it has something to say", and a card at 0 C is a card that is
+/// powered down, not a cold one - so the CPU stands in. A `cpu` setting
+/// never falls back to the GPU: someone who picked the CPU and silently
+/// got a curve driven by the other sensor would be looking at a machine
+/// nobody asked for.
+fn reference_temp(
+    cpu_temp_c: Option<i64>,
+    gpu_temp_c: Option<i64>,
+    sensor: ReferenceSensor,
+) -> Option<(i64, ReferenceSensor)> {
+    if sensor == ReferenceSensor::Gpu {
+        if let Some(gpu) = gpu_temp_c.filter(|t| *t > 0) {
+            return Some((gpu, ReferenceSensor::Gpu));
         }
     }
-
-    let fallback = Path::new(THERMAL_ZONE0);
-    fallback.exists().then(|| fallback.to_path_buf())
+    cpu_temp_c.map(|cpu| (cpu, ReferenceSensor::Cpu))
 }
 
 /// sysfs temperature files report millidegrees C.
 fn read_millideg_c(path: &Path) -> Option<i64> {
-    fs::read_to_string(path).ok()?.trim().parse::<i64>().ok().map(|v| v / 1000)
+    pyren_core::sensors::read_millideg_c(path)
 }
 
 fn read_raw_rpm(path: Option<&Path>) -> Option<i64> {
@@ -1313,6 +1413,88 @@ mod tests {
         let mut module = FanModule::inspector();
         module.store = ConfigStore::at(root);
         module
+    }
+
+    /// The GPU is what gets hot first under a game, so a curve that can
+    /// follow it is the point of the setting.
+    #[test]
+    fn a_gpu_curve_follows_the_gpu() {
+        assert_eq!(
+            reference_temp(Some(45), Some(78), ReferenceSensor::Gpu),
+            Some((78, ReferenceSensor::Gpu))
+        );
+    }
+
+    /// A card that is powered down reads 0, and 0 C is not a temperature -
+    /// following it would idle the fans on a machine that is working.
+    #[test]
+    fn a_sleeping_card_hands_the_curve_back_to_the_cpu() {
+        assert_eq!(
+            reference_temp(Some(45), Some(0), ReferenceSensor::Gpu),
+            Some((45, ReferenceSensor::Cpu))
+        );
+        assert_eq!(
+            reference_temp(Some(45), None, ReferenceSensor::Gpu),
+            Some((45, ReferenceSensor::Cpu)),
+            "a machine with no GPU sensor at all is the same case"
+        );
+    }
+
+    /// The fallback is one-directional. Someone who picked the CPU and got
+    /// a curve driven by the GPU would be looking at a machine nobody
+    /// asked for.
+    #[test]
+    fn choosing_the_cpu_never_silently_becomes_the_gpu() {
+        assert_eq!(reference_temp(None, Some(78), ReferenceSensor::Cpu), None);
+        assert_eq!(
+            reference_temp(Some(45), Some(78), ReferenceSensor::Cpu),
+            Some((45, ReferenceSensor::Cpu))
+        );
+    }
+
+    /// With neither sensor there is nothing to follow, and the caller has
+    /// to say so rather than picking a number.
+    #[test]
+    fn no_sensor_at_all_is_not_a_temperature_of_zero() {
+        assert_eq!(reference_temp(None, None, ReferenceSensor::Gpu), None);
+    }
+
+    /// The setting survives a round trip through `fan.json` in the shape
+    /// the IPC uses, which is the one the frontend sends.
+    #[test]
+    fn the_reference_sensor_is_persisted_as_a_word() {
+        let config = FanConfig { reference_sensor: ReferenceSensor::Gpu, ..FanConfig::default() };
+        let text = serde_json::to_string(&config).unwrap();
+        assert!(text.contains("\"referenceSensor\":\"gpu\""), "{text}");
+        let back: FanConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.reference_sensor, ReferenceSensor::Gpu);
+    }
+
+    /// A `fan.json` written before the field existed still loads - the
+    /// daemon and the app are separate binaries and are not always
+    /// updated together.
+    #[test]
+    fn a_config_without_the_field_defaults_to_the_cpu() {
+        let back: FanConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(back.reference_sensor, ReferenceSensor::Cpu);
+    }
+
+    #[test]
+    fn setting_the_curve_can_change_the_sensor_and_refuses_a_word_it_does_not_know() {
+        let module = module("sensor");
+        let curve = json!([{ "tempC": 40.0, "percent": 20.0 }]);
+
+        let status = module
+            .call("setCurve", json!({ "curve": curve, "referenceSensor": "gpu" }))
+            .expect("the curve is legal and so is the sensor");
+        assert_eq!(status["referenceSensor"], json!("gpu"));
+
+        let error = module
+            .call("setCurve", json!({ "curve": curve, "referenceSensor": "chassis" }))
+            .expect_err("there is no chassis sensor");
+        assert_eq!(error.kind(), ErrorKind::InvalidParams);
+        // ...and the refused call changed nothing.
+        assert_eq!(module.status()["referenceSensor"], json!("gpu"));
     }
 
     /// Every one of these has to be answerable without `acpi_call`,

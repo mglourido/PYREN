@@ -501,6 +501,7 @@ mod tests {
             fan1_input: Some(dir.join("fan1_input")),
             fan2_input: Some(dir.join("fan2_input")),
             cpu_temp: None,
+            gpu_temp: None,
         }
     }
 

@@ -810,7 +810,7 @@ which is why `stage-source` comes before `patch-source` in every plan.
 | `fan.getStatus` | none | the status object below | ✅ implemented, read-only, no privileges needed |
 | `fan.diagnose` | `{ "allowWrites": bool }` | full self-test report (see below) | ✅ implemented |
 | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the status object | ✅ implemented, needs root |
-| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete" }` | the status object | ✅ implemented |
+| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the status object | ✅ implemented |
 | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
 | `fan.calibrate` | `{ "seconds"?: 10-120 }` | the calibration report below | ✅ implemented, needs root, **blocks and spins the fans** |
 | `fan.cleanerStatus` | `{ "refresh"?: bool }` | the cleaner status below | ✅ implemented, read-only (`refresh` puts two ACPI *queries*) |
@@ -826,6 +826,7 @@ never has to follow a write with a read:
   "driverInstalled": true,
   "capabilities": { "switchMode": true, "setSpeed": false },
   "cpuTempC": 38,
+  "gpuTempC": null,
   "fanRpm": 2097,
   "isReverse": false,
   "mode": "auto",
@@ -834,6 +835,9 @@ never has to follow a write with a read:
   "manualPwm": 128,
   "curve": [{ "tempC": 40, "percent": 20 }],
   "interpolation": "smooth",
+  "referenceSensor": "cpu",
+  "referenceSensorInUse": "cpu",
+  "gpuSensorAvailable": false,
   "restoreModeOnStart": false,
   "cleaning": false,
   "fanMaxRpm": null,
@@ -1121,9 +1125,39 @@ instead of being pointed at an HP driver it can't use.
 The same report is available without the app, from `pyren-check` - see
 `docs/02-development.md`.
 
+### Which sensor the curve follows
+
+`referenceSensor` picks it: `cpu` (the default) or `gpu`. The GPU is worth
+having because on a laptop it is usually what heats up first under a game,
+and a CPU-only curve spins up after the heat has already spread.
+
+The fallback is **one-directional**, and that is the whole design:
+
+- `gpu` falls back to the CPU whenever the card reports nothing. A GPU at
+  0 C is one that is powered down, not a cold one, and stopping the fan
+  curve while the machine works would be worse than following the other
+  sensor.
+- `cpu` never falls back to the GPU. Someone who picked the CPU and
+  silently got a curve driven by the other sensor would be looking at a
+  machine nobody asked for.
+
+So a client has to be told two things rather than one, and the status
+carries both: `referenceSensor` is the setting, `referenceSensorInUse` is
+what is actually being read right now (`null` when neither sensor answers),
+and they differ exactly while the card is asleep. `gpuSensorAvailable`
+says whether there is a GPU sensor to offer at all — a machine with
+integrated graphics only should be shown no choice rather than one that
+does nothing.
+
+Changing the sensor restarts the smoothing window: it holds ten seconds of
+the *other* sensor's readings, and averaging across the change would drive
+the fans from a temperature neither part is at.
+
 `cpuTempC` is `null` if no CPU temperature sensor was found (mirrors the
 Python original's fallback chain: `coretemp`/`k10temp` hwmon →
-`thermal_zone0` → give up). `fanRpm` is `max(fan1, fan2)`, decoded through
+`thermal_zone0` → give up); `gpuTempC` is `null` far more often, and both
+come from `pyren_core::sensors`, which the power supervisor's thermal rule
+reads too. `fanRpm` is `max(fan1, fan2)`, decoded through
 the hp-wmi reverse-bit encoding — see
 `docs/02-kernel-driver.md` in the `omen-fan-control` project (see
 `dev/README.md` for where that checkout is) for why raw values

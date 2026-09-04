@@ -16,6 +16,7 @@ pub mod acpi;
 pub mod client;
 pub mod events;
 pub mod msg;
+pub mod sensors;
 mod socket;
 pub use events::{Batch, Event, EventBus};
 pub use msg::Msg;

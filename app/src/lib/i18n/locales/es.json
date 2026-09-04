@@ -151,7 +151,12 @@
     "fanReverse": "inverso",
     "pl1Hint": "Límite de potencia sostenida de la CPU, en vatios. Este es el que notan los ventiladores.",
     "pl2Hint": "Límite de aumento a corto plazo, en vatios.",
-    "smartBoostHint": "Vatiaje adicional que el firmware puede añadir por encima del límite base."
+    "smartBoostHint": "Vatiaje adicional que el firmware puede añadir por encima del límite base.",
+    "curveSensor": "La curva sigue",
+    "curveSensorHint": "Con qué temperatura se lee la curva. La GPU suele ser lo primero que se calienta en un juego; mientras la tarjeta está dormida, la curva sigue a la CPU.",
+    "sensorCpu": "CPU",
+    "sensorGpu": "GPU",
+    "curveSensorAsleep": "La tarjeta gráfica no está informando de nada ahora mismo, así que la curva está siguiendo a la CPU."
   },
   "advanced": {
     "gpuOverclocking": "Overclocking de la GPU",

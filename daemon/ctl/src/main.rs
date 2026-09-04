@@ -280,6 +280,9 @@ fn run(command: &args::Command) -> Run {
             if let Some(interpolation) = command.option("interpolation") {
                 params["interpolation"] = json!(interpolation);
             }
+            if let Some(sensor) = command.option("sensor") {
+                params["referenceSensor"] = json!(sensor);
+            }
             show(command, client::call("fan", "setCurve", params)?, print_fan)
         }
         ["fan", "restore-on-start", value] => {
@@ -874,10 +877,15 @@ fn print_fan(status: &Value) {
     row(
         "reading",
         format!(
-            "{} rpm, cpu {} C{}",
+            "{} rpm, cpu {} C, gpu {} C{}",
             status.get("fanRpm").and_then(Value::as_i64).unwrap_or(0),
             status
                 .get("cpuTempC")
+                .and_then(Value::as_i64)
+                .map(|t| t.to_string())
+                .unwrap_or("-".into()),
+            status
+                .get("gpuTempC")
                 .and_then(Value::as_i64)
                 .map(|t| t.to_string())
                 .unwrap_or("-".into()),
@@ -919,6 +927,22 @@ fn print_fan(status: &Value) {
                 .collect();
             row("curve", drawn.join(","));
         }
+    }
+
+    // The setting and what is being read are two lines' worth of one fact
+    // only when they disagree - which is exactly when it matters, because
+    // the card being asleep is why the curve is on the other sensor.
+    if let Some(sensor) = status.get("referenceSensor").and_then(Value::as_str) {
+        let in_use = status.get("referenceSensorInUse").and_then(Value::as_str);
+        row(
+            "curve from",
+            match in_use {
+                Some(in_use) if in_use != sensor => {
+                    format!("{sensor} (reading {in_use} - the {sensor} has nothing to report)")
+                }
+                _ => sensor.to_string(),
+            },
+        );
     }
 
     // Only worth a line once it exists: an absent ceiling is the normal

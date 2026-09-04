@@ -881,6 +881,7 @@ fn paths_for_testing(hwmon_dir: PathBuf, cpu_temp: Option<PathBuf>) -> FanPaths 
         fan2_input: Some(hwmon_dir.join("fan2_input")),
         hwmon_dir: Some(hwmon_dir),
         cpu_temp,
+        gpu_temp: None,
     }
 }
 
