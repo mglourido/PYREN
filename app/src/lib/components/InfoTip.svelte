@@ -7,33 +7,77 @@
     $props();
   let open = $state(false);
   let root = $state<HTMLElement>();
+  let dot = $state<HTMLButtonElement>();
+  let popEl = $state<HTMLElement>();
+  let pos = $state({ top: 0, left: 0, right: 0 });
+
+  /** Anchor the popover to the dot in viewport coordinates (it lives on <body>). */
+  function place() {
+    if (!dot) return;
+    const r = dot.getBoundingClientRect();
+    pos = {
+      top: r.bottom + 10,
+      left: align === "center" ? r.left + r.width / 2 : r.left,
+      right: window.innerWidth - r.right,
+    };
+  }
+
+  /**
+   * Reparent the popover to <body> so no ancestor's `overflow`/`transform`
+   * can clip it — a plain z-index cannot escape a clipping container.
+   */
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
+  }
 
   /** Dismiss the popover when the click (or Escape) lands outside it. */
   $effect(() => {
     if (!open) return;
+    place();
 
     const onPointer = (e: PointerEvent) => {
-      if (root && !root.contains(e.target as Node)) open = false;
+      const target = e.target as Node;
+      if (root?.contains(target) || popEl?.contains(target)) return;
+      open = false;
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") open = false;
     };
+    const reposition = () => place();
     // `capture` so it still fires if something inside stops propagation.
     document.addEventListener("pointerdown", onPointer, true);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
     return () => {
       document.removeEventListener("pointerdown", onPointer, true);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
     };
   });
 </script>
 
 <span class="tip" bind:this={root}>
-  <button class="dot" onclick={() => (open = !open)} aria-label="i" aria-expanded={open}>
+  <button
+    class="dot"
+    bind:this={dot}
+    onclick={() => (open = !open)}
+    aria-label="i"
+    aria-expanded={open}
+  >
     <Icon name="info" size={15} stroke={1.8} />
   </button>
   {#if open}
-    <span class="pop {align}">
+    <span
+      class="pop {align}"
+      bind:this={popEl}
+      use:portal
+      style="top: {pos.top}px; {align === 'right'
+        ? `right: ${pos.right}px`
+        : `left: ${pos.left}px`}"
+    >
       <button class="close" onclick={() => (open = false)} aria-label="×">
         <Icon name="close" size={13} />
       </button>
@@ -72,9 +116,9 @@
   }
 
   .pop {
-    position: absolute;
-    top: calc(100% + 10px);
-    z-index: 40;
+    /* Fixed + reparented to <body>: immune to any ancestor clipping. */
+    position: fixed;
+    z-index: 1000;
     width: max-content;
     max-width: min(340px, calc(100vw - 32px));
     padding: 14px 32px 14px 16px;
@@ -104,7 +148,6 @@
   }
 
   .pop.center {
-    left: 50%;
     translate: -50% 0;
   }
 
@@ -112,16 +155,8 @@
     left: calc(50% - 4.5px);
   }
 
-  .pop.left {
-    left: 0;
-  }
-
   .pop.left::before {
     left: 6px;
-  }
-
-  .pop.right {
-    right: 0;
   }
 
   .pop.right::before {
