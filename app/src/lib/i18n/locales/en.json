@@ -402,7 +402,6 @@
     "reportIssue": "Report an issue",
     "contribute": "How to contribute",
     "translations": "Add a translation",
-    "translationsBody": "Copy app/src/lib/i18n/locales/en.json, translate the values, save it as <code>&lt;iso&gt;.json</code> in the same folder and open a pull request. The language appears in Settings automatically.",
     "legal": "Legal",
     "legalBody": "OMEN and the OMEN logo are trademarks of HP Inc. This project uses no HP code or assets. Provided as is, with no warranty; controlling fans and power limits carries a risk of overheating or hardware damage and is your responsibility.",
     "license": "License",

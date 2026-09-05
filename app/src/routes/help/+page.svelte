@@ -101,10 +101,16 @@
           <Icon name="external" size={15} />{t("help.reportIssue")}
         </a>
       </li>
+      <li>
+        <a
+          href="https://github.com/mglourido/PYREN?tab=contributing-ov-file"
+          target="_blank"
+          rel="noreferrer"
+        >
+          <Icon name="external" size={15} />{t("help.translations")}
+        </a>
+      </li>
     </ul>
-
-    <h3>{t("help.translations")}</h3>
-    <p>{@html t("help.translationsBody")}</p>
   </Panel>
 
   <Panel title={t("help.legal")}>
@@ -229,8 +235,7 @@
     color: var(--accent-3);
   }
 
-  h3 {
-    font-size: 14px;
-    margin-bottom: 8px;
+  .links:last-child {
+    margin-bottom: 0;
   }
 </style>
