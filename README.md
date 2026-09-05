@@ -20,6 +20,10 @@ wire format between the app and the daemon, and
 run everything, and [`docs/03-frontend.md`](docs/03-frontend.md) for the
 frontend's structure and conventions.
 
+[`TEST.md`](TEST.md) is what has actually been tested and verified on
+real hardware — including the two things that are known not to work here,
+and why.
+
 `pyren-ctl status` is the fastest way to see what a running daemon
 thinks the machine can do.
 
