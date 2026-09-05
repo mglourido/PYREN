@@ -32,7 +32,6 @@
       <article class="card hero">
         <div class="hero-art" aria-hidden="true"></div>
         <h2 class="card-title"><Icon name="sparkles" size={18} /> {t("app.name")}</h2>
-        <p class="lead">{t("home.autoEco")}</p>
         <div class="switch-row">
           <Toggle
             checked={hardware.state.autoEco}
