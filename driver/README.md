@@ -10,7 +10,17 @@ mean maintaining a fork of a driver whose upstream is still moving.
 
 Pyren's installer (`daemon/crates/installer/`) is the Rust part: it decides
 *whether* this needs installing, patches two constants and at most one
-table, and drives DKMS or the distribution's kernel hook.
+table, adds two module parameters, and drives DKMS or the distribution's
+kernel hook.
+
+The parameters are the one addition that is not a value substitution, and
+they are here because the constants alone do not work: `OMEN_CPU_MAX_RPM`
+and `OMEN_GPU_MAX_RPM` are the driver's *last* fallback, overwritten during
+probe by whatever the firmware answers, so on most boards a measured fan
+ceiling patched into them is silently discarded. `cpu_max_rpm_measured` and
+`gpu_max_rpm_measured` are applied after those queries instead, which also
+means a calibration can pin its result without anything being rebuilt. See
+`dev/FINDINGS.md` §"The patched fan ceiling was never reaching the driver".
 
 ## Why it is here at all
 

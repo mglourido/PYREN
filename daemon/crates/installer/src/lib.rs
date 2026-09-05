@@ -20,6 +20,28 @@
 //! input the caller left unset from [`autodetect`], so nobody has to look
 //! up their own board id or read the driver's tables. Anything sent
 //! explicitly still wins.
+//!
+//! # The fan ceiling, and why it is not just a patched constant
+//!
+//! The install patches `OMEN_CPU_MAX_RPM`/`OMEN_GPU_MAX_RPM` into the
+//! source, and on many machines that does nothing at all: they are the
+//! driver's *last* fallback, and a board whose firmware answers the fan
+//! table query overwrites them during probe. Measured on board 8D2F - the
+//! firmware reports 5200 and the patched constant never reaches `priv`.
+//!
+//! There is also an ordering problem no amount of patching solves. The
+//! ceiling can only be measured by running the fans flat out, which needs
+//! `pwm1`, which on these boards needs the patched driver. So the first
+//! install on any machine is necessarily made *before* there is a
+//! measurement to install with.
+//!
+//! Both are why the patcher now also splices in two module parameters. A
+//! parameter is applied after the firmware queries, so a measurement
+//! outranks a claim; it lives in `/etc/modprobe.d`, so it survives a
+//! reboot, a DKMS rebuild and a kernel upgrade; and it can be changed
+//! without a compiler, so `fan.calibrate` can pin its own result the
+//! moment it has one. [`Action::PinFanCeiling`] is the same value made to
+//! take effect now rather than at the next load.
 
 pub mod autodetect;
 pub mod detect;
@@ -35,7 +57,7 @@ use serde_json::{json, Value};
 pub use autodetect::{Autodetected, ParamsEffect, RpmSource};
 pub use ec::EcProbe;
 pub use detect::Environment;
-pub use execute::{execute, ExecuteContext, ExecutionReport};
+pub use execute::{execute, pin_measured_ceiling, ExecuteContext, ExecutionReport};
 pub use patch::{BoardParams, BoardTable, MaxRpm};
 pub use plan::{plan, Action, Plan, PlanOptions, Strategy};
 
@@ -89,12 +111,42 @@ impl From<&PlanRequest> for PlanOptions {
     }
 }
 
+/// Told after a run that changed which `hp-wmi` is loaded.
+///
+/// Every driver action unloads and reloads the module, which recreates the
+/// hwmon directory under a new number - so anything holding a path into it
+/// is now holding a path to nothing. Rather than have this module know
+/// which other modules those are, the daemon wires one up at startup; the
+/// installer only has to say *when*.
+pub type DriverChanged = Box<dyn Fn() + Send + Sync>;
+
 #[derive(Default)]
-pub struct InstallerModule;
+pub struct InstallerModule {
+    driver_changed: Option<DriverChanged>,
+    events: Option<std::sync::Arc<pyren_core::EventBus>>,
+}
 
 impl InstallerModule {
     pub fn new() -> Self {
-        Self
+        Self { driver_changed: None, events: None }
+    }
+
+    /// Announce each step as it starts and as it finishes, on `installer.progress`.
+    ///
+    /// An install is one IPC call that takes the better part of a minute,
+    /// and until now it said nothing until it was over - so a UI could
+    /// either show a spinner or invent a progress bar. Neither is the
+    /// truth. The steps are known in advance and the daemon knows which
+    /// one it is on, so it says.
+    pub fn publish_to(mut self, events: std::sync::Arc<pyren_core::EventBus>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// Runs `on_change` after any successful, non-dry-run driver action.
+    pub fn on_driver_changed(mut self, on_change: DriverChanged) -> Self {
+        self.driver_changed = Some(on_change);
+        self
     }
 }
 
@@ -239,7 +291,45 @@ impl Module for InstallerModule {
                     skip_steps: request.skip_steps,
                 };
 
-                let report = execute::execute(&plan, &env, &context, !request.confirm);
+                let action = plan.action;
+                let sink = self.events.as_ref().map(|events| {
+                    let events = std::sync::Arc::clone(events);
+                    move |progress: execute::Progress| {
+                        let mut payload = serde_json::to_value(&progress)
+                            .unwrap_or_else(|_| json!({}));
+                        // Which run this belongs to, so a window that
+                        // opened mid-install does not decorate its own
+                        // panel with somebody else's steps.
+                        payload["action"] = json!(action);
+                        payload["dryRun"] = json!(!request.confirm);
+                        events.publish("installer.progress", payload);
+                    }
+                });
+                let report = match &sink {
+                    Some(sink) => execute::execute_watched(
+                        &plan,
+                        &env,
+                        &context,
+                        !request.confirm,
+                        Some(sink),
+                    ),
+                    None => execute::execute(&plan, &env, &context, !request.confirm),
+                };
+
+                // Only after something actually happened, and only for the
+                // actions that move the module. A dry run changed nothing,
+                // and a failed one is not worth re-reading the hardware for
+                // - the report already says what went wrong.
+                let touched_driver = matches!(
+                    action,
+                    Action::InstallDriver | Action::RestoreDriver | Action::PinFanCeiling
+                );
+                if request.confirm && report.succeeded && touched_driver {
+                    if let Some(on_change) = &self.driver_changed {
+                        on_change();
+                    }
+                }
+
                 serde_json::to_value(json!({
                     "plan": plan,
                     "report": report,
