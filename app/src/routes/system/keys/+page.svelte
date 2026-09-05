@@ -15,6 +15,7 @@
    */
   import Icon from "$lib/components/Icon.svelte";
   import Keyboard from "$lib/components/Keyboard.svelte";
+  import Toggle from "$lib/components/Toggle.svelte";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { daemon, type KeymapStatus } from "$lib/api/daemon";
   import { domCodeFromKeycode, keycodeFromDomCode } from "$lib/keymap-codes";
@@ -67,8 +68,8 @@
     action = "";
   }
 
-  async function toggleApply() {
-    status = await daemon.setKeymapEnabled(!applyEnabled);
+  async function toggleApply(value: boolean) {
+    status = await daemon.setKeymapEnabled(value);
   }
 </script>
 
@@ -77,10 +78,10 @@
 <div class="keys">
   <header class="head">
     <span class="prompt">{t("keys.selectKey")}</span>
-    <label class="apply" title={t("keys.applyHint")}>
-      <input type="checkbox" checked={applyEnabled} onchange={toggleApply} />
+    <span class="apply" title={t("keys.applyHint")}>
       {t("keys.applyToggle")}
-    </label>
+      <Toggle checked={applyEnabled} onchange={toggleApply} ariaLabel={t("keys.applyToggle")} />
+    </span>
     <button class="clear" disabled={Object.keys(mappings).length === 0} onclick={clearAll}>
       {t("keys.clearAll")}
     </button>
@@ -193,7 +194,6 @@
     gap: 8px;
     font-size: 13px;
     color: var(--text-dim);
-    cursor: pointer;
   }
 
   .status-detail {

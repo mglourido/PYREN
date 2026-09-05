@@ -381,8 +381,6 @@
     "demoMode": "Demo data when the daemon is unreachable",
     "resetSettings": "Reset all settings",
     "storage": "Storage",
-    "permissionsHint": "Running the daemon as root, membership of the socket's group and the privileged readings are managed on the hardware check page — they need authentication, so they are actions rather than switches.",
-    "permissionsLink": "Open hardware check",
     "configFile": "Settings file",
     "daemonConfigFile": "Daemon settings file",
     "configRecovered": "Your settings file could not be read and defaults were loaded. The previous file was kept at {backup}.",

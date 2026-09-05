@@ -562,7 +562,9 @@
           <dt>{t("installer.strategyLabel")}</dt>
           <dd>
             {env.hasDkms ? "dkms" : env.hookFlavour}
-            {env.dkmsStatus ? ` — ${env.dkmsStatus}` : ""}
+            {#if env.dkmsStatus}
+              <span class="sub">{env.dkmsStatus}</span>
+            {/if}
           </dd>
         </div>
         <div>
@@ -762,17 +764,22 @@
            measurement yet it starts on: that machine cannot have been
            calibrated before the driver existed, and nobody comes back. -->
       {#if action === "installDriver"}
-        <label class="calibrate-opt">
-          <input
-            type="checkbox"
-            bind:checked={calibrateAfter}
-            onchange={() => (calibrateTouched = true)}
-          />
-          <span>
-            {t("install.calibrateAfter")}
-            <em>{measuredMaxRpm ? t("install.calibrateAgainHint", { rpm: String(measuredMaxRpm) }) : t("install.calibrateFirstHint")}</em>
-          </span>
-        </label>
+        <div class="options">
+          <label class="switch">
+            <Toggle
+              checked={calibrateAfter}
+              onchange={(v) => {
+                calibrateAfter = v;
+                calibrateTouched = true;
+              }}
+              ariaLabel={t("install.calibrateAfter")}
+            />
+            <span>
+              <strong>{t("install.calibrateAfter")}</strong>
+              <em>{measuredMaxRpm ? t("install.calibrateAgainHint", { rpm: String(measuredMaxRpm) }) : t("install.calibrateFirstHint")}</em>
+            </span>
+          </label>
+        </div>
       {/if}
 
       <!-- One row of buttons; the mode decides what is in it. Confirming is
@@ -1049,8 +1056,8 @@
 
   .facts div {
     display: flex;
-    gap: 10px;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 4px;
     padding: 6px 0;
     border-bottom: 1px solid var(--line-soft);
     font-size: 12.5px;
@@ -1064,8 +1071,14 @@
   dd {
     margin: 0;
     color: var(--text-dim);
-    text-align: right;
-    word-break: break-all;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+
+  dd .sub {
+    display: block;
+    color: var(--text-mute);
+    font-size: 11.5px;
   }
 
   dd.missing {
@@ -1150,23 +1163,6 @@
     opacity: 0.45;
   }
 
-  .calibrate-opt {
-    display: flex;
-    align-items: flex-start;
-    gap: 9px;
-    margin-bottom: 12px;
-    font-size: 0.9rem;
-    cursor: pointer;
-  }
-  .calibrate-opt input {
-    margin-top: 2px;
-  }
-  .calibrate-opt em {
-    display: block;
-    font-style: normal;
-    font-size: 0.82rem;
-    color: var(--text-mute);
-  }
 
   .actions {
     display: flex;

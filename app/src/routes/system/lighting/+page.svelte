@@ -435,7 +435,7 @@
                 <Icon name={dialect.asked ? "close" : "minimize"} size={14} />
               {/if}
             </span>
-            <div>
+            <div class="info">
               <strong>{dialect.id}</strong>
               <span class="transport">{tm(dialect.transport)}</span>
               <p>{tm(dialect.detail)}</p>
@@ -543,7 +543,6 @@
 
   .lead {
     margin: 0;
-    max-width: 70ch;
     color: var(--text-dim);
     font-size: 14px;
     line-height: 1.5;
@@ -642,6 +641,24 @@
     cursor: pointer;
   }
 
+  input[type="color"]:hover {
+    border-color: #fff;
+  }
+
+  input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+
+  input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: calc(var(--radius-sm) - 1px);
+  }
+
+  input[type="color"]::-moz-color-swatch {
+    border: none;
+    border-radius: calc(var(--radius-sm) - 1px);
+  }
+
   .value {
     min-width: 48px;
     text-align: right;
@@ -722,12 +739,31 @@
   }
 
   select {
-    padding: 6px 10px;
+    appearance: none;
+    min-width: 220px;
+    padding: 7px 30px 7px 12px;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    background: var(--bg-panel, #1f1f23);
+    background-color: #2a2a2e;
     color: var(--text);
+    font: inherit;
     font-size: 13px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+      linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+    background-position:
+      right 15px center,
+      right 10px center;
+    background-size:
+      6px 6px,
+      6px 6px;
+    background-repeat: no-repeat;
+  }
+
+  /* The native popup list ignores the control's colours on some engines,
+     so it needs its own dark background to match the theme. */
+  select option {
+    background: #2a2a2e;
+    color: var(--text);
   }
 
   .dialects {
@@ -755,6 +791,11 @@
     flex: none;
     margin-top: 1px;
     opacity: 0.7;
+  }
+
+  .dialects .info {
+    flex: 1;
+    min-width: 0;
   }
 
   .dialects strong {

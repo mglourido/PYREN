@@ -381,8 +381,6 @@
     "demoMode": "Datos de demostración cuando el daemon no responde",
     "resetSettings": "Restablecer todos los ajustes",
     "storage": "Almacenamiento",
-    "permissionsHint": "Ejecutar el daemon como root, la pertenencia al grupo del socket y las lecturas privilegiadas se gestionan en la página de comprobación de hardware — necesitan autenticación, así que son acciones y no interruptores.",
-    "permissionsLink": "Abrir comprobación de hardware",
     "configFile": "Archivo de ajustes",
     "daemonConfigFile": "Archivo de ajustes del daemon",
     "configRecovered": "No se pudo leer tu archivo de ajustes y se cargaron los valores por defecto. El archivo anterior se conservó en {backup}.",

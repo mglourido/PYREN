@@ -3,7 +3,8 @@
   import Icon from "./Icon.svelte";
   import type { Snippet } from "svelte";
 
-  let { children, align = "left" }: { children: Snippet; align?: "left" | "right" } = $props();
+  let { children, align = "center" }: { children: Snippet; align?: "left" | "center" | "right" } =
+    $props();
   let open = $state(false);
   let root = $state<HTMLElement>();
 
@@ -46,6 +47,7 @@
     position: relative;
     display: inline-flex;
     vertical-align: middle;
+    line-height: 0;
   }
 
   .dot {
@@ -56,19 +58,30 @@
     padding: 0;
     border: none;
     border-radius: 50%;
-    background: #d9d9de;
-    color: #1a1a1e;
+    background: var(--bg-card-hover);
+    color: var(--text-dim);
+    transition:
+      background-color 0.12s ease,
+      color 0.12s ease;
+  }
+
+  .dot:hover,
+  .dot[aria-expanded="true"] {
+    background: var(--info);
+    color: var(--text);
   }
 
   .pop {
     position: absolute;
-    top: calc(100% + 8px);
+    top: calc(100% + 10px);
     z-index: 40;
-    width: 340px;
+    width: max-content;
+    max-width: min(340px, calc(100vw - 32px));
     padding: 14px 32px 14px 16px;
-    background: #f2f2f4;
-    color: #17171a;
-    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
     box-shadow: var(--shadow);
     font-size: 13px;
     line-height: 1.45;
@@ -77,12 +90,42 @@
     user-select: text;
   }
 
+  .pop::before {
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    width: 9px;
+    height: 9px;
+    background: var(--bg-card);
+    border-left: 1px solid var(--line-soft);
+    border-top: 1px solid var(--line-soft);
+    transform: rotate(45deg);
+    translate: 0 5px;
+  }
+
+  .pop.center {
+    left: 50%;
+    translate: -50% 0;
+  }
+
+  .pop.center::before {
+    left: calc(50% - 4.5px);
+  }
+
   .pop.left {
     left: 0;
   }
 
+  .pop.left::before {
+    left: 6px;
+  }
+
   .pop.right {
     right: 0;
+  }
+
+  .pop.right::before {
+    right: 6px;
   }
 
   .close {
@@ -94,7 +137,14 @@
     width: 20px;
     height: 20px;
     border: none;
+    border-radius: 4px;
     background: transparent;
-    color: #55555c;
+    color: var(--text-mute);
+    transition: background-color 0.12s ease;
+  }
+
+  .close:hover {
+    background: var(--bg-card-hover);
+    color: var(--text);
   }
 </style>
