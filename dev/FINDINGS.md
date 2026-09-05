@@ -662,6 +662,123 @@ So the experiment worth running is the one the module's own documentation
 says not to: load both, then check `hp-wmi`'s `pwm1` still answers. **It
 does** — see the next section.
 
+## The patched fan ceiling was never reaching the driver — 2026-09-05
+
+The `cpuMaxRpm`/`gpuMaxRpm` patch the installer has always applied edits
+two constants in `hp-wmi.c`:
+
+```c
+/* Safe fallback max RPM for boards that don't expose a fan table */
+#define OMEN_CPU_MAX_RPM 60
+#define OMEN_GPU_MAX_RPM 58
+```
+
+The comment is the whole story, and it took until now to read it properly.
+They are a **fallback**. `hp_wmi_setup_fan_settings` assigns them first and
+then asks the firmware twice — `HPWMI_FAN_SPEED_MAX_GET_QUERY`, then the
+Victus-S fan table — and overwrites them with whatever comes back. On a
+board that answers, a patched constant never reaches `priv` at all.
+
+This board answers. Proved by building the driver with the constants left
+at their factory 60/58 and a `pr_info` added after probe:
+
+```
+== A: prototype with NO parameter (#defines 60/58)
+  driver trace: cpu_max_rpm=52 gpu_max_rpm=52
+```
+
+52 — 5200 rpm, from the firmware. It matches the calibration exactly, which
+is a good consistency check and also means **the reinstall done earlier the
+same day to "pin the measured ceiling" changed nothing that runs**. The
+number was already right, for a reason nobody had checked.
+
+Two things follow, and only one of them was obvious.
+
+**The patch is inert on any board whose firmware answers.** Where the
+measurement and the firmware disagree — a worn fan, a different SKU under
+the same board id — the installer would report "Fan ceilings taken from the
+last calibration run: 5200 rpm" and the driver would quietly use the
+firmware's number instead. The promise was false in exactly the case that
+matters.
+
+**There is an ordering problem underneath it.** Measuring the ceiling means
+running the fans flat out, which needs `pwm1`, which on these boards needs
+the patched driver. So the first install on any machine is necessarily made
+*before* a measurement exists, and nothing ever went back to redo it. Every
+user's driver was running on a guess, and the note telling them to "run the
+calibration and install again" was a manual step nobody was going to take.
+
+### What replaced it: a module parameter
+
+The patcher now also splices two `module_param`s into the driver and
+applies them at the end of probe, after both firmware queries. Proved
+decisive by loading the same module with a value that is deliberately
+wrong:
+
+```
+== B: prototype with cpu_max_rpm_measured=40
+  driver trace: cpu_max_rpm=40 gpu_max_rpm=40
+  fan1_input=4400  pwm1=255       # rpm_to_pwm(44, 40) saturates
+                                  # a ceiling of 52 would have read 215
+```
+
+The parameter beats the firmware. That gives three properties the constant
+never had: a measurement outranks a claim, the value can be changed without
+a compiler (so `fan.calibrate` pins its own result), and it lives in
+`/etc/modprobe.d` rather than in the source, so it survives a reboot, a
+DKMS rebuild and a kernel upgrade.
+
+Verified end to end on this machine: `installer.apply` with `pinFanCeiling`
+wrote `options hp-wmi cpu_max_rpm_measured=52 gpu_max_rpm_measured=52` and
+`/sys/module/hp_wmi/parameters/` read 52 afterwards.
+
+### Two things learned the hard way while proving it
+
+**A prototype built from the pristine source proves nothing about fan
+control.** The first attempt read `pwm1=128` — the cached default — in both
+arms, because without `8D2F` in `hp_wmi_feature_boards` the driver never
+enters the path where `max_rpm` is used at all. The board patch has to be
+in the prototype too.
+
+**`insmod` does not resolve dependencies, and `sparse_keymap` leaves with
+`hp_wmi`.** Unloading `hp_wmi` drops its only user, so the next `insmod`
+fails with `Unknown symbol sparse_keymap_setup`. `modprobe sparse_keymap`
+first.
+
+## A reinstall recorded a patched module as the distribution's own — 2026-09-05
+
+Found while reinstalling, on this machine, with the evidence still on disk:
+
+```
+hp-wmi.ko.bak       9 occurrences of "gpu_mux_mode"   -> PATCHED
+hp-wmi.ko.zst.bak   0                                 -> the real stock module
+```
+
+`backup_stock_driver` kept "back up only if no backup exists" per
+*filename*. The first install used the hook strategy, which leaves an
+uncompressed `hp-wmi.ko` in the distribution's own directory next to the
+compressed stock module's `.zst.bak`. The second install used DKMS, saw no
+`hp-wmi.ko.bak`, and made one — of our own patched module.
+
+The consequence is not cosmetic. `restore_in` renames every `.bak` back, so
+a restore would have produced both `hp-wmi.ko` (patched) and
+`hp-wmi.ko.zst` (stock) in one directory, and `depmod` prefers the
+uncompressed one. "Restored the distribution's driver" would have left the
+patched one running.
+
+The invariant is now per *directory*, not per filename: a backup already
+there means the stock module is safe, so what is present now is ours to
+delete. And nothing under `updates/` is ever a candidate — that directory
+belongs to DKMS and to this installer, so a module found there is a
+previous install of ours, and backing it up would tell the same lie in the
+other place.
+
+The same reinstall also left the pacman hook behind while switching to
+DKMS, so both would have rebuilt the module on the next kernel upgrade,
+into two different directories — which is how the situation above arises in
+the first place. An install that changes strategy now retires the one it is
+leaving.
+
 ## `kernelZones` works, and `hp_wmi` did not have to go — 2026-09-04
 
 `omen-rgb-keyboard` 1.4 installed through DKMS and loaded **without**
