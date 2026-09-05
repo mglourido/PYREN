@@ -152,6 +152,13 @@ struct State {
     /// zero, because zero would be a claim about hardware we never read.
     applied: BTreeMap<String, Target>,
     pending: Option<Pending>,
+    /// Open for exactly as long as `pending` is: the driver's own
+    /// "this GPU just faulted" signal, asked once per watchdog tick so a
+    /// card that starts failing at second 2 of the hold is not left on a
+    /// bad clock until second 20. `None` wherever the signal does not
+    /// exist - no NVML, an older driver, a card that does not advertise
+    /// it - which is the behaviour this module had before it, unchanged.
+    fault_watch: Option<nvml::EventWatch>,
     /// True when the daemon started and found the config still armed - the
     /// signature of a machine that was overclocked and never came back to
     /// confirm it. Nothing is restored on such a boot, and the state says
@@ -221,6 +228,7 @@ impl OverclockModule {
                 config,
                 applied: BTreeMap::new(),
                 pending: None,
+                fault_watch: None,
                 unconfirmed_at_start,
                 last_error: None,
                 last_note: unconfirmed_at_start.then(|| {
@@ -305,16 +313,25 @@ impl OverclockModule {
 
             let due = {
                 let guard = lock(&state);
-                match &guard.pending {
-                    Some(pending) if Instant::now() >= pending.deadline => Some(pending.clone()),
-                    _ => None,
-                }
+                // Asked only while something is actually armed, and while
+                // the lock is held, because the watch belongs to the same
+                // `pending` it is watching for. The poll itself returns in
+                // about a millisecond - see `nvml::POLL_TIMEOUT_MS`.
+                let fault = guard.pending.is_some()
+                    && guard.fault_watch.as_ref().is_some_and(nvml::EventWatch::poll);
+                watchdog_tick(guard.pending.as_ref(), fault, Instant::now())
+                    .map(|reason| (guard.pending.clone().expect("a reason implies a pending"), reason))
             };
-            let Some(pending) = due else { continue };
+            let Some((pending, reason)) = due else { continue };
 
             let gpu = pending.gpu.clone();
-            match revert(&state, &probe, &store, pending, RevertReason::NotConfirmed) {
-                Ok(()) => log_warn!("overclock on {gpu} was never confirmed; reverted"),
+            match revert(&state, &probe, &store, pending, reason) {
+                Ok(()) => match reason {
+                    RevertReason::FaultReported => {
+                        log_error!("the driver reported a fault on {gpu}; reverted the overclock")
+                    }
+                    _ => log_warn!("overclock on {gpu} was never confirmed; reverted"),
+                },
                 // The one failure with nothing left to try. Say it loudly:
                 // the card is running something nobody confirmed and this
                 // daemon could not take it back.
@@ -476,6 +493,7 @@ impl OverclockModule {
                         revert_to: self.confirmed(&state, &gpu.id),
                         deadline: Instant::now() + Duration::from_secs(hold),
                     });
+                    state.fault_watch = fault_watch(&gpu);
                     state.config.armed_gpu = Some(gpu.id.clone());
                     state.config.hold_secs = Some(hold);
                 }
@@ -503,6 +521,7 @@ impl OverclockModule {
                 msg!("overclock.err.nothingPending", "there is nothing waiting to be confirmed"),
             ));
         };
+        state.fault_watch = None;
         let applied = state.applied.get(&pending.gpu).copied().unwrap_or_default();
         state.config.targets.insert(pending.gpu.clone(), applied);
         state.config.armed_gpu = None;
@@ -573,6 +592,7 @@ impl OverclockModule {
             state.config.targets.insert(id.clone(), Target::default());
             if state.pending.as_ref().is_some_and(|p| p.gpu == id) {
                 state.pending = None;
+                state.fault_watch = None;
                 state.config.armed_gpu = None;
             }
             persist(&self.store, &mut state);
@@ -775,6 +795,43 @@ impl Module for OverclockModule {
     }
 }
 
+/// What the watchdog should do this tick, with no thread, no clock of its
+/// own and no GPU in it.
+///
+/// The whole of the loop's judgement lives here so it can be tested: the
+/// thread above supplies "what is pending", "has the card complained" and
+/// "what time is it", and this decides - once - which of the two reasons
+/// applies, or neither.
+///
+/// The deadline is checked first. Both answers end in the same `revert()`
+/// to the same target, so when a hold expires *and* a fault is queued in
+/// the same 500 ms the difference is only which sentence the user reads,
+/// and "you never confirmed this" is the older, surer fact.
+fn watchdog_tick(pending: Option<&Pending>, fault: bool, now: Instant) -> Option<RevertReason> {
+    let pending = pending?;
+    if now >= pending.deadline {
+        Some(RevertReason::NotConfirmed)
+    } else if fault {
+        Some(RevertReason::FaultReported)
+    } else {
+        None
+    }
+}
+
+/// The fault signal for a card about to be left on an unconfirmed offset,
+/// where there is one.
+///
+/// Only NVIDIA, because NVML is the only thing that reports this and the
+/// only vendor this module writes to at all. Everything else - a card
+/// whose id is not an index, a driver without the event API - is `None`,
+/// which is exactly today's behaviour: the timer alone.
+fn fault_watch(gpu: &GpuProbe) -> Option<nvml::EventWatch> {
+    if gpu.vendor != Vendor::Nvidia {
+        return None;
+    }
+    nvml::EventWatch::create(nvidia_index(gpu).ok()?)
+}
+
 /// Undoes a pending change, putting the card back where it was before the
 /// apply. Shared by the watchdog and by `overclock.cancel`, because "the
 /// timer ran out" and "the user pressed undo" must not be two code paths
@@ -786,6 +843,11 @@ enum RevertReason {
     NotConfirmed,
     /// The user pressed "undo".
     Undone,
+    /// The driver said the card faulted while the change was still
+    /// waiting to be confirmed. Distinct from `NotConfirmed` on purpose:
+    /// a user reading `note` afterwards has to be able to tell "you took
+    /// too long to click" apart from "the card actually complained".
+    FaultReported,
 }
 
 impl RevertReason {
@@ -800,6 +862,11 @@ impl RevertReason {
                 "overclock.note.revertedUndone",
                 { "gpu" => gpu },
                 "the change to {gpu} was undone"
+            ),
+            Self::FaultReported => msg!(
+                "overclock.note.revertedFault",
+                { "gpu" => gpu },
+                "the change to {gpu} was reverted: the driver reported a fault"
             ),
         }
     }
@@ -823,6 +890,7 @@ fn revert(
 
     let mut guard = lock(state);
     guard.pending = None;
+    guard.fault_watch = None;
     guard.config.armed_gpu = None;
     match &outcome {
         Ok(()) => {
@@ -1053,6 +1121,33 @@ mod tests {
         ConfigStore::at(dir)
     }
 
+    /// A change armed now, for as long as the caller says. Only the
+    /// deadline matters to `watchdog_tick`; the rest is what a real
+    /// `apply()` would have put there.
+    fn armed(hold: Duration) -> Pending {
+        Pending {
+            gpu: "nvidia:0".to_string(),
+            revert_to: Target::default(),
+            deadline: Instant::now() + hold,
+        }
+    }
+
+    /// A card with no knobs, named and vendored as the caller needs. The
+    /// fault watch is decided on the id and the vendor alone.
+    fn gpu_probe(id: &str, vendor: Vendor) -> GpuProbe {
+        GpuProbe {
+            id: id.to_string(),
+            name: "a card".to_string(),
+            vendor,
+            driver: "whatever".to_string(),
+            core_offset: None,
+            mem_offset: None,
+            clock_lock: None,
+            offsets_writable: None,
+            detail: Msg::literal(""),
+        }
+    }
+
     /// The whole safety story starts here: a machine nobody has spoken to
     /// is at stock, has consented to nothing, and restores nothing.
     #[test]
@@ -1245,5 +1340,134 @@ mod tests {
             module.merge(&json!({ "coreOffsetMhz": "lots" }), Target::default()),
             Err(ModuleError::InvalidParams(_))
         ));
+    }
+
+    /// A tick is only ever about a change that is waiting to be
+    /// confirmed. With nothing armed there is nothing to undo, and a card
+    /// that is complaining about somebody else's workload must not make
+    /// this daemon write to hardware it did not arm.
+    #[test]
+    fn a_watchdog_tick_with_nothing_armed_undoes_nothing_however_the_card_behaves() {
+        assert!(watchdog_tick(None, false, Instant::now()).is_none());
+        assert!(watchdog_tick(None, true, Instant::now()).is_none());
+    }
+
+    /// The ordinary case, and the one that must stay silent: the whole
+    /// point of the hold is that the user has those seconds to look at the
+    /// screen and press confirm without the daemon interrupting.
+    #[test]
+    fn a_change_still_inside_its_hold_on_a_healthy_card_is_left_alone() {
+        let pending = armed(Duration::from_secs(20));
+        assert!(watchdog_tick(Some(&pending), false, Instant::now()).is_none());
+    }
+
+    /// The path that already had hardware confidence behind it, now
+    /// through the shared decision: a hold that runs out with nobody there
+    /// to confirm is still an unprompted revert, and still says so.
+    #[test]
+    fn a_hold_that_runs_out_undoes_the_change_without_anyone_asking() {
+        let pending = armed(Duration::from_secs(20));
+        let expired = pending.deadline + Duration::from_millis(1);
+        assert!(matches!(
+            watchdog_tick(Some(&pending), false, expired),
+            Some(RevertReason::NotConfirmed)
+        ));
+    }
+
+    /// The reason this feature exists. A card that faults at second 2 of a
+    /// twenty second hold must not be left on the bad clock until second
+    /// 20 just because the timer has not run out yet.
+    #[test]
+    fn a_card_that_reports_a_fault_is_not_left_waiting_for_the_rest_of_the_hold() {
+        let pending = armed(Duration::from_secs(20));
+        assert!(matches!(
+            watchdog_tick(Some(&pending), true, Instant::now()),
+            Some(RevertReason::FaultReported)
+        ));
+    }
+
+    /// Both at once lands in the same `revert()` to the same target, so
+    /// all that is being chosen is the sentence the user reads afterwards.
+    /// "You never confirmed this" is the older and surer of the two facts,
+    /// so it wins - and this pins that tie-break down rather than leaving
+    /// it to whichever branch happens to be written first.
+    #[test]
+    fn a_hold_that_ran_out_is_reported_as_such_even_when_the_card_also_complained() {
+        let pending = armed(Duration::from_secs(20));
+        let expired = pending.deadline + Duration::from_millis(1);
+        assert!(matches!(
+            watchdog_tick(Some(&pending), true, expired),
+            Some(RevertReason::NotConfirmed)
+        ));
+    }
+
+    /// "Exactly one revert, not zero and not two" is two separate claims.
+    /// One of them the type settles: a tick returns a single `Option`, so
+    /// it cannot name two reasons no matter what it is given. The other is
+    /// this one - that a revert takes the pending with it, so the next
+    /// tick 500 ms later finds nothing left to undo and the card is not
+    /// written to twice.
+    ///
+    /// The revert here is made to fail on purpose, with a card id no probe
+    /// will match: even the failing path has to leave nothing armed, or a
+    /// card that has gone away would be retried every half second forever.
+    #[test]
+    fn a_revert_disarms_what_it_undid_so_the_next_tick_finds_nothing() {
+        let module = OverclockModule::with_store(store("revert-disarms"));
+        let pending = Pending {
+            gpu: "absent:0".to_string(),
+            revert_to: Target::default(),
+            deadline: Instant::now() + Duration::from_secs(20),
+        };
+        lock(&module.state).pending = Some(pending.clone());
+
+        let outcome = revert(
+            &module.state,
+            &module.probe,
+            &module.store,
+            pending,
+            RevertReason::FaultReported,
+        );
+        assert!(outcome.is_err(), "a card that is not there cannot be written to");
+
+        let state = lock(&module.state);
+        assert!(state.pending.is_none(), "a revert must disarm what it undid");
+        assert!(state.fault_watch.is_none(), "the fault watch outlives nothing");
+        assert!(state.config.armed_gpu.is_none());
+        assert!(
+            watchdog_tick(state.pending.as_ref(), true, Instant::now()).is_none(),
+            "the tick after a revert must not ask for a second one"
+        );
+    }
+
+    /// The whole reason `FaultReported` is a variant of its own and not a
+    /// reuse of `NotConfirmed`: someone reading the note afterwards has to
+    /// be able to tell "you took too long to click" apart from "the card
+    /// actually complained", and to see which card it was.
+    #[test]
+    fn a_fault_note_reads_differently_from_a_timeout_note_and_names_the_card() {
+        let fault = RevertReason::FaultReported.note("nvidia:0");
+        let timeout = RevertReason::NotConfirmed.note("nvidia:0");
+
+        assert_ne!(fault.key, timeout.key, "two reasons, two keys to translate");
+        assert_ne!(fault.text, timeout.text);
+        assert_eq!(fault.params["gpu"], "nvidia:0");
+        assert!(fault.text.contains("nvidia:0"), "the note must say which card: {}", fault.text);
+        assert!(!fault.text.contains('{'), "every placeholder must be filled: {}", fault.text);
+        assert!(fault.text.contains("fault"), "a fault must read as one: {}", fault.text);
+    }
+
+    /// NVML is the only thing that reports this signal and NVIDIA is the
+    /// only vendor this module writes to, so every other card falls back
+    /// to exactly the behaviour that was there before: the timer alone,
+    /// silently, with no watch and no message about not having one.
+    #[test]
+    fn a_card_that_is_not_an_nvidia_index_gets_no_fault_watch() {
+        assert!(fault_watch(&gpu_probe("drm:card0", Vendor::Intel)).is_none());
+        assert!(fault_watch(&gpu_probe("drm:card1", Vendor::Amd)).is_none());
+        assert!(
+            fault_watch(&gpu_probe("drm:card1", Vendor::Nvidia)).is_none(),
+            "an NVIDIA card whose id is not an nvidia-smi index has no index to register with"
+        );
     }
 }

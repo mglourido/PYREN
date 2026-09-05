@@ -962,7 +962,8 @@
       "backToStock": "de vuelta a los relojes con los que salió de fábrica",
       "nothingToUndo": "nada que deshacer: este daemon no ha movido estos relojes",
       "revertedUnconfirmed": "el cambio en {gpu} no se confirmó, así que se deshizo",
-      "revertedUndone": "el cambio en {gpu} se deshizo"
+      "revertedUndone": "el cambio en {gpu} se deshizo",
+      "revertedFault": "el cambio en {gpu} se revirtió: el driver informó de un fallo"
     },
     "err": {
       "perGpu": "{id}: {error}",

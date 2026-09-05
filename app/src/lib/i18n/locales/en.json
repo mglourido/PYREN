@@ -962,7 +962,8 @@
       "backToStock": "back to the clocks the firmware shipped",
       "nothingToUndo": "nothing to undo: this daemon has not moved these clocks",
       "revertedUnconfirmed": "the change to {gpu} was not confirmed, so it was undone",
-      "revertedUndone": "the change to {gpu} was undone"
+      "revertedUndone": "the change to {gpu} was undone",
+      "revertedFault": "the change to {gpu} was reverted: the driver reported a fault"
     },
     "err": {
       "perGpu": "{id}: {error}",

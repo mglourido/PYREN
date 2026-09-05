@@ -4,7 +4,7 @@ This is the honest version: what has been tested, how, and what has
 **not** been. Every number here comes from a suite you can run yourself.
 
 ```sh
-cd daemon && cargo test --workspace     # 503 tests
+cd daemon && cargo test --workspace     # 514 tests
 tools/power-soak.sh                     # 31 checks, against real hardware
 ```
 
@@ -22,6 +22,7 @@ tools/power-soak.sh                     # 31 checks, against real hardware
 | **Fan mode** manual | ⚠️ **partly** | tested lightly — accepted where the driver exposes `pwm1`, refused where not |
 | **One fan curve per profile** | ❌ **does not exist** | there is a single global curve; the fan module does not know the power mode. Would be a new feature |
 | **GPU overclocking** | ✅ **yes** | verified on hardware — +50 MHz applied and reverted, through NVML. Needs no X and no `Coolbits` |
+| **Reverting an unconfirmed offset on a reported fault** | ⚠️ **partly** | the decision logic is tested and the driver registration is verified on hardware; **no real fault has ever been seen firing** — see below |
 
 ### How GPU overclocking works here
 
@@ -46,6 +47,58 @@ cancel         →   0 MHz
 
 Read back through NVML directly rather than taken from Pyren's own
 report, and the card was left at stock.
+
+### Reverting when the card complains, not only when the timer runs out
+
+The watchdog that undoes an offset nobody confirmed now has a second
+reason to act: the driver reporting that the card faulted. Both go
+through one pure function, `watchdog_tick`, which is what makes the
+decision testable without a thread or a GPU.
+
+**Tested.** Eight tests in `pyren-overclock` cover the whole decision:
+nothing armed reverts nothing however the card is behaving; a
+change still inside its hold on a healthy card is left alone; a hold that
+runs out is `NotConfirmed`, as it always was; a fault inside the hold is
+`FaultReported`; and when both are true in the same 500 ms tick the
+deadline wins, because "you never confirmed this" is the older and surer
+of the two facts. A revert also disarms what it undid — even the failing
+revert of a card that has gone away — so the tick half a second later
+finds nothing left to undo and the card is never written to twice. The
+two notes are asserted to differ, in key and in words, and to name the
+card: a user reading `note` afterwards has to be able to tell "you took
+too long to click" apart from "the card actually complained".
+
+**Verified on hardware**, three checks, all non-destructive:
+
+```
+NVML present                                   yes
+gpu0 advertises nvmlEventTypeXidCriticalError   yes  (bitmask 0xf19c, bit 0x8)
+a poll on a healthy card                       no event, 1.08 ms
+```
+
+The poll waits 1 ms, not the 400 ms the plan first suggested: the driver
+queues events into the set as they happen, so a poll finds whatever
+already arrived without waiting for it, and a longer wait would only push
+the watchdog's own 500 ms deadline check late. The measured 1.08 ms is
+asserted in the suite to stay under 100 ms — and that assertion, like
+every other one in `nvml.rs`, still passes on a machine with no NVIDIA
+driver at all, where it simply has no watch to poll.
+
+**What this does not mean.** Nobody has watched a real XID fire and be
+caught. The plan that introduced this said so before it was built and it
+is still true: registering for `nvmlEventTypeXidCriticalError` and
+confirming the GPU's bitmask advertises it is *"not the same as having
+watched a real XID fire and be caught"*, and a "done" here means *"the
+three live checks above passed, and that the fixture-level decision logic
+has tests"* — nothing more. There is no safe way to manufacture a
+critical GPU fault on demand, and corrupting a card on purpose to test
+the corruption handler is not a trade this project makes. The convincing
+evidence *"will only ever come from an offset search that goes wrong by
+accident during ordinary use after this ships, not from a test suite
+manufacturing the failure on purpose"*
+(`docs/05-overclock-watchdog-plan.md`). A card that does not advertise
+the bit, or a driver too old to have the event API, gets exactly the
+behaviour that was there before: the timer alone, silently.
 
 ---
 
@@ -227,7 +280,7 @@ Verified: the sequence that failed every time now passes 5/5.
 +50 MHz core offset was applied, read back off the card and reverted. The
 module's safety machinery — the consent gate, the stepped climb, the
 revert-on-failure timer, the refusal to restore an offset after a crash —
-has 47 tests of its own, and the revert path was exercised live.
+has 58 tests of its own, and the revert path was exercised live.
 
 What has *not* been done is finding out how far this card will actually
 go. That is not a test, it is an afternoon with a workload: an offset
@@ -236,9 +289,22 @@ it does there is no error message. Pyren applies offsets in 15 MHz steps
 and reverts anything you do not confirm, which bounds the damage; it
 cannot tell you your card is stable.
 
-Memory offsets are implemented and untested on hardware. The driver
+Memory offsets are **verified on hardware** too. A `+400` offset moved
+the reported memory clock from 12001 to 12201 MHz — half the offset,
+which is exactly the relationship the module documents: the driver
 advertises −2000…+6000 here, and a memory offset is a *transfer rate*
-offset — what other tools show as "memory clock" is half of it.
+offset, so what other tools show as "memory clock" is half of it. Read
+back through NVML and reverted with `cancel`.
+
+**On battery, an offset applies and does very little.** The power source
+does not change whether the write lands — a live `+200` moved the core
+ceiling from 3090 to 3285 MHz on battery — but `nvidia-smi -q -d POWER`
+reported the card's current ceiling at 50 W against an 80 W default, a
+limit the driver sets on its own and that neither `pyren-power` nor
+`pyren-overclock` touches. A card that hits 50 W before it hits the new
+clock ceiling gets nothing out of the offset until the machine is
+plugged in. Not a bug in either module; worth knowing before spending an
+evening on "why did the offset do nothing".
 
 Also not covered: RGB lighting, the keyboard remapper, the network
 module and the driver installer are exercised by their own crates'
@@ -254,7 +320,7 @@ hardware pass like the one above.
 | `pyren-installer` | 84 | the driver installer and its plans |
 | `pyren-power` | 77 | the four profiles, the envelope, auto-switching |
 | `pyren-fan` | 75 | fan modes, curves, calibration, the cleaner |
-| `pyren-overclock` | 47 | consent, the climb, the revert timer, the NVML binding |
+| `pyren-overclock` | 58 | consent, the climb, the revert timer and the fault revert, the NVML binding |
 | `pyren-core` | 43 | IPC, config, sensors, the event bus |
 | `pyren-rgb` | 37 | lighting zones and dialects |
 | `pyren-hotkey` | 28 | the performance key |
@@ -267,7 +333,7 @@ hardware pass like the one above.
 | `pyren-ctl` | 9 | the command-line client's parsing |
 | `pyren-gpu` | 9 | the graphics mux |
 
-**503 total, 0 failing.** Plus 31 checks against real hardware in
+**514 total, 0 failing.** Plus 31 checks against real hardware in
 `tools/power-soak.sh`, and one real-clock soak that is skipped by
 default because it runs for minutes.
 

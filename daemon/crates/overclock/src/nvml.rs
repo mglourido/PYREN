@@ -28,7 +28,7 @@
 //! missing symbol is "this driver is too old for this knob", and neither
 //! is an error worth showing anybody.
 
-use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uint, c_ulonglong, c_void, CStr, CString};
 use std::sync::OnceLock;
 
 use crate::plan::Range;
@@ -37,6 +37,25 @@ use crate::plan::Range;
 const NVML_SUCCESS: c_int = 0;
 const NVML_NOT_SUPPORTED: c_int = 3;
 const NVML_NO_PERMISSION: c_int = 4;
+/// `nvmlEventSetWait_v2` with nothing queued. The ordinary answer, not an
+/// error: it is what "the card has not complained" looks like.
+const NVML_ERROR_TIMEOUT: c_int = 10;
+
+/// `nvmlEventTypeXidCriticalError`. The driver's own "this GPU just did
+/// something it should not have" - the signal `nvidia-bug-report` reads.
+///
+/// Deliberately the only bit registered. ECC counters are unsupported on a
+/// consumer card, and a *throttle* is usually the card protecting itself
+/// rather than failing, so neither belongs on a path whose response is to
+/// undo the user's change.
+const NVML_EVENT_XID_CRITICAL: c_ulonglong = 0x8;
+
+/// How long a poll waits for an event that is not there. The driver queues
+/// events into the set as they happen, so a poll finds anything that
+/// arrived since the last one without waiting for it; anything arriving
+/// *during* the poll is caught by the next tick 500 ms later. Waiting
+/// longer here would only push the watchdog's own deadline check late.
+const POLL_TIMEOUT_MS: c_uint = 1;
 
 /// What went wrong, in the terms the caller has to distinguish.
 ///
@@ -66,6 +85,37 @@ type DeviceByIndex = unsafe extern "C" fn(c_uint, *mut *mut c_void) -> c_int;
 type GetOffset = unsafe extern "C" fn(*mut c_void, *mut c_int) -> c_int;
 type SetOffset = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 type GetRange = unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int) -> c_int;
+type EventSetCreate = unsafe extern "C" fn(*mut *mut c_void) -> c_int;
+type EventSetFree = unsafe extern "C" fn(*mut c_void) -> c_int;
+type RegisterEvents = unsafe extern "C" fn(*mut c_void, c_ulonglong, *mut c_void) -> c_int;
+type EventSetWait = unsafe extern "C" fn(*mut c_void, *mut EventData, c_uint) -> c_int;
+type SupportedEvents = unsafe extern "C" fn(*mut c_void, *mut c_ulonglong) -> c_int;
+
+/// `nvmlEventData_t`, field for field as of the versions that carry
+/// `nvmlEventSetWait_v2`. The layout matters more than the contents: the
+/// driver writes the whole struct, so a short one would be a stack
+/// overwrite. Only `event_type` is ever read.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EventData {
+    device: *mut c_void,
+    event_type: c_ulonglong,
+    event_data: c_ulonglong,
+    gpu_instance_id: c_uint,
+    compute_instance_id: c_uint,
+}
+
+impl EventData {
+    fn empty() -> Self {
+        Self {
+            device: std::ptr::null_mut(),
+            event_type: 0,
+            event_data: 0,
+            gpu_instance_id: 0,
+            compute_instance_id: 0,
+        }
+    }
+}
 
 /// The handles `dlsym` found. `None` for a symbol this driver does not
 /// have, which is how an older driver is told apart from a broken one.
@@ -79,6 +129,11 @@ struct Symbols {
     set_mem: Option<SetOffset>,
     core_range: Option<GetRange>,
     mem_range: Option<GetRange>,
+    event_set_create: Option<EventSetCreate>,
+    event_set_free: Option<EventSetFree>,
+    register_events: Option<RegisterEvents>,
+    event_set_wait: Option<EventSetWait>,
+    supported_events: Option<SupportedEvents>,
 }
 
 // The library is opened once and never closed, and NVML's own API is
@@ -124,6 +179,11 @@ fn load() -> Option<Symbols> {
             set_mem: sym::<SetOffset>(library, "nvmlDeviceSetMemClkVfOffset"),
             core_range: sym::<GetRange>(library, "nvmlDeviceGetGpcClkMinMaxVfOffset"),
             mem_range: sym::<GetRange>(library, "nvmlDeviceGetMemClkMinMaxVfOffset"),
+            event_set_create: sym::<EventSetCreate>(library, "nvmlEventSetCreate"),
+            event_set_free: sym::<EventSetFree>(library, "nvmlEventSetFree"),
+            register_events: sym::<RegisterEvents>(library, "nvmlDeviceRegisterEvents"),
+            event_set_wait: sym::<EventSetWait>(library, "nvmlEventSetWait_v2"),
+            supported_events: sym::<SupportedEvents>(library, "nvmlDeviceGetSupportedEventTypes"),
             _library: library,
         })
     }
@@ -239,6 +299,120 @@ pub fn set_mem_offset(index: u32, mhz: i32) -> Result<(), NvmlError> {
     write(index, |s| s.set_mem, mhz)
 }
 
+// --- the fault signal ---------------------------------------------------
+
+/// Whether this driver has the whole event API this module needs.
+///
+/// All five or none: a set that can be created and never waited on is a
+/// leak, and a wait with no way to register anything never fires.
+fn event_symbols(symbols: &Symbols) -> Option<(EventSetCreate, EventSetFree, RegisterEvents, EventSetWait, SupportedEvents)> {
+    Some((
+        symbols.event_set_create?,
+        symbols.event_set_free?,
+        symbols.register_events?,
+        symbols.event_set_wait?,
+        symbols.supported_events?,
+    ))
+}
+
+/// Whether this GPU will report a critical fault at all.
+///
+/// A card that does not advertise the bit is not broken and is not worth a
+/// message: it simply has one fewer signal than the reference card, and
+/// everything else keeps working exactly as before.
+pub fn supports_fault_events(index: u32) -> bool {
+    let Some(symbols) = symbols() else { return false };
+    let Some((.., supported)) = event_symbols(symbols) else { return false };
+    let Ok(handle) = device(symbols, index) else { return false };
+
+    let mut mask: c_ulonglong = 0;
+    // SAFETY: a handle the driver gave us, and a valid out-pointer.
+    let rc = unsafe { supported(handle, &mut mask) };
+    rc == NVML_SUCCESS && mask & NVML_EVENT_XID_CRITICAL != 0
+}
+
+/// A registration for one GPU's critical faults, open for as long as an
+/// unconfirmed offset is on that card.
+///
+/// The point of the type is that [`spawn_watchdog`](crate::OverclockModule)
+/// never touches a raw NVML handle: it creates one of these when it arms a
+/// change, asks [`poll`](Self::poll) once a tick, and drops it when the
+/// change is confirmed or undone - the same way `Symbols`/`sym` keep the
+/// rest of the FFI edge inside this file.
+pub struct EventWatch {
+    set: *mut c_void,
+    free: EventSetFree,
+    wait: EventSetWait,
+}
+
+// The set is only ever used from the watchdog thread that owns it, and
+// NVML's own API is documented thread-safe. The raw pointer is what makes
+// this needed - the same reason `Symbols` needs it.
+unsafe impl Send for EventWatch {}
+unsafe impl Sync for EventWatch {}
+
+impl EventWatch {
+    /// Registers for critical faults on one GPU, or `None` for every
+    /// reason that is not an error: no NVML, a driver without the event
+    /// API, a card that does not advertise the bit, or a driver that
+    /// simply refuses the registration.
+    ///
+    /// There is no `Err` on purpose. Nothing upstream would do anything
+    /// different with one: this is an *extra* signal on top of the timer
+    /// that has always been there, so its absence has to be the old
+    /// behaviour rather than a failed apply.
+    pub fn create(index: u32) -> Option<Self> {
+        let symbols = symbols()?;
+        let (create, free, register, wait, _) = event_symbols(symbols)?;
+        if !supports_fault_events(index) {
+            return None;
+        }
+        let handle = device(symbols, index).ok()?;
+
+        let mut set: *mut c_void = std::ptr::null_mut();
+        // SAFETY: a valid out-pointer, filled in only on success.
+        let rc = unsafe { create(&mut set) };
+        if rc != NVML_SUCCESS || set.is_null() {
+            return None;
+        }
+
+        // SAFETY: a handle and a set the driver just gave us.
+        let rc = unsafe { register(handle, NVML_EVENT_XID_CRITICAL, set) };
+        if rc != NVML_SUCCESS {
+            // SAFETY: freeing the set we just created and are abandoning.
+            unsafe { free(set) };
+            return None;
+        }
+        Some(Self { set, free, wait })
+    }
+
+    /// Whether the driver has reported a critical fault since the last
+    /// ask.
+    ///
+    /// Only a real, positively identified XID is `true`. A timeout is the
+    /// ordinary "nothing happened", and any *other* error is also `false`:
+    /// a broken query must not undo a change the user made, because "we
+    /// could not tell" is not "the card is failing".
+    pub fn poll(&self) -> bool {
+        let mut data = EventData::empty();
+        // SAFETY: a set this type owns, and an out-parameter of exactly
+        // the struct the driver writes.
+        let rc = unsafe { (self.wait)(self.set, &mut data, POLL_TIMEOUT_MS) };
+        if rc == NVML_ERROR_TIMEOUT {
+            return false;
+        }
+        rc == NVML_SUCCESS && data.event_type & NVML_EVENT_XID_CRITICAL != 0
+    }
+}
+
+impl Drop for EventWatch {
+    fn drop(&mut self) {
+        // SAFETY: a set this type created and has not freed; the field is
+        // never null after `create` returned `Some`.
+        unsafe { (self.free)(self.set) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +449,42 @@ mod tests {
             assert!(range.min <= offset && offset <= range.max, "{offset} outside {range:?}");
             assert!(range.min <= 0 && range.max >= 0, "stock must be inside the range");
         }
+    }
+
+    /// Same contract as `available()`, for the second half of this file:
+    /// asking about a GPU that may not exist, on a machine that may have
+    /// no driver, must answer rather than fall over.
+    #[test]
+    fn asking_whether_a_gpu_reports_faults_is_safe_on_any_machine() {
+        let _ = supports_fault_events(0);
+        assert!(!supports_fault_events(u32::MAX), "a GPU that is not there reports nothing");
+    }
+
+    /// The gate the whole feature hangs on: no NVML, no old driver, no
+    /// card without the bit ever produces a watch. And where one *is*
+    /// produced, creating and dropping it must not leak or panic.
+    #[test]
+    fn a_fault_watch_exists_only_where_the_card_advertises_the_signal() {
+        assert!(EventWatch::create(u32::MAX).is_none(), "no GPU, no watch");
+        assert_eq!(
+            EventWatch::create(0).is_some(),
+            available() && supports_fault_events(0),
+            "a watch must appear exactly when the card says it can report faults"
+        );
+    }
+
+    /// The live latency check, where there is hardware for it: a poll on a
+    /// healthy card answers "nothing happened", and answers *fast* - the
+    /// watchdog calls this every 500 ms and must not be blocked by it.
+    #[test]
+    fn polling_a_healthy_card_is_prompt_and_reports_nothing() {
+        let Some(watch) = EventWatch::create(0) else { return };
+        let start = std::time::Instant::now();
+        assert!(!watch.poll(), "a healthy GPU must not report a critical fault");
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(100),
+            "a poll took {:?}, which would push the watchdog's own tick late",
+            start.elapsed()
+        );
     }
 }

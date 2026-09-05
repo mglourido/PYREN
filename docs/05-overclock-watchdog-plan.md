@@ -1,8 +1,13 @@
 # Plan: reacting to a failing GPU, not just to an unconfirmed timer
 
-**Status: proposed, not started.** Nothing in this file has been built.
-It exists so the idea survives past the session that found it, and so
-whoever picks it up does not have to re-derive where the hooks are.
+**Status: built.** The watchdog now reverts on a reported fault as well
+as on the timer, `watchdog_tick` is the pure decision both go through,
+and the three live checks under "Testing plan" passed on the reference
+GPU. What "done" does *and does not* mean here is spelled out in "What
+this plan does not claim", which still stands: nobody has watched a real
+XID fire. See `TEST.md` for the evidence.
+
+The rest of this file is kept as written, as the design record.
 
 ## Where this came from
 
