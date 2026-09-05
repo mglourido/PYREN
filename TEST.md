@@ -8,6 +8,39 @@ cd daemon && cargo test --workspace     # 500 tests
 tools/power-soak.sh                     # 31 checks, against real hardware
 ```
 
+## At a glance
+
+| feature | works? | notes |
+|---|---|---|
+| **Power profiles** (Eco / Balanced / Performance / Unlimited) | ✅ **yes** | verified on hardware — moves both the firmware profile and the OS one |
+| **Power limits** (PL1 / PL2), Performance & Unlimited | ✅ **yes** | verified on hardware — 45 W asked, 44 W applied, clamped to stock |
+| **Turbo on/off** per profile | ✅ **yes** | verified on hardware |
+| **Profile survives closing the app** | ✅ **yes** | the app is a client; the mode belongs to the daemon |
+| **Profile survives a daemon restart** | ✅ **yes** | only with *restore on start* on — off by default, on purpose |
+| **Automatic switching** (battery / load / heat) | ✅ **yes** | soaked; one switch per half hour under load, no flapping |
+| **Fan modes** auto / max / curve | ✅ **yes** | tested against a fixture |
+| **Fan mode** manual | ⚠️ **partly** | tested lightly — accepted where the driver exposes `pwm1`, refused where not |
+| **One fan curve per profile** | ❌ **does not exist** | there is a single global curve; the fan module does not know the power mode. Would be a new feature |
+| **GPU overclocking** | ❌ **not on this machine** | the code works and has 44 tests, but the offsets cannot be applied here — see below |
+
+### Why GPU overclocking does not work here
+
+NVIDIA offers two ways to move a clock offset, and this machine can use
+neither *as Pyren currently asks for it*:
+
+| path | needs | status here |
+|---|---|---|
+| `nvidia-settings` (what Pyren uses today) | a real Xorg server with an NVIDIA X screen, and `Coolbits` enabled | ❌ this is a **Wayland** session (Hyprland + rootless Xwayland). `nvidia-settings -q screens` finds no NVIDIA screen at all, so there is nothing for `Coolbits` to apply to |
+| **NVML** (`libnvidia-ml`) | nothing but root | ✅ **available** — driver 610.57.04 exposes `nvmlDeviceSetGpcClkVfOffset`, and the offset reads back fine with a −1000…+1000 range |
+
+So the blocker is not a permission the user has failed to grant. It is
+that the mechanism Pyren reaches for does not exist on a Wayland desktop,
+while one that does exist is not wired up yet. Enabling `Coolbits` would
+change nothing here; it would only help somebody running a real Xorg
+session.
+
+---
+
 Two kinds of evidence appear below, and they are not equally strong:
 
 | | what it means |
@@ -190,19 +223,34 @@ landing on real silicon, and that is deliberate: an offset that survives
 a benchmark can still hang the machine in a game, and when it does there
 is no error message.
 
-On the reference machine it also **cannot** work yet, for two reasons
-that are the environment's rather than Pyren's:
+On the reference machine it also **cannot** work as Pyren currently asks
+for it, and the reason is worth being precise about, because the obvious
+diagnosis is the wrong one.
 
-1. **`Coolbits` is not enabled.** Without it in an Xorg screen section,
-   `nvidia-settings` refuses the offset write for *everyone* — the
-   attribute reads fine and returns `Operation not permitted` on write,
-   for root as much as for you.
-2. **The daemon has no X cookie to connect with.** It runs as root under
-   systemd, and Hyprland's Xwayland was started without an auth file, so
-   there is nothing for root to authenticate with. Pyren diagnoses this
-   correctly and says so, which is the behaviour that was tested.
+Pyren applies offsets through `nvidia-settings`, which needs an X screen
+driven by the NVIDIA X driver, with `Coolbits` enabled on it. What was
+actually found:
 
-Neither is a defect in Pyren, and neither is fixed by a code change.
+1. **There is no NVIDIA X screen to enable anything on.** This is a
+   Wayland session, and `nvidia-settings -q screens` returns nothing.
+   Writing a `Coolbits` line into `xorg.conf.d` would be inert — it
+   configures an Xorg screen that this desktop never creates.
+2. **The write is refused for everyone, not just root.** Asked directly
+   from the user's own session, `nvidia-settings -a ...Offset...=50`
+   answers `Operation not permitted for the current user`. That is the
+   same wall, seen from the other side.
+3. **The daemon also has no X cookie**, since Hyprland's Xwayland was
+   started without an auth file. Pyren diagnoses *this* one correctly and
+   says so in its own error message, which is the behaviour that was
+   tested.
+
+None of that is a defect in Pyren. But it does mean the feature reaches
+for a mechanism that a modern Wayland desktop does not have — while the
+driver on the same machine exposes one that needs no X at all. NVML
+(`libnvidia-ml.so.1`) carries `nvmlDeviceSetGpcClkVfOffset` and friends
+on driver 610.57.04, the current offset reads back as 0, and the driver
+advertises a −1000…+1000 range. Wiring that up is what would make
+overclocking work here; a permission toggle would not.
 
 Also not covered: RGB lighting, the keyboard remapper, the network
 module and the driver installer are exercised by their own crates'
