@@ -46,6 +46,12 @@ Now launch **Pyren** from your application menu, or run `pyren`.
 `pyren-check` prints what this laptop can be told to do; `pyren-ctl status`
 shows what the running daemon has switched on.
 
+If your launcher does not list Pyren right after installing, it is holding
+a cached app list from before the entry existed. Log out and back in, or
+clear the launcher's cache — `rm ~/.cache/rofi3.druncache` for rofi,
+`rm ~/.cache/wofi-*` for wofi. Running `pyren` from a terminal is
+unaffected.
+
 ### Requirements
 
 - A Linux kernel with the `hp-wmi` driver. Recent kernels have manual fan

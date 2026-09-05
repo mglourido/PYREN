@@ -6,6 +6,6 @@ Comment=Fan, power, lighting and GPU control for HP OMEN laptops on Linux
 Exec=pyren
 Icon=pyren
 Terminal=false
-Categories=System;Settings;HardwareSettings;
+Categories=Settings;HardwareSettings;
 Keywords=omen;hp;fan;power;rgb;overclock;gpu;
 StartupWMClass=pyren

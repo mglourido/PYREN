@@ -332,4 +332,8 @@ Two things left, both in your own session:
 
 Then launch Pyren from your app menu, or run 'pyren'. 'pyren-check' reports
 what this laptop can be told to do.
+
+If your launcher does not show Pyren, it has a stale app list: log out and
+back in, or clear its cache (rofi: 'rm ~/.cache/rofi3.druncache'; wofi:
+'~/.cache/wofi-*'). Running 'pyren' from a terminal always works.
 EOF
