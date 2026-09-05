@@ -134,7 +134,7 @@ pub fn is_module_installed() -> bool {
 /// Only ever called from a path where the user has asked for something
 /// that needs it. The daemon does not modprobe at startup: loading a
 /// kernel module is a change to the machine, and this project does not
-/// make those on its own (see `dev/TODO.md` §4, "the daemon does not touch
+/// make those on its own (see `dev/TODO.md` §3, "the daemon does not touch
 /// the fans until asked").
 pub fn ensure_loaded() -> Result<(), AcpiError> {
     if is_loaded() {

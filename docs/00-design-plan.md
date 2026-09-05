@@ -140,20 +140,22 @@ doesn't exist, because nothing has needed one yet.
    independent enforcements of the cycle timeout. See
    `01-ipc-protocol.md` §"The fan cleaner" for the wire shape and for what
    remains untested (the firmware's own answer).
-5. Second module (RGB, from `omen-rgb-linux`) to prove the module boundary
-   generalizes to a differently-shaped hardware surface — reviewed, not
-   started. Which of the two unrelated paths to port **is now settled**:
-   the laptop has no `0d62` USB device, so the 4-zone ACPI lightbar is the
-   only candidate. See `docs/04-rgb-porting-review.md`.
+5. ~~Second module (RGB, from `omen-rgb-linux`)~~ — done, and it proved
+   the module boundary generalizes: the laptop has no `0d62` USB device,
+   so the 4-zone ACPI lightbar was the only candidate (see
+   `docs/04-rgb-porting-review.md`), and it now speaks two dialects
+   (`fourZone` over `acpi_call`, `kernelZones` over a sibling DKMS module)
+   confirmed against the real light strip, auto-picked or pinned by hand.
 6. ~~Privileged installer flow (kernel driver + daemon systemd unit)~~ —
    ported as the `installer` module (inspect/plan/apply, see
-   `docs/01-ipc-protocol.md`). Its *execution* path is written but has
-   never been run; running it on the test laptop is now the top item in
-   `dev/TODO.md`, because it is also the experiment that would decide
-   whether this board can be given a real fan percentage. The GUI wizard on
-   top of it is done — `DriverWizard.svelte` at the bottom of `/drivers`,
-   which shows the plan's steps and their commands and keeps "apply"
-   disabled until a dry run of those exact options has been read
+   `docs/01-ipc-protocol.md`), and its execution path has since been run
+   against hardware repeatedly, including full reinstalls that switch
+   between the DKMS and kernel-hook strategies. The GUI wizard on top of
+   it is done — `DriverWizard.svelte` at the bottom of `/drivers`, which
+   shows the plan's steps and their commands, keeps "apply" disabled until
+   a dry run of those exact options has been read, and now covers the
+   window with a live progress overlay while a driver action runs, driven
+   by the daemon's own `installer.progress` events rather than a timer
    (`docs/03-frontend.md`).
 7. ~~Power modes as real profiles~~ — done: the laptop's own firmware
    profile, the OS profile (delegated to power-profiles-daemon), and the
@@ -170,7 +172,7 @@ doesn't exist, because nothing has needed one yet.
    here**: the `power` module owns those registers and re-applies them,
    clamped to stock, on every mode change, so raising them means deciding
    which module owns the envelope. See `docs/01-ipc-protocol.md`
-   §"`overclock` module" and `dev/TODO.md` §3.
+   §"`overclock` module" and `dev/TODO.md` §1.
 
 ## Open decisions (intentionally not settled by this scaffold)
 

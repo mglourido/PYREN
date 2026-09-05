@@ -129,7 +129,7 @@ GPU
   network set <off|auto>       off deletes the root qdisc; auto hands the
                                interface cake, or fq_codel on a kernel with
                                no sch_cake - system-wide, not per-app (see
-                               dev/TODO.md §2.1 for why there is no
+                               dev/TODO.md §2 for why there is no
                                per-process priority here)
   oc get                       what can be tuned on each GPU, what is set,
                                and - where nothing can be - why not

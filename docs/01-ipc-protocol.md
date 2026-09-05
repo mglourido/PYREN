@@ -1520,8 +1520,7 @@ System-wide smart queuing on the default-route interface — **not**
 per-application traffic control. See `daemon/crates/network/src/lib.rs` for
 why the app's per-process priority/block table has nothing behind it: it
 needs per-process traffic accounting (cgroups/nftables/eBPF) this project
-does not implement, flagged as the larger and less valuable half of
-`dev/TODO.md` §2.1.
+does not implement — see `dev/TODO.md` §2 for the deliberate scope cut.
 
 | method | params | result |
 |---|---|---|
@@ -1801,9 +1800,9 @@ exactly one press: the one they pressed to answer the question.
 ## `keymap` module
 
 Remaps one physical key to another, system-wide, with no compositor
-keybinding involved. Closes the "key mapping" half of `dev/TODO.md` §2.1 —
-the backend decision it names (`keyd`, a `udev` hwdb entry, or an
-evdev-level remapper) is the third: this daemon already opens
+keybinding involved. The backend decision it needed — `keyd`, a `udev`
+hwdb entry, or an evdev-level remapper — settled on the third: this
+daemon already opens
 `/dev/input/event*` directly for `hotkey`, so a `/dev/uinput` virtual
 device reusing that same access is one fewer moving part than a second
 daemon's config file.

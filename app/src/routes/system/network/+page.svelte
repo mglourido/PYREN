@@ -5,7 +5,7 @@
    * fallback) so responsive traffic stays snappy under load. There is no
    * per-application priority or block list: that needs per-process traffic
    * accounting (cgroups/nftables/eBPF) this daemon does not implement -
-   * see `dev/TODO.md` §2.1 and `daemon/crates/network/src/lib.rs`.
+   * see `dev/TODO.md` §2 and `daemon/crates/network/src/lib.rs`.
    */
   import Segmented from "$lib/components/Segmented.svelte";
   import { t } from "$lib/i18n/index.svelte";
