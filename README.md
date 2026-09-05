@@ -28,6 +28,7 @@ thinks the machine can do.
 ```
 daemon/     Rust workspace: pyren-daemon + pyren-ctl + pyren-check + module crates
 app/        Tauri app: SvelteKit frontend + src-tauri shell
+osd/        the on-screen-display widget, its own Cargo workspace (GTK layer-shell)
 driver/     the patched hp-wmi kernel module, a verbatim copy of upstream's (C, GPL-2)
 docs/       design plan + IPC protocol + development + frontend + RGB review
 dev/        working notes: what is left to do, and what was learned
