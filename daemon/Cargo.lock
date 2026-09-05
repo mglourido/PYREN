@@ -73,6 +73,7 @@ dependencies = [
 name = "pyren-daemon"
 version = "0.1.0"
 dependencies = [
+ "pyren-config",
  "pyren-core",
  "pyren-fan",
  "pyren-gpu",

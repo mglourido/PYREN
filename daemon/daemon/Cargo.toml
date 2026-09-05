@@ -18,3 +18,9 @@ pyren-gpu = { path = "../crates/gpu" }
 pyren-network = { path = "../crates/network" }
 # For the payloads the daemon publishes on the event bus.
 serde_json = "1"
+
+# Only the cross-module tests need this: they build each module against a
+# config store inside a fixture directory, so a test never writes to the
+# real /etc/pyren.
+[dev-dependencies]
+pyren-config = { path = "../crates/config" }

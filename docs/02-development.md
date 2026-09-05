@@ -477,6 +477,59 @@ are the questions, and neither can be asked without doing it. It puts the
 machine back in the mode it found it in on the way out, including on
 Ctrl-C.
 
+### The energy settings, and the fan modes Unlimited unlocks
+
+A third suite answers a different question - not *which* profile a mode
+selects, but whether the **envelope** it carries reaches the hardware:
+
+```sh
+cd daemon && cargo test --test energy_profiles
+```
+
+It lives in `daemon/tests/` rather than in a crate because the question
+is cross-module, and the daemon is the only thing that can see all three
+owners at once:
+
+| module | what it owns |
+|---|---|
+| `pyren-power` | the package limits (PL1/PL2), the turbo knob, the profile |
+| `pyren-fan` | `pwm1` and `pwm1_enable` - the fans |
+| `pyren-overclock` | the GPU's offsets, and nothing else |
+
+**Those three never call each other**, and half this file is about
+keeping it that way: changing the power mode must not write to the fans,
+changing the fan mode must not write to the envelope, and an overclock
+request must not reach the CPU's power limits. The app presents Unlimited
+as the mode that unlocks manual power limits *and* manual fan control,
+but that grouping is the frontend's policy - the daemon will set a fan
+curve in Eco perfectly happily, and the tests say so rather than
+pretending otherwise.
+
+Two deliberate limits on what it does:
+
+- **No test applies an offset to a GPU.** The reference laptop has a real
+  card and a consent on file, so an `apply` in a test would drive it -
+  which is what that module's warning is about. Only the path that stops
+  at the consent gate is exercised; the offsets themselves are covered by
+  `pyren-overclock`'s own tests.
+- **`manual` fan mode gets one test and no more.** It pins the fans at a
+  speed nobody is watching. What matters is that it is accepted where
+  `pwm1` exists and refused where it does not - one assertion each - and
+  a fixture without `pwm1` (board 8D2F) covers the refusal.
+
+To check the envelope on real hardware instead, `pyren-ctl` is enough:
+
+```sh
+pyren-ctl power tune --mode performance --pl1 45 --pl2 60
+pyren-ctl power set performance
+cat /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw   # 44 W
+pyren-ctl power tune --mode performance --pl1 77 --pl2 77          # put it back
+```
+
+The 45 that comes back as 44 is not a bug: limits are stored as a whole
+percentage of this machine's own ceiling so that a restored config means
+the same thing on different hardware, and one percent of 77 W is 0.77 W.
+
 The two lifecycle answers, since they come up often:
 
 | event | what happens to the profile |
