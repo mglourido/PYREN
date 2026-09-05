@@ -22,3 +22,23 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
+
+# `cargo build` here produces the daemon that `tools/dev-all.sh` installs and
+# runs for real, not a throwaway - so a debug build is a debug daemon serving
+# the app all day, and it is worth not being needlessly slow.
+#
+# Measured, so nobody has to wonder whether it earns its place: on the test
+# laptop it does not, yet. Against the same source at `opt-level = 0`, every
+# method came out inside the noise - `system.getMetrics` 33.3 vs 32.4 ms,
+# `fan.getStatus` 22.5 vs 22.8, `core.capabilities` 203.8 vs 203.2. That is
+# the expected answer once the sampler stopped being the bottleneck: what is
+# left is blocking reads of /proc and /sys and one fork+exec of `nvidia-smi`,
+# and no amount of codegen makes a syscall faster.
+#
+# Kept anyway, because it costs nothing to keep: an incremental rebuild is
+# unchanged (0.63 s vs 0.75 s) and a full one is 9 s. It is here for the CPU-
+# bound work that does not exist yet rather than for a win on today's numbers,
+# and `1` rather than `2` because it leaves backtraces and line numbers
+# intact. Delete it without ceremony if it ever gets in the way.
+[profile.dev]
+opt-level = 1

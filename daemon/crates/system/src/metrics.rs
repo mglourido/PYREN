@@ -13,12 +13,13 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::gpu::{DrmUsageReader, GpuMetrics, GpuReader};
+use crate::gpu::{read_nvidia_gpus, DrmUsageReader, GpuMetrics, GpuReader, GpuUsage};
 
 /// Busiest processes reported per sample. Matches what the UI table shows.
 const TOP_PROCESSES: usize = 12;
@@ -144,6 +145,22 @@ struct NetCounters {
     tx_bytes: u64,
 }
 
+/// Everything one sample gathers from the machine, before anything is
+/// derived from it. Exists so [`Sampler::gather`] has one thing to return
+/// after joining the threads it spread the work over.
+struct Raw {
+    temperatures: Vec<TempReading>,
+    fans: Vec<FanReading>,
+    drm: GpuUsage,
+    disks: Vec<DiskUsage>,
+    processes: Vec<(i32, ProcessStat)>,
+    nvidia: Vec<GpuMetrics>,
+    cpu: CpuSample,
+    clocks: Vec<f64>,
+    memory: MemoryMetrics,
+    net: HashMap<String, NetCounters>,
+}
+
 /// Holds the previous sample so rates can be derived. Not `Sync` by itself -
 /// the module wraps it in a `Mutex`.
 pub struct Sampler {
@@ -154,6 +171,7 @@ pub struct Sampler {
     process_ticks: HashMap<i32, u64>,
     /// `None` for the very first sample taken at construction.
     last_sampled: Instant,
+    hwmon: HwmonCatalog,
     gpus: GpuReader,
     drm_usage: DrmUsageReader,
 }
@@ -181,6 +199,7 @@ impl Sampler {
             net: HashMap::new(),
             process_ticks: HashMap::new(),
             last_sampled: Instant::now(),
+            hwmon: HwmonCatalog::new(),
             gpus: GpuReader::new(),
             drm_usage: DrmUsageReader::new(),
         };
@@ -205,27 +224,87 @@ impl Sampler {
         let elapsed = self.last_sampled.elapsed().as_secs_f64().max(0.001);
         self.last_sampled = Instant::now();
 
-        let temperatures = read_temperatures();
-        // One walk of /proc/*/fdinfo feeds both the per-card utilisation and
-        // the process table's GPU column. Sampled before the process walk
-        // that consumes it, because both borrow the sampler.
-        let drm = self.drm_usage.sample(elapsed);
+        let raw = self.gather(elapsed);
+
+        // Everything below is arithmetic over what was gathered, plus the
+        // reads that had to wait for it. None of it touches the disk.
+        let cpu = self.sample_cpu(raw.cpu, raw.clocks, &raw.temperatures);
+        let network = self.sample_network(raw.net, elapsed);
+        let processes = self.sample_processes(elapsed, &raw.drm.per_pid, raw.processes);
+        let gpus = self.gpus.sample(elapsed, &raw.drm.per_card, raw.nvidia);
 
         Metrics {
-            cpu: self.sample_cpu(&temperatures),
-            memory: read_memory(),
-            fans: read_fans(),
-            disks: read_disks(),
-            network: self.sample_network(elapsed),
-            gpus: self.gpus.sample(elapsed, &drm.per_card),
-            processes: self.sample_processes(elapsed, &drm.per_pid),
-            temperatures,
+            cpu,
+            memory: raw.memory,
+            temperatures: raw.temperatures,
+            fans: raw.fans,
+            disks: raw.disks,
+            network,
+            gpus,
+            processes,
         }
     }
 
-    fn sample_cpu(&mut self, temperatures: &[TempReading]) -> CpuMetrics {
-        let current = read_cpu_sample();
+    /// Runs every independent sweep at once.
+    ///
+    /// These are blocking reads that have nothing to say to each other, and
+    /// in series they added up: the sample was as slow as their sum. Run
+    /// together it is as slow as the worst of them, which is `nvidia-smi`.
+    ///
+    /// A sweep that panics degrades to its empty value rather than taking
+    /// the sample - and with it the connection - down with it.
+    fn gather(&mut self, elapsed: f64) -> Raw {
+        // Disjoint field borrows, so the two stateful sweeps can be handed
+        // to threads without borrowing the whole sampler.
+        let hwmon = &mut self.hwmon;
+        let drm_usage = &mut self.drm_usage;
+        let nvidia_available = self.gpus.nvidia_smi_available();
 
+        thread::scope(|scope| {
+            let hwmon_job = scope.spawn(|| hwmon.sample());
+            // One walk of /proc/*/fdinfo feeds both the per-card utilisation
+            // and the process table's GPU column.
+            let drm_job = scope.spawn(|| drm_usage.sample(elapsed));
+            let disks_job = scope.spawn(read_disks);
+            let processes_job = scope.spawn(read_process_stats);
+            let nvidia_job = scope.spawn(move || {
+                if nvidia_available {
+                    read_nvidia_gpus()
+                } else {
+                    Vec::new()
+                }
+            });
+
+            // Four small /proc reads, done on this thread while the above
+            // run: each is well under a millisecond, so a thread apiece
+            // would cost more to start than to do.
+            let cpu = read_cpu_sample();
+            let clocks = read_cpu_clocks();
+            let memory = read_memory();
+            let net = read_net_counters();
+
+            let (temperatures, fans) = hwmon_job.join().unwrap_or_default();
+            Raw {
+                temperatures,
+                fans,
+                drm: drm_job.join().unwrap_or_default(),
+                disks: disks_job.join().unwrap_or_default(),
+                processes: processes_job.join().unwrap_or_default(),
+                nvidia: nvidia_job.join().unwrap_or_default(),
+                cpu,
+                clocks,
+                memory,
+                net,
+            }
+        })
+    }
+
+    fn sample_cpu(
+        &mut self,
+        current: CpuSample,
+        clocks: Vec<f64>,
+        temperatures: &[TempReading],
+    ) -> CpuMetrics {
         let usage_percent = current.total.usage_since(&self.cpu.total);
         let per_core_percent = current
             .per_core
@@ -239,13 +318,16 @@ impl Sampler {
         CpuMetrics {
             usage_percent,
             per_core_percent,
-            clocks_mhz: read_cpu_clocks(),
+            clocks_mhz: clocks,
             temp_c: cpu_temperature(temperatures),
         }
     }
 
-    fn sample_network(&mut self, elapsed: f64) -> NetworkMetrics {
-        let current = read_net_counters();
+    fn sample_network(
+        &mut self,
+        current: HashMap<String, NetCounters>,
+        elapsed: f64,
+    ) -> NetworkMetrics {
         let mut interfaces = Vec::new();
         let (mut up_total, mut down_total) = (0.0, 0.0);
 
@@ -264,32 +346,20 @@ impl Sampler {
         NetworkMetrics { up_mbps: up_total, down_mbps: down_total, interfaces }
     }
 
+    /// Turns one `/proc` walk into the busiest processes. The walk itself is
+    /// [`read_process_stats`], done on another thread; only the rates need
+    /// the previous sample and therefore the sampler.
     fn sample_processes(
         &mut self,
         elapsed: f64,
         gpu: &HashMap<i32, f64>,
+        stats: Vec<(i32, ProcessStat)>,
     ) -> Vec<ProcessUsage> {
         let cores = self.cpu.per_core.len().max(1) as f64;
-        let mut current_ticks = HashMap::new();
-        let mut processes = Vec::new();
+        let mut current_ticks = HashMap::with_capacity(stats.len());
+        let mut processes = Vec::with_capacity(stats.len());
 
-        let Ok(entries) = fs::read_dir("/proc") else {
-            return processes;
-        };
-
-        for entry in entries.filter_map(|e| e.ok()) {
-            let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
-                continue;
-            };
-            // Processes exit between the readdir and the read; that's normal,
-            // not an error worth reporting.
-            let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-                continue;
-            };
-            let Some(parsed) = parse_process_stat(&stat) else {
-                continue;
-            };
-
+        for (pid, parsed) in stats {
             current_ticks.insert(pid, parsed.cpu_ticks);
             let previous = self.process_ticks.get(&pid).copied().unwrap_or(parsed.cpu_ticks);
             let delta = parsed.cpu_ticks.saturating_sub(previous) as f64;
@@ -418,78 +488,243 @@ fn read_memory() -> MemoryMetrics {
     }
 }
 
-/// Every `temp*_input` under `/sys/class/hwmon`, labelled where the chip
-/// provides a label.
-fn read_temperatures() -> Vec<TempReading> {
-    let mut readings = Vec::new();
-    for (chip, dir) in hwmon_chips() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
-        let mut chip_readings = Vec::new();
+// ---------------------------------------------------------------------------
+// hwmon
+// ---------------------------------------------------------------------------
 
-        for entry in entries.filter_map(|e| e.ok()) {
-            let file = entry.file_name();
-            let file = file.to_string_lossy();
-            let Some(index) = file.strip_prefix("temp").and_then(|f| f.strip_suffix("_input"))
+/// How long a chip's sweep has to take before it is demoted to the slow
+/// cadence below.
+///
+/// Reading a `temp*_input` is normally a cached value the driver already
+/// has - under a millisecond, and often under a hundred microseconds. On
+/// some chips it is not: an NVMe controller turns the read into a SMART
+/// command to the drive, measured at 40-130 ms on the test laptop (130 when
+/// the drive was idle enough to have gone quiet). That one file was the
+/// largest single cost in a sample, and paying it every two seconds also
+/// keeps the drive awake for nothing.
+const SLOW_CHIP_THRESHOLD: Duration = Duration::from_millis(10);
+
+/// How often a chip whose temperatures are slow is actually read for them.
+/// Nothing behind such a sensor - a disk controller, a battery - moves fast
+/// enough for this to lose a reading anyone would notice.
+///
+/// This applies to temperatures and deliberately not to fans, however
+/// expensive a chip's `fan*_input` turns out to be: a temperature that is
+/// half a minute old is off by a degree, while an RPM that is half a minute
+/// old is the wrong answer to the question the fan page exists to ask. The
+/// `hp` chip on the test laptop costs ~15 ms for its two fans, over the
+/// threshold above, and is still read every sample for exactly that reason.
+/// The sweep runs alongside `nvidia-smi`, which is slower still, so it
+/// costs nothing in wall time anyway.
+const SLOW_CHIP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How often the catalog is rebuilt, so a chip that shows up later - a USB
+/// sensor plugged in, a module loaded after the daemon started - is picked
+/// up without restarting the daemon.
+const REDISCOVER_INTERVAL: Duration = Duration::from_secs(30);
+
+/// One `temp*_input` or `fan*_input`.
+///
+/// The label is resolved at discovery because it is fixed for the life of
+/// the node; re-reading `temp1_label` on every sample was one extra open
+/// per sensor for a string that never changed.
+struct HwmonInput {
+    path: PathBuf,
+    label: String,
+}
+
+/// One hwmon chip and everything worth reading from it.
+struct HwmonChip {
+    name: String,
+    /// The chip's directory, which is what identifies it across a rescan.
+    dir: PathBuf,
+    temps: Vec<HwmonInput>,
+    fans: Vec<HwmonInput>,
+    /// Set once this chip's *temperature* sweep has been measured over
+    /// [`SLOW_CHIP_THRESHOLD`]. Measured rather than matched against a list
+    /// of chip names: which sensors are expensive is a property of the
+    /// machine, and a hardcoded list would be wrong on the next one.
+    slow_temps: bool,
+    /// The last temperatures read. Returned unchanged while a slow chip is
+    /// between refreshes, so the UI keeps showing a real reading rather
+    /// than a gap.
+    temp_readings: Vec<TempReading>,
+    fan_readings: Vec<FanReading>,
+    last_temp_read: Option<Instant>,
+}
+
+impl HwmonChip {
+    /// Refreshes this chip: fans always, temperatures unless this is a slow
+    /// chip that was read recently.
+    fn read(&mut self) {
+        self.fan_readings = self
+            .fans
+            .iter()
+            .filter_map(|input| {
+                Some(FanReading {
+                    chip: self.name.clone(),
+                    label: input.label.clone(),
+                    rpm: read_number(&input.path)? as i64,
+                })
+            })
+            .collect();
+
+        if self.temps.is_empty() || self.skip_temps() {
+            return;
+        }
+
+        let started = Instant::now();
+        let mut temps: Vec<TempReading> = self
+            .temps
+            .iter()
+            .filter_map(|input| {
+                Some(TempReading {
+                    chip: self.name.clone(),
+                    label: input.label.clone(),
+                    celsius: read_number(&input.path)? / 1000.0,
+                })
+            })
+            .collect();
+        temps.sort_by(|a, b| a.label.cmp(&b.label));
+
+        self.slow_temps = started.elapsed() >= SLOW_CHIP_THRESHOLD;
+        self.last_temp_read = Some(Instant::now());
+        self.temp_readings = temps;
+    }
+
+    fn skip_temps(&self) -> bool {
+        if !self.slow_temps {
+            return false;
+        }
+        match self.last_temp_read {
+            Some(last) => last.elapsed() < SLOW_CHIP_INTERVAL,
+            None => false,
+        }
+    }
+}
+
+/// Every hwmon chip, discovered once and rescanned occasionally.
+///
+/// This used to be two functions that each walked `/sys/class/hwmon` from
+/// scratch - one for temperatures, one for fans - so every sample did the
+/// directory walk twice and re-read every label. The walk was never the
+/// expensive part; the reads on a slow chip were, and doing them twice as
+/// often as needed made it worse.
+struct HwmonCatalog {
+    chips: Vec<HwmonChip>,
+    discovered: Instant,
+}
+
+impl HwmonCatalog {
+    fn new() -> Self {
+        let mut catalog = Self { chips: discover_hwmon(), discovered: Instant::now() };
+        // Read once here, at startup, rather than leaving it to the first
+        // client: this is where the cost of a slow chip is discovered, and
+        // paying it before anyone is waiting means the first `getMetrics`
+        // is already fast and already knows which chips to back off from.
+        for chip in &mut catalog.chips {
+            chip.read();
+        }
+        catalog
+    }
+
+    /// Temperatures in chip order (labels sorted within each chip), and
+    /// fans sorted by chip and label - the order the UI has always seen.
+    fn sample(&mut self) -> (Vec<TempReading>, Vec<FanReading>) {
+        if self.discovered.elapsed() >= REDISCOVER_INTERVAL {
+            self.rediscover();
+        }
+
+        let mut temperatures = Vec::new();
+        let mut fans = Vec::new();
+        for chip in &mut self.chips {
+            chip.read();
+            temperatures.extend(chip.temp_readings.iter().cloned());
+            fans.extend(chip.fan_readings.iter().cloned());
+        }
+
+        fans.sort_by(|a, b| (&a.chip, &a.label).cmp(&(&b.chip, &b.label)));
+        (temperatures, fans)
+    }
+
+    fn rediscover(&mut self) {
+        let mut fresh = discover_hwmon();
+        for chip in &mut fresh {
+            // Carry over what was already learned about a chip that is
+            // still there. Without this, every rescan would re-measure the
+            // slow chips by reading them - which is the cost being avoided.
+            let Some(known) = self.chips.iter().find(|c| c.dir == chip.dir && c.name == chip.name)
             else {
                 continue;
             };
-            let Some(millidegrees) = read_number(&entry.path()) else { continue };
-
-            let label = fs::read_to_string(dir.join(format!("temp{index}_label")))
-                .map(|l| l.trim().to_string())
-                .unwrap_or_else(|_| format!("temp{index}"));
-
-            chip_readings.push(TempReading {
-                chip: chip.clone(),
-                label,
-                celsius: millidegrees / 1000.0,
-            });
+            chip.slow_temps = known.slow_temps;
+            chip.last_temp_read = known.last_temp_read;
+            chip.temp_readings = known.temp_readings.clone();
+            chip.fan_readings = known.fan_readings.clone();
         }
-
-        chip_readings.sort_by(|a, b| a.label.cmp(&b.label));
-        readings.extend(chip_readings);
+        self.chips = fresh;
+        self.discovered = Instant::now();
     }
-    readings
 }
 
-fn read_fans() -> Vec<FanReading> {
-    let mut readings = Vec::new();
-    for (chip, dir) in hwmon_chips() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let file = entry.file_name();
-            let file = file.to_string_lossy();
-            let Some(index) = file.strip_prefix("fan").and_then(|f| f.strip_suffix("_input"))
-            else {
-                continue;
-            };
-            let Some(rpm) = read_number(&entry.path()) else { continue };
-
-            let label = fs::read_to_string(dir.join(format!("fan{index}_label")))
-                .map(|l| l.trim().to_string())
-                .unwrap_or_else(|_| format!("fan{index}"));
-
-            readings.push(FanReading { chip: chip.clone(), label, rpm: rpm as i64 });
-        }
-    }
-    readings.sort_by(|a, b| (&a.chip, &a.label).cmp(&(&b.chip, &b.label)));
-    readings
-}
-
-fn hwmon_chips() -> Vec<(String, std::path::PathBuf)> {
+/// Walks `/sys/class/hwmon` and resolves every input path and label.
+fn discover_hwmon() -> Vec<HwmonChip> {
     let Ok(entries) = fs::read_dir("/sys/class/hwmon") else {
         return Vec::new();
     };
-    let mut chips: Vec<(String, std::path::PathBuf)> = entries
+
+    let mut chips: Vec<HwmonChip> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter_map(|dir| {
-            let name = fs::read_to_string(dir.join("name")).ok()?;
-            Some((name.trim().to_string(), dir))
+            let name = fs::read_to_string(dir.join("name")).ok()?.trim().to_string();
+            let mut temps = Vec::new();
+            let mut fans = Vec::new();
+
+            for entry in fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()) {
+                let file = entry.file_name();
+                let file = file.to_string_lossy();
+                let index = |prefix: &str| {
+                    file.strip_prefix(prefix)
+                        .and_then(|rest| rest.strip_suffix("_input"))
+                        .map(str::to_string)
+                };
+
+                if let Some(i) = index("temp") {
+                    temps.push(HwmonInput { label: label_for(&dir, "temp", &i), path: entry.path() });
+                } else if let Some(i) = index("fan") {
+                    fans.push(HwmonInput { label: label_for(&dir, "fan", &i), path: entry.path() });
+                }
+            }
+
+            // A chip exposing neither is one this module has nothing to say
+            // about; keeping it would mean reading its name again forever.
+            if temps.is_empty() && fans.is_empty() {
+                return None;
+            }
+
+            Some(HwmonChip {
+                name,
+                dir,
+                temps,
+                fans,
+                slow_temps: false,
+                temp_readings: Vec::new(),
+                fan_readings: Vec::new(),
+                last_temp_read: None,
+            })
         })
         .collect();
-    chips.sort();
+
+    chips.sort_by(|a, b| (&a.name, &a.dir).cmp(&(&b.name, &b.dir)));
     chips
+}
+
+/// `temp1_label` where the chip provides one, `temp1` otherwise.
+fn label_for(dir: &Path, prefix: &str, index: &str) -> String {
+    fs::read_to_string(dir.join(format!("{prefix}{index}_label")))
+        .map(|label| label.trim().to_string())
+        .unwrap_or_else(|_| format!("{prefix}{index}"))
 }
 
 /// Picks the reading the UI should call "the CPU temperature".
@@ -655,18 +890,28 @@ fn parse_process_stat(stat: &str) -> Option<ProcessStat> {
     Some(ProcessStat { name, cpu_ticks: utime + stime, rss_pages })
 }
 
-fn read_process_ticks() -> HashMap<i32, u64> {
+/// One walk of `/proc/*/stat`.
+///
+/// Split out from the process table so it can be run on its own thread:
+/// it is a few hundred small reads that depend on nothing else in a sample.
+fn read_process_stats() -> Vec<(i32, ProcessStat)> {
     let Ok(entries) = fs::read_dir("/proc") else {
-        return HashMap::new();
+        return Vec::new();
     };
     entries
         .filter_map(|e| e.ok())
         .filter_map(|entry| {
             let pid = entry.file_name().to_string_lossy().parse::<i32>().ok()?;
+            // Processes exit between the readdir and the read; that's normal,
+            // not an error worth reporting.
             let stat = fs::read_to_string(entry.path().join("stat")).ok()?;
-            Some((pid, parse_process_stat(&stat)?.cpu_ticks))
+            Some((pid, parse_process_stat(&stat)?))
         })
         .collect()
+}
+
+fn read_process_ticks() -> HashMap<i32, u64> {
+    read_process_stats().into_iter().map(|(pid, stat)| (pid, stat.cpu_ticks)).collect()
 }
 
 #[cfg(test)]

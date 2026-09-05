@@ -68,15 +68,26 @@ impl GpuReader {
         self.i915.is_some()
     }
 
+    /// Whether `nvidia-smi` is on `PATH`. The caller asks because the run
+    /// itself is the most expensive thing in a sample (~35 ms of fork+exec)
+    /// and it starts it on its own thread; see [`read_nvidia_gpus`].
+    pub fn nvidia_smi_available(&self) -> bool {
+        self.nvidia_smi_available
+    }
+
     /// `elapsed` is the wall time since the previous sample, which is what
     /// the PMU's busy nanoseconds have to be divided by. `card_busy` is the
     /// per-card utilisation [`DrmUsageReader`] measured over the same
-    /// window, keyed by PCI slot.
-    pub fn sample(&mut self, elapsed: f64, card_busy: &HashMap<String, f64>) -> Vec<GpuMetrics> {
-        let mut gpus = Vec::new();
-        if self.nvidia_smi_available {
-            gpus.extend(read_nvidia_gpus());
-        }
+    /// window, keyed by PCI slot. `nvidia` is what [`read_nvidia_gpus`]
+    /// returned - passed in rather than fetched here so it can overlap with
+    /// the rest of the sweep instead of adding to it.
+    pub fn sample(
+        &mut self,
+        elapsed: f64,
+        card_busy: &HashMap<String, f64>,
+        nvidia: Vec<GpuMetrics>,
+    ) -> Vec<GpuMetrics> {
+        let mut gpus = nvidia;
         let intel_busy = self.i915.as_mut().and_then(|pmu| pmu.busy_percent(elapsed));
         gpus.extend(self.read_drm_gpus(intel_busy, card_busy));
         gpus
@@ -250,10 +261,13 @@ fn hwmon_value(device: &Path, attribute: &str) -> Option<f64> {
 
 /// NVIDIA cards, via one `nvidia-smi` query.
 ///
-/// Shelling out once per poll is cheap (~25 ms) and needs no NVML bindings;
-/// if the binary is missing or the driver isn't loaded it simply reports
-/// nothing and the sysfs path above still covers other vendors.
-fn read_nvidia_gpus() -> Vec<GpuMetrics> {
+/// Shelling out needs no NVML bindings, and if the binary is missing or the
+/// driver isn't loaded it simply reports nothing while the sysfs path above
+/// still covers other vendors. It is not cheap, though - measured at ~35 ms
+/// on the test laptop, which was the single largest item in a sample - so
+/// the sampler runs this on its own thread and overlaps it with everything
+/// else rather than paying for it in series.
+pub(crate) fn read_nvidia_gpus() -> Vec<GpuMetrics> {
     let output = Command::new("nvidia-smi")
         .args([
             "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,clocks.gr",
@@ -509,6 +523,10 @@ struct Snapshot {
 }
 
 /// Busy percentages, from the delta between two [`Snapshot`]s.
+///
+/// `Default` is "nothing was measured", which is what a caller falls back
+/// to when the walk that produces this could not be completed.
+#[derive(Default)]
 pub struct GpuUsage {
     /// pid -> percentage of the window that process kept a GPU busy.
     /// Absent means the process holds no DRM client at all.

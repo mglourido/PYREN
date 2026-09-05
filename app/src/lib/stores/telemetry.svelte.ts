@@ -119,6 +119,8 @@ export class Telemetry {
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private subscribers = 0;
+  /** True while a poll is in flight; see `poll()`. */
+  private polling = false;
   /**
    * The previous poll's reachability, so the console line below fires on
    * the transition rather than once every interval - a machine with no
@@ -178,21 +180,50 @@ export class Telemetry {
   }
 
   private async poll() {
+    // A poll that outlives its interval would otherwise start a second one
+    // on top of it, and two in flight write the same fields and both call
+    // `record()` - which puts two samples in the history for one tick and
+    // makes the graphs run at the wrong speed. Skipping the tick is the
+    // right answer: the next one is already scheduled.
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      await this.pollOnce();
+    } finally {
+      this.polling = false;
+    }
+  }
+
+  private async pollOnce() {
     let reachable = false;
 
-    try {
-      const metrics = await daemon.systemMetrics();
+    // Started together, applied in order. These are two independent round
+    // trips to the daemon and awaiting them one after the other made every
+    // tick cost the sum of the two for no reason.
+    //
+    // `allSettled` rather than `all`, because either is allowed to fail on
+    // its own: the fan module is HP-only and its absence says nothing about
+    // whether the daemon is up.
+    const [metrics, fan] = await Promise.allSettled([
+      daemon.systemMetrics(),
+      daemon.fanStatus(),
+    ]);
+
+    if (metrics.status === "fulfilled") {
       reachable = true;
-      this.applyMetrics(metrics);
-    } catch (e) {
+      this.applyMetrics(metrics.value);
+    } else {
+      const e = metrics.reason;
       this.daemonError = e instanceof DaemonUnavailable ? e.message : String(e);
       if (settings.current.demoData) this.simulate();
     }
 
-    // The fan module is HP-only: its absence says nothing about whether the
-    // daemon is up, so it must not flip the demo flag.
-    try {
-      const status = await daemon.fanStatus();
+    // Applied after the metrics and not before: `applyMetrics` reads
+    // `driverInstalled` to decide whether to believe the generic hwmon fan,
+    // and it has to see the value from the previous poll, the way it did
+    // when these two calls ran in series.
+    if (fan.status === "fulfilled") {
+      const status = fan.value;
       reachable = true;
       hardware.observeFan(status);
       this.driverInstalled = status.driverInstalled;
@@ -201,7 +232,7 @@ export class Telemetry {
         this.fanRpm = status.fanRpm;
         this.cpuTempC = status.cpuTempC ?? this.cpuTempC;
       }
-    } catch {
+    } else {
       this.driverInstalled = false;
     }
 
