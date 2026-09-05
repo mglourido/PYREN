@@ -752,7 +752,7 @@
     "succeeded": "Correcto",
     "failed": "Falló",
     "afterInstall": {
-      "working": "Funcionó: pwm1 ya está, así que el módulo parcheado es el que está en uso. Queda un paso: el demonio buscó las rutas de los ventiladores al arrancar, cuando pwm1 todavía no existía, así que sigue diciendo que no puede fijar una velocidad. Reinícialo (o reinicia el equipo) y la página de ventiladores ya podrá mandar una velocidad:",
+      "working": "El control de ventiladores funciona. No hay nada más que hacer: el daemon ya ha recogido el controlador nuevo.",
       "needsReload": "El módulo parcheado está instalado en disco, pero sigue sin haber pwm1: lo más probable es que el kernel siga con el módulo que cargó al arrancar, porque no se pudo descargar mientras algo lo tenía en uso. Reinicia, o ejecuta esto y vuelve a abrir esta página:",
       "ifStillNothing": "Si tras reiniciar sigue sin aparecer pwm1, el módulo cargó pero el firmware de esta placa no respondió a la consulta del ventilador. No hay nada roto ni nada que quede a medias: «Restaurar controlador de serie» devuelve el módulo del que se hizo copia durante la instalación.",
       "restored": "El módulo de serie está de vuelta en disco. Reinicia, o ejecuta esto, para que el kernel vuelva realmente a él:"
@@ -762,6 +762,7 @@
       "stage-source": "Copiar el código del controlador y dkms.conf a {path}",
       "backup-driver": "Hacer una copia del hp-wmi.ko de serie junto a él como .bak, luego quitarlo para que depmod elija el nuevo sin ambigüedad",
       "dkms-remove-old": "Quitar el módulo DKMS registrado anteriormente",
+      "dkms-remove-switch": "Dar de baja el módulo DKMS de la instalación anterior; a partir de ahora recompila el hook del kernel",
       "dkms-add": "Registrar el módulo con DKMS",
       "dkms-build": "Compilar el módulo",
       "dkms-install": "Instalar el módulo compilado",
@@ -780,13 +781,17 @@
       "dkms-remove": "Dar de baja el módulo DKMS",
       "remove-sources": "Borrar /usr/src/{name}-{version}",
       "remove-hooks": "Borrar cualquier hook de actualización del kernel instalado",
+      "remove-hooks-switch": "Borrar el hook de actualización de kernel de la instalación anterior; a partir de ahora recompila DKMS",
       "restore-backups": "Renombrar cada hp-wmi.ko.bak de vuelta a hp-wmi.ko, restaurando el controlador de serie",
       "create-group": "Crear el grupo «{group}» que puede alcanzar el daemon",
       "write-unit": "Escribir /etc/systemd/system/pyren-daemon.service",
       "daemon-reload": "Recargar las unidades de systemd",
       "enable": "Activar e iniciar el daemon al arrancar",
       "disable": "Parar el daemon y quitarlo del arranque",
-      "remove-unit": "Borrar el archivo de unidad de systemd"
+      "remove-unit": "Borrar el archivo de unidad de systemd",
+      "write-modprobe-conf": "Escribir los techos medidos en {path}, para que también los use cualquier carga posterior",
+      "modprobe-measured": "Volver a cargar hp-wmi, esta vez con los techos medidos",
+      "remove-modprobe-conf": "Borrar {path}; el controlador de serie no tiene el parámetro de techo medido y se niega a cargar si se le pasa"
     },
     "warn": {
       "alreadyInstalled": "El control de ventiladores funciona aquí porque el controlador parcheado ya está instalado. Reinstalarlo lo recompila y lo vuelve a poner, que es lo que hace falta tras una actualización de kernel si ningún hook lo recompiló solo. Para volver al controlador de la distribución, usa «restaurar».",
@@ -795,13 +800,15 @@
       "serviceInstalled": "La unidad del servicio ya está instalada; se reemplazará.",
       "joinGroup": "Añade a cada usuario que deba controlar este equipo al grupo «{group}»: sudo usermod -aG {group} $USER (luego cierra sesión y vuelve a entrar).",
       "boardMissing": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}) y aquí hp-wmi está cargado, y aun así no hay pwm1. El controlador de serie no reconoció esta placa, que es justo el caso para el que existen el controlador parcheado y el id de tu placa en la tabla correcta. Si el firmware después acepta una escritura al ventilador solo se sabe probándolo.",
-      "noHpWmi": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}), pero aquí hp-wmi no está cargado siquiera, así que nada indica que este sea uno de los portátiles para los que sirve ninguno de los dos controladores. Es poco probable que instalarlo ayude."
+      "noHpWmi": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}), pero aquí hp-wmi no está cargado siquiera, así que nada indica que este sea uno de los portátiles para los que sirve ninguno de los dos controladores. Es poco probable que instalarlo ayude.",
+      "reloadDropsFanControl": "hp-wmi se descarga y se vuelve a cargar, así que el control de ventiladores, las teclas del portátil y el perfil del firmware desaparecen un momento. Mientras tanto los ventiladores siguen con la curva del propio firmware."
     },
     "blocker": {
       "alreadyWorking": "El control de ventiladores ya está disponible; nada que instalar.",
       "noDriverSource": "No se encontraron las fuentes parcheadas de hp-wmi. Pyren las incluye en su propio directorio driver/; un paquete debe instalarlas en /usr/share/pyren/driver, o PYREN_DRIVER_DIR debe apuntar a una copia.",
       "kernelHeaders": "Las cabeceras del kernel en ejecución faltan o están incompletas, así que el módulo no se puede compilar.",
-      "buildTools": "Se necesitan un compilador de C y make para compilar el módulo."
+      "buildTools": "Se necesitan un compilador de C y make para compilar el módulo.",
+      "noMeasuredRpmParam": "El hp-wmi cargado aquí no tiene parámetro de techo medido, así que no hay dónde poner la medida. Se compiló antes de que existiera; instalar el controlador otra vez produce uno que sí lo tiene."
     },
     "exec": {
       "skipped": "omitido tras un fallo anterior",
@@ -937,6 +944,26 @@
       "gpuGone": "{gpu} ya no está",
       "verifyCore": "el controlador indica un desplazamiento del núcleo de {got} MHz tras haber pedido {asked} MHz",
       "verifyMem": "el controlador indica un desplazamiento de memoria de {got} MHz tras haber pedido {asked} MHz"
+    }
+  },
+  "install": {
+    "title": {
+      "installDriver": "Instalando el controlador",
+      "restoreDriver": "Restaurando el controlador de la distribución",
+      "installService": "Instalando el servicio",
+      "removeService": "Quitando el servicio",
+      "pinFanCeiling": "Fijando el techo de ventiladores medido",
+      "dryRun": "Ensayando, sin cambiar nada"
+    },
+    "done": "Listo",
+    "failedNote": "Algo ha fallado. El registro de arriba dice en qué paso y por qué.",
+    "close": "Cerrar",
+    "calibrateAfter": "Medir los ventiladores al terminar la instalación",
+    "calibrateFirstHint": "Nada ha medido esta máquina todavía, y no podía: hace falta el controlador instalado primero. Unos 20 segundos, y con ruido.",
+    "calibrateAgainHint": "Ya medida en {rpm} rpm. Solo merece la pena repetirlo si has limpiado o cambiado los ventiladores. Unos 20 segundos, y con ruido.",
+    "calibrateLoud": "los ventiladores suben al máximo hasta que la lectura se estabilice",
+    "step": {
+      "calibrate": "Medir cuál es la velocidad máxima en esta máquina"
     }
   }
 }

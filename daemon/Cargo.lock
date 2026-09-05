@@ -93,6 +93,7 @@ version = "0.1.0"
 dependencies = [
  "pyren-config",
  "pyren-core",
+ "pyren-installer",
  "serde",
  "serde_json",
  "thiserror",

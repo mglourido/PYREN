@@ -27,6 +27,56 @@ const CPU_MAX_RPM_DEFINE: &str = "#define OMEN_CPU_MAX_RPM";
 const GPU_MAX_RPM_DEFINE: &str = "#define OMEN_GPU_MAX_RPM";
 const LEGACY_MAX_RPM_DEFINE: &str = "#define OMEN_MAX_RPM";
 
+/// Where the runtime override is spliced in, and where it is called from.
+///
+/// The `#define`s above are the driver's *last* fallback: it asks the
+/// firmware for a ceiling first, and on a board that answers - which is
+/// most of them, once the board is in `hp_wmi_feature_boards` - a patched
+/// constant is overwritten during probe and the measured value is silently
+/// discarded. Measured on board 8D2F: the fan table reports 5200 and the
+/// patched `#define` never reached `priv`.
+///
+/// So the measurement is applied *after* those queries instead, from a
+/// module parameter. That also makes it a value that can be changed
+/// without rebuilding anything - a reload is enough - and one that
+/// survives a DKMS rebuild, because it lives in `/etc/modprobe.d` rather
+/// than in the source.
+const PARAM_ANCHOR: &str = "#define OMEN_GPU_MAX_RPM";
+const PARAM_CALL_ANCHOR: &str = "\tret = hp_wmi_setup_fan_settings(priv);\n\tif (ret)\n\t\treturn ret;\n";
+
+/// The module parameters' names, which `/etc/modprobe.d` has to agree with.
+pub const CPU_RPM_PARAM: &str = "cpu_max_rpm_measured";
+pub const GPU_RPM_PARAM: &str = "gpu_max_rpm_measured";
+
+const PARAM_SOURCE: &str = r#"
+/*
+ * Pyren: the fan ceilings as *measured* on this machine, in hundreds of
+ * RPM. Zero means no measurement has been taken, and the driver's own
+ * answer is left alone.
+ *
+ * Applied after the firmware queries in hp_wmi_setup_fan_settings, not
+ * instead of the fallback #defines above: a ceiling the firmware merely
+ * claims is not evidence about the fan actually fitted, and on boards that
+ * answer that query the #defines never survive probe.
+ */
+static u8 cpu_max_rpm_measured;
+static u8 gpu_max_rpm_measured;
+module_param(cpu_max_rpm_measured, byte, 0444);
+MODULE_PARM_DESC(cpu_max_rpm_measured,
+		 "Measured CPU fan ceiling, in hundreds of RPM (0: use the firmware's)");
+module_param(gpu_max_rpm_measured, byte, 0444);
+MODULE_PARM_DESC(gpu_max_rpm_measured,
+		 "Measured GPU fan ceiling, in hundreds of RPM (0: use the firmware's)");
+
+static void hp_wmi_apply_measured_max_rpm(struct hp_wmi_hwmon_priv *priv)
+{
+	if (cpu_max_rpm_measured)
+		priv->cpu_max_rpm = cpu_max_rpm_measured;
+	if (gpu_max_rpm_measured)
+		priv->gpu_max_rpm = gpu_max_rpm_measured;
+}
+"#;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PatchError {
     #[error("io error on {path}: {source}")]
@@ -169,6 +219,49 @@ pub fn patch_max_rpm(source: &str, max_rpm: MaxRpm) -> Result<(String, Vec<Strin
     }
 
     Ok((patched, applied))
+}
+
+/// Splices the measured-ceiling module parameters into the driver.
+///
+/// Idempotent by inspection rather than by luck: the caller always starts
+/// from the pristine `hp-wmi.c.orig`, and this checks anyway, so patching
+/// a tree twice cannot produce two definitions of the same symbol.
+pub fn add_measured_rpm_params(source: &str) -> Result<(String, Option<String>), PatchError> {
+    if source.contains(CPU_RPM_PARAM) {
+        return Ok((source.to_string(), None));
+    }
+
+    // After the #define block, so the parameters sit with the constants
+    // they stand in for, and after `struct hp_wmi_hwmon_priv`, which the
+    // apply function takes a pointer to.
+    let define_start = find_define(source, PARAM_ANCHOR)
+        .ok_or_else(|| PatchError::AnchorMissing(PARAM_ANCHOR.to_string()))?;
+    let line_end = source[define_start..]
+        .find('\n')
+        .map(|i| define_start + i + 1)
+        .unwrap_or(source.len());
+
+    let call_anchor = PARAM_CALL_ANCHOR;
+    if !source.contains(call_anchor) {
+        return Err(PatchError::AnchorMissing(
+            "the hp_wmi_setup_fan_settings call in hwmon init".to_string(),
+        ));
+    }
+
+    let mut patched = String::with_capacity(source.len() + PARAM_SOURCE.len() + 64);
+    patched.push_str(&source[..line_end]);
+    patched.push_str(PARAM_SOURCE);
+    patched.push_str(&source[line_end..]);
+    let patched = patched.replacen(
+        call_anchor,
+        &format!("{call_anchor}\thp_wmi_apply_measured_max_rpm(priv);\n"),
+        1,
+    );
+
+    Ok((
+        patched,
+        Some(format!("{CPU_RPM_PARAM}/{GPU_RPM_PARAM} module parameters added")),
+    ))
 }
 
 /// Rewrites the value of `#define <name> <value>`, keeping the rest of the
@@ -334,6 +427,15 @@ pub fn patch_driver_tree(
 
     let mut source = read(&pristine_path)?;
     let mut applied = Vec::new();
+
+    // Unconditional: a driver that understands the parameter can be given
+    // a measurement later without being rebuilt, which is the whole point.
+    // Doing it only when a measurement already exists would leave every
+    // first install - the one case where there cannot be one yet - unable
+    // to accept the calibration that follows it.
+    let (patched, change) = add_measured_rpm_params(&source)?;
+    source = patched;
+    applied.extend(change);
 
     if !max_rpm.is_empty() {
         let (patched, changes) = patch_max_rpm(&source, max_rpm)?;
@@ -542,6 +644,50 @@ mod upstream_source_tests {
         fs::read_to_string(dir.join("hp-wmi-omen/hp-wmi.c.orig"))
             .or_else(|_| fs::read_to_string(dir.join("hp-wmi-omen/hp-wmi.c")))
             .ok()
+    }
+
+    /// The parameter patch is spliced into C by string surgery, so both
+    /// of its anchors have to be checked against the file that actually
+    /// gets compiled - a function renamed upstream must fail a test here
+    /// rather than an install on somebody's laptop.
+    #[test]
+    fn the_measured_rpm_parameters_splice_into_the_real_driver() {
+        let Some(source) = real_source() else {
+            eprintln!("skipped: driver sources not found");
+            return;
+        };
+
+        let (patched, change) = add_measured_rpm_params(&source).expect("parameter anchors missing");
+        assert!(change.is_some(), "the pristine source has no parameters yet");
+        assert_eq!(patched.matches("module_param(cpu_max_rpm_measured").count(), 1);
+        assert_eq!(patched.matches("hp_wmi_apply_measured_max_rpm(priv);").count(), 1);
+
+        // The definition has to come before the call, or it will not
+        // compile - and it has to be after the priv struct it takes.
+        let struct_at = patched.find("struct hp_wmi_hwmon_priv {").expect("priv struct");
+        let defined_at = patched.find("static void hp_wmi_apply_measured_max_rpm").unwrap();
+        let called_at = patched.find("\thp_wmi_apply_measured_max_rpm(priv);").unwrap();
+        assert!(struct_at < defined_at, "the override takes a priv pointer");
+        assert!(defined_at < called_at);
+
+        // The override must run after the firmware queries, not before:
+        // that ordering is the whole reason it exists.
+        let queries_at = patched.find("HPWMI_FAN_SPEED_MAX_GET_QUERY, HPWMI_GM").unwrap();
+        assert!(queries_at < called_at, "a measurement has to outrank the firmware's claim");
+    }
+
+    /// Installing twice must not define the same symbol twice. The caller
+    /// always works from the pristine snapshot, but this is cheap to hold.
+    #[test]
+    fn splicing_the_parameters_twice_changes_nothing_the_second_time() {
+        let Some(source) = real_source() else {
+            eprintln!("skipped: driver sources not found");
+            return;
+        };
+        let (once, _) = add_measured_rpm_params(&source).unwrap();
+        let (twice, change) = add_measured_rpm_params(&once).unwrap();
+        assert_eq!(once, twice);
+        assert!(change.is_none(), "nothing to report when nothing changed");
     }
 
     #[test]

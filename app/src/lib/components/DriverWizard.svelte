@@ -41,7 +41,9 @@
   import Panel from "$lib/components/Panel.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
+  import InstallProgress from "$lib/components/InstallProgress.svelte";
+  import type { LiveStep } from "$lib/components/InstallProgress.svelte";
   import {
     daemon,
     type Autodetected,
@@ -51,8 +53,11 @@
     type InstallerAction,
     type InstallerInspection,
     type InstallerRequest,
+    type InstallerProgress,
     type InstallPlan,
+    type InstallStep,
     type StepStatus,
+    onDaemonEvent,
   } from "$lib/api/daemon";
   import { hardware } from "$lib/stores/hardware.svelte";
   import { t, tm } from "$lib/i18n/index.svelte";
@@ -112,6 +117,75 @@
   let runError = $state<string | null>(null);
 
   /**
+   * The run as it happens, built from the daemon's `installer.progress`
+   * events rather than from the report, which only arrives at the end.
+   *
+   * Two reasons this exists rather than a spinner. The wait is long enough
+   * - `dkms-build` is most of a minute on its own - that "is it working or
+   * is it stuck" is a real question, and until the module is back the rest
+   * of the app is talking to a daemon whose driver is unloaded, so the
+   * window has to stop accepting clicks anyway. Somewhere that is being
+   * covered up may as well say what it is doing.
+   */
+  let liveSteps = $state<LiveStep[]>([]);
+  let liveCurrent = $state<number | null>(null);
+  let liveLog = $state<string[]>([]);
+  let overlayOpen = $state(false);
+  /** Whether the run on screen is the real one or the rehearsal. */
+  let liveConfirm = $state(false);
+  let stopListening: (() => void) | null = null;
+
+  function beginLiveRun(steps: InstallStep[]) {
+    liveSteps = steps.map((step) => ({
+      id: step.id,
+      description: step.description,
+      status: null,
+      detail: null,
+      started: false,
+    }));
+    liveCurrent = null;
+    liveLog = [];
+    overlayOpen = true;
+
+    stopListening?.();
+    stopListening = onDaemonEvent((event) => {
+      if (event.topic !== "installer.progress") return;
+      const progress = event.payload as unknown as InstallerProgress;
+      // A second window, or a `pyren-ctl` run, could be installing too.
+      // Only this panel's own action belongs on this panel.
+      if (progress.action !== action) return;
+
+      const step = liveSteps[progress.index];
+      if (!step) return;
+
+      if (progress.status === null) {
+        step.started = true;
+        liveCurrent = progress.index;
+        liveLog = [...liveLog, `> ${tm(progress.description)}`];
+        return;
+      }
+
+      step.status = progress.status;
+      step.detail = progress.detail;
+      if (liveCurrent === progress.index) liveCurrent = null;
+      const detail = progress.detail ? tm(progress.detail) : "";
+      liveLog = [...liveLog, `  [${progress.status}]${detail ? ` ${detail}` : ""}`];
+    });
+  }
+
+  function endLiveRun() {
+    stopListening?.();
+    stopListening = null;
+    liveCurrent = null;
+  }
+
+  function closeOverlay() {
+    overlayOpen = false;
+  }
+
+  onDestroy(() => stopListening?.());
+
+  /**
    * The options a dry run was last read for. Anything typed after that
    * invalidates it: an "Apply" that ran a plan the user never saw would be
    * exactly the button this page exists to avoid.
@@ -162,7 +236,9 @@
   const planKey = $derived(JSON.stringify({ action, preferHooks, force }));
 
   /** A driver action only; the service is installed by the panel above. */
-  const isDriverAction = $derived(action === "installDriver" || action === "restoreDriver");
+  const isDriverAction = $derived(
+    action === "installDriver" || action === "restoreDriver" || action === "pinFanCeiling",
+  );
 
   const runnable = $derived(!!plan && plan.blockers.length === 0 && plan.steps.length > 0);
   const dryRunCurrent = $derived(dryRunKey === optionsKey);
@@ -184,6 +260,23 @@
 
   /** Calibrated ceiling, if `fan.calibrate` has ever been run here. */
   const measuredMaxRpm = $derived(hardware.fan?.fanMaxRpm ?? null);
+
+  /**
+   * Whether to measure the ceiling once the install is done.
+   *
+   * Defaults to on for a machine that has never been calibrated, which is
+   * every machine at its first install - that is the case where nobody
+   * comes back to do it, and the driver is left scaling pwm against a
+   * guess. A machine that already has a measurement gets it off: twenty
+   * seconds of full-speed fans to re-learn a number it already knows is
+   * a poor default. It is a checkbox either way, because the fans are
+   * loud and a surprise is worse than a wait.
+   */
+  let calibrateAfter = $state(false);
+  let calibrateTouched = $state(false);
+  $effect(() => {
+    if (!calibrateTouched) calibrateAfter = measuredMaxRpm === null;
+  });
 
   async function inspect() {
     inspecting = true;
@@ -273,10 +366,88 @@
     await run(false);
   }
 
+  /**
+   * Measuring the ceiling, as the last phase of the install.
+   *
+   * It has to be here rather than on the fan page, because of an ordering
+   * nothing else can get around: measuring means running the fans at full
+   * speed, which needs `pwm1`, which on these boards needs the driver that
+   * was *just* installed. So the first install on any machine is always
+   * made before a measurement exists - and until now nothing ever went
+   * back, which left every driver converting pwm to rpm against a number
+   * it had guessed. The daemon writes the result where the driver reads
+   * it, so this is the moment the whole chain closes.
+   */
+  async function calibratePhase() {
+    const step: LiveStep = {
+      id: "calibrate",
+      description: {
+        key: "install.step.calibrate",
+        text: "Measure what full speed is on this machine",
+      },
+      status: null,
+      detail: null,
+      started: true,
+    };
+    liveSteps = [...liveSteps, step];
+    liveCurrent = liveSteps.length - 1;
+    liveLog = [...liveLog, `> ${tm(step.description)}`, `  ${t("install.calibrateLoud")}`];
+
+    // The call blocks until the fans settle, so the only way to show the
+    // ramp as it happens is to watch the same tachometer it is watching.
+    const watch = setInterval(async () => {
+      try {
+        const status = await daemon.fanStatus();
+        if (status.fanRpm) liveLog = [...liveLog, `  ${status.fanRpm} rpm`];
+      } catch {
+        /* A reading that did not arrive is not worth failing a run over. */
+      }
+    }, 1000);
+
+    try {
+      const calibration = await daemon.calibrateFans(30);
+      const measured = calibration.verdict === "measured";
+      step.status = measured ? "ok" : "warned";
+      step.detail = { key: "", text: calibration.detail };
+      liveLog = [...liveLog, `  [${step.status}] ${calibration.detail}`];
+      if (calibration.pinned) {
+        liveLog = [...liveLog, `  ${calibration.pinned.detail}`];
+      }
+    } catch (e) {
+      step.status = "failed";
+      step.detail = { key: "", text: String(e) };
+      liveLog = [...liveLog, `  [failed] ${String(e)}`];
+    } finally {
+      clearInterval(watch);
+      liveCurrent = null;
+      liveSteps = [...liveSteps];
+    }
+  }
+
+  /**
+   * The overlay covers the window, so it must not be up while the machine
+   * is only being *asked* about. It appears for a run and stays until the
+   * report has been read.
+   */
+  const overlayTitle = $derived(
+    t(liveConfirm ? `install.title.${action}` : "install.title.dryRun"),
+  );
+
   async function run(confirm: boolean) {
     running = true;
     runError = null;
     const key = optionsKey;
+    // The steps are known before the call: they are the plan's, and the
+    // daemon runs them in order. Showing them up front, greyed, is what
+    // makes the panel a progress bar rather than a log that grows out of
+    // nothing.
+    //
+    // No plan means automatic mode's opening dry run, which is the one
+    // call here that has nothing to draw yet - and nothing to wait for
+    // either, since a rehearsal runs no commands. The panel it would put
+    // up would be an empty bar over a window that was never blocked.
+    liveConfirm = confirm;
+    if (plan) beginLiveRun(plan.steps);
     try {
       const result = await daemon.installerApply({ ...request, confirm });
       plan = result.plan;
@@ -289,11 +460,15 @@
       if (confirm) {
         // What was just installed changes every answer on this panel.
         await inspect();
+        if (result.report.succeeded && action === "installDriver" && calibrateAfter) {
+          await calibratePhase();
+        }
       }
     } catch (e) {
       runError = String(e);
     } finally {
       running = false;
+      endLiveRun();
     }
   }
 
@@ -321,6 +496,18 @@
     "omenV1NoEc",
   ];
 </script>
+
+<InstallProgress
+  open={overlayOpen}
+  title={overlayTitle}
+  steps={liveSteps}
+  current={liveCurrent}
+  log={liveLog}
+  finished={!running}
+  succeeded={!!report?.succeeded && !runError}
+  error={runError}
+  onclose={closeOverlay}
+/>
 
 <Panel>
   <button class="disclosure" onclick={toggleOpen} aria-expanded={open}>
@@ -570,6 +757,24 @@
         </div>
       {/if}
 
+      <!-- Asked before the install, not after, because the answer is
+           twenty seconds of full-speed fans. On a machine with no
+           measurement yet it starts on: that machine cannot have been
+           calibrated before the driver existed, and nobody comes back. -->
+      {#if action === "installDriver"}
+        <label class="calibrate-opt">
+          <input
+            type="checkbox"
+            bind:checked={calibrateAfter}
+            onchange={() => (calibrateTouched = true)}
+          />
+          <span>
+            {t("install.calibrateAfter")}
+            <em>{measuredMaxRpm ? t("install.calibrateAgainHint", { rpm: String(measuredMaxRpm) }) : t("install.calibrateFirstHint")}</em>
+          </span>
+        </label>
+      {/if}
+
       <!-- One row of buttons; the mode decides what is in it. Confirming is
            a separate click in both modes, and stays unreachable until a dry
            run of these exact options has come back. -->
@@ -728,13 +933,15 @@
                done. -->
           {#if !report.dryRun && report.succeeded && isDriverAction}
             {#if action === "installDriver" && env?.fanControlAvailable}
-              <!-- pwm1 exists, but the fan module found its sysfs paths at
-                   daemon startup and caches them, so until the daemon is
-                   restarted it still reports that no speed can be set.
-                   Saying "done, nothing to do" here would contradict the
-                   fan page the user goes to next. -->
+              <!-- This used to end with "now run `sudo systemctl restart
+                   pyren-daemon`", because installing reloads hp-wmi, which
+                   renumbers the hwmon directory the fan module found at
+                   startup - so it kept reading a directory that no longer
+                   existed and reported that no speed could be set. The
+                   daemon looks again by itself now (`FanModule::rediscover`,
+                   wired to the installer in `daemon/src/main.rs`), so there
+                   is nothing left to ask for. -->
               <p class="notice ok-notice">{t("installer.afterInstall.working")}</p>
-              <code class="fix">sudo systemctl restart pyren-daemon</code>
             {:else if action === "installDriver"}
               <p class="notice warn">{t("installer.afterInstall.needsReload")}</p>
               <code class="fix">sudo modprobe -r hp-wmi &amp;&amp; sudo modprobe hp-wmi</code>
@@ -941,6 +1148,24 @@
   input:disabled,
   select:disabled {
     opacity: 0.45;
+  }
+
+  .calibrate-opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-bottom: 12px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  .calibrate-opt input {
+    margin-top: 2px;
+  }
+  .calibrate-opt em {
+    display: block;
+    font-style: normal;
+    font-size: 0.82rem;
+    color: var(--text-mute);
   }
 
   .actions {

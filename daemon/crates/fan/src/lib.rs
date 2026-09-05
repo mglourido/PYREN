@@ -241,14 +241,84 @@ struct State {
     last_save_error: Option<String>,
 }
 
-pub struct FanModule {
+/// What this module knows about the hardware it is driving: where the
+/// sysfs files are, and what they will accept.
+///
+/// Shared and replaceable rather than fixed at construction, because both
+/// answers change under a running daemon. Installing the driver unloads
+/// and reloads `hp-wmi`, which destroys and recreates the whole hwmon
+/// directory - `hwmon9` becomes `hwmon8` - so every path found at startup
+/// then names a file that no longer exists. Fan control went on reporting
+/// itself as working and quietly read nothing until somebody restarted the
+/// daemon, which is what the driver wizard used to have to tell people to
+/// do. See [`FanModule::rediscover`].
+#[derive(Clone)]
+struct Hardware {
     paths: FanPaths,
     caps: Capabilities,
+}
+
+#[derive(Clone)]
+pub struct FanModule {
+    hardware: Arc<Mutex<Hardware>>,
     store: ConfigStore,
     state: Arc<Mutex<State>>,
 }
 
 impl FanModule {
+    /// Where the fan files are *right now*.
+    ///
+    /// Cloned out rather than borrowed: holding the lock across a sysfs
+    /// read would serialise every status call behind whichever one is
+    /// waiting on the kernel.
+    fn paths(&self) -> FanPaths {
+        lock_hw(&self.hardware).paths.clone()
+    }
+
+    fn caps(&self) -> Capabilities {
+        lock_hw(&self.hardware).caps
+    }
+
+    /// Look at the hardware again, because the driver under it changed.
+    ///
+    /// Called after a driver install or restore, which reload `hp-wmi` and
+    /// so renumber the hwmon directory. Without it the daemon keeps the
+    /// paths it found at startup and reads a directory that no longer
+    /// exists; with it, nobody has to be told to restart anything.
+    ///
+    /// Returns whether anything actually moved, which is worth reporting:
+    /// "the driver was replaced and fan control is still there" is a
+    /// different sentence from "nothing changed".
+    pub fn rediscover(&self) -> bool {
+        self.adopt(discover_paths())
+    }
+
+    /// Takes on a freshly found set of paths, and says whether it was a
+    /// different machine from the one it had.
+    ///
+    /// Split from [`rediscover`](Self::rediscover) so the decision can be
+    /// tested against fabricated paths: the discovery itself reads real
+    /// sysfs (or `PYREN_HWMON_DIR`, which is process-wide and so unusable
+    /// from a test running beside others), while this - what counts as a
+    /// change, and that the swap is actually stored - is the part that
+    /// was written today.
+    fn adopt(&self, fresh: FanPaths) -> bool {
+        let caps = Capabilities::detect(&fresh);
+        let mut hardware = lock_hw(&self.hardware);
+        // The hwmon directory is the thing a module reload renumbers, and
+        // capabilities are what changes when the driver under it is a
+        // different one. Comparing every path would report a move twice.
+        let changed = hardware.paths.hwmon_dir != fresh.hwmon_dir || hardware.caps != caps;
+        hardware.paths = fresh;
+        hardware.caps = caps;
+        drop(hardware);
+
+        if changed {
+            log_info!("re-read the fan hardware after a driver change: {}", describe(caps).text);
+        }
+        changed
+    }
+
     pub fn new() -> Self {
         Self::with_store(ConfigStore::system())
     }
@@ -313,7 +383,7 @@ impl FanModule {
             last_save_error: None,
         }));
 
-        let module = Self { paths, caps, store, state };
+        let module = Self { hardware: Arc::new(Mutex::new(Hardware { paths, caps })), store, state };
         module.recover_interrupted_cycle();
         if caps.switch_mode {
             module.spawn_control_loop();
@@ -340,7 +410,7 @@ impl FanModule {
     /// be ours is exactly the change this project does not make.
     fn recover_interrupted_cycle(&self) {
         let (_, reversed) =
-            read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
+            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
         if !reversed || !acpi::is_loaded() {
             return;
         }
@@ -352,12 +422,7 @@ impl FanModule {
 
         // On a thread: the ramp down takes seconds, and nothing about
         // serving the socket should wait for it.
-        let module = FanModule {
-            paths: self.paths.clone(),
-            caps: self.caps,
-            store: self.store.clone(),
-            state: Arc::clone(&self.state),
-        };
+        let module = self.clone();
         std::thread::spawn(move || {
             lock(&module.state).cleaning = Cleaning::Stopping;
             let generation = cleaner::probe().generation.unwrap_or(cleaner::Generation::Modern);
@@ -396,8 +461,7 @@ impl FanModule {
                 last_save_error: None,
             })),
             store: ConfigStore::system(),
-            paths,
-            caps,
+            hardware: Arc::new(Mutex::new(Hardware { paths, caps })),
         }
     }
 
@@ -407,29 +471,29 @@ impl FanModule {
     /// rewrites the value already set and restores the previous mode, so no
     /// fan changes speed.
     pub fn diagnose(&self, allow_writes: bool) -> diagnostics::Diagnosis {
-        diagnostics::diagnose(&self.paths, allow_writes)
+        diagnostics::diagnose(&self.paths(), allow_writes)
     }
 
     pub fn capabilities(&self) -> Capabilities {
-        self.caps
+        self.caps()
     }
 
     fn status(&self) -> Value {
-        let cpu_temp_c = self.paths.cpu_temp.as_deref().and_then(read_millideg_c);
-        let gpu_temp_c = self.paths.gpu_temp.as_deref().and_then(read_millideg_c);
+        let cpu_temp_c = self.paths().cpu_temp.as_deref().and_then(read_millideg_c);
+        let gpu_temp_c = self.paths().gpu_temp.as_deref().and_then(read_millideg_c);
         let (fan_rpm, is_reverse) =
-            read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
+            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
         let state = lock(&self.state);
 
         json!({
-            "driverInstalled": self.paths.hwmon_dir.is_some(),
-            "capabilities": self.caps,
+            "driverInstalled": self.paths().hwmon_dir.is_some(),
+            "capabilities": self.caps(),
             "cpuTempC": cpu_temp_c,
             "gpuTempC": gpu_temp_c,
             "fanRpm": fan_rpm,
             "isReverse": is_reverse,
             "mode": state.mode.as_str(),
-            "pwm": control::read_pwm(&self.paths),
+            "pwm": control::read_pwm(&self.paths()),
             "targetPwm": state.last_target_pwm,
             "manualPwm": state.config.manual_pwm,
             "curve": state.config.curve,
@@ -445,7 +509,7 @@ impl FanModule {
                 state.config.reference_sensor,
             )
             .map(|(_, sensor)| sensor.as_str()),
-            "gpuSensorAvailable": self.paths.gpu_temp.is_some(),
+            "gpuSensorAvailable": self.paths().gpu_temp.is_some(),
             "restoreModeOnStart": state.config.restore_mode_on_start,
             "fanMaxRpm": state.config.fan_max_rpm,
             "fan1MaxRpm": state.config.fan1_max_rpm,
@@ -461,12 +525,12 @@ impl FanModule {
     }
 
     fn set_mode(&self, mode: FanMode, pwm: Option<u8>) -> ModuleResult {
-        if !self.caps.supports(mode) {
+        if !self.caps().supports(mode) {
             return Err(ModuleError::localised(
                 ErrorKind::NotCapable,
                 msg!(
                     "fan.err.cannotDoMode",
-                    { "mode" => mode.as_str(), "exposes" => describe(self.caps).text },
+                    { "mode" => mode.as_str(), "exposes" => describe(self.caps()).text },
                     "this machine cannot do '{mode}': the hp-wmi driver exposes {exposes}. \
                      Run fan.diagnose for the details."
                 ),
@@ -552,12 +616,12 @@ impl FanModule {
     /// block `getStatus` too, so the flag is set, the lock dropped, and
     /// the run happens outside it.
     fn calibrate(&self, seconds: u64) -> ModuleResult {
-        if !self.caps.supports(FanMode::Max) {
+        if !self.caps().supports(FanMode::Max) {
             return Err(ModuleError::localised(
                 ErrorKind::NotCapable,
                 msg!(
                     "fan.err.cannotCalibrate",
-                    { "exposes" => describe(self.caps).text },
+                    { "exposes" => describe(self.caps()).text },
                     "calibration puts the fans at max and watches them, which this machine \
                      cannot do: the hp-wmi driver exposes {exposes}. Run fan.diagnose for \
                      the details."
@@ -576,7 +640,7 @@ impl FanModule {
             state.calibrating = true;
         }
 
-        let outcome = calibration::run(&self.paths, self.caps, seconds);
+        let outcome = calibration::run(&self.paths(), self.caps(), seconds);
 
         let mut state = lock(&self.state);
         state.calibrating = false;
@@ -593,16 +657,26 @@ impl FanModule {
         };
 
         // A run that measured nothing must not erase a run that did.
+        let mut pinned = None;
         if calibration.verdict.worth_storing() {
             state.config.fan_max_rpm = calibration.fan_max_rpm;
             state.config.fan1_max_rpm = calibration.fan1_max_rpm;
             state.config.fan2_max_rpm = calibration.fan2_max_rpm;
             persist(&self.store, &mut state);
+            pinned = Some(pin_ceiling(&calibration));
         }
         drop(state);
 
         let mut result = serde_json::to_value(&calibration)
             .map_err(|e| ModuleError::Internal(e.to_string()))?;
+        // What became of the measurement beyond this daemon's own config.
+        // Reported rather than silently attempted: it is the difference
+        // between a number the curve uses and a number the *driver* uses.
+        result["pinned"] = match pinned {
+            Some(Ok(detail)) => json!({ "ok": true, "detail": detail }),
+            Some(Err(detail)) => json!({ "ok": false, "detail": detail }),
+            None => Value::Null,
+        };
         // The same shape every other fan write returns, so a caller never
         // has to follow one with a read.
         result["status"] = self.status();
@@ -663,7 +737,7 @@ impl FanModule {
         let state = lock(&self.state);
         let cycle = state.cleaning.cycle();
         let (_, is_reverse) =
-            read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
+            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
 
         json!({
             "supported": probe.supported,
@@ -687,7 +761,7 @@ impl FanModule {
             "durationSecs": state.config.cleaner_duration_secs,
             "configuredSpeed": state.config.cleaner_speed,
             "maxStartTempC": cleaner::MAX_START_TEMP_C,
-            "cpuTempC": self.paths.cpu_temp.as_deref().and_then(read_millideg_c),
+            "cpuTempC": self.paths().cpu_temp.as_deref().and_then(read_millideg_c),
             "error": state.last_cleaner_error,
         })
     }
@@ -779,11 +853,11 @@ impl FanModule {
         let request = cleaner::Request {
             speed,
             duration,
-            temp_c: self.paths.cpu_temp.as_deref().and_then(read_millideg_c),
+            temp_c: self.paths().cpu_temp.as_deref().and_then(read_millideg_c),
         };
 
-        let fan1 = self.paths.fan1_input.clone();
-        let fan2 = self.paths.fan2_input.clone();
+        let fan1 = self.paths().fan1_input.clone();
+        let fan2 = self.paths().fan2_input.clone();
         cleaner::start(&probe, &request, || {
             let (rpm1, _) = parse_hwmon_rpm(read_raw_rpm(fan1.as_deref()));
             let (rpm2, _) = parse_hwmon_rpm(read_raw_rpm(fan2.as_deref()));
@@ -848,10 +922,8 @@ impl FanModule {
     /// id so a watchdog left over from a cycle somebody stopped by hand
     /// cannot end the next one.
     fn arm_watchdog(&self, id: u64, wait: Duration, generation: cleaner::Generation) {
+        let module = self.clone();
         let state = Arc::clone(&self.state);
-        let paths = self.paths.clone();
-        let caps = self.caps;
-        let store = self.store.clone();
 
         std::thread::spawn(move || {
             std::thread::sleep(wait);
@@ -867,7 +939,6 @@ impl FanModule {
             }
 
             let result = cleaner::stop(generation);
-            let module = FanModule { paths, caps, store, state };
             module.finish_cycle(result);
         });
     }
@@ -895,10 +966,10 @@ impl FanModule {
     /// call takes effect immediately rather than up to [`TICK`] later.
     fn tick_once(&self) -> Result<(), ModuleError> {
         let now_secs = monotonic_secs();
-        let cpu_temp_c = self.paths.cpu_temp.as_deref().and_then(read_millideg_c);
-        let gpu_temp_c = self.paths.gpu_temp.as_deref().and_then(read_millideg_c);
+        let cpu_temp_c = self.paths().cpu_temp.as_deref().and_then(read_millideg_c);
+        let gpu_temp_c = self.paths().gpu_temp.as_deref().and_then(read_millideg_c);
         let (rpm, _) =
-            read_fan_rpm(self.paths.fan1_input.as_deref(), self.paths.fan2_input.as_deref());
+            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
 
         let mut state = lock(&self.state);
         if state.calibrating {
@@ -964,7 +1035,7 @@ impl FanModule {
         }
 
         let pwm = target.unwrap_or(0);
-        let result = control::apply(&self.paths, self.caps, mode, pwm);
+        let result = control::apply(&self.paths(), self.caps(), mode, pwm);
         // Recorded even when the write failed, so a machine that cannot be
         // written to is retried once a minute rather than every tick.
         state.hysteresis.applied(pwm, now_secs);
@@ -988,13 +1059,12 @@ impl FanModule {
     /// curve has to be followed while the app is closed, which is the whole
     /// reason there is a daemon.
     fn spawn_control_loop(&self) {
-        let paths = self.paths.clone();
-        let caps = self.caps;
-        let state = Arc::clone(&self.state);
-        let store = self.store.clone();
+        // A clone, not a snapshot: it shares the hardware handle, so a
+        // `rediscover` after a driver install reaches the loop that is
+        // actually driving the fans, not only the next IPC call.
+        let worker = self.clone();
 
         std::thread::spawn(move || {
-            let worker = FanModule { paths, caps, store, state };
             loop {
                 // The third enforcement point for a cycle's timeout, so
                 // that a cleaner left running by a lost watchdog is ended
@@ -1021,7 +1091,7 @@ impl Module for FanModule {
     }
 
     fn is_supported(&self) -> bool {
-        self.paths.hwmon_dir.is_some()
+        self.paths().hwmon_dir.is_some()
     }
 
     fn call(&self, method: &str, params: Value) -> ModuleResult {
@@ -1215,6 +1285,48 @@ fn describe(caps: Capabilities) -> Msg {
 /// The mode the hardware is in, translated into ours. The driver cannot
 /// distinguish manual from curve - a curve is manual values that keep
 /// changing - so a machine found in manual reports manual.
+/// Hands a fresh measurement to the driver, permanently.
+///
+/// Without this a calibration only ever reached *this* daemon's config:
+/// the driver went on converting between pwm and rpm against a ceiling it
+/// had guessed, or one the firmware claimed, and there was no way to
+/// correct it short of rebuilding the kernel module. The measurement now
+/// goes into `/etc/modprobe.d`, which the driver reads on every load - so
+/// it survives a reboot, a DKMS rebuild and a kernel upgrade alike.
+///
+/// Deliberately does **not** reload `hp-wmi` to make it take effect at
+/// once. That would recreate the hwmon directory under this process's
+/// feet, leaving every cached sysfs path here pointing at a file that no
+/// longer exists - fan control silently broken until the daemon is
+/// restarted. The value takes effect at the next load instead, and the
+/// driver installer, which is reloading anyway, is where "now" happens.
+fn pin_ceiling(calibration: &calibration::Calibration) -> Result<String, String> {
+    let max_rpm = pyren_installer::MaxRpm {
+        cpu: calibration.fan1_max_rpm.and_then(|rpm| u32::try_from(rpm).ok()),
+        gpu: calibration.fan2_max_rpm.and_then(|rpm| u32::try_from(rpm).ok()),
+    };
+    match pyren_installer::pin_measured_ceiling(max_rpm) {
+        Ok(detail) => {
+            log_info!("pinned the measured fan ceiling for the driver: {detail}");
+            Ok(detail)
+        }
+        Err(e) => {
+            // Never fails the calibration itself: the measurement is
+            // taken, stored and usable by the curve either way. Running
+            // unprivileged is the ordinary reason to land here.
+            log_warn!("could not pin the measured fan ceiling for the driver: {e}");
+            Err(e)
+        }
+    }
+}
+
+/// Same reasoning as [`lock`]: a poisoned hardware lock means a thread
+/// panicked while swapping paths, and refusing to read them afterwards
+/// would turn a recoverable mishap into a dead fan module.
+fn lock_hw(hardware: &Arc<Mutex<Hardware>>) -> std::sync::MutexGuard<'_, Hardware> {
+    hardware.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn observed_mode(paths: &FanPaths) -> Option<FanMode> {
     match control::read_hardware_mode(paths)? {
         0 => Some(FanMode::Max),
@@ -1437,6 +1549,58 @@ mod tests {
         let mut module = FanModule::inspector();
         module.store = ConfigStore::at(root);
         module
+    }
+
+    /// Installing the driver reloads `hp-wmi`, and the hwmon directory
+    /// comes back under a different number. Everything this module had
+    /// found at startup then names a file that is gone - it went on
+    /// answering `getStatus` with a rpm it could no longer read, and the
+    /// only fix was restarting the daemon, which the wizard had to ask
+    /// for in so many words.
+    #[test]
+    fn a_renumbered_hwmon_directory_is_picked_up() {
+        let module = module("rediscover");
+        let moved = FanPaths {
+            hwmon_dir: Some(PathBuf::from("/sys/devices/platform/hp-wmi/hwmon/hwmon8")),
+            pwm1: Some(PathBuf::from("/sys/devices/platform/hp-wmi/hwmon/hwmon8/pwm1")),
+            ..Default::default()
+        };
+
+        assert!(module.adopt(moved.clone()), "a different directory is a change");
+        assert_eq!(module.paths().pwm1, moved.pwm1, "and the new paths are the ones kept");
+        assert!(!module.adopt(moved), "the same directory twice is not");
+    }
+
+    /// The other half of what a driver change can do: same directory, but
+    /// the module behind it now accepts something it did not before.
+    /// Reporting "nothing changed" there would leave the fan page saying
+    /// no speed can be set on a machine where it now can.
+    #[test]
+    fn gaining_a_control_counts_as_a_change() {
+        let module = module("rediscover-caps");
+        // Real files, because capabilities are detected by looking: a
+        // path that names a pwm1 which is not there is exactly the state
+        // this whole mechanism exists to get out of.
+        let dir = std::env::temp_dir().join(format!("pyren-hwmon-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let bare = FanPaths { hwmon_dir: Some(dir.clone()), ..Default::default() };
+        module.adopt(bare);
+        assert!(!module.caps().switch_mode, "nothing to drive yet");
+
+        fs::write(dir.join("pwm1"), b"0").unwrap();
+        fs::write(dir.join("pwm1_enable"), b"2").unwrap();
+        let with_pwm = FanPaths {
+            hwmon_dir: Some(dir.clone()),
+            pwm1: Some(dir.join("pwm1")),
+            pwm1_enable: Some(dir.join("pwm1_enable")),
+            ..Default::default()
+        };
+        assert!(module.adopt(with_pwm), "the same directory can still be a different driver");
+        assert!(module.caps().switch_mode);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The GPU is what gets hot first under a game, so a curve that can

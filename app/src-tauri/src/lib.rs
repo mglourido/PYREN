@@ -90,6 +90,22 @@ fn connect_daemon() -> Result<UnixStream, String> {
 /// and is done; the event watcher below has to branch on `kind`, because
 /// "this daemon has no event stream" is a reason to stop asking and
 /// everything else is a reason to try again.
+/// # Why every command below is `#[tauri::command(async)]`
+///
+/// A **synchronous** Tauri command runs on the main thread, and this
+/// function blocks on a socket with no timeout. That was invisible for the
+/// calls that answer in milliseconds and catastrophic for the one that
+/// does not: installing the driver is a single request that compiles a
+/// kernel module and regenerates the initramfs, so the window froze solid
+/// for the better part of a minute - no repaint, no progress, and the
+/// install panel appearing all at once when it was already over.
+///
+/// `async` on a synchronous body tells Tauri to run it on a worker thread
+/// instead. Marking *all* of them, not only the slow ones, is deliberate:
+/// with no read timeout, any call to a wedged daemon would otherwise hang
+/// the interface permanently, and "which of these can be slow" is not a
+/// judgement worth re-making every time a command is added. None of them
+/// take a `Window` or `AppHandle`, so none of them needs the main thread.
 fn request_daemon(module: &str, method: &str, params: Value) -> Result<Value, String> {
     let stream = connect_daemon()?;
 
@@ -161,7 +177,7 @@ fn connect_error(path: &str, e: std::io::Error) -> String {
     format!("cannot reach pyren-daemon at {path}: {e}")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_get_status() -> Result<Value, String> {
     call_daemon("fan", "getStatus", Value::Null)
 }
@@ -169,12 +185,12 @@ fn fan_get_status() -> Result<Value, String> {
 /// `pwm` is only meaningful for `manual`; the daemon ignores it otherwise
 /// and refuses a mode this machine's driver cannot do, rather than
 /// pretending it worked.
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_set_mode(mode: String, pwm: Option<u8>) -> Result<Value, String> {
     call_daemon("fan", "setMode", json!({ "mode": mode, "pwm": pwm }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_set_curve(
     curve: Value,
     interpolation: Option<String>,
@@ -191,21 +207,21 @@ fn fan_set_curve(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("fan", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
 
 /// The fan cleaner. `refresh` re-asks the firmware what it can do, which
 /// costs two ACPI calls - the polling status read leaves it off.
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_cleaner_status(refresh: bool) -> Result<Value, String> {
     call_daemon("fan", "cleanerStatus", json!({ "refresh": refresh }))
 }
 
 /// Starts a cycle. Blocks for a few seconds while the blades are braked,
 /// then returns with a countdown running; the daemon ends it on its own.
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_start_cleaning(
     speed: Option<u8>,
     seconds: Option<u64>,
@@ -218,14 +234,14 @@ fn fan_start_cleaning(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_stop_cleaning() -> Result<Value, String> {
     call_daemon("fan", "stopCleaning", Value::Null)
 }
 
 /// The remembered duration and speed, which are a preference rather than
 /// a parameter of one run.
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_set_cleaner_config(seconds: Option<u64>, speed: Option<Value>) -> Result<Value, String> {
     let mut params = serde_json::Map::new();
     if let Some(seconds) = seconds {
@@ -239,12 +255,12 @@ fn fan_set_cleaner_config(seconds: Option<u64>, speed: Option<Value>) -> Result<
     call_daemon("fan", "setCleanerConfig", Value::Object(params))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn power_set_apply_to_os_profile(enabled: bool) -> Result<Value, String> {
     call_daemon("power", "setApplyToOsProfile", json!({ "enabled": enabled }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn power_set_tuning(tuning: Value) -> Result<Value, String> {
     call_daemon("power", "setTuning", tuning)
 }
@@ -255,7 +271,7 @@ fn power_set_tuning(tuning: Value) -> Result<Value, String> {
 /// different fixes, so the page reads them off `getCapabilities` rather
 /// than being handed one boolean (`docs/01-ipc-protocol.md` §"`rgb`
 /// module").
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_get_status() -> Result<Value, String> {
     call_daemon("rgb", "getStatus", Value::Null)
 }
@@ -263,26 +279,26 @@ fn rgb_get_status() -> Result<Value, String> {
 /// Which GPU is driving the screen - iGPU only / hybrid / dGPU - through
 /// the patched `hp-wmi` driver's `gpu_mux_mode`, not `supergfxctl`. See
 /// `docs/01-ipc-protocol.md` §"`gpu` module".
-#[tauri::command]
+#[tauri::command(async)]
 fn gpu_get_status() -> Result<Value, String> {
     call_daemon("gpu", "getStatus", Value::Null)
 }
 
 /// Takes effect after a logout or reboot, which the daemon does not do
 /// itself - the graphics page says so.
-#[tauri::command]
+#[tauri::command(async)]
 fn gpu_set_mode(mode: String) -> Result<Value, String> {
     call_daemon("gpu", "setMode", json!({ "mode": mode }))
 }
 
 /// System-wide smart queuing only - see `docs/01-ipc-protocol.md`
 /// §"`network` module" for why there is no per-application field here.
-#[tauri::command]
+#[tauri::command(async)]
 fn network_get_status() -> Result<Value, String> {
     call_daemon("network", "getStatus", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn network_set_mode(mode: String) -> Result<Value, String> {
     call_daemon("network", "setMode", json!({ "mode": mode }))
 }
@@ -290,24 +306,24 @@ fn network_set_mode(mode: String) -> Result<Value, String> {
 /// A **fresh** probe, unlike the one in `getStatus`. This is what makes
 /// "install acpi_call, then ask again" a complete workflow without
 /// restarting the daemon, so the page calls it after an install.
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_get_capabilities() -> Result<Value, String> {
     call_daemon("rgb", "getCapabilities", Value::Null)
 }
 
 /// `color` goes out as `"#rrggbb"`; `brightness` is a percentage, and
 /// omitting it keeps whatever the daemon has stored.
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_set_static(color: String, brightness: Option<u8>) -> Result<Value, String> {
     call_daemon("rgb", "setStatic", json!({ "color": color, "brightness": brightness }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_set_zones(zones: Value, brightness: Option<u8>) -> Result<Value, String> {
     call_daemon("rgb", "setZones", json!({ "zones": zones, "brightness": brightness }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_off() -> Result<Value, String> {
     call_daemon("rgb", "off", Value::Null)
 }
@@ -315,7 +331,7 @@ fn rgb_off() -> Result<Value, String> {
 /// Asks the firmware what the zones are, which is four ACPI round trips -
 /// hence a button and not a poll. It is also the only check that the
 /// payload was *understood* rather than merely accepted.
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_read_zones() -> Result<Value, String> {
     call_daemon("rgb", "readZones", Value::Null)
 }
@@ -324,12 +340,12 @@ fn rgb_read_zones() -> Result<Value, String> {
 /// first that answers. Exists because auto can only ever choose a dialect
 /// this build can *read*, and the person at the keyboard can see whether
 /// the lights actually changed.
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_set_dialect(dialect: String) -> Result<Value, String> {
     call_daemon("rgb", "setDialect", json!({ "dialect": dialect }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn rgb_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
@@ -344,45 +360,45 @@ fn rgb_set_restore_on_start(enabled: bool) -> Result<Value, String> {
 /// `docs/01-ipc-protocol.md`, and what makes an apply safe is the daemon's
 /// own rules (consent, the ramp, the revert timer), not a re-typing of the
 /// fields here.
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_get_state() -> Result<Value, String> {
     call_daemon("overclock", "getState", Value::Null)
 }
 
 /// `allowWrites` opts into the one question that costs a write: whether
 /// the clock offsets can be *set*, as opposed to merely read.
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_probe(allow_writes: bool) -> Result<Value, String> {
     call_daemon("overclock", "probe", json!({ "allowWrites": allow_writes }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_set_consent(accepted: bool) -> Result<Value, String> {
     call_daemon("overclock", "setConsent", json!({ "accepted": accepted }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_apply(request: Value) -> Result<Value, String> {
     call_daemon("overclock", "apply", request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_confirm() -> Result<Value, String> {
     call_daemon("overclock", "confirm", Value::Null)
 }
 
 /// Undoes a pending change now instead of at the end of its timer.
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_cancel() -> Result<Value, String> {
     call_daemon("overclock", "cancel", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_reset(gpu: Option<String>) -> Result<Value, String> {
     call_daemon("overclock", "reset", json!({ "gpu": gpu }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn overclock_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("overclock", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
@@ -394,62 +410,71 @@ fn overclock_set_restore_on_start(enabled: bool) -> Result<Value, String> {
 /// mirroring it in the shell would mean editing three places to add one
 /// field. What keeps `apply` safe is not this layer but the daemon's own
 /// rule that it is a dry run unless `confirm` is true.
-#[tauri::command]
+#[tauri::command(async)]
 fn installer_inspect() -> Result<Value, String> {
     call_daemon("installer", "inspect", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn installer_autodetect(request: Value) -> Result<Value, String> {
     call_daemon("installer", "autodetect", request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn installer_plan(request: Value) -> Result<Value, String> {
     call_daemon("installer", "plan", request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn installer_apply(request: Value) -> Result<Value, String> {
     call_daemon("installer", "apply", request)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn core_capabilities() -> Result<Value, String> {
     call_daemon("core", "capabilities", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fan_diagnose(allow_writes: bool) -> Result<Value, String> {
     call_daemon("fan", "diagnose", json!({ "allowWrites": allow_writes }))
 }
 
-#[tauri::command]
+/// Blocks for as long as the run takes - up to `seconds`, and the daemon
+/// ends early once the reading settles. Tauri commands run off the UI
+/// thread, so the window stays responsive; the install panel covers it
+/// anyway, because the fans are at full speed while this is happening.
+#[tauri::command(async)]
+fn fan_calibrate(seconds: Option<u64>) -> Result<Value, String> {
+    call_daemon("fan", "calibrate", json!({ "seconds": seconds }))
+}
+
+#[tauri::command(async)]
 fn system_get_info() -> Result<Value, String> {
     call_daemon("system", "getInfo", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn system_get_metrics() -> Result<Value, String> {
     call_daemon("system", "getMetrics", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn power_get_state() -> Result<Value, String> {
     call_daemon("power", "getState", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn power_set_mode(mode: String) -> Result<Value, String> {
     call_daemon("power", "setMode", json!({ "mode": mode }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn power_set_auto_config(config: Value) -> Result<Value, String> {
     call_daemon("power", "setAutoConfig", config)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn power_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("power", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
@@ -475,18 +500,18 @@ struct JsonDocument {
 /// What the app is allowed to do, and what is missing. Runs entirely in
 /// this unprivileged process and needs no daemon - the daemon being
 /// unreachable is one of the things it diagnoses.
-#[tauri::command]
+#[tauri::command(async)]
 fn admin_status() -> Result<Value, String> {
     Ok(admin::status(&socket_path()))
 }
 
 /// Applies one of a closed set of fixes, authenticated through `pkexec`.
-#[tauri::command]
+#[tauri::command(async)]
 fn admin_grant(action: String) -> Result<Value, String> {
     admin::grant(&action)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn app_config_load(namespace: String) -> Result<Value, String> {
     let store = app_config_store(&namespace)?;
     let loaded = store.load::<JsonDocument>(&namespace);
@@ -511,7 +536,7 @@ fn app_config_load(namespace: String) -> Result<Value, String> {
     }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn app_config_save(namespace: String, values: Map<String, Value>) -> Result<String, String> {
     let store = app_config_store(&namespace)?;
     store
@@ -553,21 +578,21 @@ fn workaround_webkit_dmabuf() {
 }
 
 /// What is running in this session, and what starts at login.
-#[tauri::command]
+#[tauri::command(async)]
 fn session_status() -> Value {
     session::status()
 }
 
 /// Starts the widget now. The app does this at launch by itself; this is
 /// the button for the case where it was stopped by hand.
-#[tauri::command]
+#[tauri::command(async)]
 fn session_start_osd() -> Result<Value, String> {
     session::start_osd()?;
     Ok(session::status())
 }
 
 /// Shows the widget without changing the power mode.
-#[tauri::command]
+#[tauri::command(async)]
 fn session_show_osd() -> Result<Value, String> {
     session::show_osd()?;
     Ok(session::status())
@@ -578,20 +603,20 @@ fn session_show_osd() -> Result<Value, String> {
 /// Both, because they are one idea to the person switching it off: a
 /// widget that vanishes and reappears at the next login has not been
 /// turned off, it has been dismissed.
-#[tauri::command]
+#[tauri::command(async)]
 fn session_stop_osd() -> Result<Value, String> {
     session::stop_osd()?;
     Ok(session::status())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn session_set_osd_at_login(enabled: bool) -> Result<Value, String> {
     session::set_osd_at_login(enabled)
 }
 
 /// What key is bound, whether the daemon can hear one at all, and whether
 /// acting on it is switched on.
-#[tauri::command]
+#[tauri::command(async)]
 fn hotkey_get_status() -> Result<Value, String> {
     call_daemon("hotkey", "getStatus", Value::Null)
 }
@@ -601,19 +626,19 @@ fn hotkey_get_status() -> Result<Value, String> {
 /// Long-running on purpose: the reply *is* the key the user pressed, so
 /// the settings page shows "press a key now" for exactly as long as this
 /// call is outstanding.
-#[tauri::command]
+#[tauri::command(async)]
 fn hotkey_learn(timeout_ms: Option<u64>) -> Result<Value, String> {
     call_daemon("hotkey", "learn", json!({ "timeoutMs": timeout_ms, "bind": true }))
 }
 
 /// Forgets the bound key. The hotkey stays switched on, so the next
 /// `learn` binds without a second trip.
-#[tauri::command]
+#[tauri::command(async)]
 fn hotkey_clear() -> Result<Value, String> {
     call_daemon("hotkey", "setTriggers", json!({ "triggers": [] }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn hotkey_set_enabled(enabled: bool) -> Result<Value, String> {
     call_daemon("hotkey", "setEnabled", json!({ "enabled": enabled }))
 }
@@ -621,12 +646,12 @@ fn hotkey_set_enabled(enabled: bool) -> Result<Value, String> {
 /// Does what the key does, without the key: the settings page's preview,
 /// and the only way to see the widget on a laptop whose Fn+P never
 /// reaches Linux.
-#[tauri::command]
+#[tauri::command(async)]
 fn hotkey_press() -> Result<Value, String> {
     call_daemon("hotkey", "press", Value::Null)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn keymap_get_status() -> Result<Value, String> {
     call_daemon("keymap", "getStatus", Value::Null)
 }
@@ -634,12 +659,12 @@ fn keymap_get_status() -> Result<Value, String> {
 /// `mapping` and `from` are passed through as-is - `{ from: { device?, keycode }, to }`
 /// and `{ device?, keycode }` respectively - rather than unpacked into
 /// separate arguments, since both are already the daemon's own shape.
-#[tauri::command]
+#[tauri::command(async)]
 fn keymap_set_mapping(mapping: Value) -> Result<Value, String> {
     call_daemon("keymap", "setMapping", mapping)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn keymap_remove_mapping(from: Value) -> Result<Value, String> {
     call_daemon("keymap", "removeMapping", from)
 }
@@ -648,12 +673,12 @@ fn keymap_remove_mapping(from: Value) -> Result<Value, String> {
 /// session if the mapping is wrong - `EVIOCGRAB` is exclusive, so `hotkey`
 /// stops hearing the same device too. See `docs/01-ipc-protocol.md`
 /// §"`keymap` module".
-#[tauri::command]
+#[tauri::command(async)]
 fn keymap_set_enabled(enabled: bool) -> Result<Value, String> {
     call_daemon("keymap", "setEnabled", json!({ "enabled": enabled }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn session_set_app_at_login(enabled: bool) -> Result<Value, String> {
     session::set_app_at_login(enabled)
 }
@@ -763,6 +788,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fan_get_status,
             fan_diagnose,
+            fan_calibrate,
             fan_set_mode,
             fan_set_curve,
             fan_set_restore_on_start,

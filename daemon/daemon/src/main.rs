@@ -262,14 +262,24 @@ fn main() {
     power.publish_to(Arc::clone(&events));
     registry.register(Box::new(system));
     registry.register(Box::new(power.clone()));
-    registry.register(Box::new(fan));
+    registry.register(Box::new(fan.clone()));
     registry.register(Box::new(rgb));
     registry.register(Box::new(overclock));
     registry.register(Box::new(gpu));
     registry.register(Box::new(network));
     registry.register(Box::new(hotkey.clone()));
     registry.register(Box::new(keymap));
-    registry.register(Box::new(InstallerModule::new()));
+    // Installing the driver reloads hp-wmi, which renumbers the hwmon
+    // directory the fan module found at startup. Handing it a way to look
+    // again is what makes an install take effect without anyone being told
+    // to restart the daemon afterwards.
+    registry.register(Box::new(
+        InstallerModule::new()
+            .publish_to(Arc::clone(&events))
+            .on_driver_changed(Box::new(move || {
+                fan.rediscover();
+            })),
+    ));
     let registry = Arc::new(registry);
 
     // The shortcut, once somebody has taught the daemon which key it is.

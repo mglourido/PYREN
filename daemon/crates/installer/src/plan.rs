@@ -17,6 +17,10 @@ use crate::detect::{Environment, HookFlavour};
 
 /// DKMS package identity, matching the source project's `dkms.conf`.
 pub const DKMS_NAME: &str = "hp-wmi-omen";
+/// Where the measured ceilings are written for `modprobe` to pick up. In
+/// `/etc` rather than `/usr/lib` because it is this machine's measurement,
+/// not the package's opinion.
+pub const MODPROBE_CONF_PATH: &str = "/etc/modprobe.d/pyren-hp-wmi.conf";
 pub const DKMS_VERSION: &str = "1.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +30,16 @@ pub enum Action {
     RestoreDriver,
     InstallService,
     RemoveService,
+    /// Hand the driver a measured fan ceiling, without rebuilding it.
+    ///
+    /// This is what makes a calibration reach the hardware at all. The
+    /// ceilings the installer patches into the source are the driver's
+    /// last fallback - a board whose firmware answers the fan-table query
+    /// overwrites them during probe - and they can only be changed by
+    /// compiling the module again. The module parameters can be changed by
+    /// writing a file and reloading, they outrank the firmware, and they
+    /// survive both a DKMS rebuild and a kernel upgrade.
+    PinFanCeiling,
 }
 
 /// How a permanent install keeps the module across kernel upgrades.
@@ -122,6 +136,7 @@ pub struct PlanOptions {
 pub fn plan(env: &Environment, action: Action, options: PlanOptions) -> Plan {
     match action {
         Action::InstallDriver => plan_install_driver(env, options),
+        Action::PinFanCeiling => plan_pin_fan_ceiling(env),
         Action::RestoreDriver => plan_restore_driver(env),
         Action::InstallService => plan_install_service(env),
         Action::RemoveService => plan_remove_service(env),
@@ -295,6 +310,39 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         ),
     ];
 
+    // A machine that was installed one way and is being installed the
+    // other keeps working either way - both mechanisms rebuild from the
+    // same patched source - but it ends up with two things claiming the
+    // module across a kernel upgrade, in two different directories. That
+    // is how the stock backup got overwritten with a patched module once
+    // already, so the strategy being left behind is retired here.
+    match strategy {
+        Strategy::Dkms if env.hook_installed => steps.push(
+            Step::internal(
+                "remove-hooks",
+                msg!(
+                    "installer.step.remove-hooks-switch",
+                    "Delete the kernel-upgrade hook from the previous install; DKMS rebuilds \
+                     the module from now on"
+                ),
+            )
+            .optional(),
+        ),
+        Strategy::Hooks if env.dkms_installed => steps.push(
+            Step::command(
+                "dkms-remove-old",
+                msg!(
+                    "installer.step.dkms-remove-switch",
+                    "Deregister the DKMS module from the previous install; the kernel hook \
+                     rebuilds the module from now on"
+                ),
+                &["dkms", "remove", &format!("{DKMS_NAME}/{DKMS_VERSION}"), "--all"],
+            )
+            .optional(),
+        ),
+        _ => {}
+    }
+
     match strategy {
         Strategy::Dkms => {
             if env.dkms_installed {
@@ -435,6 +483,72 @@ fn initramfs_step(env: &Environment) -> Option<Step> {
     )
 }
 
+/// Writing the measurement where the driver will read it, and reloading
+/// so it does. Deliberately small: no compiler, no DKMS, no initramfs - if
+/// this needed any of those it could not be run after every calibration,
+/// which is the point of it existing.
+fn plan_pin_fan_ceiling(env: &Environment) -> Plan {
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+
+    if !env.driver_accepts_measured_rpm {
+        blockers.push(Blocker {
+            id: "driver-has-no-parameter".to_string(),
+            message: msg!(
+                "installer.blocker.noMeasuredRpmParam",
+                "The hp-wmi loaded here has no measured-ceiling parameter, so there is \
+                 nowhere to put the measurement. It was built before this existed; \
+                 installing the driver again produces one that has it."
+            ),
+            fix: None,
+        });
+    }
+
+    // Losing hp-wmi for a moment takes fan control with it, along with the
+    // hotkeys and the firmware profile. Short, but not nothing, and a user
+    // who is about to be asked to confirm deserves to know.
+    warnings.push(msg!(
+        "installer.warn.reloadDropsFanControl",
+        "hp-wmi is unloaded and loaded again, so fan control, the laptop's hotkeys and \
+         the firmware profile are gone for a moment. The fans keep running on the \
+         firmware's own curve while they are."
+    ));
+
+    let steps = vec![
+        Step::internal(
+            "write-modprobe-conf",
+            msg!(
+                "installer.step.write-modprobe-conf",
+                { "path" => MODPROBE_CONF_PATH },
+                "Write the measured ceilings to {path}, so every later load uses them too"
+            ),
+        ),
+        Step::command(
+            "modprobe-remove",
+            msg!("installer.step.modprobe-remove-plain", "Unload hp-wmi"),
+            &["modprobe", "-r", "hp-wmi"],
+        )
+        .optional(),
+        Step::command(
+            "modprobe",
+            msg!(
+                "installer.step.modprobe-measured",
+                "Load hp-wmi again, this time with the measured ceilings"
+            ),
+            &["modprobe", "hp-wmi"],
+        ),
+    ];
+
+    Plan {
+        action: Action::PinFanCeiling,
+        strategy: None,
+        steps,
+        blockers,
+        warnings,
+        needs_root: true,
+    }
+}
+
 fn plan_restore_driver(env: &Environment) -> Plan {
     let mut steps = Vec::new();
 
@@ -459,6 +573,19 @@ fn plan_restore_driver(env: &Environment) -> Plan {
     steps.push(Step::internal(
         "remove-hooks",
         msg!("installer.step.remove-hooks", "Delete any installed kernel-upgrade hook"),
+    ));
+    // Not tidiness: modprobe refuses a module given a parameter it does
+    // not have, and the distribution's own hp-wmi has neither of these.
+    // Left behind, this file stops the restored driver from loading at
+    // all - a "restore" that takes fan control away for good.
+    steps.push(Step::internal(
+        "remove-modprobe-conf",
+        msg!(
+            "installer.step.remove-modprobe-conf",
+            { "path" => MODPROBE_CONF_PATH },
+            "Delete {path}; the stock driver has no measured-ceiling parameter and refuses \
+             to load when given one"
+        ),
     ));
     steps.push(Step::internal(
         "restore-backups",
@@ -602,6 +729,8 @@ mod tests {
             },
             distro_id: "arch".into(),
             hook_flavour: HookFlavour::Pacman,
+            hook_installed: false,
+            driver_accepts_measured_rpm: true,
             headers: HeadersInfo {
                 build_dir: Some(PathBuf::from("/lib/modules/6.12.4-arch1-1/build")),
                 has_autoconf: true,
@@ -823,6 +952,94 @@ mod tests {
         assert!(
             steps.iter().position(|id| *id == "dkms-remove-old")
                 < steps.iter().position(|id| *id == "dkms-add")
+        );
+    }
+
+    /// Switching from the hook strategy to DKMS has to retire the hook.
+    /// Left in place, both rebuild the module on a kernel upgrade, into
+    /// two different directories - which is how a patched module ended up
+    /// recorded as the distribution's own backup once already.
+    #[test]
+    fn moving_to_dkms_retires_the_hook_the_last_install_left() {
+        let env = Environment { hook_installed: true, ..ready_env() };
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+        let steps = ids(&plan);
+
+        assert_eq!(plan.strategy, Some(Strategy::Dkms));
+        assert!(steps.contains(&"remove-hooks"));
+        assert!(
+            steps.iter().position(|id| *id == "remove-hooks")
+                < steps.iter().position(|id| *id == "dkms-add")
+        );
+        // Failing to delete a hook must not abort an otherwise good
+        // install: the module is built and loaded either way.
+        assert!(plan.steps.iter().find(|s| s.id == "remove-hooks").unwrap().optional);
+    }
+
+    /// And the same in the other direction.
+    #[test]
+    fn moving_to_hooks_deregisters_the_dkms_module() {
+        let env = Environment { dkms_installed: true, ..ready_env() };
+        let options = PlanOptions { prefer_hooks: true, ..PlanOptions::default() };
+        let plan = plan(&env, Action::InstallDriver, options);
+        let steps = ids(&plan);
+
+        assert_eq!(plan.strategy, Some(Strategy::Hooks));
+        assert!(steps.contains(&"dkms-remove-old"));
+        assert!(
+            steps.iter().position(|id| *id == "dkms-remove-old")
+                < steps.iter().position(|id| *id == "make")
+        );
+        assert!(plan.steps.iter().find(|s| s.id == "dkms-remove-old").unwrap().optional);
+    }
+
+    /// A machine with neither leftover gets neither step - the plan says
+    /// what will run, and a no-op step in it is a lie about the machine.
+    #[test]
+    fn a_machine_with_nothing_to_retire_gets_no_retirement_steps() {
+        let plan = plan(&ready_env(), Action::InstallDriver, PlanOptions::default());
+        let steps = ids(&plan);
+        assert!(!steps.contains(&"remove-hooks"));
+        assert!(!steps.contains(&"dkms-remove-old"));
+    }
+
+    /// The whole reason this action exists: a measurement reaches the
+    /// driver without a compiler, DKMS or an initramfs anywhere in it.
+    #[test]
+    fn pinning_a_measured_ceiling_needs_no_rebuild() {
+        let plan = plan(&ready_env(), Action::PinFanCeiling, PlanOptions::default());
+        let steps = ids(&plan);
+
+        assert!(plan.blockers.is_empty());
+        assert_eq!(steps, vec!["write-modprobe-conf", "modprobe-remove", "modprobe"]);
+        for absent in ["dkms-build", "make", "initramfs", "depmod"] {
+            assert!(!steps.contains(&absent), "{absent} would make this too expensive to run");
+        }
+        assert!(plan.needs_root);
+    }
+
+    /// A driver built before the parameter existed has nowhere to put the
+    /// measurement, and saying "reinstall" is more use than writing a file
+    /// that nothing will read.
+    #[test]
+    fn pinning_is_blocked_when_the_driver_has_no_parameter_for_it() {
+        let env = Environment { driver_accepts_measured_rpm: false, ..ready_env() };
+        let plan = plan(&env, Action::PinFanCeiling, PlanOptions::default());
+        assert!(!plan.is_runnable());
+        assert_eq!(plan.blockers[0].id, "driver-has-no-parameter");
+    }
+
+    /// Left behind, the file stops the stock driver from loading at all:
+    /// modprobe refuses a parameter the module does not have.
+    #[test]
+    fn restoring_takes_the_modprobe_conf_away() {
+        let plan = plan(&ready_env(), Action::RestoreDriver, PlanOptions::default());
+        let steps = ids(&plan);
+        assert!(steps.contains(&"remove-modprobe-conf"));
+        assert!(
+            steps.iter().position(|id| *id == "remove-modprobe-conf")
+                < steps.iter().position(|id| *id == "modprobe"),
+            "it has to be gone before the stock driver is loaded"
         );
     }
 

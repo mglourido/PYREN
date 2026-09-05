@@ -19,9 +19,9 @@ use std::process::Command;
 use pyren_core::{msg, Msg};
 use serde::Serialize;
 
-use crate::detect::{Environment, HookFlavour};
+use crate::detect::{hook_paths, Environment, HookFlavour, HOOK_FLAVOURS};
 use crate::patch::{self, BoardTable, MaxRpm};
-use crate::plan::{Plan, Step, DKMS_NAME, DKMS_VERSION};
+use crate::plan::{Plan, Step, DKMS_NAME, DKMS_VERSION, MODPROBE_CONF_PATH};
 
 /// Extra inputs an install needs beyond the plan itself.
 #[derive(Debug, Clone, Default)]
@@ -80,33 +80,77 @@ pub struct ExecutionReport {
     pub results: Vec<StepResult>,
 }
 
+/// One thing worth telling a watching UI, as it happens.
+///
+/// Emitted twice per step - once as it starts, once with what it did - so
+/// a progress bar can advance on the *start* of a step rather than on the
+/// end of the previous one. The difference is visible: `dkms-build` takes
+/// most of an install, and a bar that only moves when a step finishes sits
+/// still through it with nothing on screen saying why.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress<'a> {
+    /// 0-based, so `index + 1` of `total` reads naturally.
+    pub index: usize,
+    pub total: usize,
+    pub id: &'a str,
+    /// Translatable - render with `tm()`. Copied from the plan step.
+    pub description: &'a Msg,
+    /// `None` while the step is running; the outcome once it is over.
+    pub status: Option<StepStatus>,
+    /// Only on the second emission, and only when there is something to
+    /// show: command output, or the error.
+    pub detail: Option<&'a Msg>,
+}
+
+/// Somewhere to send [`Progress`] as it happens. `Sync` because the
+/// daemon's event bus is shared.
+pub type ProgressSink<'a> = &'a (dyn Fn(Progress) + Sync);
+
 pub fn execute(
     plan: &Plan,
     env: &Environment,
     context: &ExecuteContext,
     dry_run: bool,
 ) -> ExecutionReport {
+    execute_watched(plan, env, context, dry_run, None)
+}
+
+/// [`execute`], with somebody watching.
+///
+/// A dry run reports its steps too: the wizard shows the same panel for
+/// both, and a rehearsal that skipped straight to the report would look
+/// like a real run that had gone wrong.
+pub fn execute_watched(
+    plan: &Plan,
+    env: &Environment,
+    context: &ExecuteContext,
+    dry_run: bool,
+    progress: Option<ProgressSink>,
+) -> ExecutionReport {
     let mut results = Vec::new();
     let mut failed = false;
+    let total = plan.steps.len();
 
-    for step in &plan.steps {
-        if failed {
-            results.push(result(
-                step,
-                StepStatus::Skipped,
-                msg!("installer.exec.skipped", "skipped after an earlier failure"),
-            ));
-            continue;
+    for (index, step) in plan.steps.iter().enumerate() {
+        if let Some(sink) = progress {
+            sink(Progress {
+                index,
+                total,
+                id: &step.id,
+                description: &step.description,
+                status: None,
+                detail: None,
+            });
         }
-        if step.optional && context.skip_steps.iter().any(|id| id == &step.id) {
-            results.push(result(
-                step,
-                StepStatus::Declined,
-                msg!("installer.exec.declined", "not run, at your request"),
-            ));
-            continue;
-        }
-        if dry_run {
+        // One outcome per step, worked out before anything is pushed, so
+        // there is a single place that both records it and announces it.
+        // The early returns this replaced each skipped the announcement.
+        let done = if failed {
+            result(step, StepStatus::Skipped, msg!("installer.exec.skipped", "skipped after an earlier failure"))
+        } else if step.optional && context.skip_steps.iter().any(|id| id == &step.id) {
+            result(step, StepStatus::Declined, msg!("installer.exec.declined", "not run, at your request"))
+        } else if dry_run {
             let detail = if step.command.is_empty() {
                 // Deliberately the same sentence as the plan step's
                 // `installer.internalStep`: one concept, one name. A client
@@ -117,21 +161,30 @@ pub fn execute(
                 // A command line, quoted verbatim.
                 Msg::literal(step.command.join(" "))
             };
-            results.push(result(step, StepStatus::Planned, detail));
-            continue;
-        }
+            result(step, StepStatus::Planned, detail)
+        } else {
+            match run_step(step, env, context) {
+                // Real-run detail is command output / OS text: verbatim.
+                Ok(detail) => result(step, StepStatus::Ok, Msg::literal(detail)),
+                Err(e) if step.optional => result(step, StepStatus::Warned, Msg::literal(e)),
+                Err(e) => {
+                    failed = true;
+                    result(step, StepStatus::Failed, Msg::literal(e))
+                }
+            }
+        };
+        results.push(done);
 
-        let outcome = run_step(step, env, context);
-        match outcome {
-            // Real-run detail is command output / OS text: shown verbatim.
-            Ok(detail) => results.push(result(step, StepStatus::Ok, Msg::literal(detail))),
-            Err(e) if step.optional => {
-                results.push(result(step, StepStatus::Warned, Msg::literal(e)));
-            }
-            Err(e) => {
-                results.push(result(step, StepStatus::Failed, Msg::literal(e)));
-                failed = true;
-            }
+        // Whatever the branch above decided, it is the last thing pushed.
+        if let (Some(sink), Some(done)) = (progress, results.last()) {
+            sink(Progress {
+                index,
+                total,
+                id: &step.id,
+                description: &step.description,
+                status: Some(done.status),
+                detail: Some(&done.detail),
+            });
         }
     }
 
@@ -153,6 +206,8 @@ fn run_step(step: &Step, env: &Environment, context: &ExecuteContext) -> Result<
         "backup-driver" => backup_stock_driver(&env.kernel.release),
         "install-module" => install_module(&env.kernel.release),
         id if id.starts_with("install-hook") => install_hook(env),
+        "write-modprobe-conf" => write_modprobe_conf(context),
+        "remove-modprobe-conf" => remove_modprobe_conf(),
         "remove-sources" => remove_sources(),
         "remove-hooks" => remove_hooks(),
         "restore-backups" => restore_backups(&env.kernel.release),
@@ -255,35 +310,45 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 fn module_dirs(kernel_release: &str) -> [PathBuf; 2] {
     [
-        PathBuf::from(format!(
-            "/lib/modules/{kernel_release}/kernel/drivers/platform/x86/hp"
-        )),
+        stock_module_dir(kernel_release),
         PathBuf::from(format!("/lib/modules/{kernel_release}/updates")),
     ]
 }
 
-/// Backs up and removes any stock `hp-wmi.ko`.
+/// The one directory a distribution ships its own `hp-wmi` in. Anything
+/// under `updates/` got there from DKMS or from this installer.
+fn stock_module_dir(kernel_release: &str) -> PathBuf {
+    PathBuf::from(format!(
+        "/lib/modules/{kernel_release}/kernel/drivers/platform/x86/hp"
+    ))
+}
+
+/// Backs up and removes any `hp-wmi.ko` in the way of the one about to be
+/// installed.
 ///
-/// The `.bak` is only written when one doesn't already exist: re-running an
-/// install must not replace the pristine backup with an already-patched
-/// module, or restoring would never get back to the distro's driver.
+/// **Only the first module found in a directory is the stock one**, and
+/// only in the directory a distribution actually ships to. Both halves of
+/// that were learned the hard way:
+///
+/// - The backup used to be keyed on the *filename*, so a run that found
+///   `hp-wmi.ko` next to an existing `hp-wmi.ko.zst.bak` wrote a second
+///   backup - of an already-patched module, since a previous install by
+///   the hook strategy leaves its uncompressed `hp-wmi.ko` exactly there.
+///   Restoring then renamed both back, and `depmod` preferred the
+///   uncompressed one: "restored the distribution's driver" put the
+///   patched one in place. A backup already present in a directory means
+///   the stock module is safe, so what is there now is ours to delete.
+/// - `updates/` never holds a distribution's own module, so nothing found
+///   there is a candidate for the pristine backup - it is a previous DKMS
+///   install of ours, and backing it up would tell the same lie.
 fn backup_stock_driver(kernel_release: &str) -> Result<String, String> {
+    let stock_dir = stock_module_dir(kernel_release);
     let mut backed_up = Vec::new();
 
     for dir in module_dirs(kernel_release) {
-        for module in find_modules(&dir, "hp-wmi.ko") {
-            if module.to_string_lossy().ends_with(".bak") {
-                continue;
-            }
-            let backup = PathBuf::from(format!("{}.bak", module.display()));
-            if !backup.exists() {
-                fs::copy(&module, &backup)
-                    .map_err(|e| format!("backing up {}: {e}", module.display()))?;
-                backed_up.push(backup.display().to_string());
-            }
-            fs::remove_file(&module)
-                .map_err(|e| format!("removing {}: {e}", module.display()))?;
-        }
+        // `updates/` holds no stock module to preserve, whatever is or
+        // isn't backed up there.
+        backed_up.extend(backup_in(&dir, dir == stock_dir)?);
     }
 
     Ok(if backed_up.is_empty() {
@@ -291,6 +356,31 @@ fn backup_stock_driver(kernel_release: &str) -> Result<String, String> {
     } else {
         format!("backed up {}", backed_up.join(", "))
     })
+}
+
+/// One directory's worth of the backup, and what it preserved. Split out
+/// for the same reason as [`restore_in`]: a function whose whole job is
+/// copying and deleting kernel modules can only be tested against a
+/// temporary directory.
+fn backup_in(dir: &Path, may_hold_stock: bool) -> Result<Vec<String>, String> {
+    let modules = find_modules(dir, "hp-wmi.ko");
+    let already_backed_up = modules.iter().any(|m| m.to_string_lossy().ends_with(".bak"));
+    let holds_stock = may_hold_stock && !already_backed_up;
+
+    let mut backed_up = Vec::new();
+    for module in modules {
+        if module.to_string_lossy().ends_with(".bak") {
+            continue;
+        }
+        if holds_stock {
+            let backup = PathBuf::from(format!("{}.bak", module.display()));
+            fs::copy(&module, &backup)
+                .map_err(|e| format!("backing up {}: {e}", module.display()))?;
+            backed_up.push(backup.display().to_string());
+        }
+        fs::remove_file(&module).map_err(|e| format!("removing {}: {e}", module.display()))?;
+    }
+    Ok(backed_up)
 }
 
 /// Every file under `dir` whose name starts with `name` (so `.ko`, `.ko.xz`
@@ -321,26 +411,6 @@ fn install_module(kernel_release: &str) -> Result<String, String> {
     let dest = dest_dir.join("hp-wmi.ko");
     fs::copy(&built, &dest).map_err(|e| format!("installing {}: {e}", dest.display()))?;
     Ok(format!("installed {}", dest.display()))
-}
-
-/// Where each distro family's kernel hook has to live, and what it's called
-/// in the source project's `hooks/` directory.
-fn hook_paths(flavour: HookFlavour) -> Option<(&'static str, PathBuf)> {
-    match flavour {
-        HookFlavour::Pacman => Some((
-            "90-hp-wmi-omen.hook",
-            PathBuf::from("/etc/pacman.d/hooks/90-hp-wmi-omen.hook"),
-        )),
-        HookFlavour::KernelPostinst => Some((
-            "zz-hp-wmi-omen",
-            PathBuf::from("/etc/kernel/postinst.d/zz-hp-wmi-omen"),
-        )),
-        HookFlavour::KernelInstall => Some((
-            "99-hp-wmi-omen.install",
-            PathBuf::from("/etc/kernel/install.d/99-hp-wmi-omen.install"),
-        )),
-        HookFlavour::None => None,
-    }
 }
 
 fn install_hook(env: &Environment) -> Result<String, String> {
@@ -386,11 +456,7 @@ fn remove_sources() -> Result<String, String> {
 
 fn remove_hooks() -> Result<String, String> {
     let mut removed = Vec::new();
-    for flavour in [
-        HookFlavour::Pacman,
-        HookFlavour::KernelPostinst,
-        HookFlavour::KernelInstall,
-    ] {
+    for flavour in HOOK_FLAVOURS {
         let Some((_, path)) = hook_paths(flavour) else { continue };
         if path.exists() {
             fs::remove_file(&path).map_err(|e| format!("removing {}: {e}", path.display()))?;
@@ -495,6 +561,76 @@ fn leftovers(dir: &Path, restored: &[String]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Writes the measured ceilings where `modprobe` will find them.
+///
+/// Two properties this file has that a patched constant does not: it is
+/// read on *every* load, so a kernel upgrade or a DKMS rebuild keeps the
+/// measurement without recompiling anything, and it is applied after the
+/// driver's firmware queries, so it is the only one of the two that a
+/// board answering that query actually honours.
+///
+/// A fan with no measurement is left out of the file rather than written
+/// as zero. They mean the same thing to the driver, but only one of them
+/// says it: a file listing `gpu_max_rpm_measured=0` reads like a measured
+/// ceiling of nothing.
+fn write_modprobe_conf(context: &ExecuteContext) -> Result<String, String> {
+    pin_measured_ceiling(context.max_rpm)
+}
+
+/// The durable half of pinning a measurement, on its own.
+///
+/// Separate from the reload because the two have completely different
+/// costs. Writing this file is inert: nothing changes until `hp-wmi` is
+/// next loaded, so it can be done after *any* calibration, by anyone, with
+/// no disruption at all. Reloading is what makes it take effect now, and
+/// it takes fan control, the hotkeys and the firmware profile down for a
+/// moment - and it recreates the hwmon directory, so every cached sysfs
+/// path in this process points at a file that no longer exists. That is
+/// why the daemon writes and does not reload: an install is already
+/// reloading anyway, and a plain recalibration lands at the next boot
+/// rather than breaking the running daemon to save the wait.
+pub fn pin_measured_ceiling(max_rpm: MaxRpm) -> Result<String, String> {
+    let mut options = Vec::new();
+    for (name, rpm) in [(patch::CPU_RPM_PARAM, max_rpm.cpu), (patch::GPU_RPM_PARAM, max_rpm.gpu)] {
+        // The driver counts in hundreds of RPM, and its parameters are u8,
+        // so a ceiling above 25500 rpm cannot be expressed. No fan in one
+        // of these laptops comes close, but silently truncating one would
+        // pin a ceiling nobody measured.
+        let Some(rpm) = rpm else { continue };
+        let hundreds = rpm / 100;
+        if hundreds == 0 || hundreds > u8::MAX as u32 {
+            return Err(format!("{rpm} rpm is outside what {name} can hold (100-25500 rpm)"));
+        }
+        options.push(format!("{name}={hundreds}"));
+    }
+    if options.is_empty() {
+        return Err("no measured fan ceiling to write; run the fan calibration first".to_string());
+    }
+
+    let path = Path::new(MODPROBE_CONF_PATH);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    }
+    let body = format!(
+        "# Written by Pyren from a fan calibration run on this machine.\n\
+         # These outrank the ceiling the firmware reports; delete this file\n\
+         # to go back to whatever the driver works out for itself.\n\
+         options hp-wmi {}\n",
+        options.join(" ")
+    );
+    fs::write(path, body).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(format!("wrote {} to {}", options.join(" "), path.display()))
+}
+
+fn remove_modprobe_conf() -> Result<String, String> {
+    let path = Path::new(MODPROBE_CONF_PATH);
+    if !path.exists() {
+        return Ok(format!("{} is not there", path.display()));
+    }
+    fs::remove_file(path).map_err(|e| format!("removing {}: {e}", path.display()))?;
+    Ok(format!("removed {}", path.display()))
+}
+
 const SERVICE_PATH: &str = "/etc/systemd/system/pyren-daemon.service";
 
 fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
@@ -569,6 +705,8 @@ mod tests {
             },
             distro_id: "arch".into(),
             hook_flavour: HookFlavour::Pacman,
+            hook_installed: false,
+            driver_accepts_measured_rpm: true,
             headers: HeadersInfo {
                 build_dir: Some(PathBuf::from("/lib/modules/6.12.4-arch1-1/build")),
                 has_autoconf: true,
@@ -612,6 +750,67 @@ mod tests {
         assert!(!dir.join("hp-wmi.ko.zst.bak").exists(), "the backup is consumed");
         assert_eq!(restored.len(), 1);
         assert_eq!(removed.len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The bug this machine was found in: a hook-strategy install had left
+    /// its uncompressed patched module in the distro's own directory, next
+    /// to the compressed stock module's backup. Keying the backup on the
+    /// filename saw no `hp-wmi.ko.bak` and made one - of the patched
+    /// module - and a restore then had two "stock" modules to put back.
+    #[test]
+    fn a_second_backup_is_never_taken_of_our_own_module() {
+        let dir = std::env::temp_dir().join(format!("pyren-backup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("hp-wmi.ko.zst.bak"), b"stock").unwrap();
+        fs::write(dir.join("hp-wmi.ko"), b"patched").unwrap();
+
+        let backed_up = backup_in(&dir, true).unwrap();
+
+        assert!(backed_up.is_empty(), "the stock module is already safe");
+        assert!(!dir.join("hp-wmi.ko.bak").exists(), "and must not be shadowed by a patched one");
+        assert!(!dir.join("hp-wmi.ko").exists(), "ours still goes, to leave depmod one answer");
+        assert_eq!(fs::read(dir.join("hp-wmi.ko.zst.bak")).unwrap(), b"stock");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The first install on a fresh machine, which is the one run that has
+    /// a stock module to preserve.
+    #[test]
+    fn the_first_install_backs_the_stock_module_up() {
+        let dir = std::env::temp_dir().join(format!("pyren-backup-first-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("hp-wmi.ko.zst"), b"stock").unwrap();
+
+        let backed_up = backup_in(&dir, true).unwrap();
+
+        assert_eq!(backed_up.len(), 1);
+        assert_eq!(fs::read(dir.join("hp-wmi.ko.zst.bak")).unwrap(), b"stock");
+        assert!(!dir.join("hp-wmi.ko.zst").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `updates/` is DKMS's directory and ours. A module found there is a
+    /// previous install of the patched driver, so backing it up would
+    /// record it as the distribution's - the same lie, in the other place.
+    #[test]
+    fn nothing_under_updates_is_mistaken_for_the_stock_module() {
+        let dir = std::env::temp_dir().join(format!("pyren-backup-upd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("dkms")).unwrap();
+        fs::write(dir.join("dkms/hp-wmi.ko.zst"), b"ours, from last time").unwrap();
+
+        let backed_up = backup_in(&dir, false).unwrap();
+
+        assert!(backed_up.is_empty());
+        assert!(!dir.join("dkms/hp-wmi.ko.zst.bak").exists());
+        assert!(!dir.join("dkms/hp-wmi.ko.zst").exists(), "it is still cleared out of the way");
 
         let _ = fs::remove_dir_all(&dir);
     }

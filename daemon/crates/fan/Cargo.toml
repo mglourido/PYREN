@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 pyren-core = { path = "../core" }
 pyren-config = { path = "../config" }
+pyren-installer = { path = "../installer" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"

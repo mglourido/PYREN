@@ -18,6 +18,10 @@ pub const UPSTREAM_FAN_CONTROL_KERNEL: (u32, u32) = (6, 20);
 
 const HWMON_ROOT: &str = "/sys/devices/platform/hp-wmi/hwmon";
 
+/// sysfs shows a loaded module's parameters, so this is also the check for
+/// "was this driver built from a source new enough to have them".
+const MEASURED_RPM_PARAM_PATH: &str = "/sys/module/hp_wmi/parameters/cpu_max_rpm_measured";
+
 /// Which kernel-upgrade hook mechanism this distribution uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +82,23 @@ pub struct Environment {
     pub driver_source: Option<PathBuf>,
     /// Whether the daemon's own systemd unit is installed.
     pub service_installed: bool,
+    /// Whether the loaded `hp-wmi` understands a measured fan ceiling.
+    ///
+    /// The parameter is the only route a calibration has into the driver
+    /// without a rebuild, so "is it there" is the question that decides
+    /// whether pinning a measurement is possible at all right now. A
+    /// driver installed before the parameter existed answers no, and the
+    /// remedy is a reinstall rather than anything the fan module can do.
+    pub driver_accepts_measured_rpm: bool,
+
+    /// Whether one of this installer's kernel-upgrade hooks is on disk.
+    ///
+    /// Separate from `hook_flavour`, which only says which mechanism this
+    /// distribution *has*. An install that switches strategy has to retire
+    /// the one it is leaving behind, and "a hook exists here" is the only
+    /// evidence that there is one to retire.
+    pub hook_installed: bool,
+
     /// Whether *our* patched driver is what is installed here.
     ///
     /// Without this, `fan_control_available` is two different situations
@@ -96,6 +117,8 @@ impl Environment {
 
         Self {
             hook_flavour: hook_flavour(&distro_id),
+            hook_installed: hook_installed(),
+            driver_accepts_measured_rpm: Path::new(MEASURED_RPM_PARAM_PATH).exists(),
             headers: headers_info(&kernel.release, &distro_id),
             has_dkms: which("dkms"),
             dkms_installed: dkms_status.is_some(),
@@ -177,6 +200,43 @@ pub fn hook_flavour(distro_id: &str) -> HookFlavour {
         "fedora" | "rhel" | "centos" | "rocky" | "almalinux" => HookFlavour::KernelInstall,
         _ => HookFlavour::None,
     }
+}
+
+/// Every hook mechanism this installer knows how to write, so a machine
+/// can be asked about all of them rather than only the one its own
+/// distribution uses. A hook left over from a strategy switch does not
+/// stop being a hook because the flavour was re-detected.
+pub const HOOK_FLAVOURS: [HookFlavour; 3] = [
+    HookFlavour::Pacman,
+    HookFlavour::KernelPostinst,
+    HookFlavour::KernelInstall,
+];
+
+/// Where each distro family's kernel hook has to live, and what it's called
+/// in the source project's `hooks/` directory.
+pub fn hook_paths(flavour: HookFlavour) -> Option<(&'static str, PathBuf)> {
+    match flavour {
+        HookFlavour::Pacman => Some((
+            "90-hp-wmi-omen.hook",
+            PathBuf::from("/etc/pacman.d/hooks/90-hp-wmi-omen.hook"),
+        )),
+        HookFlavour::KernelPostinst => Some((
+            "zz-hp-wmi-omen",
+            PathBuf::from("/etc/kernel/postinst.d/zz-hp-wmi-omen"),
+        )),
+        HookFlavour::KernelInstall => Some((
+            "99-hp-wmi-omen.install",
+            PathBuf::from("/etc/kernel/install.d/99-hp-wmi-omen.install"),
+        )),
+        HookFlavour::None => None,
+    }
+}
+
+fn hook_installed() -> bool {
+    HOOK_FLAVOURS
+        .into_iter()
+        .filter_map(hook_paths)
+        .any(|(_, path)| path.exists())
 }
 
 fn headers_info(kernel_release: &str, distro_id: &str) -> HeadersInfo {

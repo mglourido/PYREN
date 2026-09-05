@@ -641,9 +641,31 @@ plan is also something that pastes into a bug report.
 | `installer.inspect` | none | what this machine has, and whether the patch is needed | ✅ implemented |
 | `installer.autodetect` | none | the install's inputs, worked out from the machine | ✅ implemented, read-only |
 | `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings | ✅ implemented |
-| `installer.apply` | as above plus `confirm`, `auto`, `skipSteps`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report, autodetected? }` | ✅ implemented; `installDriver` run for real on 8D2F |
+| `installer.apply` | as above plus `confirm`, `auto`, `skipSteps`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report, autodetected? }` | ✅ implemented; `installDriver` and `pinFanCeiling` both run for real on 8D2F |
 
-All four are driven from the app by `DriverWizard.svelte` at the bottom
+`action` is one of `installDriver`, `restoreDriver`, `installService`,
+`removeService` or `pinFanCeiling`.
+
+**`pinFanCeiling` is the odd one out**, and worth knowing about before
+reaching for the others. The fan ceilings the install patches into the
+driver's source are its *last* fallback: it asks the firmware for one
+first, and a board that answers — 8D2F does, with 5200 — overwrites the
+patched constant during probe, so a measured value never reaches it. The
+patcher therefore also splices in two module parameters, applied after
+those queries, and this action writes them to
+`/etc/modprobe.d/pyren-hp-wmi.conf` and reloads `hp-wmi` so they take
+effect at once. No compiler, no DKMS, no initramfs — three steps.
+
+`fan.calibrate` writes that same file itself, and reports what came of it
+in a `pinned` field (`{ ok, detail }`, or `null` when the run measured
+nothing worth storing). It deliberately does **not** reload: that
+recreates the hwmon directory, and every sysfs path the fan module cached
+at startup would point at a file that no longer exists. So a plain
+recalibration takes effect at the next load, and `pinFanCeiling` is how a
+caller asks for "now" — at the price of a daemon restart afterwards, the
+same one every driver action already needs.
+
+All of them are driven from the app by `DriverWizard.svelte` at the bottom
 of `/drivers`, which renders the plan's steps and their commands and keeps
 "apply" disabled until a dry run of those exact options has come back —
 see `docs/03-frontend.md`. `pyren-ctl` has no installer subcommand; the
@@ -933,6 +955,7 @@ and there it is the only way to learn the number the driver's own
   "restoredMode": "auto",
   "restoreError": null,
   "detail": "3915 rpm, up from 2093 at idle, settled after 12s",
+  "pinned": { "ok": true, "detail": "wrote cpu_max_rpm_measured=39 gpu_max_rpm_measured=37 to /etc/modprobe.d/pyren-hp-wmi.conf" },
   "samples": [
     { "atSecs": 1, "fan1Rpm": 2400, "fan2Rpm": 2230, "isReverse": false }
   ],
@@ -940,7 +963,7 @@ and there it is the only way to learn the number the driver's own
 }
 ```
 
-Four rules a client should know about:
+Five rules a client should know about:
 
 - **The call blocks** for up to `seconds` (default 30, clamped to 10-120).
   There is nothing to return until a physical process finishes. The state
@@ -961,6 +984,19 @@ Four rules a client should know about:
   run fails partway or panics. If it cannot be put back — a machine
   observed in `manual` that has no `pwm1` — the fans go to `auto` rather
   than being left at full speed, and `restoreError` says so.
+
+- **The measurement is handed to the driver, not just to this daemon.**
+  `pinned` says what came of that: the ceilings go to
+  `/etc/modprobe.d/pyren-hp-wmi.conf`, which the driver reads on every
+  load. Before this existed a calibration only ever reached the daemon's
+  own config, and the driver went on converting between pwm and rpm
+  against a number it had guessed — see the `installer` section for why
+  patching the constant does not fix that. `pinned` is `null` when the run
+  measured nothing worth storing, and `{ ok: false, detail }` when the
+  write failed; either way the calibration itself still succeeds, because
+  the measurement is taken and the curve can use it regardless. It takes
+  effect at the **next load** of `hp-wmi` — `installer.apply` with
+  `pinFanCeiling` is how a caller asks for it now instead.
 
 `samples` is the trace, one reading a second, kept because it is the
 evidence for the verdict rather than decoration: a `didNotRespond` is much
