@@ -95,8 +95,7 @@ critical GPU fault on demand, and corrupting a card on purpose to test
 the corruption handler is not a trade this project makes. The convincing
 evidence *"will only ever come from an offset search that goes wrong by
 accident during ordinary use after this ships, not from a test suite
-manufacturing the failure on purpose"*
-(`docs/05-overclock-watchdog-plan.md`). A card that does not advertise
+manufacturing the failure on purpose"*. A card that does not advertise
 the bit, or a driver too old to have the event API, gets exactly the
 behaviour that was there before: the timer alone, silently.
 

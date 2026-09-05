@@ -1,11 +1,11 @@
 //! What lighting this machine actually has.
 //!
-//! Step 1 of `docs/04-rgb-porting-review.md` §"Suggested porting order",
-//! and the reason it is step 1: the source project has **two unrelated
-//! hardware paths** - per-key RGB over USB HID, and a 4-zone light strip
-//! over ACPI-WMI - and *which one a laptop has is not decided by the model
-//! name*. They share no transport, no privilege model and no detection, so
-//! the only honest answer comes from looking.
+//! The source project has **two unrelated hardware paths** - per-key RGB
+//! over USB HID, and a 4-zone light strip over ACPI-WMI - and *which one a
+//! laptop has is not decided by the model name*. They share no transport,
+//! no privilege model and no detection, so the only honest answer comes
+//! from looking. See `dev/FINDINGS.md` §"The RGB project has two unrelated
+//! hardware paths".
 //!
 //! This is the same rule the `system` module follows (`docs/01-ipc-protocol.md`
 //! §"`controls` and `compatibility` are measured, not looked up"). There is
@@ -113,7 +113,7 @@ fn probe_per_key() -> PerKey {
         ported: false,
         detail: if present {
             "an HP Gaming Keyboard II is attached, but this build does not drive it \
-             (see docs/04-rgb-porting-review.md, finding 1)"
+             (see dev/TODO.md, \"The per-key RGB keyboard path is not ported\")"
                 .into()
         } else {
             "no HP Gaming Keyboard II on this machine".into()

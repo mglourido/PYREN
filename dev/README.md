@@ -29,7 +29,7 @@ daemon/                 Rust workspace (the daemon and its two CLIs)
     ├── system/         machine identity + generic Linux monitoring
     ├── power/          power profiles + the auto-switch supervisor
     ├── fan/            fan status, the write path, the self-test
-    ├── rgb/            lighting: probes both paths, drives the 4-zone lightbar
+    ├── rgb/            lighting: probes both paths, drives the 4-zone keyboard
     ├── gpu/            MUX-mode switching (hp-wmi's own gpu_mux_mode)
     ├── network/        system-wide qdisc (cake/fq_codel) on the default route
     ├── keymap/         evdev-level key remapping (/dev/uinput)
@@ -38,7 +38,7 @@ daemon/                 Rust workspace (the daemon and its two CLIs)
 app/                    Tauri app: SvelteKit frontend + src-tauri shell
 tools/pyren-check.sh     dependency-free shell twin of pyren-check
 driver/                 the patched hp-wmi module, verbatim from upstream (never edited here)
-docs/                   design, IPC protocol, development, frontend, RGB review
+docs/                   architecture, IPC protocol, development, frontend
 ```
 
 ## The source projects being ported from
@@ -124,10 +124,12 @@ Every hardware module is built, wired end to end (daemon ↔ app ↔
 - **Network booster**: the one honest half (system-wide `cake`/`fq_codel`
   via the default-route interface) confirmed on hardware; per-process
   prioritisation was scoped out on purpose, see `TODO.md` §3.
-- **GPU overclocking**: the clock lock (`nvidia-smi --lock-gpu-clocks`)
-  confirmed working as root, with its revert-on-lapse timer proven
-  against a real GPU. Offset writes are confirmed unreachable *on this
-  session* (Wayland, no `Coolbits` screen) rather than untested.
+- **GPU overclocking**: core and memory offsets applied and reverted on a
+  real GPU through NVML (`libnvidia-ml`), which needs no X and no
+  `Coolbits`; the clock lock (`nvidia-smi --lock-gpu-clocks`) and its
+  revert-on-lapse timer are proven the same way. The only unexercised
+  path is the `nvidia-settings` fallback for drivers too old for NVML's
+  offset support. See `TEST.md`.
 - **Frontend**: the whole Pyren surface, bilingual, with settings on
   disk, and a live progress overlay for driver actions (one segment per
   step, driven by the daemon's own `installer.progress` events).
@@ -141,9 +143,9 @@ Every hardware module is built, wired end to end (daemon ↔ app ↔
 ## What is still open
 
 See `TODO.md` for the current, short list — mainly things that need
-different hardware to finish confirming (AMD Overdrive, an Xorg session
-for NVIDIA offset writes) or a deliberate decision (raising CPU power
-limits above stock).
+different hardware to finish confirming (AMD Overdrive, keymap against a
+spare keyboard, the GPU MUX reboot swap) or a deliberate decision
+(raising CPU power limits above stock).
 
 ## The rename
 

@@ -581,7 +581,7 @@ done
 if [ "$PER_KEY" -eq 1 ]; then
 	record warn lighting-per-key "Per-key RGB keyboard" \
 		"$PER_KEY_ID is attached, but this build does not drive it" \
-		"The per-key path is deliberately unported until the key map's backspace entry can be checked on real hardware; see docs/04-rgb-porting-review.md."
+		"The per-key path is deliberately unported until the key map's backspace entry can be checked on real hardware; see dev/TODO.md, \"The per-key RGB keyboard path is not ported\"."
 else
 	record skip lighting-per-key "Per-key RGB keyboard" "no $PER_KEY_ID on this machine"
 fi

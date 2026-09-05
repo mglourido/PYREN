@@ -171,7 +171,8 @@ fn per_key_check(probe: &Probe) -> Check {
         )
         .with_remedy(
             "The per-key path is deliberately unported until the key map's backspace \
-             entry can be checked on real hardware; see docs/04-rgb-porting-review.md.",
+             entry can be checked on real hardware; see dev/TODO.md, \
+             \"The per-key RGB keyboard path is not ported\".",
         )
     } else {
         Check::new(

@@ -40,8 +40,11 @@
 //!
 //! The `(command, command_type)` pairs below are undocumented in the
 //! driver source - reverse-engineered by the upstream project, and **not
-//! confirmed against hardware by this project**: the development laptop
-//! has no `acpi_call` (`dev/FINDINGS.md`). Everything that can be tested
+//! confirmed against hardware by this project**: `acpi_call` is loaded on
+//! the development laptop now (it is what drives the lighting - see
+//! `dev/FINDINGS.md`), but the capability query has never been put to this
+//! machine's firmware, and board 8D2F may have no fan cleaner to answer it
+//! anyway. Everything that can be tested
 //! without the firmware - the buffers built, the replies parsed, the
 //! capability decoding, the guards - is tested at the bottom of this file,
 //! so what is left untested when somebody does run it is the firmware's

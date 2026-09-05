@@ -1,6 +1,6 @@
 //! RGB lighting module - ported from the `omen-rgb-linux` Python project
-//! (arfelious, GPL-3.0), following the review in
-//! `docs/04-rgb-porting-review.md`.
+//! (arfelious, GPL-3.0). The wire protocol and its three dialects are in
+//! `docs/01-ipc-protocol.md` §"There is no single OMEN lighting protocol".
 //!
 //! | method | params | result |
 //! |---|---|---|
@@ -37,14 +37,17 @@
 //! per-key path is step 3 of the porting order, and blocked on hardware
 //! rather than on time.
 //!
-//! ## Nothing here has been confirmed against a light strip
+//! ## Confirmed against the hardware (2026-09-04)
 //!
-//! The development laptop has no `acpi_call` installed, so every constant
-//! in [`lightbar`] is upstream's reverse engineering, carried across and
-//! unit-tested for *shape* only. What that buys: when someone installs
-//! `acpi_call-dkms`, the only untested thing left is the firmware's answer,
-//! and `rgb.getCapabilities` says in words which of the three ways it can
-//! be unavailable this machine is in.
+//! On the one OMEN this has run on, the firmware speaks the [`fourzone`]
+//! dialect: `rgb.readZones` reads all four back and a write is visible on
+//! the keyboard. Two caveats, both in `dev/FINDINGS.md`: the [`lightbar`]
+//! dialect this project ported *first* answers `PASS` and does nothing
+//! here, and `acpi_call` truncates the reply so `fourZone`'s read reports
+//! the fourth zone black (the colour written to it is real). The dialect
+//! without either problem is [`kernel_zones`], which needs the out-of-tree
+//! `omen-rgb-keyboard` module. `rgb.getCapabilities` says in words which
+//! dialects this machine answered.
 
 use std::sync::{Arc, Mutex};
 

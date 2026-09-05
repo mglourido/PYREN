@@ -31,10 +31,14 @@ and nobody has sat through one to see the driving card actually change.
 Low urgency — the write path is proven — but it is the one thing about
 this feature still untested.
 
-### Fan cleaner: unconfirmed against firmware that has it
-The feature is ported and the app has a page for it, but no machine here
-answers the capability query, so what byte 8 of the modern reply means and
-whether the legacy toggle is the right bit are still upstream's word.
+### Fan cleaner: ported, never asked of real firmware
+The feature is ported and the app has a page for it. This used to be
+blocked on `acpi_call`; it is installed and loaded now — it is what
+drives the lighting — so the capability query can finally be put to this
+machine's firmware. Nobody has recorded doing it, and if board 8D2F turns
+out to have no fan cleaner the feature still needs a machine that does.
+Until then, what stays upstream's word: what byte 8 of the modern reply
+means, and whether the legacy toggle is the right bit.
 `fan.startCleaning { "force": true }` skips the "no fan cleaner here"
 refusal so this can be tried on a machine that has the feature.
 
@@ -42,13 +46,6 @@ refusal so this can be tried on a machine that has the feature.
 `pp_od_clk_voltage` is a two-line write away and stays unwritten until
 there is an AMD machine to test on: a wrong value there does not fail with
 an error message. The probe already says so.
-
-### NVIDIA offset writes: unreachable on this session, unverified on any
-`Coolbits` is a property of the X screen, and this desktop is Wayland-only
-with no Xorg screen to put it on — read fine as the user, refused
-everywhere else, on purpose (see `overclock`'s own probe text). Untried:
-`oc probe --write` then `oc set --core 15` on different hardware or an
-Xorg session.
 
 ### Raising CPU PL1/PL2 above stock
 Deliberately not in the `overclock` module yet: the `power` module owns
@@ -77,12 +74,30 @@ is a decision, not an addition — and it would need the same consent gate
   should also settle where the *daemon's* system unit comes from — nothing
   installs one today, and the service running here points at a debug
   build inside the tree.
-- **CONTRIBUTING.md**, including how to add a translation (the mechanism
-  is already documented in `docs/03-frontend.md` and the Help page).
-- **More locales.** Only `en` and `es`; adding one is dropping a JSON file
-  in `app/src/lib/i18n/locales/`.
-- **Accessibility pass** on the frontend: keyboard navigation through the
-  mode cards and the fan-curve editor, focus visibility, reduced motion.
+- **`kernelZones` needs a module nothing installs.** The RGB dialect that
+  reads all four zones back and never hand-builds a firmware buffer is
+  `kernelZones`, over the out-of-tree `OmenLinux/omen-rgb-keyboard` module.
+  `tools/try-kernel-zones.sh` installs it by hand (and rolls back if
+  `hp-wmi`'s `pwm1` stops answering); it is not persistent across a kernel
+  upgrade and the installer does not carry it. Until it does, a fresh
+  machine auto-picks `fourZone`, whose fourth zone is written correctly but
+  reads back black because `acpi_call` truncates the reply. Either package
+  the module (DKMS, alongside the driver install) or accept the `fourZone`
+  read limit as documented. See `FINDINGS.md` §"`kernelZones` works".
+- **The per-key RGB keyboard path is not ported.** Only the 4-zone lightbar
+  is. Port the USB-HID path (`0d62:54bf`, HP Gaming Keyboard II) only if
+  such a device turns up on a machine — this one has none (`FINDINGS.md`
+  §"The test laptop has no per-key RGB keyboard"). Settle first the
+  `set_all()` vs `keys.json` contradiction about `backspace` (`FINDINGS.md`
+  §"`keys.json` really does contradict `set_all()`"): set the keyboard
+  white, look at backspace, then `set-key backspace ffffff` — a dark
+  segment in the first case but not the second means `set_all()` is
+  blanking real LEDs; identical both times means the key-map entry is the
+  wrong shape. Three upstream quirks to carry over: the HID lighting
+  interface is write-only (`get_colors()` returns the driver's buffer, not
+  hardware state), the interface-number-3 filter in `hid.enumerate` tells
+  the lighting endpoint from the input ones, and the double-write of the
+  `0x0a` commit report is marked mandatory — keep it.
 - **End-to-end IPC test**: spawn the daemon on a temp socket, exercise
   every module method. Would have caught the Tauri command wiring being
   untested for two sessions, and is the natural place to prove the
@@ -92,12 +107,29 @@ is a decision, not an addition — and it would need the same consent gate
   tools/pyren-check.sh`, which catches syntax and nothing else.
   `shellcheck` wasn't added because it isn't installed here and a lint
   nobody has run locally would land red.
+- **The `nvidia-settings` offset fallback is unexercised.** GPU core and
+  memory offsets are verified on hardware through NVML (`TEST.md`), which
+  needs no X and no `Coolbits`; the `nvidia-settings` path only runs on a
+  driver too old for NVML's offset support and has never been hit on any
+  machine. `oc probe --write` on an Xorg session with an old driver is
+  what would confirm it — not urgent, since the mechanism that matters
+  works.
 
 ---
 
 ## 3. Deliberately not done
 
 Recorded so nobody "fixes" them by accident:
+
+- **The GPU-fault watchdog watches only for critical XIDs.** Not ECC error
+  counters (this consumer GPU's bitmask marks single/double-bit ECC
+  unsupported, and a card with no ECC memory has nothing to count), and not
+  clock/thermal throttle reasons — a card throttling under an overclock is
+  usually working as intended, so reverting on it would undo overclocks
+  that were never dangerous. Throttle reasons are worth *showing* in
+  `status()` some day, just not as a revert trigger. A general NVML event
+  feed for the app is also out of scope: the watchdog protects the confirm
+  window, it is not a monitoring feature.
 
 - **No read-only access for non-members of `pyren`.** The socket is
   `0660`; a user outside the group gets nothing, not "vitals but no

@@ -40,10 +40,14 @@ Three stores, deliberately separate:
   started once in the root layout so history graphs stay continuous across
   navigation. Ref-counted `start()`/`stop()`.
 - **`hardware`** — what the *user asked for* (power mode, fan mode, curve,
-  power limits, GPU mode). Power and fan writes go to the daemon; GPU stays
-  local-only until that daemon path lands. Lighting used to live here and
-  no longer does: the lighting page reads and writes the `rgb` module
-  directly, so there is no second copy of the zone colours to keep in step.
+  power limits, GPU MUX mode). All of those write to the daemon —
+  `power`, `fan` and `gpu` respectively; `setGpuMode` sets the choice
+  locally first, then calls the `gpu` module and surfaces a refusal
+  rather than pretending the write landed. Two features that could have
+  lived here do not: the lighting page reads and writes the `rgb` module
+  directly, and the overclock page (`/system/advanced`) the `overclock`
+  module, each keeping its own state so there is no second copy of the
+  zone colours or the pending-offset countdown to hold in step.
   `syncFromDaemon()` seeds the store from the machine's real state on
   startup, so the UI opens showing the mode the machine is actually in.
 

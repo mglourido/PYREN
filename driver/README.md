@@ -47,10 +47,27 @@ from, so patching twice gives the same result as patching once.
 
 ## Licensing
 
-`hp-wmi.c` is a modified copy of a Linux kernel driver and is **GPL-2**, as
-its own `MODULE_LICENSE` says. The surrounding project is GPL-3;
-`LICENSE.upstream.md` is upstream's copy of that licence, kept alongside the
-files it covers. Pyren's own licence is at the repository root.
+`hp-wmi.c` is a modified copy of a Linux kernel driver. Its
+`SPDX-License-Identifier` and its `MODULE_LICENSE` both say
+**`GPL-2.0-or-later`** — GPL v2 *or, at your option, any later version*.
+That "or later" is what makes it distributable inside Pyren: GPL-2.0-or-later
+is upward-compatible with **GPL v3**, the licence of the surrounding project.
+
+This file is **not relicensed**. It keeps its own SPDX header and its own
+copyright notices:
+
+- Copyright (C) 2008 Red Hat `<mjg@redhat.com>`
+- Copyright (C) 2010, 2011 Anssi Hannula `<anssi.hannula@iki.fi>`
+- portions based on `wistron_btns.c`, Copyright (C) 2005 Miloslav Trmac,
+  Bernhard Rosenkraenzer, Dmitry Torokhov
+
+Do not strip those, and do not change the SPDX tag. When the installer
+patches its staged copy at build time, the result is a modified work that
+stays under GPL-2.0-or-later.
+
+`LICENSE.upstream.md` is upstream's copy of the GPL text, kept alongside the
+files it covers. Pyren's own licence is at the repository root
+(`LICENSE`), and `NOTICE` there records this credit too.
 
 ## The rule for this directory
 

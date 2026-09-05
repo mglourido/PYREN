@@ -13,9 +13,10 @@
 //! the case the manual override exists for.
 //!
 //! Ported from `src/lightbar.py` in `omen-rgb-linux`
-//! (arfelious, GPL-3.0). The review that preceded this port is
-//! `docs/04-rgb-porting-review.md`; three of its findings are fixed here
-//! rather than carried over, and each fix is commented where it lands.
+//! (arfelious, GPL-3.0). Three upstream bugs are fixed here rather than
+//! carried over, and each fix is commented where it lands; the reasoning
+//! is in `dev/FINDINGS.md` §"The RGB project has two unrelated hardware
+//! paths".
 //!
 //! ## The protocol
 //!

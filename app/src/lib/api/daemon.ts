@@ -133,7 +133,7 @@ export type RgbPerKey = {
   present: boolean;
   /** The USB id that was looked for, so a bug report says what was searched. */
   usbId: string;
-  /** Always false in this build - see docs/04-rgb-porting-review.md step 3. */
+  /** Always false in this build - see dev/TODO.md, "The per-key RGB keyboard path is not ported". */
   ported: boolean;
   detail: string;
 };

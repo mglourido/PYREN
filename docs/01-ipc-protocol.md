@@ -1263,7 +1263,7 @@ first that answers is used.
 
 | id | how | needs | where it comes from |
 |---|---|---|---|
-| `kernelZones` | `/sys/devices/platform/hp-wmi/rgb_zones/zone00…03`, one `RRGGBB` each | a kernel that publishes them | the in-tree and out-of-tree `hp-wmi` four-zone support |
+| `kernelZones` | `/sys/devices/platform/{hp-wmi,omen-rgb-keyboard}/rgb_zones/zone00…03`, one `RRGGBB` each | a kernel that publishes them (in-tree `hp-wmi`, or the out-of-tree `omen-rgb-keyboard` module) | the in-tree and out-of-tree `hp-wmi` four-zone support |
 | `fourZone` | WMI command `0x20009`, command types 2 (`COLOR_GET`) / 3 (`COLOR_SET`); zones at byte 25 of a 128-byte state buffer | `acpi_call`, root | the 2023 `hp-wmi` four-zone patch and `OmenLinux/omen-rgb-keyboard` (2025), read independently and in agreement |
 | `lightbar` | WMI command `0x20009`, command type 11 (`SET_LIGHTBAR_COLORS`); brightness at byte 3, zones at byte 7 | `acpi_call`, root | `omen-rgb-linux`, the port this module started as |
 
@@ -1307,9 +1307,10 @@ hardware, and only one of them is driven:
 | Device | HP Gaming Keyboard II, `0d62:54bf` | `hp-wmi` (+ the `acpi_call` module for the WMI dialects) |
 
 Both are probed; only the second is driven. On the one OMEN this project
-has run on there is no `0d62` device on the bus at all. The full reasoning,
-and the three upstream bugs this port fixes rather than carries over, are
-in [`04-rgb-porting-review.md`](04-rgb-porting-review.md).
+has run on there is no `0d62` device on the bus at all. The three upstream
+bugs this port fixes rather than carries over are noted at their fix sites
+in `daemon/crates/rgb` and in `dev/FINDINGS.md` §"The RGB project has two
+unrelated hardware paths".
 
 `getCapabilities` answers:
 
@@ -1556,7 +1557,7 @@ honest read of `tc qdisc show` — ours or not.
 | `overclock.getState` | none | every GPU, what can be moved on it, and what is set | ✅ implemented, read-only |
 | `overclock.probe` | `{ "allowWrites"?: bool }` | a **fresh** look, replacing the startup one | ✅ implemented; writes only with `allowWrites` |
 | `overclock.setConsent` | `{ "accepted": bool }` | the state | ✅ implemented |
-| `overclock.apply` | `{ "gpu"?, "coreOffsetMhz"?, "memOffsetMhz"?, "clockLock"?, "holdSecs"? }` | the state, with `pending` armed | ✅ implemented; clock locks need root, offsets need Coolbits |
+| `overclock.apply` | `{ "gpu"?, "coreOffsetMhz"?, "memOffsetMhz"?, "clockLock"?, "holdSecs"? }` | the state, with `pending` armed | ✅ implemented; offsets and clock locks both need root, nothing else |
 | `overclock.confirm` | none | the state | ✅ implemented |
 | `overclock.cancel` | none | the state | ✅ implemented |
 | `overclock.reset` | `{ "gpu"? }` | the state | ✅ implemented |
@@ -1622,7 +1623,8 @@ written, and `unconfirmedAtStart` says so.
 
 | vendor | mechanism | needs | status |
 |---|---|---|---|
-| NVIDIA | `nvidia-settings` clock offsets | an X display whose screen has `Coolbits` | implemented |
+| NVIDIA | NVML (`libnvidia-ml`) clock offsets | root | implemented, tried first |
+| NVIDIA | `nvidia-settings` clock offsets | an X display whose screen has `Coolbits` | implemented — fallback for a driver too old for NVML's `VfOffset` symbols |
 | NVIDIA | `nvidia-smi --lock-gpu-clocks` | root | implemented |
 | AMD | `pp_od_clk_voltage` (Overdrive) | `amdgpu.ppfeaturemask` | **detected, not driven** |
 | Intel | `gt_max_freq_mhz` | — | nothing to overclock: it is a ceiling, not an offset |
@@ -1632,13 +1634,22 @@ and the X configuration far more than by the model of the card, so all of
 them are probed and none is looked up — the same rule as
 §"`controls` and `compatibility` are measured, not looked up".
 
-Two of the rows deserve their reasons in full:
+The two NVIDIA offset paths are one knob with a fallback. **NVML is tried
+first**: the driver's own library, needing no X server, no session and no
+`Coolbits` — only root, which this daemon has — so it is the one that
+works on a Wayland desktop, where there is no NVIDIA X screen for
+`Coolbits` to apply to. **`nvidia-settings` is second**, and only when NVML
+cannot answer *at all* (`Unavailable` — a driver predating the `VfOffset`
+symbols); a `NotSupported` or a permission refusal from NVML is the
+driver's considered answer about this card and is not re-asked through
+another interface. `offset_mechanism` reports which one is live.
+
+Two more of the rows deserve their reasons in full:
 
 - **A clock lock is not an overclock.** `--lock-gpu-clocks` cannot ask for
   a frequency the card was not shipped able to run. It is here because it
   is the knob that decides how long the card is willing to *stay* there,
-  which is what somebody on this page is usually after — and on the laptop
-  this was written on it is the only mechanism that works at all.
+  which is what somebody on this page is usually after.
 - **AMD Overdrive is detected and deliberately not driven**, for the same
   reason `rgb` probes the per-key keyboard without driving it: there is no
   AMD machine to test on, and a wrong write to `pp_od_clk_voltage` does not
@@ -1646,37 +1657,35 @@ Two of the rows deserve their reasons in full:
 
 ### What was found on the development laptop
 
-Driver 610.57.04, RTX 5060 Laptop GPU, Wayland session with XWayland:
+Driver 610.57.04, RTX 5060 Laptop GPU, Wayland session with XWayland,
+`overclock` running as root:
 
-- both offset attributes **read** fine, advertising -1000..1000 MHz for the
-  core and -2000..6000 for the memory transfer rate;
-- writing one back at its *current* value — a no-op assignment, and the
-  only way to tell a readable attribute from a settable one — is refused
-  with "The current user does not have permission for operation", which is
-  what a screen with no `Coolbits` says.
+- **the offsets work, through NVML.** A +50 MHz core offset was applied,
+  read back off the card and reverted; a +400 memory offset moved the
+  reported memory clock by +200 MHz (a memory offset is a transfer-rate
+  offset, so half of it shows up as "memory clock"). Read back through
+  NVML directly, not trusted from the module's own report. See `TEST.md`.
+- **the clock lock works.** As root, 900-1200 MHz took the idle card from
+  180 MHz / P8 / 7.5 W to 892 MHz / P5 / 9.9 W, `getState` reported the
+  pending change, and letting the confirmation lapse put the card back at
+  180 MHz / P8 by itself — the revert timer doing exactly what it exists
+  for, on a real GPU.
+- **on battery an offset lands and does little.** A live +200 moved the
+  core ceiling from 3090 to 3285 MHz, but the driver held the card to a
+  50 W ceiling against an 80 W default — a limit neither `pyren-power` nor
+  `pyren-overclock` sets — so a card that hits 50 W before the new clock
+  ceiling gets nothing from the offset until it is plugged in.
 
-So the offsets are visible and not settable here, and
-`overclock.probe --write` is what turns that from a guess into a sentence.
+What is **not** exercised is the `nvidia-settings` fallback: this desktop's
+driver is new enough that NVML always answers, so that path has never run
+here or anywhere. When a caller does reach it — an old driver on an Xorg
+session — it needs an X screen with `Coolbits`, and because a systemd
+daemon is in nobody's session it also needs either the user letting it in
+from inside their session (`xhost +si:localuser:root`) or the operator
+pointing it at a display with `PYREN_X_DISPLAY` and `PYREN_XAUTHORITY`. The
+module reports which of those refusals it hit rather than passing the
+driver's wording through.
 
-Run **as root** - which is how the daemon runs in production - it fails one
-step earlier and for a different reason: a daemon started by systemd is in
-nobody's session, so the X server answers *"Authorization required"* before
-`Coolbits` ever comes up. On a Wayland desktop there is not even a cookie to
-hand it, because the compositor starts `Xwayland` with no `-auth` file at
-all (Hyprland: `Xwayland :1 -rootless -core -listenfd … -wm …`) and the
-server falls back to admitting the uid that owns it. So the offsets are
-reachable by *that user's* processes and by nothing else, and the module
-says which of the three refusals it got rather than passing the driver's
-wording through. The fixes it names are the two that exist: the user
-allowing us in from inside their session (`xhost +si:localuser:root`), or
-the operator pointing the daemon at a display it may open, with
-`PYREN_X_DISPLAY` and `PYREN_XAUTHORITY`.
-
-**The clock lock, in contrast, is proven against the hardware.** As root,
-900-1200 MHz took the idle card from 180 MHz / P8 / 7.5 W to 892 MHz / P5 /
-9.9 W, `getState` reported the pending change, and letting the confirmation
-lapse put the card back at 180 MHz / P8 by itself - the revert timer doing
-exactly what it exists for, on a real GPU.
 When `offsetsWritable` comes back `false` the offset ranges are withdrawn
 from the state as well: a slider that can only ever fail is worse than no
 slider.

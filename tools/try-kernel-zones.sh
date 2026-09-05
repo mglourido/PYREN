@@ -1,6 +1,8 @@
 #!/bin/sh
 # try-kernel-zones.sh - install omen-rgb-keyboard and find out whether the
-# `kernelZones` dialect can answer on this machine (TODO §1.2b).
+# `kernelZones` dialect can answer on this machine. Confirmed working here
+# on 2026-09-04 (dev/FINDINGS.md); nothing installs the module permanently
+# yet, see dev/TODO.md.
 #
 # Run as root:   sudo tools/try-kernel-zones.sh
 # Undo it all:   sudo tools/try-kernel-zones.sh --rollback

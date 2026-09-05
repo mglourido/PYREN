@@ -1,0 +1,95 @@
+Pyren
+Copyright (C) 2026 Pyren contributors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version. The full text is in LICENSE.
+
+Pyren is an original work (the Rust daemon in daemon/, the Tauri + SvelteKit
+app in app/, and the OSD widget in osd/). Its fan and RGB modules were
+written from scratch in Rust following the behaviour of the projects listed
+below; no source code from them is copied into daemon/. This NOTICE records
+third-party material and upstream credit, as required by GPLv3 section 5.
+
+
+================================================================================
+1. omen-fan-control  --  https://github.com/arfelious/omen-fan-control
+================================================================================
+
+Licence: GPL-3.0-or-later.
+
+Used as the behavioural specification for:
+  - daemon/crates/fan/           (fan control, curve, hysteresis, calibration)
+  - daemon/crates/fan/src/cleaner.rs   (reverse-spin dust cleaner protocol)
+  - daemon/crates/installer/     (driver + service installer, ported from the
+                                  project's Python installer v2.0)
+
+Also the origin of the vendored kernel driver tree in driver/ -- see section 3.
+
+
+================================================================================
+2. omen-rgb-linux  --  https://github.com/arfelious/omen-rgb-linux
+================================================================================
+
+Licence: GPL-3.0-or-later.
+
+Used as the behavioural specification for:
+  - daemon/crates/rgb/           (4-zone lightbar / keyboard RGB, the WMI
+                                  command 0x20009 / type 11 "lightbar" dialect)
+
+The porting review is in docs/04-rgb-porting-review.md. The per-key USB-HID
+path was not ported. No files from this project are vendored.
+
+
+================================================================================
+3. Linux kernel  --  drivers/platform/x86/hp/hp-wmi.c  (the "hp-wmi" driver)
+================================================================================
+
+Vendored verbatim as:
+  driver/hp-wmi-omen/hp-wmi.c
+  driver/hp-wmi-omen/hp-wmi.c.orig
+
+Licence: GPL-2.0-or-later (SPDX-License-Identifier in the file itself, and
+its MODULE_LICENSE). GPL-2.0-*or-later* is upward-compatible with the GNU
+GPL version 3, which is why it can be distributed as part of this project.
+This file keeps its own SPDX header, its own copyright notices and its own
+licence -- it is NOT relicensed to GPLv3. See driver/LICENSE.upstream.md and
+driver/README.md.
+
+Original copyright, preserved from the file:
+  Copyright (C) 2008        Red Hat <mjg@redhat.com>
+  Copyright (C) 2010, 2011  Anssi Hannula <anssi.hannula@iki.fi>
+  Portions based on wistron_btns.c:
+  Copyright (C) 2005        Miloslav Trmac <mitr@volny.cz>
+  Copyright (C) 2005        Bernhard Rosenkraenzer <bero@arklinux.org>
+  Copyright (C) 2005        Dmitry Torokhov <dtor@mail.ru>
+
+The copy vendored here was taken from omen-fan-control (section 1), from its
+`main` branch on 2026-09-04, not from a tagged release:
+  hp-wmi.c sha256: 2eab833344d4ff7ca52a07d7fc5a6124c2285028ac0cdf7defc772fbad833d62
+
+Pyren does not modify this file in the repository. At install time
+daemon/crates/installer/ copies the tree elsewhere and patches the copy
+(two fan-ceiling constants, at most one board table, two module parameters);
+that patched build is a modified work under GPL-2.0-or-later.
+
+A handful of interface constants (numeric WMI command IDs and register
+names such as HPWMI_MUX_MODE_*, HPWMI_SET_LIGHTBAR_COLORS, the rgb_zones
+sysfs layout) are referenced in daemon/crates/{gpu,rgb} by name for
+interoperability with this driver.
+
+
+================================================================================
+4. Runtime dependencies not distributed with Pyren
+================================================================================
+
+  - NVIDIA NVML / libnvidia-ml.so.1, and the nvidia-settings / nvidia-smi
+    tools, are used by daemon/crates/overclock/ only if present: NVML is
+    loaded with dlopen() at runtime and the tools are run as separate
+    processes. No NVIDIA code is linked into or shipped with Pyren.
+  - The acpi_call kernel module is loaded on demand; it is packaged
+    separately by the distribution.
+
+Rust and JavaScript build/runtime dependencies are under permissive licences
+(MIT / Apache-2.0), compatible with the GNU GPL version 3.

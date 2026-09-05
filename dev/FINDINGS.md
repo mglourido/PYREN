@@ -20,7 +20,10 @@ board `8D2F`, kernel 7.2.2**. `pyren-check` reports `monitoringOnly`:
 
 `pwm1_enable` without `pwm1` is unusual — hwmon normally exposes them
 together — and `platform_profile` being absent on an OMEN is also odd. Both
-suggest the driver came up with reduced functionality for this board.
+suggest the driver came up with reduced functionality for this board. This
+table is the *stock* driver; the patched one changes it — see §"The
+patched driver works on 8D2F" (adds `pwm1`/`pwm2`) and §"power-profiles-daemon
+can be refused" (adds `platform_profile`).
 
 Reading the patched driver's source (`hp_wmi_hwmon_is_visible`) shows
 `hwmon_pwm` returning `0644` unconditionally, so that driver *would* expose
@@ -251,23 +254,16 @@ max-RPM constant means an uncalibrated fan ceiling.
 ## The driver source is vendored, as of 2026-09-04
 
 `driver/` in this repository is now a verbatim copy of upstream's tree, and
-`driver/README.md` carries its provenance. This reverses the earlier
-decision, which is kept below because the reasoning against still stands —
-it was simply outweighed.
+`driver/README.md` carries its provenance. This reversed an earlier
+decision to leave it out: copying a GPL-2 kernel driver maintained in
+[`omen-fan-control`](https://github.com/arfelious/omen-fan-control) means
+tracking its changes by hand, but without it the installer only worked for
+someone who already had that project checked out — the driver path, the
+whole reason the installer exists, did nothing on a fresh machine and told
+the user to go and find a checkout.
 
-**The argument against**: `hp-wmi.c` is a modified copy of a GPL-2 kernel
-driver maintained in
-[`omen-fan-control`](https://github.com/arfelious/omen-fan-control), and
-copying it here means tracking their changes by hand.
-
-**What outweighed it**: without it the installer could only work for
-someone who already had the other project checked out. The driver path —
-the whole reason the installer exists — did nothing on a fresh machine, and
-the blocker it reported told the user to go and find a checkout. That is
-not a smaller cost than a manual sync; it is the feature not existing.
-
-The alternatives researched at the time, unchanged and still the better
-end state if this is ever revisited:
+The alternatives researched at the time, still the better end state if this
+is ever revisited:
 
 - **No distro package exists.** The AUR has nothing for `hp-wmi-omen` or
   `omen-fan-control` (checked directly against the AUR RPC). The project
@@ -319,10 +315,10 @@ Arch; this machine's repositories also carry a prebuilt `acpi_call` for the
 CachyOS kernel). Until then "no per-key device" is proven and "the 4-zone
 interface answers" is not.
 
-That path **is now ported** (`daemon/crates/rgb`, 2026-09-03) with its
-buffer layout unit-tested and its firmware answer still unasked; the three
-commands that ask it are at the end of
-[`docs/04-rgb-porting-review.md`](../docs/04-rgb-porting-review.md).
+That path **is now ported** (`daemon/crates/rgb`, 2026-09-03); at the time
+this was written its buffer layout was unit-tested and its firmware answer
+still unasked. The firmware has since answered — see §"The lights work,
+and what was in the way was our own read" below.
 
 ## The RGB source on the USB stick is gone
 
@@ -340,9 +336,10 @@ Everything else on the stick survived at its original `jul 24` timestamp —
 licence. So this is a truncation of exactly the `.py` files that carry the
 protocol, not a failing stick.
 
-`docs/04-rgb-porting-review.md` was written from those files and says the
-lightbar payload layout "is already documented in `lightbar.py`", which
-was true when it was written and is not true of the copy on the stick.
+The pre-port review (kept in git history, not in `docs/` any more) was
+written from those files and said the lightbar payload layout "is already
+documented in `lightbar.py`", which was true when it was written and is not
+true of the copy on the stick.
 **The port was written from upstream `main` instead**
 (`raw.githubusercontent.com/arfelious/omen-rgb-linux/main/src/lightbar.py`),
 which matches every quotation in the review — the `lstrip("b0x")`, the
@@ -377,17 +374,28 @@ ported until it is settled — see the review's step 3.
 
 ## The RGB project has two unrelated hardware paths
 
-Full review in [`docs/04-rgb-porting-review.md`](../docs/04-rgb-porting-review.md).
-Short version: per-key RGB over USB HID (`0d62:54bf`) and a 4-zone lightbar
-over ACPI share nothing, and which applies is not decided by the model
-name — which is why the probes above had to be run rather than reasoned
-about. On this laptop the answer is: not the per-key one.
+Per-key RGB over USB HID (`0d62:54bf`) and a 4-zone lightbar over ACPI
+share nothing, and which one applies is not decided by the model name —
+which is why the probes above had to be run rather than reasoned about. On
+this laptop it is the lightbar, not the per-key device.
 
-That review also found: a contradiction between `set_all()` and
-`data/keys.json` about backspace, an `lstrip("b0x")` that eats data bytes
-(it takes a character set, not a prefix — verified), and that
-`/proc/acpi/call` is a single global interface with no locking, which a
-daemon must serialise **across modules** since the fan cleaner uses it too.
+Three upstream bugs the port fixes rather than carries over (each is also
+commented at its fix site in `daemon/crates/rgb`):
+
+- **`lstrip("b0x")` eats data bytes.** `str.lstrip` takes a character set,
+  not a prefix, so `'0xb0b0aa'.lstrip('b0x')` → `'aa'` — three bytes gone.
+  It is `removeprefix("0x")`. Latent upstream (fallback branch only), but
+  it returns wrong colours when it fires.
+- **`_detect_acpi_path` is dead code.** Both branches return the same
+  `\_SB.WMID.WMAA`, so the `os.path.exists` check does nothing. The port
+  makes it a plainly-named constant.
+- **`/proc/acpi/call` has no locking.** One write-then-read file; two
+  processes on it read each other's replies. The daemon must serialise it
+  **across modules** — the fan cleaner uses it too — so the lock lives in
+  `pyren_core::acpi`, not in the `rgb` module.
+
+And one contradiction that could not be fixed without the keyboard — see
+§"`keys.json` really does contradict `set_all()`".
 
 ## Bugs the parity test caught
 
@@ -478,39 +486,32 @@ The fix is in two layers, and the first one is the real one:
 device name it reports is how somebody notices they caught the wrong
 thing.
 
-## power-profiles-daemon cannot move this machine right now
+## power-profiles-daemon can be refused, and the daemon says so — resolved
 
-Worth knowing before reading a widget that says the mode did not change,
-because it is not the widget being wrong. `power.setMode` on the test
-laptop currently fails, with the whole reason in the reply:
+**Resolved by the patched driver.** Before `8D2F` was in
+`hp_wmi_feature_boards` the machine had no
+`/sys/firmware/acpi/platform_profile`, so power-profiles-daemon was the
+only mechanism `power` had — and on this session it was being refused:
 
 ```
 power-profiles-daemon: ... Failed to activate CPU driver 'intel_pstate':
-Error writing '/sys/devices/system/cpu/cpufreq/policy11/energy_performance_preference':
+Error writing '.../policy11/energy_performance_preference':
 Device or resource busy (26)
 ```
 
-The machine has **no `/sys/firmware/acpi/platform_profile`** (see the board
-8D2F section above — `hp-wmi` exposes no thermal-profile attribute here),
-so power-profiles-daemon is the only mechanism `power` has left. And it is
-being refused: `intel_pstate` is in active mode with the `performance`
-governor, and in that state the kernel makes
-`energy_performance_preference` read-only, so ppd's write returns `EBUSY`.
+`intel_pstate` in active mode with the `performance` governor makes
+`energy_performance_preference` read-only, so ppd's write returns `EBUSY`,
+and `powerprofilesctl get` reporting `power-saver` while the governor said
+`performance` was a half-applied profile. Since the driver install,
+`platform_profile` is present and is the primary mechanism (Eco→`cool`,
+Balanced→`balanced`, …, verified on hardware — see `TEST.md`), so a stuck
+ppd no longer takes power-mode changes down with it.
 
-`powerprofilesctl get` says `power-saver` while the governor says
-`performance`, which is what a half-applied profile looks like. What left
-the governor there is not established — `cpupower.service` is disabled and
-nothing else obvious is running. Setting it back to `powersave` should let
-ppd work again, and would be the thing to try before concluding that a
-power-mode change is broken in this project's code:
-
-```sh
-echo powersave | sudo tee /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
-```
-
-The daemon reports all of this rather than swallowing it: `changed: false`
-plus the `failed` list reaches the OSD, and the widget prints it under the
-four modes.
+Two things worth keeping from it: the `EBUSY` shape is real and can recur
+on any `intel_pstate` machine whose governor is pinned to `performance`
+(fix: `echo powersave | sudo tee /sys/.../policy*/scaling_governor`); and
+the daemon reports the failure rather than swallowing it — `changed: false`
+plus a `failed` list reaches the OSD, which prints it under the four modes.
 
 ## Peripherals register as batteries
 
@@ -812,20 +813,6 @@ Two things worth keeping from this:
   became reachable, and the daemon chose it with nothing pinned — no
   restart required either, since the probe runs per call.
 
-## `hotkey press` is safe to test with — 2026-09-04
-
-Two properties of `pyren-ctl hotkey press`, found while using it to raise
-the OSD. Neither is about whether the widget works — it does, and did
-before — but both matter for reading the `hotkey learn` runs:
-
-- **It does not cycle the power mode.** The mode was `eco` before and
-  after. It raises the widget and lets the *selection* do the switching,
-  so it can be fired at any time without changing the machine.
-- **It does not increment `presses`.** That counter stayed at 0 across a
-  press. So it counts real keys off an evdev device and not synthetic
-  ones, which makes it trustworthy evidence that Fn+P arrived — a
-  non-zero `presses` cannot have come from us.
-
 ## GPU MUX switching needs no `supergfxctl` — read and confirmed 2026-09-04
 
 Read out of `driver/hp-wmi-omen/hp-wmi.c` while scoping TODO §2.1's GPU
@@ -863,7 +850,52 @@ Two things read out of the source that are easy to get backwards:
   `EOPNOTSUPP` back — unlike `rgb`, which probes every dialect with a read
   that changes nothing first.
 
-**`gpu.setMode` has not been run.** It changes the session's card and
-needs a logout or reboot to take effect, which is exactly the kind of
-write this pass should not fire blind. `getStatus` is the half that is
-confirmed; trying an actual switch is next.
+**`gpu.setMode` was run on 2026-09-04.** `pyren-ctl gpu set discrete`
+wrote `1` to `gpu_mux_mode` (from `0`) and `gpu.getStatus` read `discrete`
+straight back, then it was put back to `hybrid` immediately — the mode
+only takes effect at the next logout or reboot, and a laptop that quietly
+boots into a different GPU is a worse surprise than an untested code path.
+So the write and the read-your-own-write round trip are both confirmed;
+what nobody has sat through is the logout/reboot that actually swaps the
+driving card (`dev/TODO.md` §1).
+
+## GPU overclock: what NVML answers that `nvidia-settings` cannot — 2026-09-05
+
+Fuller write-up in `TEST.md` §"How GPU overclocking works here"; the parts
+that cost real work:
+
+- **`nvidia-settings` is a dead end on Wayland.** NVIDIA offers two ways to
+  move a clock offset. `nvidia-settings` needs a real Xorg server with an
+  NVIDIA X screen and `Coolbits` enabled; on a Wayland session
+  `nvidia-settings -q screens` finds no NVIDIA screen, so there is nothing
+  for `Coolbits` to apply to and the write is refused for root as much as
+  for the user. Pyren originally reached for this path only, which is why
+  overclocking appeared not to work at all. **NVML** (`libnvidia-ml`) needs
+  nothing but root, so it is tried first; `nvidia-settings` is only the
+  fallback for a driver too old to have NVML offset support, and that
+  fallback has never run on any machine (`dev/TODO.md` §2).
+
+- **A memory offset is a transfer-rate offset.** A `+400` moved the
+  reported memory clock from 12001 to 12201 MHz — half the number — because
+  what other tools label "memory clock" is half the transfer rate. The
+  driver advertises the range as −2000…+6000 here. Read back and reverted
+  through NVML.
+
+- **On battery the offset lands and does almost nothing.** The power source
+  does not change whether the write takes — a live `+200` moved the core
+  ceiling from 3090 to 3285 MHz on battery — but the driver caps the card
+  at 50 W against an 80 W default on its own, and nothing in `pyren-power`
+  or `pyren-overclock` touches that. A card that hits 50 W before the new
+  clock ceiling gets nothing from the offset until it is plugged in. Worth
+  knowing before spending an evening on "why did the offset do nothing".
+
+- **The revert watchdog acts on a reported fault too, not only the timer.**
+  One pure function, `watchdog_tick`, decides: a hold that runs out is
+  `NotConfirmed` (as always), a driver-reported fault inside the hold is
+  `FaultReported`, and when both are true in one 500 ms tick the deadline
+  wins — "you never confirmed this" is the older and surer fact. The poll
+  for `nvmlEventTypeXidCriticalError` waits 1 ms, not the 400 ms first
+  planned: the driver queues events as they happen, so a poll finds
+  whatever already arrived, and a longer wait would only push the
+  watchdog's own 500 ms check late. No real XID has ever been seen caught —
+  there is no safe way to manufacture a critical GPU fault on demand.

@@ -115,90 +115,54 @@ it.
 A `core.json` for cross-cutting settings (enabled modules, log level) still
 doesn't exist, because nothing has needed one yet.
 
-## Roadmap
+## Module surface
 
-1. ~~Daemon skeleton + IPC socket + Tauri shell round-trip~~ — done: `fan.getStatus` and `core.capabilities` work end-to-end.
-2. ~~Port the rest of the `fan` module~~ — done, the fan cleaner included:
-   config persistence, the `setMode`/`setCurve` write path, the hysteresis
-   loop (a background thread inside the daemon, replacing the Python
-   `serve` loop), and calibration — `fan.calibrate` runs the fans at max,
-   watches them settle and puts back the mode it found, which is what gives
-   the hysteresis an RPM ceiling to compare against instead of PWM values.
-   A run that does not move the fans stores nothing, because a machine's
-   idle speed recorded as its ceiling is worse than no calibration at all.
-   What a machine can actually do is reported as `capabilities`, because
-   `auto`/`max` and a *speed* have different hardware requirements — see
-   `01-ipc-protocol.md`.
-3. ~~Fan UI in the app matching Pyren's Performance/Fans tab~~ — done,
-   along with the rest of the Pyren surface (vitals, advanced tuning,
-   lighting, graphics switcher, network booster, key mapping, settings,
-   drivers, help). See `docs/03-frontend.md`. The UI's *write* paths call
-   the daemon; the fan ones now do something, the rest still do not.
-4. ~~Fan-cleaner protocol~~ (`docs/04-fan-control-logic.md` §"Fan cleaner
-   protocol" in the source repo) — done: the ACPI-call sequence, both
-   firmware generations, the braking and ramp-down steps, and the three
-   independent enforcements of the cycle timeout. See
-   `01-ipc-protocol.md` §"The fan cleaner" for the wire shape and for what
-   remains untested (the firmware's own answer).
-5. ~~Second module (RGB, from `omen-rgb-linux`)~~ — done, and it proved
-   the module boundary generalizes: the laptop has no `0d62` USB device,
-   so the 4-zone ACPI lightbar was the only candidate (see
-   `docs/04-rgb-porting-review.md`), and it now speaks two dialects
-   (`fourZone` over `acpi_call`, `kernelZones` over a sibling DKMS module)
-   confirmed against the real light strip, auto-picked or pinned by hand.
-6. ~~Privileged installer flow (kernel driver + daemon systemd unit)~~ —
-   ported as the `installer` module (inspect/plan/apply, see
-   `docs/01-ipc-protocol.md`), and its execution path has since been run
-   against hardware repeatedly, including full reinstalls that switch
-   between the DKMS and kernel-hook strategies. The GUI wizard on top of
-   it is done — `DriverWizard.svelte` at the bottom of `/drivers`, which
-   shows the plan's steps and their commands, keeps "apply" disabled until
-   a dry run of those exact options has been read, and now covers the
-   window with a live progress overlay while a driver action runs, driven
-   by the daemon's own `installer.progress` events rather than a timer
-   (`docs/03-frontend.md`).
-7. ~~Power modes as real profiles~~ — done: the laptop's own firmware
-   profile, the OS profile (delegated to power-profiles-daemon), and the
-   package power envelope, applied as three separable parts. The envelope
-   ships untouched, because per-chassis numbers are not something this
-   project can invent; `pyren-ctl power tune` is how a measured one gets
-   recorded.
-8. ~~Overclocking — GPU offsets~~ — done as the `overclock` module, and
-   the only feature in this project that leaves the envelope the machine
-   shipped with, so it is the only one behind a consent of its own: an
-   offset is applied as a climb in small steps and undone automatically
-   unless somebody confirms it, and nothing is restored at boot without an
-   explicit opt-in. **CPU limits above the firmware's own are still not
-   here**: the `power` module owns those registers and re-applies them,
-   clamped to stock, on every mode change, so raising them means deciding
-   which module owns the envelope. See `docs/01-ipc-protocol.md`
-   §"`overclock` module" and `dev/TODO.md` §1.
+The daemon now carries these modules, each one crate under
+`daemon/crates/`, each behind the same `pyren_core::Module` trait:
 
-## Open decisions (intentionally not settled by this scaffold)
+| module | what it owns |
+|---|---|
+| `system` | machine identity + generic Linux monitoring |
+| `power` | firmware profile, the OS profile (via power-profiles-daemon), and the package power envelope — three separable parts, the envelope shipped untouched |
+| `fan` | modes, the hysteresis curve loop, calibration, and the dust-cleaner |
+| `rgb` | the 4-zone lightbar, three dialects, auto-picked or pinned |
+| `overclock` | GPU core/memory offsets — the only feature that leaves the shipped envelope, so the only one behind a consent of its own |
+| `gpu` | the graphics MUX (`gpu_mux_mode`) |
+| `hotkey` / `keymap` | the OMEN key, and an evdev remapper |
+| `network` | the honest half of the "network booster" |
+| `installer` | the driver + systemd-unit installer (inspect / plan / apply) |
 
-- **Monorepo vs. multi-repo**: modules currently live as crates inside this
-  one repo. If a module should be independently publishable/versioned
-  later, that's a bigger change (crates.io-style versioning, workspace
-  `path` deps become git/registry deps) — don't assume it until it's
-  actually needed.
-- ~~**Config persistence mechanism**~~ — **decided**: hand-rolled JSON, like
-  the Python original, in `pyren-config`. The requirements are narrow (a
-  few small files, no layering, no environment interpolation) and what
-  actually matters is failure behaviour, which a config framework would not
-  have given us for free:
+Two carve-outs the layout deliberately leaves open:
 
-  - **Atomic writes.** Config is written by a daemon that can be killed at
-    any moment. Writing in place risks a truncated file that fails to parse
-    on next boot which — for a daemon that controls fans — means silently
-    reverting to defaults. Saves go to a temp file, are flushed, then
-    renamed over the target.
-  - **A corrupt file is never overwritten silently.** It is moved to
-    `<name>.json.bad` and the user is told where it went, in both the
-    daemon log and the app's Settings page.
-  - **Versioned files.** A file written by a *newer* build is refused
-    rather than parsed optimistically and written back in the older shape —
-    downgrading must not destroy settings.
+- **CPU power limits above the firmware's own** are not in `overclock`: the
+  `power` module owns those registers and re-applies them clamped to stock
+  on every mode change, so raising them means deciding which module owns
+  the envelope. Tracked in `dev/TODO.md` §1.
+- **Monorepo vs. multi-repo**: modules live as crates inside this one repo.
+  Making one independently publishable/versioned later is a bigger change
+  (workspace `path` deps become git/registry deps) — don't assume it until
+  it is actually needed.
 
-  The desktop app shares this one crate by path dependency rather than
-  duplicating it. The two remain separate Cargo workspaces shipping as
-  separate binaries; this is one small library in common, not a merge.
+## Why hand-rolled config, not a framework
+
+Like the Python original, `pyren-config` is hand-rolled JSON. The
+requirements are narrow (a
+few small files, no layering, no environment interpolation) and what
+actually matters is failure behaviour, which a config framework would not
+have given us for free:
+
+- **Atomic writes.** Config is written by a daemon that can be killed at
+  any moment. Writing in place risks a truncated file that fails to parse
+  on next boot which — for a daemon that controls fans — means silently
+  reverting to defaults. Saves go to a temp file, are flushed, then
+  renamed over the target.
+- **A corrupt file is never overwritten silently.** It is moved to
+  `<name>.json.bad` and the user is told where it went, in both the
+  daemon log and the app's Settings page.
+- **Versioned files.** A file written by a *newer* build is refused
+  rather than parsed optimistically and written back in the older shape —
+  downgrading must not destroy settings.
+
+The desktop app shares this one crate by path dependency rather than
+duplicating it. The two remain separate Cargo workspaces shipping as
+separate binaries; this is one small library in common, not a merge.
