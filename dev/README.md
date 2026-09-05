@@ -30,6 +30,10 @@ daemon/                 Rust workspace (the daemon and its two CLIs)
     ├── power/          power profiles + the auto-switch supervisor
     ├── fan/            fan status, the write path, the self-test
     ├── rgb/            lighting: probes both paths, drives the 4-zone lightbar
+    ├── gpu/            MUX-mode switching (hp-wmi's own gpu_mux_mode)
+    ├── network/        system-wide qdisc (cake/fq_codel) on the default route
+    ├── keymap/         evdev-level key remapping (/dev/uinput)
+    ├── overclock/      GPU clock offsets/lock, one consent gate of its own
     └── installer/      driver/service installer (inspect → plan → apply)
 app/                    Tauri app: SvelteKit frontend + src-tauri shell
 tools/pyren-check.sh     dependency-free shell twin of pyren-check
@@ -80,50 +84,66 @@ login (or `newgrp pyren` for one shell).
 
 ## What actually works today
 
-- **Monitoring**: real, on any machine. CPU per core, memory, hwmon
-  temperatures and fans, disks, network, GPU, top processes.
+Every hardware module is built, wired end to end (daemon ↔ app ↔
+`pyren-ctl`), and confirmed against this laptop:
+
+- **Monitoring**: CPU per core, memory, hwmon temperatures and fans,
+  disks, network, GPU, top processes — real on any machine.
 - **Machine identification**, and a verdict about what this machine can be
   *told to do*, measured rather than looked up in a board list.
+- **The patched driver, installed.** `pwm1`/`pwm2` exist on this board
+  because of it. The installer's plan → apply flow has been run
+  repeatedly, including a full reinstall with a fan ceiling this
+  installer measured itself, and it correctly recognises a strategy
+  switch (DKMS ↔ kernel hooks) and retires the one it leaves behind. A
+  driver install or restore makes the running daemon re-read its own
+  hardware (`FanModule::rediscover`) — nothing to restart by hand.
+- **Fan control, fully**: mode switching (`auto`/`max` and now
+  `manual`/`curve`, since `pwm1` exists), a curve followed on the
+  daemon's own thread, hysteresis, calibration (`fan.calibrate` — max,
+  watch, restore, settle early). A measurement it takes is pinned into
+  the driver itself via a module parameter that outranks the firmware's
+  own claim — see `FINDINGS.md` §"The patched fan ceiling was never
+  reaching the driver" for why that needed to exist at all.
+- **Fan self-test**: three front ends (daemon method, app page, CLI +
+  shell script), kept in step by a parity test.
 - **Power profiles**: the laptop's own firmware profile and the OS one
-  (delegated to power-profiles-daemon) as separate switches, plus a package
-  power envelope that ships untouched until someone measures their machine.
-  With the auto-switch supervisor: unplugging drops to Balanced, plugging
-  in steps up to Performance, each refining from there.
-- **Fan self-test**: three front ends (daemon method, app page, CLI + shell
-  script), kept in step by a parity test.
-- **Fan control**: mode switching (max and auto measured on the laptop,
-  ~2000 → ~3900 rpm and back), a curve followed on the daemon's own thread,
-  hysteresis, calibration (`fan.calibrate` — max, watch, restore, which
-  needs only mode switching and so runs on this board), and settings that
-  survive a restart — as far as the hardware allows, which it reports
-  rather than guesses.
+  (delegated to power-profiles-daemon) as separate switches, plus a
+  package power envelope that ships untouched until someone measures
+  their machine. The auto-switch supervisor: unplugging drops to
+  Balanced, plugging in steps up to Performance, each refining from
+  there, plus a thermal rule that outranks both.
+- **Lighting**: both ACPI dialects (`fourZone`, `kernelZones`) confirmed
+  against the real light strip, zone 4's read fixed by the `kernelZones`
+  path, dialect auto-picked or pinned by hand.
+- **GPU switching**: `gpu_mux_mode` written and read back correctly
+  (`hybrid` ↔ `discrete`) — the one untested part is watching a reboot
+  actually swap the driving card, see `TODO.md`.
+- **Key mapping**: an evdev-level remapper (`/dev/uinput`), built and
+  wired end to end — not yet run against real hardware, see `TODO.md`.
+- **Network booster**: the one honest half (system-wide `cake`/`fq_codel`
+  via the default-route interface) confirmed on hardware; per-process
+  prioritisation was scoped out on purpose, see `TODO.md` §3.
+- **GPU overclocking**: the clock lock (`nvidia-smi --lock-gpu-clocks`)
+  confirmed working as root, with its revert-on-lapse timer proven
+  against a real GPU. Offset writes are confirmed unreachable *on this
+  session* (Wayland, no `Coolbits` screen) rather than untested.
 - **Frontend**: the whole Pyren surface, bilingual, with settings on
-  disk. Fan and power controls reach the daemon; the pages hide what this
-  machine cannot do.
+  disk, and a live progress overlay for driver actions (one segment per
+  step, driven by the daemon's own `installer.progress` events).
 - **`pyren-ctl`**: `status`, `power set|tune|auto|os-profile`,
-  `fan set|curve|diagnose|calibrate`, `oc get|probe|consent|set|confirm`,
-  `--json` on anything.
+  `fan set|curve|diagnose|calibrate`, `rgb`, `gpu`, `network`, `keymap`,
+  `oc get|probe|consent|set|confirm`, `--json` on anything.
 - **A socket other local users cannot open**: `0660`, group `pyren`
   (verified against a root daemon - a process outside the group gets
   `EACCES`).
 
-## What does not work yet
+## What is still open
 
-- **Setting a fan *percentage* on this laptop.** The write path is built and
-  tested; the running kernel exposes no `pwm1`, so `manual` and `curve` are
-  refused here while `auto` and `max` are not. Installing the patched
-  driver should change that — see `TODO.md` §1.1.
-- **Lighting, GPU switching, network booster, key mapping**: the UI is
-  complete and drives local state only. No daemon module behind any of them.
-- **The installer's execution path** has never been run. It is `TODO.md`
-  §1.1 and the single most valuable thing left, because it is also the test
-  of whether this board can be given a fan percentage at all.
-- **Writing a GPU offset.** The `overclock` module is built and wired to
-  the app, and on this laptop the NVIDIA offsets read fine and refuse to be
-  written: the X screen has no `Coolbits`. So the climb and the revert have
-  been exercised against refusals only. The clock lock (`nvidia-smi
-  --lock-gpu-clocks`) is the mechanism this machine *does* have, and it
-  needs the daemon to be running as root - see `TODO.md` §3.
+See `TODO.md` for the current, short list — mainly things that need
+different hardware to finish confirming (AMD Overdrive, an Xorg session
+for NVIDIA offset writes) or a deliberate decision (raising CPU power
+limits above stock).
 
 ## The rename
 
@@ -144,7 +164,7 @@ that move them are in the README's deployment section.
 ## Verifying a change
 
 ```sh
-cd daemon && cargo test && cargo clippy --all-targets   # 215 tests, 0 warnings
+cd daemon && cargo test && cargo clippy --all-targets   # 456 tests, 0 warnings
 cd app && bun run check && bun run build
 cd app/src-tauri && cargo check
 sh -n tools/pyren-check.sh

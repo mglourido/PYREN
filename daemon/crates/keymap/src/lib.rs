@@ -8,7 +8,7 @@
 //! | `keymap.removeMapping` | `{ "device"?, "keycode" }` | as `getStatus` |
 //! | `keymap.setEnabled` | `{ "enabled": bool }` | as `getStatus` |
 //!
-//! ## The backend decision `dev/TODO.md` §2.1 was waiting on
+//! ## The backend decision `dev/TODO.md` §2 was waiting on
 //!
 //! Three ways exist to remap a key on Linux: `keyd` (a second daemon and
 //! its own config file), a `udev` hwdb entry (build-time, one keycode for

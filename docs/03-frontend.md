@@ -231,10 +231,15 @@ Installing the *service* is not here — it is a `pkexec` action in the
 Permissions panel above, because a unit that makes the daemon root cannot
 be installed by asking the unprivileged daemon to do it.
 
-## Not built yet (frontend side)
+## What every module actually drives (frontend side)
 
-- Key mapping drives local state only — there is no daemon module behind
-  it yet.
+Every page below reaches a real daemon module; nothing here is wired to
+local state alone any more.
+
+- Key mapping (`/system/keys`) drives the `keymap` module: an evdev-level
+  remapper opening `/dev/uinput`, with mappings stored by the daemon
+  rather than the page's own state. Built and wired end to end; not yet
+  run against real hardware (`dev/TODO.md`).
 - GPU switching is **wired** to the `gpu` module: MUX mode read at startup
   and set through `hp-wmi`'s own `gpu_mux_mode`, no `supergfxctl`.
 - Network booster is **wired**, but only for the system-wide half: `Off`
@@ -243,7 +248,7 @@ be installed by asking the unprivileged daemon to do it.
   §"`network` module". The per-application priority/block table the page
   used to mock up is gone; per-process traffic control needs
   cgroups/nftables/eBPF this project does not implement (`dev/TODO.md`
-  §2.1), so the page shows total bandwidth and says plainly that
+  §2), so the page shows total bandwidth and says plainly that
   per-application prioritisation is not available, rather than a table
   with no daemon behind it.
 - Lighting is **wired** (`system/lighting`) to the `rgb` module: zone

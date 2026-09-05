@@ -103,7 +103,7 @@ pub struct RgbConfig {
     pub dialect: Selection,
     /// Off by default, like every other module's equivalent. Turning a
     /// machine's lights on at boot because they were on last week is a
-    /// decision for the user, not for the daemon (`dev/TODO.md` §4).
+    /// decision for the user, not for the daemon (`dev/TODO.md` §3).
     pub restore_on_start: bool,
 }
 

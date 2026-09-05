@@ -542,7 +542,7 @@ impl OverclockModule {
     /// written: there is nothing of ours on it to undo, and writing stock
     /// over whatever somebody else set would be this module touching
     /// hardware it was not asked about - the same rule the fan module
-    /// follows at startup (`dev/TODO.md` §4).
+    /// follows at startup (`dev/TODO.md` §3).
     fn reset(&self, gpu_id: Option<String>) -> ModuleResult {
         let probe = lock(&self.probe).clone();
         let ids: Vec<String> = match gpu_id {

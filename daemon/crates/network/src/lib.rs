@@ -14,7 +14,7 @@
 //! that via `cgroup net_cls`/`nftables` socket matching or eBPF, not for
 //! free from `/proc`) and a way to turn "high priority" into an actual
 //! `tc`/`nftables` rule *per PID*, which means tracking PIDs as they start
-//! and stop. `dev/TODO.md` §2.1 flagged this as the larger and less
+//! and stop. `dev/TODO.md` §2 flagged this as the larger and less
 //! valuable half of the page, and it stays undone - see the app's
 //! `system/network` page for what it shows instead.
 //!
