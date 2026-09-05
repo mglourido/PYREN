@@ -470,6 +470,25 @@ export type FanCheck = {
   remedy: Msg | null;
 };
 
+/** What became of the measurement beyond the daemon's own config. */
+export type FanPinned = { ok: boolean; detail: string };
+
+export type FanCalibration = {
+  verdict: "measured" | "noReading" | "didNotRespond" | "reverse";
+  fanMaxRpm: number | null;
+  fan1MaxRpm: number | null;
+  fan2MaxRpm: number | null;
+  baselineRpm: number | null;
+  startedAtMax: boolean;
+  seconds: number;
+  settled: boolean;
+  restoredMode: string | null;
+  restoreError: Msg | null;
+  detail: string;
+  /** `null` when the run measured nothing worth storing. */
+  pinned: FanPinned | null;
+};
+
 /** Overall conclusion of the fan-control self-test. */
 export type FanVerdict = "fullControl" | "monitoringOnly" | "unsupported";
 
@@ -578,7 +597,14 @@ export type InstallerAction =
   | "installDriver"
   | "restoreDriver"
   | "installService"
-  | "removeService";
+  | "removeService"
+  /**
+   * Hand the driver the fan ceiling a calibration measured, without
+   * rebuilding it. `fan.calibrate` already writes the measurement where
+   * the driver reads it, so this is only needed to make it take effect
+   * *now* rather than at the next load - it reloads hp-wmi.
+   */
+  | "pinFanCeiling";
 
 /** How a permanent install survives a kernel upgrade. */
 export type InstallStrategy = "dkms" | "hooks";
@@ -620,6 +646,14 @@ export type InstallerEnvironment = {
    * board with a previous install of ours already doing the work.
    */
   patchedDriverInstalled: boolean;
+  /** Whether one of this installer's kernel-upgrade hooks is on disk. */
+  hookInstalled: boolean;
+  /**
+   * Whether the loaded hp-wmi understands a measured fan ceiling. A driver
+   * built before that parameter existed answers false, and the remedy is
+   * installing it again rather than anything the fan page can do.
+   */
+  driverAcceptsMeasuredRpm: boolean;
 };
 
 export type InstallerInspection = {
@@ -672,6 +706,31 @@ export type ExecutionReport = {
   dryRun: boolean;
   succeeded: boolean;
   results: StepResult[];
+};
+
+/**
+ * One `installer.progress` event: a step starting, or the same step
+ * finishing.
+ *
+ * An install is a single IPC call that takes most of a minute, so without
+ * these a UI can only show a spinner or invent a progress bar. The daemon
+ * emits one of these as each step *starts* — `status: null` — and another
+ * with the outcome, which is what lets a bar advance at the moment the
+ * long step begins rather than when the short one before it ended.
+ */
+export type InstallerProgress = {
+  action: InstallerAction;
+  dryRun: boolean;
+  /** 0-based. */
+  index: number;
+  total: number;
+  id: string;
+  /** Translatable - render with `tm()`. */
+  description: Msg;
+  /** `null` while the step runs; its outcome once it is over. */
+  status: StepStatus | null;
+  /** Only on the second event: command output, or the error. */
+  detail: Msg | null;
 };
 
 /** Which board-params variant an untested board should be driven with. */
@@ -901,6 +960,7 @@ const DAEMON_ROUTES: Record<
   system_get_metrics: { module: "system", method: "getMetrics" },
   fan_get_status: { module: "fan", method: "getStatus" },
   fan_diagnose: { module: "fan", method: "diagnose" },
+  fan_calibrate: { module: "fan", method: "calibrate" },
   fan_set_mode: { module: "fan", method: "setMode" },
   fan_set_curve: { module: "fan", method: "setCurve" },
   fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
@@ -1107,6 +1167,15 @@ export const daemon = {
   fanStatus: () => call<FanStatus>("fan_get_status"),
   /** `allowWrites` opts into the one check that touches hardware. */
   fanDiagnose: (allowWrites = false) => call<FanDiagnosis>("fan_diagnose", { allowWrites }),
+  /**
+   * Runs the fans flat out and measures what full speed is here, then puts
+   * the mode back. **Loud, and it blocks** for up to `seconds` - the
+   * daemon stops early once the reading settles, so it is usually under
+   * twenty. The measurement is also handed to the driver, which is the
+   * only way a calibration reaches the pwm/rpm conversion at all; see
+   * `pinned` in the reply.
+   */
+  calibrateFans: (seconds?: number) => call<FanCalibration>("fan_calibrate", { seconds }),
   /** `pwm` (0-255) is required for `manual` and ignored otherwise. */
   setFanMode: (mode: FanDaemonMode, pwm?: number) =>
     call<FanStatus>("fan_set_mode", { mode, pwm }),

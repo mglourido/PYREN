@@ -752,7 +752,7 @@
     "succeeded": "Succeeded",
     "failed": "Failed",
     "afterInstall": {
-      "working": "It worked — pwm1 is there, so the patched module is the one in use. One step is left: the daemon looked for its fan paths when it started, before pwm1 existed, so it still reports that a speed cannot be set. Restart it (or reboot) and the fan page can command a speed:",
+      "working": "Fan control is working. Nothing else to do - the daemon has already picked up the new driver.",
       "needsReload": "The patched module is installed on disk, but pwm1 is still missing — the kernel is very likely still running the module it loaded at boot, because it could not be unloaded while something was using it. Reboot, or run this and reopen this page:",
       "ifStillNothing": "If pwm1 is still missing after a reboot, the module loaded but this board's firmware did not answer the fan query. Nothing is broken and nothing is left behind: \"Restore stock driver\" puts back the module that was backed up during the install.",
       "restored": "The stock module is back on disk. Reboot, or run this, for the kernel to actually go back to it:"
@@ -762,6 +762,7 @@
       "stage-source": "Copy the driver sources and dkms.conf to {path}",
       "backup-driver": "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so depmod picks the new one unambiguously",
       "dkms-remove-old": "Remove the previously registered DKMS module",
+      "dkms-remove-switch": "Deregister the DKMS module from the previous install; the kernel hook rebuilds the module from now on",
       "dkms-add": "Register the module with DKMS",
       "dkms-build": "Build the module",
       "dkms-install": "Install the built module",
@@ -780,13 +781,17 @@
       "dkms-remove": "Deregister the DKMS module",
       "remove-sources": "Delete /usr/src/{name}-{version}",
       "remove-hooks": "Delete any installed kernel-upgrade hook",
+      "remove-hooks-switch": "Delete the kernel-upgrade hook from the previous install; DKMS rebuilds the module from now on",
       "restore-backups": "Rename every hp-wmi.ko.bak back to hp-wmi.ko, restoring the stock driver",
       "create-group": "Create the '{group}' group that may reach the daemon",
       "write-unit": "Write /etc/systemd/system/pyren-daemon.service",
       "daemon-reload": "Reload systemd units",
       "enable": "Enable and start the daemon at boot",
       "disable": "Stop the daemon and remove it from boot",
-      "remove-unit": "Delete the systemd unit file"
+      "remove-unit": "Delete the systemd unit file",
+      "write-modprobe-conf": "Write the measured ceilings to {path}, so every later load uses them too",
+      "modprobe-measured": "Load hp-wmi again, this time with the measured ceilings",
+      "remove-modprobe-conf": "Delete {path}; the stock driver has no measured-ceiling parameter and refuses to load when given one"
     },
     "warn": {
       "alreadyInstalled": "Fan control works here because the patched driver is already installed. Reinstalling rebuilds and reinstates it, which is what a kernel upgrade needs if no hook rebuilt it automatically. To go back to the distribution's own driver, use \"restore\" instead.",
@@ -795,13 +800,15 @@
       "serviceInstalled": "The service unit is already installed; it will be replaced.",
       "joinGroup": "Add each user who should control this machine to the '{group}' group: sudo usermod -aG {group} $USER (then log out and back in).",
       "boardMissing": "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), and hp-wmi is loaded here - yet there is no pwm1. The stock driver did not recognise this board, which is exactly the case the patched driver plus your board's id in the right table exists for. Whether the firmware then honours a fan write is something only trying it can answer.",
-      "noHpWmi": "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), but hp-wmi is not loaded at all here, so there is nothing to say this is one of the laptops either driver is for. Installing is unlikely to help."
+      "noHpWmi": "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), but hp-wmi is not loaded at all here, so there is nothing to say this is one of the laptops either driver is for. Installing is unlikely to help.",
+      "reloadDropsFanControl": "hp-wmi is unloaded and loaded again, so fan control, the laptop's hotkeys and the firmware profile are gone for a moment. The fans keep running on the firmware's own curve while they are."
     },
     "blocker": {
       "alreadyWorking": "Fan control is already available; nothing to install.",
       "noDriverSource": "The patched hp-wmi sources were not found. Pyren ships them in its own driver/ directory; a packaged build has to install that to /usr/share/pyren/driver, or PYREN_DRIVER_DIR has to point at a copy.",
       "kernelHeaders": "Kernel headers for the running kernel are missing or incomplete, so the module cannot be compiled.",
-      "buildTools": "A C compiler and make are required to build the module."
+      "buildTools": "A C compiler and make are required to build the module.",
+      "noMeasuredRpmParam": "The hp-wmi loaded here has no measured-ceiling parameter, so there is nowhere to put the measurement. It was built before this existed; installing the driver again produces one that has it."
     },
     "exec": {
       "skipped": "skipped after an earlier failure",
@@ -937,6 +944,26 @@
       "gpuGone": "{gpu} is gone",
       "verifyCore": "the driver reports a core offset of {got} MHz after being asked for {asked} MHz",
       "verifyMem": "the driver reports a memory offset of {got} MHz after being asked for {asked} MHz"
+    }
+  },
+  "install": {
+    "title": {
+      "installDriver": "Installing the driver",
+      "restoreDriver": "Restoring the distribution's driver",
+      "installService": "Installing the service",
+      "removeService": "Removing the service",
+      "pinFanCeiling": "Pinning the measured fan ceiling",
+      "dryRun": "Rehearsing, without changing anything"
+    },
+    "done": "Done",
+    "failedNote": "Something went wrong. The log above says which step and why.",
+    "close": "Close",
+    "calibrateAfter": "Measure the fans when the install finishes",
+    "calibrateFirstHint": "Nothing has measured this machine yet, and it could not have: it takes the driver being installed first. About 20 seconds, and loud.",
+    "calibrateAgainHint": "Already measured at {rpm} rpm. Only worth repeating if the fans have been cleaned or replaced. About 20 seconds, and loud.",
+    "calibrateLoud": "the fans go to full speed until the reading settles",
+    "step": {
+      "calibrate": "Measure what full speed is on this machine"
     }
   }
 }
