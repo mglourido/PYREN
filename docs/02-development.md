@@ -426,6 +426,64 @@ print(s.recv(4096).decode())
 
 See `docs/01-ipc-protocol.md` for the full wire format.
 
+## Testing the performance profiles
+
+The four modes are the one feature whose interesting half *writes* -
+`/sys/firmware/acpi/platform_profile`, `/sys/class/powercap` and
+`powerprofilesctl` - so testing it means deciding whose machine gets
+changed. There are two suites, and they answer different questions.
+
+**The hermetic one** drives a laptop that does not exist:
+
+```sh
+cd daemon && cargo test -p pyren-power --test profiles
+```
+
+`crates/power/tests/profiles.rs` builds a fixture sysfs tree plus a
+stand-in `powerprofilesctl` that records every request, and points the
+module at it through `PYREN_PLATFORM_PROFILE`, `PYREN_CPU_ROOT`,
+`PYREN_POWERCAP` and `PYREN_POWERPROFILESCTL`. Because the fake machine
+is readable back, assertions are exact: *Eco set the firmware profile to
+`low-power` and asked the OS for `power-saver`*. It covers switching
+between the four (including twenty rounds of cycling, and ten threads
+doing it at once), the app closing, the daemon restarting with and
+without restore-on-start, the stock-envelope ratchet across five boots,
+and simulated timelines of up to forty minutes of supervision.
+
+Those timelines run on a simulated clock. The one that does not is
+ignored by default:
+
+```sh
+PYREN_SOAK_SECS=300 cargo test -p pyren-power --test profiles -- --ignored --nocapture
+```
+
+That runs the actual supervisor thread against the fixture for five
+minutes and asserts at every sample that the daemon and the machine
+agree, and that it is not flapping.
+
+**The live one** is the half a fixture cannot honestly answer - the real
+firmware, and the two lifecycle events:
+
+```sh
+tools/power-soak.sh                # about 6 minutes
+tools/power-soak.sh --minutes 15   # watch it evolve for longer
+tools/power-soak.sh --quick        # switching only, no waiting
+```
+
+It needs a running daemon. It closes the app if one is open and restarts
+`pyren-daemon.service` with `sudo`, both on purpose: *what happens to the
+profile when the app goes away* and *what survives the daemon restarting*
+are the questions, and neither can be asked without doing it. It puts the
+machine back in the mode it found it in on the way out, including on
+Ctrl-C.
+
+The two lifecycle answers, since they come up often:
+
+| event | what happens to the profile |
+|---|---|
+| the app is closed, minimised or backgrounded | nothing. The app is a client; the mode belongs to the daemon, which is still running |
+| the daemon restarts | the mode in memory is gone. It comes back only if `restoreModeOnStart` is on - otherwise the daemon reports whatever the firmware is actually set to, and changes nothing |
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main`, every pull
@@ -436,7 +494,7 @@ request, and on demand. Four jobs, so a failure names the half that broke:
 | `daemon` | `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings` |
 | `app` | `bun install --frozen-lockfile`, `bun run check`, `bun run build` |
 | `tauri` | `cargo check --all-targets` on `app/src-tauri`, after installing WebKitGTK |
-| `shell` | `sh -n tools/pyren-check.sh` |
+| `shell` | `sh -n tools/pyren-check.sh`, `sh -n tools/power-soak.sh` |
 
 Two things worth knowing about it:
 

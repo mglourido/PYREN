@@ -99,8 +99,11 @@ jobs:
         working-directory: osd
 
   shell:
-    name: pyren-check.sh (syntax)
+    name: shell scripts (syntax)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: sh -n tools/pyren-check.sh
+      # power-soak.sh drives real firmware, so CI can only check that it
+      # parses - which is still the failure it would otherwise ship.
+      - run: sh -n tools/power-soak.sh

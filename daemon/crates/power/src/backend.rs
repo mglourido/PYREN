@@ -29,7 +29,7 @@
 //! unprivileged surfaces a permission error instead of failing silently.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
@@ -37,8 +37,48 @@ use serde::Serialize;
 use crate::PowerMode;
 
 const PLATFORM_PROFILE: &str = "/sys/firmware/acpi/platform_profile";
-const PLATFORM_PROFILE_CHOICES: &str = "/sys/firmware/acpi/platform_profile_choices";
 const CPU_ROOT: &str = "/sys/devices/system/cpu";
+const POWERPROFILESCTL: &str = "powerprofilesctl";
+
+/// The firmware profile file. `PYREN_PLATFORM_PROFILE` points it at a
+/// fixture, which is the only way to exercise the *writing* half of this
+/// module at all: a test that ran against the real path would change the
+/// developer's own machine, and on a laptop with no such file it could
+/// not run in the first place.
+///
+/// The choices file is taken as its sibling rather than as a second
+/// variable, because that is how sysfs lays them out and a fixture that
+/// had to name both could name two that disagree.
+fn platform_profile_path() -> PathBuf {
+    std::env::var_os("PYREN_PLATFORM_PROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(PLATFORM_PROFILE))
+}
+
+fn platform_profile_choices_path() -> PathBuf {
+    let path = platform_profile_path();
+    match path.parent() {
+        Some(dir) => dir.join("platform_profile_choices"),
+        None => PathBuf::from("platform_profile_choices"),
+    }
+}
+
+/// `/sys/devices/system/cpu`, or a fixture standing in for it.
+///
+/// Shared with [`crate::limits`], whose turbo knobs live under the same
+/// root: one fake machine, not two that could drift apart.
+pub(crate) fn cpu_root() -> PathBuf {
+    std::env::var_os("PYREN_CPU_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(CPU_ROOT))
+}
+
+/// The program that owns the OS profile. `PYREN_POWERPROFILESCTL` points
+/// it at a stand-in, so a test can watch what this module asks the OS for
+/// without a power-profiles-daemon being installed - or being moved.
+fn powerprofilesctl() -> PathBuf {
+    std::env::var_os("PYREN_POWERPROFILESCTL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(POWERPROFILESCTL))
+}
 
 /// What the machine offers and what it is currently set to.
 #[derive(Debug, Clone, Serialize)]
@@ -68,8 +108,8 @@ impl ApplyReport {
 }
 
 pub fn read_state() -> BackendState {
-    let platform_profile = read_trimmed(PLATFORM_PROFILE);
-    let platform_profile_choices = read_trimmed(PLATFORM_PROFILE_CHOICES)
+    let platform_profile = read_trimmed(platform_profile_path());
+    let platform_profile_choices = read_trimmed(platform_profile_choices_path())
         .map(|s| s.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default();
 
@@ -82,7 +122,7 @@ pub fn read_state() -> BackendState {
         available.push("power-profiles-daemon");
     }
     let energy_preference =
-        read_trimmed(format!("{CPU_ROOT}/cpu0/cpufreq/energy_performance_preference"));
+        read_trimmed(cpu_root().join("cpu0/cpufreq/energy_performance_preference"));
     if energy_preference.is_some() {
         available.push("energy_performance_preference");
     }
@@ -92,7 +132,7 @@ pub fn read_state() -> BackendState {
         platform_profile_choices,
         power_profiles_daemon: ppd,
         energy_preference,
-        governor: read_trimmed(format!("{CPU_ROOT}/cpu0/cpufreq/scaling_governor")),
+        governor: read_trimmed(cpu_root().join("cpu0/cpufreq/scaling_governor")),
         available,
     }
 }
@@ -114,21 +154,32 @@ pub(crate) enum Step {
 
 /// What applying `mode` to this machine would do.
 ///
-/// The two halves are independent. The firmware profile is always part of
-/// the answer; the OS profile is only part of it when the user says so.
+/// The two halves are independent - the firmware profile is always part
+/// of the answer, the OS profile only when the user says so - **but they
+/// are not independent writers.** power-profiles-daemon 0.30 and later
+/// ships its own `platform_profile` driver, so asking it for a profile
+/// can itself write `/sys/firmware/acpi/platform_profile` as a side
+/// effect, in whatever this machine's ACPI choices happen to map to in
+/// *ppd's* opinion - which measurably disagrees with this module's own
+/// mapping (see `pick_platform_profile`) on the reference laptop: asking
+/// ppd for `power-saver` here lands the firmware on `balanced`, not the
+/// `cool` this module would have chosen for Eco.
+///
+/// So the OS step is planned **before** the platform step, and applied in
+/// that order too (`apply` does not reorder what `plan` hands it): our
+/// own explicit write is always the last thing touching the file, and
+/// wins regardless of what ppd's driver decided to do on the way past.
+/// Losing this ordering silently reintroduces a race that a fixed
+/// interval and a `sleep` will not reliably catch - `tests/profiles.rs`
+/// has a machine whose fake `powerprofilesctl` writes its own, wrong,
+/// platform profile as a side effect, precisely so a future reordering
+/// fails a test rather than a user's fan curve.
 pub(crate) fn plan(
     state: &BackendState,
     mode: PowerMode,
     os_profile: bool,
 ) -> (Vec<Step>, Vec<String>) {
     let (mut steps, mut problems) = (Vec::new(), Vec::new());
-
-    if !state.platform_profile_choices.is_empty() {
-        match pick_platform_profile(mode, &state.platform_profile_choices) {
-            Some(profile) => steps.push(Step::PlatformProfile(profile)),
-            None => problems.push("platform_profile: no choice matches this mode".to_string()),
-        }
-    }
 
     if os_profile {
         // power-profiles-daemon first, because it already drives EPP and
@@ -139,6 +190,13 @@ pub(crate) fn plan(
             steps.push(Step::PowerProfilesDaemon(power_profiles_daemon_name(mode)));
         } else if state.energy_preference.is_some() {
             steps.push(Step::EnergyPreference(energy_preference_name(mode)));
+        }
+    }
+
+    if !state.platform_profile_choices.is_empty() {
+        match pick_platform_profile(mode, &state.platform_profile_choices) {
+            Some(profile) => steps.push(Step::PlatformProfile(profile)),
+            None => problems.push("platform_profile: no choice matches this mode".to_string()),
         }
     }
 
@@ -157,7 +215,7 @@ pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
 
     for step in steps {
         match step {
-            Step::PlatformProfile(profile) => match fs::write(PLATFORM_PROFILE, &profile) {
+            Step::PlatformProfile(profile) => match fs::write(platform_profile_path(), &profile) {
                 Ok(()) => report.applied.push(format!("platform_profile={profile}")),
                 Err(e) => report.failed.push(format!("platform_profile: {e}")),
             },
@@ -217,7 +275,7 @@ fn energy_preference_name(mode: PowerMode) -> &'static str {
 }
 
 fn read_power_profiles_daemon() -> Option<String> {
-    let output = Command::new("powerprofilesctl").arg("get").output().ok()?;
+    let output = Command::new(powerprofilesctl()).arg("get").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -225,15 +283,61 @@ fn read_power_profiles_daemon() -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// How many times `set` is asked to land on the profile before this gives
+/// up on it.
+///
+/// Found on the reference laptop: power-profiles-daemon 0.30's own
+/// platform driver does not always get there in one call - going straight
+/// from `performance` to `power-saver` reproducibly settles on `balanced`
+/// instead, with ppd itself entirely out of pyren's picture (`ps
+/// power-profiles-daemon`'s own client hits the same thing). A second
+/// `set` for the same profile, immediately after, was observed to
+/// succeed every time it was tried - so this is not pyren compensating
+/// for a bug it understands, only pyren declining to call a transient
+/// miss a settled answer before asking once more.
+const OS_PROFILE_ATTEMPTS: u32 = 2;
+
+/// Asks power-profiles-daemon for `profile`, and reads back what it
+/// actually landed on rather than trusting the command's exit status -
+/// which is the same principle [`crate::limits::apply`] applies to the
+/// power envelope, and for the same reason: a mechanism that can silently
+/// not do what it was asked needs to be checked, not assumed.
 fn set_power_profiles_daemon(profile: &str) -> Result<(), String> {
-    let output = Command::new("powerprofilesctl")
-        .args(["set", profile])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        return Ok(());
+    let mut settled_on = None;
+
+    for attempt in 1..=OS_PROFILE_ATTEMPTS {
+        let output = Command::new(powerprofilesctl())
+            .args(["set", profile])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+
+        let seen = read_power_profiles_daemon();
+        if seen.as_deref() == Some(profile) {
+            return Ok(());
+        }
+        settled_on = seen;
+
+        // Not the last attempt: a moment for ppd's own state to catch up
+        // to the call that just returned, before asking again.
+        if attempt < OS_PROFILE_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
-    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+
+    Err(match settled_on {
+        Some(seen) if seen == profile => unreachable!("a matching read returns Ok above"),
+        Some(seen) => format!(
+            "asked for {profile}, power-profiles-daemon settled on {seen} \
+             (tried {OS_PROFILE_ATTEMPTS} times)"
+        ),
+        None => format!(
+            "asked for {profile}, power-profiles-daemon did not answer afterwards \
+             (tried {OS_PROFILE_ATTEMPTS} times)"
+        ),
+    })
 }
 
 /// Writes one cpufreq attribute on every CPU, returning how many took it.
@@ -241,8 +345,9 @@ fn set_power_profiles_daemon(profile: &str) -> Result<(), String> {
 /// Partial success is normal on hybrid CPUs where some cores are offline,
 /// so only a total failure is reported as an error.
 fn write_all_cpus(attribute: &str, value: &str) -> Result<usize, String> {
-    let Ok(entries) = fs::read_dir(CPU_ROOT) else {
-        return Err(format!("{CPU_ROOT} is unreadable"));
+    let root = cpu_root();
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Err(format!("{} is unreadable", root.display()));
     };
 
     let mut written = 0;
@@ -323,6 +428,9 @@ mod tests {
         }
     }
 
+    /// The OS step is planned - and applied - before the firmware step,
+    /// on purpose: see the race documented on `plan` itself. This is the
+    /// assertion that would catch a well-meaning reordering.
     #[test]
     fn both_halves_are_applied_when_the_os_profile_is_wanted() {
         let (steps, problems) = plan(&full_machine(), PowerMode::Eco, true);
@@ -330,9 +438,10 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                Step::PlatformProfile("low-power".into()),
                 Step::PowerProfilesDaemon("power-saver"),
-            ]
+                Step::PlatformProfile("low-power".into()),
+            ],
+            "the firmware write must come last, so it wins any race with ppd's own driver"
         );
         assert!(problems.is_empty());
     }
@@ -354,7 +463,7 @@ mod tests {
 
         assert_eq!(
             steps,
-            vec![Step::PlatformProfile("low-power".into()), Step::EnergyPreference("power")]
+            vec![Step::EnergyPreference("power"), Step::PlatformProfile("low-power".into())]
         );
     }
 

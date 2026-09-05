@@ -851,13 +851,30 @@ mod tests {
 
     /// A machine with no powercap still gets the half of the profile it
     /// does have, and says so.
+    ///
+    /// `apply_profile` is the one function here that writes, so it is
+    /// pointed at a directory that contains nothing first. Without that
+    /// this test changes the machine it is running on - under `sudo cargo
+    /// test` it would leave the developer's laptop in Eco - and what it
+    /// asserts would depend on what that laptop happens to offer.
+    /// `tests/profiles.rs` is where the writing half is exercised against
+    /// a machine it is allowed to change.
     #[test]
     fn a_profile_on_a_machine_without_powercap_still_applies_the_os_half() {
+        let nowhere = std::env::temp_dir().join(format!("pyren-power-nowhere-{}", std::process::id()));
+        std::env::set_var("PYREN_PLATFORM_PROFILE", nowhere.join("platform_profile"));
+        std::env::set_var("PYREN_CPU_ROOT", nowhere.join("cpu"));
+        std::env::set_var("PYREN_POWERPROFILESCTL", nowhere.join("powerprofilesctl"));
+
         let config = PowerConfig::default();
         let report = apply_profile(PowerMode::Eco, &config, &limits::LimitPaths::default());
 
         assert!(!report.applied.iter().any(|a| a.starts_with("PL")));
         assert!(!report.applied.iter().any(|a| a.starts_with("turbo")));
+
+        for name in ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_POWERPROFILESCTL"] {
+            std::env::remove_var(name);
+        }
     }
 
     #[test]

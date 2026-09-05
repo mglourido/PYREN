@@ -29,8 +29,25 @@ use serde::{Deserialize, Serialize};
 use crate::PowerMode;
 
 const POWERCAP: &str = "/sys/class/powercap";
-const NO_TURBO: &str = "/sys/devices/system/cpu/intel_pstate/no_turbo";
-const BOOST: &str = "/sys/devices/system/cpu/cpufreq/boost";
+
+/// The powercap tree, or a fixture standing in for it
+/// (`PYREN_POWERCAP`). Writing a real RAPL zone from a test would cap the
+/// developer's own CPU, and reverting it afterwards is not something a
+/// failed assertion can be relied on to do.
+fn powercap_root() -> PathBuf {
+    std::env::var_os("PYREN_POWERCAP").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(POWERCAP))
+}
+
+/// The two knobs for turbo, whichever this CPU has. Both live under the
+/// CPU root the backend already resolves, so one `PYREN_CPU_ROOT` moves
+/// the whole fake machine rather than half of it.
+fn no_turbo_path() -> PathBuf {
+    crate::backend::cpu_root().join("intel_pstate/no_turbo")
+}
+
+fn boost_path() -> PathBuf {
+    crate::backend::cpu_root().join("cpufreq/boost")
+}
 
 /// Never cap the package below this, whatever a percentage works out to.
 /// A CPU that cannot draw a few watts is a machine that does not respond.
@@ -204,7 +221,7 @@ impl ModeTuning {
 /// interfaces is how one ends up with a machine whose limit depends on the
 /// order sysfs was enumerated in.
 fn find_package_zone() -> Option<PathBuf> {
-    let entries = fs::read_dir(POWERCAP).ok()?;
+    let entries = fs::read_dir(powercap_root()).ok()?;
     let mut zones: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -224,12 +241,12 @@ fn find_package_zone() -> Option<PathBuf> {
 }
 
 fn find_turbo_knob() -> Option<TurboKnob> {
-    let no_turbo = Path::new(NO_TURBO);
+    let no_turbo = no_turbo_path();
     if no_turbo.exists() {
-        return Some(TurboKnob::NoTurbo(no_turbo.to_path_buf()));
+        return Some(TurboKnob::NoTurbo(no_turbo));
     }
-    let boost = Path::new(BOOST);
-    boost.exists().then(|| TurboKnob::Boost(boost.to_path_buf()))
+    let boost = boost_path();
+    boost.exists().then_some(TurboKnob::Boost(boost))
 }
 
 fn read_uw(zone: &Path, constraint: u8) -> Option<u64> {
