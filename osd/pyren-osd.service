@@ -9,7 +9,7 @@
 
 [Unit]
 Description=Pyren on-screen display for the performance key
-Documentation=https://github.com/paraguayo33/pyren
+Documentation=https://github.com/mglourido/PYREN
 # Started when the session's graphics are up. Without this it can race the
 # compositor and find no Wayland display to connect to.
 PartOf=graphical-session.target

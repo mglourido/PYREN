@@ -160,8 +160,18 @@ What deliberately did **not** move: `hp-wmi`, `omen-fan-control`,
 upstream projects', HP's — and renaming them would be renaming things this
 project does not own.
 
-A machine that ran the old build keeps its old files; the three commands
-that move them are in the README's deployment section.
+A machine that ran the old build keeps its old files; nothing migrates
+them automatically:
+
+```sh
+sudo mv /etc/omen-hub /etc/pyren                # daemon settings
+mv ~/.config/omen-hub ~/.config/pyren           # app settings
+sudo groupmod -n pyren omen-hub                 # the socket's group
+```
+
+`OMEN_HUB_SOCKET` is now `PYREN_SOCKET`; disable the old
+`omen-hub-daemon.service` before installing `pyren-daemon.service`, or two
+daemons fight over the same hardware.
 
 ## Verifying a change
 

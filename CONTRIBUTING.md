@@ -142,6 +142,13 @@ the inner fragment is passed as pre-rendered English text and is **not**
 re-translated (except joined lists, which `Msg::join` splits so each part
 is translated). See `docs/01-ipc-protocol.md` for the details.
 
+## Releasing
+
+Tagged releases are built locally with `tools/release.sh` (bump the version
+first with `tools/bump-version.sh`). The whole process — what the archive
+contains, how `install/install.sh` sets a machine up, and the step-by-step
+— is in [`install/INSTALL.md`](install/INSTALL.md).
+
 ## Pull requests
 
 - Branch off `main`; keep the change focused.

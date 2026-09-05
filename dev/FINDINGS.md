@@ -899,3 +899,36 @@ that cost real work:
   whatever already arrived, and a longer wait would only push the
   watchdog's own 500 ms check late. No real XID has ever been seen caught —
   there is no safe way to manufacture a critical GPU fault on demand.
+
+## The release app must be built with `tauri build`, not `cargo build` — 2026-09-05
+
+Setting up the first release build (`tools/release.sh`), the obvious move
+looked like a plain `cargo build --release` on `app/src-tauri`: the CLI
+adds nothing but `beforeBuildCommand` and some env vars, and the frontend
+is already built. The binary came out **8.7 MB, ran, linked cleanly — and
+had zero frontend embedded.** `strings` on it found one asset key,
+`/index.html`; a correct build has ~70 (`/_app/immutable/…`).
+
+The chain, all compile-time: `tauri`'s build script does `let dev =
+!has_feature("custom-protocol")` and emits `cargo:dev={dev}`;
+`tauri-build::is_dev()` reads it back; `tauri-codegen`'s `context_codegen`
+then does
+
+```rust
+} else if dev && config.build.dev_url.is_some() {
+    let assets = EmbeddedAssets::default();   // <-- empty
+```
+
+So with no `custom-protocol` feature **and** a `devUrl` in
+`tauri.conf.json` (we have `http://localhost:1420`), `generate_context!`
+ships an empty asset set and the app only works with `vite dev` running.
+`tauri build` avoids this by passing `--features tauri/custom-protocol`.
+
+Fixes applied: `app/src-tauri/Cargo.toml` gained the standard
+`[features] custom-protocol = ["tauri/custom-protocol"]` (the
+`create-tauri-app` template has it; this project's manifest never did), and
+`release.sh` builds the app with `bun run tauri build --no-bundle` —
+`--no-bundle` so no `dpkg`/`rpmbuild`/`linuxdeploy` has to be installed for
+the tarball. CI never caught this because its `tauri` job is `cargo check`
+only and its `app` job builds just the frontend; nothing built a
+production app binary before the release script.

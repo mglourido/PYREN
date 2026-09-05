@@ -21,3 +21,10 @@ gtk4-layer-shell = "0.8"
 # pyren-ctl uses, by path rather than copied.
 pyren-core = { path = "../daemon/crates/core" }
 serde_json = "1"
+
+# Matches daemon/Cargo.toml's release profile - see the note there. The
+# widget ships in the same tarball.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

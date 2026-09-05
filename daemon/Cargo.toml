@@ -42,3 +42,13 @@ license = "GPL-3.0-or-later"
 # intact. Delete it without ceremony if it ever gets in the way.
 [profile.dev]
 opt-level = 1
+
+# The release profile is what `tools/release.sh` ships. `thin` LTO and a
+# single codegen unit are the ordinary "make it as fast as it gets" knobs;
+# `strip = "symbols"` drops the symbol table (a smaller binary in the
+# tarball) without touching panic messages - those are string literals, not
+# debuginfo, so a crash still names its file and line in the journal.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

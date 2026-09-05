@@ -14,6 +14,16 @@ edition = "2021"
 name = "pyren_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Production builds must embed the frontend rather than load it from the
+# dev server. Without this feature `tauri`'s build script sets `cfg(dev)`
+# and `generate_context!` ships an *empty* asset set whenever `devUrl` is
+# configured (tauri-codegen context.rs: `dev && dev_url.is_some()`), so a
+# `cargo build --release` alone produces an app that only works with
+# `vite dev` running. `tauri build` enables this; a manual release build
+# needs `--features custom-protocol`. DO NOT REMOVE.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -35,4 +45,14 @@ libc = "0.2"
 # versioning behaviour. The two remain separate Cargo workspaces and ship as
 # separate binaries; this is one small library crate in common, not a merge.
 pyren-config = { path = "../../daemon/crates/config" }
+
+# What `tools/release.sh` builds. `thin` rather than fat LTO on purpose:
+# this crate pulls in ~490 others (WebKitGTK/GTK bindings), and a fat-LTO
+# release link is minutes of wall time for a few percent. `strip` keeps the
+# packaged binary small; the frontend is already embedded by
+# `tauri::generate_context!`, so this ELF is the whole app.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 

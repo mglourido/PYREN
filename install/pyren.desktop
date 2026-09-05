@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pyren
+GenericName=Gaming Hub
+Comment=Fan, power, lighting and GPU control for HP OMEN laptops on Linux
+Exec=pyren
+Icon=pyren
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=omen;hp;fan;power;rgb;overclock;gpu;
+StartupWMClass=pyren

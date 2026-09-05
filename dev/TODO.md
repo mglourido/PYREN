@@ -69,11 +69,13 @@ is a decision, not an addition — and it would need the same consent gate
   off-by-default, would recover a little of what a firmware profile would
   have moved. Not something to switch on anyone's behalf, and not a fan
   curve.
-- **Packaging.** `tools/install.sh` covers the binaries and the widget's
-  user unit; a PKGBUILD is the right next step for this audience, and it
-  should also settle where the *daemon's* system unit comes from — nothing
-  installs one today, and the service running here points at a debug
-  build inside the tree.
+- **Packaging.** Done for the first release: `tools/release.sh` builds the
+  archive, `install/install.sh` sets a machine up (both units, the `pyren`
+  group, the driver sources under `/usr/share/pyren`), `install/INSTALL.md`
+  is the process. A distro package (`.deb`, a PKGBUILD) is deliberately not
+  built. Still local-only: the *dev* machine's `pyren-daemon.service` points
+  at a debug build inside the tree, which `tools/dev-all.sh` restarts; a
+  real install replaces it.
 - **`kernelZones` needs a module nothing installs.** The RGB dialect that
   reads all four zones back and never hand-builds a firmware buffer is
   `kernelZones`, over the out-of-tree `OmenLinux/omen-rgb-keyboard` module.
