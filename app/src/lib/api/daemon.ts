@@ -144,8 +144,9 @@ export type RgbDialectId = "kernelZones" | "fourZone" | "lightbar";
 /** What one dialect answered when it was asked. */
 export type RgbDialectProbe = {
   id: RgbDialectId;
-  /** What it talks to, in one phrase: "WMI 0x20009, command types 2/3". */
-  transport: string;
+  /** What it talks to, in one phrase: "WMI 0x20009, command types 2/3".
+   *  Translatable - render with `tm()`. */
+  transport: Msg;
   /** A read through it worked. The only field that means the lights can be
    *  driven this way. */
   available: boolean;
@@ -153,7 +154,8 @@ export type RgbDialectProbe = {
    *  skipped for want of `acpi_call` or the kernel's files — which is not
    *  a refusal, and must not be shown as one. */
   asked: boolean;
-  detail: string;
+  /** Translatable - render with `tm()`. */
+  detail: Msg;
 };
 
 /**
@@ -183,8 +185,9 @@ export type RgbLighting = {
   dialects: RgbDialectProbe[];
   commandAnswers: boolean | null;
   /** Set when the interfaces are there and nothing could be asked anyway —
-   *  almost always "the daemon is not root". Carries why. */
-  unreachable: string | null;
+   *  almost always "the daemon is not root". Carries why. Translatable -
+   *  render with `tm()`. */
+  unreachable: Msg | null;
   detail: string;
 };
 

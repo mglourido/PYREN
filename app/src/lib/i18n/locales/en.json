@@ -451,7 +451,18 @@
       "returnCode": "the firmware returned code {code}: {meaning}",
       "unreadable": "the firmware answered {answer}, which is not a colour reply",
       "needsRoot": "writing the kernel's zone files needs root",
-      "io": "{error}"
+      "io": "{error}",
+      "answered": "answered a read of all four zones",
+      "transport": {
+        "kernelZones": "the kernel's rgb_zones files",
+        "fourZone": "WMI 0x20009, command types 2/3",
+        "lightbar": "WMI 0x20009, command type 11"
+      },
+      "unreachable": {
+        "kernelZones": "no kernel rgb_zones files, under either hp-wmi or omen-rgb-keyboard",
+        "noWmi": "no hp-wmi interface on this machine",
+        "noAcpiCall": "/proc/acpi/call is not there, so the firmware cannot be asked"
+      }
     },
     "err": {
       "zonesRequired": "params.zones is required: four colours, '#rrggbb' or [r, g, b]",
@@ -640,6 +651,23 @@
       "vagueTrigger": "a trigger needs a keycode or a scancode; got {trigger}",
       "buttonTrigger": "keycode {keycode} is a mouse or touchpad button, not a key; binding it would throw the widget on screen on every click",
       "modifierTrigger": "keycode {keycode} is a modifier, which is never a shortcut on its own; bind it together with another key"
+    }
+  },
+  "keymap": {
+    "unavailable": {
+      "noDevices": "no keyboard devices in /dev/input, so there is nothing to remap",
+      "needsRoot": "grabbing /dev/input needs root; the systemd unit runs the daemon as root",
+      "noUinput": "/dev/uinput is missing; load the 'uinput' kernel module"
+    },
+    "detail": {
+      "disabled": "no key is being remapped; turn this on once a mapping is set",
+      "noMappings": "enabled, with nothing mapped yet",
+      "running": "remapping {count} keys"
+    },
+    "err": {
+      "invalidMapping": "invalid mapping: {detail}",
+      "invalidSpec": "invalid key: {detail}",
+      "enabledRequired": "params.enabled is required: true or false"
     }
   },
   "power": {

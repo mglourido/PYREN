@@ -11,6 +11,7 @@
 //! §"`controls` and `compatibility` are measured, not looked up"). There is
 //! no board list here and there will not be one.
 
+use pyren_core::Msg;
 use serde::Serialize;
 
 use crate::dialect::{self, Dialect, DialectProbe};
@@ -92,7 +93,9 @@ pub struct Lighting {
     pub command_answers: Option<bool>,
     /// Set when the interfaces are there and nothing could be asked
     /// anyway; almost always "this is not root". Carries why.
-    pub unreachable: Option<String>,
+    ///
+    /// Translatable - render with `tm()`.
+    pub unreachable: Option<Msg>,
     pub detail: String,
 }
 
@@ -173,7 +176,7 @@ fn probe_lighting() -> Lighting {
     // exists to keep out of the refusal count.
     let unreachable = dialects
         .iter()
-        .find(|d| !d.asked && !d.available && d.detail.contains("root"))
+        .find(|d| !d.asked && !d.available && d.detail.text.contains("root"))
         .map(|d| d.detail.clone());
 
     let detail = if present {
@@ -181,7 +184,7 @@ fn probe_lighting() -> Lighting {
             dialects.iter().filter(|d| d.available).map(|d| d.id).collect();
         format!("the lights answered on: {}", names.join(", "))
     } else if let Some(why) = &unreachable {
-        format!("the interfaces are here but nothing could be asked ({why})")
+        format!("the interfaces are here but nothing could be asked ({})", why.text)
     } else if !hp_wmi && !kernel_zones_present() {
         "no hp-wmi interface and no kernel rgb_zones files, so there is nothing to ask"
             .to_string()

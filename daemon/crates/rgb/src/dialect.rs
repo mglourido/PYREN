@@ -32,6 +32,7 @@
 //! writes is not a machine anyone has seen, but it is not ruled out
 //! either, and the cost of being wrong is one refused write.
 
+use pyren_core::{msg, Msg};
 use serde::{Deserialize, Serialize};
 
 use crate::color::Rgb;
@@ -79,6 +80,35 @@ impl DialectError {
                 | Self::Io(_)
         )
     }
+
+    /// The sentence for this failure. Only the ACPI half is in the
+    /// catalog; the rest carry firmware bytes and OS errors, which are
+    /// passed through as params rather than translated.
+    pub fn to_msg(&self) -> Msg {
+        match self {
+            Self::Acpi(inner) => inner.to_msg(),
+            Self::Refused(answer) => msg!(
+                "rgb.dialect.refused",
+                { "answer" => answer.clone() },
+                "the firmware refused this lighting dialect (it answered: {answer})"
+            ),
+            Self::ReturnCode(code) => msg!(
+                "rgb.dialect.returnCode",
+                { "code" => *code, "meaning" => return_code_meaning(*code) },
+                "the firmware returned code {code}: {meaning}"
+            ),
+            Self::Unreadable(answer) => msg!(
+                "rgb.dialect.unreadable",
+                { "answer" => answer.clone() },
+                "the firmware answered {answer}, which is not a colour reply"
+            ),
+            Self::NeedsRoot => msg!(
+                "rgb.dialect.needsRoot",
+                "writing the kernel's zone files needs root"
+            ),
+            Self::Io(detail) => msg!("rgb.dialect.io", { "error" => detail.clone() }, "{error}"),
+        }
+    }
 }
 
 /// The documented meanings, so an error names the fix rather than a number.
@@ -125,11 +155,20 @@ impl Dialect {
     }
 
     /// What it talks to, in one phrase, for a UI that has to name it.
-    pub fn transport(self) -> &'static str {
+    pub fn transport(self) -> Msg {
         match self {
-            Self::KernelZones => "the kernel's rgb_zones files",
-            Self::FourZone => "WMI 0x20009, command types 2/3",
-            Self::Lightbar => "WMI 0x20009, command type 11",
+            Self::KernelZones => msg!(
+                "rgb.dialect.transport.kernelZones",
+                "the kernel's rgb_zones files"
+            ),
+            Self::FourZone => msg!(
+                "rgb.dialect.transport.fourZone",
+                "WMI 0x20009, command types 2/3"
+            ),
+            Self::Lightbar => msg!(
+                "rgb.dialect.transport.lightbar",
+                "WMI 0x20009, command type 11"
+            ),
         }
     }
 
@@ -162,16 +201,25 @@ impl Dialect {
     /// a `stat`, never a call. A dialect that fails this is not probed,
     /// so a machine with no `acpi_call` does not report two firmware
     /// refusals that never happened.
-    fn reachable(self) -> Result<(), &'static str> {
+    fn reachable(self) -> Result<(), Msg> {
         match self {
-            Self::KernelZones => kernel_zones::present()
-                .then_some(())
-                .ok_or("no kernel rgb_zones files, under either hp-wmi or omen-rgb-keyboard"),
+            Self::KernelZones => kernel_zones::present().then_some(()).ok_or_else(|| {
+                msg!(
+                    "rgb.dialect.unreachable.kernelZones",
+                    "no kernel rgb_zones files, under either hp-wmi or omen-rgb-keyboard"
+                )
+            }),
             Self::FourZone | Self::Lightbar => {
                 if !lightbar::hp_wmi_present() {
-                    Err("no hp-wmi interface on this machine")
+                    Err(msg!(
+                        "rgb.dialect.unreachable.noWmi",
+                        "no hp-wmi interface on this machine"
+                    ))
                 } else if !pyren_core::acpi::is_loaded() {
-                    Err("/proc/acpi/call is not there, so the firmware cannot be asked")
+                    Err(msg!(
+                        "rgb.dialect.unreachable.noAcpiCall",
+                        "/proc/acpi/call is not there, so the firmware cannot be asked"
+                    ))
                 } else {
                     Ok(())
                 }
@@ -186,7 +234,7 @@ impl Dialect {
                 transport: self.transport(),
                 available: false,
                 asked: false,
-                detail: why.to_string(),
+                detail: why,
             };
         }
         match self.read_colors() {
@@ -195,7 +243,7 @@ impl Dialect {
                 transport: self.transport(),
                 available: true,
                 asked: true,
-                detail: "answered a read of all four zones".to_string(),
+                detail: msg!("rgb.dialect.answered", "answered a read of all four zones"),
             },
             // A failure to *reach* the interface is not the firmware
             // saying no. The commonest one by far is an unprivileged
@@ -207,7 +255,7 @@ impl Dialect {
                 transport: self.transport(),
                 available: false,
                 asked: e.reached_the_firmware(),
-                detail: e.to_string(),
+                detail: e.to_msg(),
             },
         }
     }
@@ -218,7 +266,8 @@ impl Dialect {
 #[serde(rename_all = "camelCase")]
 pub struct DialectProbe {
     pub id: &'static str,
-    pub transport: &'static str,
+    /// Translatable - render with `tm()`.
+    pub transport: Msg,
     /// A read through it worked. The only field that means the lights can
     /// be driven this way.
     pub available: bool,
@@ -227,7 +276,8 @@ pub struct DialectProbe {
     /// the same as a refusal, the same distinction the module makes
     /// everywhere else.
     pub asked: bool,
-    pub detail: String,
+    /// Translatable - render with `tm()`.
+    pub detail: Msg,
 }
 
 /// Which dialect to use: work it out, or the one the user picked.
@@ -279,7 +329,13 @@ mod tests {
     use super::*;
 
     fn probe(id: &'static str, available: bool) -> DialectProbe {
-        DialectProbe { id, transport: "", available, asked: true, detail: String::new() }
+        DialectProbe {
+            id,
+            transport: Msg::literal(""),
+            available,
+            asked: true,
+            detail: Msg::literal(""),
+        }
     }
 
     #[test]

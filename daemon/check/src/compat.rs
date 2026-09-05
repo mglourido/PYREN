@@ -285,7 +285,7 @@ mod tests {
             .into_iter()
             .map(|(id, asked, available)| pyren_rgb::dialect::DialectProbe {
                 id,
-                transport: "fixture",
+                transport: "fixture".into(),
                 available,
                 asked,
                 detail: if available {

@@ -451,7 +451,18 @@
       "returnCode": "el firmware devolvió el código {code}: {meaning}",
       "unreadable": "el firmware respondió {answer}, que no es una respuesta de color",
       "needsRoot": "escribir los ficheros de zonas del kernel requiere root",
-      "io": "{error}"
+      "io": "{error}",
+      "answered": "respondió a una lectura de las cuatro zonas",
+      "transport": {
+        "kernelZones": "los ficheros rgb_zones del kernel",
+        "fourZone": "WMI 0x20009, tipos de orden 2/3",
+        "lightbar": "WMI 0x20009, tipo de orden 11"
+      },
+      "unreachable": {
+        "kernelZones": "no hay ficheros rgb_zones del kernel, ni en hp-wmi ni en omen-rgb-keyboard",
+        "noWmi": "no hay interfaz hp-wmi en esta máquina",
+        "noAcpiCall": "/proc/acpi/call no existe, así que no se le puede preguntar al firmware"
+      }
     },
     "err": {
       "zonesRequired": "params.zones es obligatorio: cuatro colores, '#rrggbb' o [r, g, b]",
@@ -640,6 +651,23 @@
       "vagueTrigger": "un disparador necesita un keycode o un scancode; se recibió {trigger}",
       "buttonTrigger": "el keycode {keycode} es un botón de ratón o de touchpad, no una tecla; asignarlo lanzaría el widget en pantalla en cada clic",
       "modifierTrigger": "el keycode {keycode} es un modificador, que nunca es un atajo por sí solo; asígnalo junto con otra tecla"
+    }
+  },
+  "keymap": {
+    "unavailable": {
+      "noDevices": "no hay dispositivos de teclado en /dev/input, así que no hay nada que reasignar",
+      "needsRoot": "tomar el control de /dev/input necesita root; la unidad de systemd ejecuta el daemon como root",
+      "noUinput": "falta /dev/uinput; carga el módulo del kernel 'uinput'"
+    },
+    "detail": {
+      "disabled": "no se está reasignando ninguna tecla; actívalo cuando haya una asignación",
+      "noMappings": "activado, sin nada asignado todavía",
+      "running": "reasignando {count} teclas"
+    },
+    "err": {
+      "invalidMapping": "asignación no válida: {detail}",
+      "invalidSpec": "tecla no válida: {detail}",
+      "enabledRequired": "params.enabled es obligatorio: true o false"
     }
   },
   "power": {

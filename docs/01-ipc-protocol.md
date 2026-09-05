@@ -1329,21 +1329,31 @@ in [`04-rgb-porting-review.md`](04-rgb-porting-review.md).
     "commandAnswers": false,
     "unreachable": null,
     "dialects": [
-      { "id": "kernelZones", "transport": "the kernel's rgb_zones files",
+      { "id": "kernelZones",
+        "transport": { "key": "rgb.dialect.transport.kernelZones", "text": "the kernel's rgb_zones files" },
         "available": false, "asked": false,
-        "detail": "this kernel does not publish rgb_zones for hp-wmi" },
-      { "id": "fourZone", "transport": "WMI 0x20009, command types 2/3",
+        "detail": { "key": "rgb.dialect.unreachable.kernelZones",
+                    "text": "no kernel rgb_zones files, under either hp-wmi or omen-rgb-keyboard" } },
+      { "id": "fourZone",
+        "transport": { "key": "rgb.dialect.transport.fourZone", "text": "WMI 0x20009, command types 2/3" },
         "available": false, "asked": true,
-        "detail": "the firmware refused (it answered: )" },
-      { "id": "lightbar", "transport": "WMI 0x20009, command type 11",
+        "detail": { "key": "rgb.dialect.refused", "params": { "answer": "" },
+                    "text": "the firmware refused this lighting dialect (it answered: )" } },
+      { "id": "lightbar",
+        "transport": { "key": "rgb.dialect.transport.lightbar", "text": "WMI 0x20009, command type 11" },
         "available": false, "asked": true,
-        "detail": "the firmware refused (it answered: )" }
+        "detail": { "key": "rgb.dialect.refused", "params": { "answer": "" },
+                    "text": "the firmware refused this lighting dialect (it answered: )" } }
     ],
     "detail": "the firmware was asked in every dialect this build knows and refused each one"
   },
   "supported": false
 }
 ```
+
+`transport` and each dialect's `detail` (and `lighting.unreachable`, when set) are
+`Msg` - translatable, render with a client's `tm()`. `lighting.detail` and
+`perKey.detail` stay plain strings: neither reaches the app's UI today.
 
 Four fields there are easy to conflate and must not be:
 

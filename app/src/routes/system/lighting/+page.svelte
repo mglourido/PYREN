@@ -298,7 +298,7 @@
              failed. The other four cases are fully said in the user's
              language and repeating them in English adds noise. -->
         {#if unavailable === "unreachable" && lighting?.unreachable}
-          <span class="detail">{lighting.unreachable}</span>
+          <span class="detail">{tm(lighting.unreachable)}</span>
         {/if}
       </Banner>
     {/if}
@@ -437,8 +437,8 @@
             </span>
             <div>
               <strong>{dialect.id}</strong>
-              <span class="transport">{dialect.transport}</span>
-              <p>{dialect.detail}</p>
+              <span class="transport">{tm(dialect.transport)}</span>
+              <p>{tm(dialect.detail)}</p>
             </div>
           </li>
         {/each}

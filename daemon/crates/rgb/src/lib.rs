@@ -200,7 +200,7 @@ impl RgbModule {
                 Some(dialect) => {
                     if let Err(e) = dialect.write_colors(&zones, brightness) {
                         log_warn!("could not restore the lights: {e}");
-                        lock(&module.state).last_error = Some(dialect_msg(&e));
+                        lock(&module.state).last_error = Some(e.to_msg());
                     }
                 }
                 None => log_warn!(
@@ -292,7 +292,7 @@ impl RgbModule {
                 persist(&self.store, &mut state);
             }
             Err(e) => {
-                lock(&self.state).last_error = Some(dialect_msg(&e));
+                lock(&self.state).last_error = Some(e.to_msg());
                 return Err(dialect_error(e));
             }
         }
@@ -470,40 +470,7 @@ fn dialect_error(e: DialectError) -> ModuleError {
         DialectError::Refused(_) | DialectError::ReturnCode(_) => ErrorKind::NotCapable,
         DialectError::Unreadable(_) => ErrorKind::Failed,
     };
-    ModuleError::localised(kind, dialect_msg(&e))
-}
-
-/// The sentence for one dialect failure. Only the ACPI half is in the
-/// catalog; the rest carry firmware bytes and OS errors, which are passed
-/// through as params rather than translated.
-fn dialect_msg(e: &DialectError) -> Msg {
-    match e {
-        DialectError::Acpi(inner) => inner.to_msg(),
-        DialectError::Refused(answer) => msg!(
-            "rgb.dialect.refused",
-            { "answer" => answer.clone() },
-            "the firmware refused this lighting dialect (it answered: {answer})"
-        ),
-        DialectError::ReturnCode(code) => msg!(
-            "rgb.dialect.returnCode",
-            { "code" => *code, "meaning" => dialect::return_code_meaning(*code) },
-            "the firmware returned code {code}: {meaning}"
-        ),
-        DialectError::Unreadable(answer) => msg!(
-            "rgb.dialect.unreadable",
-            { "answer" => answer.clone() },
-            "the firmware answered {answer}, which is not a colour reply"
-        ),
-        DialectError::NeedsRoot => msg!(
-            "rgb.dialect.needsRoot",
-            "writing the kernel's zone files needs root"
-        ),
-        DialectError::Io(detail) => msg!(
-            "rgb.dialect.io",
-            { "error" => detail.clone() },
-            "{error}"
-        ),
-    }
+    ModuleError::localised(kind, e.to_msg())
 }
 
 fn persist(store: &ConfigStore, state: &mut State) {
