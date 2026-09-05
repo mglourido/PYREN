@@ -169,6 +169,23 @@
         action: !p.acpiCallLoaded && p.acpiCallInstalled ? "loadAcpiCall" : undefined,
       },
       {
+        // The GPU offsets. Three outcomes rather than two, because "not
+        // working" splits into a fix this button can apply and one it
+        // cannot: on Wayland there is no NVIDIA X screen for Coolbits to
+        // apply to, and writing the file would change nothing.
+        id: "gpuOffsets",
+        ok: p.nvmlOffsets || p.coolbitsSet,
+        title: t("admin.gpuOffsets"),
+        detail: p.nvmlOffsets
+          ? t("admin.gpuOffsetsNvml")
+          : p.coolbitsSet
+            ? t("admin.gpuOffsetsCoolbitsSet")
+            : p.coolbitsWouldHelp
+              ? t("admin.gpuOffsetsNeedsCoolbits")
+              : t("admin.gpuOffsetsWayland"),
+        action: p.coolbitsWouldHelp ? "enableCoolbits" : undefined,
+      },
+      {
         id: "root",
         ok: daemonPrivileges?.root ?? false,
         title: t("admin.rootTitle"),

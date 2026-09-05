@@ -40,10 +40,25 @@ export type AdminStatus = {
    *  could not be found, in which case that fix is not offered. */
   daemonBinary: string | null;
   user: string | null;
+  /** Whether the driver's own library can move a GPU clock offset. When
+   *  it can, it needs no X server and no Coolbits, and the Coolbits fix
+   *  is beside the point. */
+  nvmlOffsets: boolean;
+  /** Whether some Xorg config already sets Coolbits. */
+  coolbitsSet: boolean;
+  /** Whether writing the Coolbits snippet would change anything. False on
+   *  a Wayland session, where there is no NVIDIA X screen for it to apply
+   *  to — offering it there is a button that changes nothing. */
+  coolbitsWouldHelp: boolean;
 };
 
 /** The fixes `admin_grant` accepts. Must match `Grant` in admin.rs. */
-export type AdminAction = "joinGroup" | "installService" | "enableService" | "loadAcpiCall";
+export type AdminAction =
+  | "joinGroup"
+  | "installService"
+  | "enableService"
+  | "loadAcpiCall"
+  | "enableCoolbits";
 
 export type GrantResult = {
   applied: boolean;

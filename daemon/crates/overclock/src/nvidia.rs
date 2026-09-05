@@ -59,6 +59,7 @@ use std::process::Command;
 
 use pyren_core::{msg, Msg};
 
+use crate::nvml;
 use crate::plan::{ClockLock, Range};
 
 /// `nvidia-settings` attribute for the core-clock offset, applied to every
@@ -113,6 +114,34 @@ impl NvidiaError {
                 { "what" => *what, "detail" => detail.clone() },
                 "could not read {what}: {detail}"
             ),
+        }
+    }
+}
+
+impl From<nvml::NvmlError> for NvidiaError {
+    /// NVML's answers in this module's terms.
+    ///
+    /// `Unavailable` never arrives here: it is the one the callers above
+    /// intercept to fall back on `nvidia-settings`, so reaching this arm
+    /// would mean a fallback was forgotten. It is mapped to the honest
+    /// thing rather than a panic, because a daemon that aborts over an
+    /// internal mismatch is worse than one that says a tool is missing.
+    fn from(error: nvml::NvmlError) -> Self {
+        match error {
+            nvml::NvmlError::Unavailable => Self::NotInstalled("libnvidia-ml"),
+            nvml::NvmlError::NotSupported => Self::Refused(msg!(
+                "overclock.nvml.notSupported",
+                "this driver offers no clock offset for this card"
+            )),
+            nvml::NvmlError::NeedsRoot => Self::NeedsRoot(msg!(
+                "overclock.nvml.needsRoot",
+                "the driver refused this offset because the daemon is not root"
+            )),
+            nvml::NvmlError::Failed(detail) => Self::Refused(msg!(
+                "overclock.nvml.failed",
+                { "detail" => detail },
+                "the NVIDIA driver refused the offset: {detail}"
+            )),
         }
     }
 }
@@ -213,23 +242,66 @@ impl Nvidia {
         )))
     }
 
-    // --- nvidia-settings: the offsets -----------------------------------
+    // --- the offsets ----------------------------------------------------
+    //
+    // Two mechanisms for one knob, and which one answers decides whether
+    // this feature exists on a given desktop at all.
+    //
+    // **NVML first.** It is the driver's own library, it needs no X
+    // server, no session and no `Coolbits` - only root, which this daemon
+    // is. That makes it the only one of the two that works on a Wayland
+    // desktop, where there is no NVIDIA X screen for `Coolbits` to be
+    // enabled on and the `nvidia-settings` path is refused for everyone.
+    //
+    // **`nvidia-settings` second**, for the case NVML cannot answer: a
+    // driver old enough to predate the `VfOffset` symbols. There it is
+    // still the only way, and it still works - on an Xorg session with
+    // `Coolbits` set.
+    //
+    // The fallback is on `Unavailable` alone. A `NotSupported` or a
+    // refusal from NVML is the driver's considered answer about this
+    // card, and asking the same question through a second interface would
+    // turn one clear "no" into two confusing ones.
 
     /// The core offset as it is now, with the range the driver advertises.
     pub fn core_offset(&self, index: u32) -> Result<(i32, Option<Range>), NvidiaError> {
-        self.read_attribute(index, CORE_ATTRIBUTE)
+        match nvml::core_offset(index) {
+            Err(nvml::NvmlError::Unavailable) => self.read_attribute(index, CORE_ATTRIBUTE),
+            other => other.map_err(NvidiaError::from),
+        }
     }
 
     pub fn mem_offset(&self, index: u32) -> Result<(i32, Option<Range>), NvidiaError> {
-        self.read_attribute(index, MEM_ATTRIBUTE)
+        match nvml::mem_offset(index) {
+            Err(nvml::NvmlError::Unavailable) => self.read_attribute(index, MEM_ATTRIBUTE),
+            other => other.map_err(NvidiaError::from),
+        }
     }
 
     pub fn set_core_offset(&self, index: u32, mhz: i32) -> Result<(), NvidiaError> {
-        self.write_attribute(index, CORE_ATTRIBUTE, mhz)
+        match nvml::set_core_offset(index, mhz) {
+            Err(nvml::NvmlError::Unavailable) => self.write_attribute(index, CORE_ATTRIBUTE, mhz),
+            other => other.map_err(NvidiaError::from),
+        }
     }
 
     pub fn set_mem_offset(&self, index: u32, mhz: i32) -> Result<(), NvidiaError> {
-        self.write_attribute(index, MEM_ATTRIBUTE, mhz)
+        match nvml::set_mem_offset(index, mhz) {
+            Err(nvml::NvmlError::Unavailable) => self.write_attribute(index, MEM_ATTRIBUTE, mhz),
+            other => other.map_err(NvidiaError::from),
+        }
+    }
+
+    /// Which mechanism is answering for the offsets, for a status panel
+    /// that has to explain why they do or do not work here.
+    pub fn offset_mechanism(&self) -> &'static str {
+        if nvml::available() {
+            "nvml"
+        } else if self.settings {
+            "nvidia-settings"
+        } else {
+            "none"
+        }
     }
 
     /// Whether the offsets can actually be *set*, found out by setting the

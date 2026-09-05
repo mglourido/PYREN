@@ -4,7 +4,7 @@ This is the honest version: what has been tested, how, and what has
 **not** been. Every number here comes from a suite you can run yourself.
 
 ```sh
-cd daemon && cargo test --workspace     # 500 tests
+cd daemon && cargo test --workspace     # 503 tests
 tools/power-soak.sh                     # 31 checks, against real hardware
 ```
 
@@ -21,23 +21,31 @@ tools/power-soak.sh                     # 31 checks, against real hardware
 | **Fan modes** auto / max / curve | ✅ **yes** | tested against a fixture |
 | **Fan mode** manual | ⚠️ **partly** | tested lightly — accepted where the driver exposes `pwm1`, refused where not |
 | **One fan curve per profile** | ❌ **does not exist** | there is a single global curve; the fan module does not know the power mode. Would be a new feature |
-| **GPU overclocking** | ❌ **not on this machine** | the code works and has 44 tests, but the offsets cannot be applied here — see below |
+| **GPU overclocking** | ✅ **yes** | verified on hardware — +50 MHz applied and reverted, through NVML. Needs no X and no `Coolbits` |
 
-### Why GPU overclocking does not work here
+### How GPU overclocking works here
 
-NVIDIA offers two ways to move a clock offset, and this machine can use
-neither *as Pyren currently asks for it*:
+NVIDIA offers two ways to move a clock offset, and only one of them
+exists on a Wayland desktop:
 
 | path | needs | status here |
 |---|---|---|
-| `nvidia-settings` (what Pyren uses today) | a real Xorg server with an NVIDIA X screen, and `Coolbits` enabled | ❌ this is a **Wayland** session (Hyprland + rootless Xwayland). `nvidia-settings -q screens` finds no NVIDIA screen at all, so there is nothing for `Coolbits` to apply to |
-| **NVML** (`libnvidia-ml`) | nothing but root | ✅ **available** — driver 610.57.04 exposes `nvmlDeviceSetGpcClkVfOffset`, and the offset reads back fine with a −1000…+1000 range |
+| `nvidia-settings` | a real Xorg server with an NVIDIA X screen, and `Coolbits` enabled | ❌ this is a **Wayland** session. `nvidia-settings -q screens` finds no NVIDIA screen, so there is nothing for `Coolbits` to apply to — the write is refused for the user as much as for root |
+| **NVML** (`libnvidia-ml`) | nothing but root | ✅ **used** — Pyren tries this first, and `nvidia-settings` only when the driver is too old to have it |
 
-So the blocker is not a permission the user has failed to grant. It is
-that the mechanism Pyren reaches for does not exist on a Wayland desktop,
-while one that does exist is not wired up yet. Enabling `Coolbits` would
-change nothing here; it would only help somebody running a real Xorg
-session.
+This was the fix. Pyren originally reached for `nvidia-settings` only,
+which is why overclocking appeared not to work at all: it was asking for
+a mechanism a Wayland desktop does not have. Verified end to end
+afterwards:
+
+```
+offset before      0 MHz
+apply +50 MHz  →  50 MHz on the card, revert timer armed
+cancel         →   0 MHz
+```
+
+Read back through NVML directly rather than taken from Pyren's own
+report, and the card was left at stock.
 
 ---
 
@@ -215,42 +223,22 @@ Verified: the sequence that failed every time now passes 5/5.
 
 ## What is *not* tested, and why
 
-**GPU overclocking has never been run against a real card here.** The
-module is implemented and its logic has 44 tests of its own — the
-consent gate, the stepped climb, the revert-on-failure timer, the refusal
-to restore an offset after a crash. What has not happened is an offset
-landing on real silicon, and that is deliberate: an offset that survives
-a benchmark can still hang the machine in a game, and when it does there
-is no error message.
+**GPU overclocking is now verified on hardware, but only shallowly.** A
++50 MHz core offset was applied, read back off the card and reverted. The
+module's safety machinery — the consent gate, the stepped climb, the
+revert-on-failure timer, the refusal to restore an offset after a crash —
+has 47 tests of its own, and the revert path was exercised live.
 
-On the reference machine it also **cannot** work as Pyren currently asks
-for it, and the reason is worth being precise about, because the obvious
-diagnosis is the wrong one.
+What has *not* been done is finding out how far this card will actually
+go. That is not a test, it is an afternoon with a workload: an offset
+that survives a benchmark can still hang the machine in a game, and when
+it does there is no error message. Pyren applies offsets in 15 MHz steps
+and reverts anything you do not confirm, which bounds the damage; it
+cannot tell you your card is stable.
 
-Pyren applies offsets through `nvidia-settings`, which needs an X screen
-driven by the NVIDIA X driver, with `Coolbits` enabled on it. What was
-actually found:
-
-1. **There is no NVIDIA X screen to enable anything on.** This is a
-   Wayland session, and `nvidia-settings -q screens` returns nothing.
-   Writing a `Coolbits` line into `xorg.conf.d` would be inert — it
-   configures an Xorg screen that this desktop never creates.
-2. **The write is refused for everyone, not just root.** Asked directly
-   from the user's own session, `nvidia-settings -a ...Offset...=50`
-   answers `Operation not permitted for the current user`. That is the
-   same wall, seen from the other side.
-3. **The daemon also has no X cookie**, since Hyprland's Xwayland was
-   started without an auth file. Pyren diagnoses *this* one correctly and
-   says so in its own error message, which is the behaviour that was
-   tested.
-
-None of that is a defect in Pyren. But it does mean the feature reaches
-for a mechanism that a modern Wayland desktop does not have — while the
-driver on the same machine exposes one that needs no X at all. NVML
-(`libnvidia-ml.so.1`) carries `nvmlDeviceSetGpcClkVfOffset` and friends
-on driver 610.57.04, the current offset reads back as 0, and the driver
-advertises a −1000…+1000 range. Wiring that up is what would make
-overclocking work here; a permission toggle would not.
+Memory offsets are implemented and untested on hardware. The driver
+advertises −2000…+6000 here, and a memory offset is a *transfer rate*
+offset — what other tools show as "memory clock" is half of it.
 
 Also not covered: RGB lighting, the keyboard remapper, the network
 module and the driver installer are exercised by their own crates'
@@ -266,7 +254,7 @@ hardware pass like the one above.
 | `pyren-installer` | 84 | the driver installer and its plans |
 | `pyren-power` | 77 | the four profiles, the envelope, auto-switching |
 | `pyren-fan` | 75 | fan modes, curves, calibration, the cleaner |
-| `pyren-overclock` | 44 | consent, the climb, the revert timer |
+| `pyren-overclock` | 47 | consent, the climb, the revert timer, the NVML binding |
 | `pyren-core` | 43 | IPC, config, sensors, the event bus |
 | `pyren-rgb` | 37 | lighting zones and dialects |
 | `pyren-hotkey` | 28 | the performance key |
@@ -279,7 +267,7 @@ hardware pass like the one above.
 | `pyren-ctl` | 9 | the command-line client's parsing |
 | `pyren-gpu` | 9 | the graphics mux |
 
-**500 total, 0 failing.** Plus 31 checks against real hardware in
+**503 total, 0 failing.** Plus 31 checks against real hardware in
 `tools/power-soak.sh`, and one real-clock soak that is skipped by
 default because it runs for minutes.
 

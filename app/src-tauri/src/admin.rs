@@ -29,7 +29,7 @@
 //! and it does not belong behind a single button.
 
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -62,6 +62,23 @@ pub enum Grant {
     /// "permission denied" the rest of this panel exists to explain -
     /// which sends people to the wrong fix.
     LoadAcpiCall,
+    /// Write an Xorg snippet enabling `Coolbits`, so `nvidia-settings`
+    /// will accept a clock offset.
+    ///
+    /// The narrowest of the fixes here, and the one most likely to do
+    /// nothing: `Coolbits` is an option of the NVIDIA **X** driver, and it
+    /// only has an effect on a session where that driver runs an X screen.
+    /// A Wayland desktop has none - the compositor drives the display and
+    /// Xwayland is rootless - so the file is written and the offsets stay
+    /// refused. `coolbitsWouldHelp` in [`status`] is what decides whether
+    /// this is offered at all, and on a Wayland session the answer is no.
+    ///
+    /// Kept anyway because Pyren now reaches the offsets through NVML
+    /// first, which needs none of this; `Coolbits` is the fallback path's
+    /// prerequisite, for somebody on an Xorg session with a driver too old
+    /// for NVML's offset symbols. It also needs the X server restarted,
+    /// which no button can do.
+    EnableCoolbits,
 }
 
 impl Grant {
@@ -71,6 +88,7 @@ impl Grant {
             "installService" => Ok(Self::InstallService),
             "enableService" => Ok(Self::EnableService),
             "loadAcpiCall" => Ok(Self::LoadAcpiCall),
+            "enableCoolbits" => Ok(Self::EnableCoolbits),
             other => Err(format!("unknown admin action '{other}'")),
         }
     }
@@ -114,7 +132,65 @@ pub fn status(socket_path: &str) -> Value {
         "canElevate": which("pkexec"),
         "daemonBinary": daemon_binary(),
         "user": username(),
+        // The GPU offsets, and which of the two mechanisms can carry them
+        // here. See `Grant::EnableCoolbits` for why the answer is usually
+        // "neither Coolbits nor a permission".
+        "nvmlOffsets": nvml_offsets_available(),
+        "coolbitsSet": coolbits_configured(),
+        "coolbitsWouldHelp": coolbits_would_help(),
     })
+}
+
+/// Whether the driver's own library can move a clock offset.
+///
+/// The question the Coolbits button exists to *not* be asked when the
+/// answer is yes: NVML needs no X server and no Coolbits, so on a machine
+/// where it works the Xorg snippet is beside the point.
+///
+/// Asked by looking for the symbol rather than by loading the library
+/// here: this panel runs in the app, which is unprivileged and has no
+/// business initialising NVML. The daemon is what actually uses it.
+fn nvml_offsets_available() -> bool {
+    Command::new("sh")
+        .args([
+            "-c",
+            "ldconfig -p 2>/dev/null | grep -q libnvidia-ml.so.1 && \
+             nm -D --defined-only \
+             \"$(ldconfig -p | awk '/libnvidia-ml.so.1/ {print $NF; exit}')\" 2>/dev/null | \
+             grep -q nvmlDeviceSetGpcClkVfOffset",
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn coolbits_configured() -> bool {
+    let mut roots = vec![PathBuf::from("/etc/X11/xorg.conf")];
+    if let Ok(entries) = std::fs::read_dir("/etc/X11/xorg.conf.d") {
+        roots.extend(entries.filter_map(|e| e.ok()).map(|e| e.path()));
+    }
+    roots.iter().any(|path| {
+        std::fs::read_to_string(path)
+            .map(|text| text.to_lowercase().contains("coolbits"))
+            .unwrap_or(false)
+    })
+}
+
+/// Whether writing that file would change anything.
+///
+/// It would not on a Wayland session, which is most of them now:
+/// `Coolbits` configures an X screen driven by the NVIDIA X driver, and a
+/// compositor with a rootless Xwayland never creates one. Offering the
+/// fix there would be a button that authenticates, writes a file, asks
+/// for a reboot and changes nothing - which is worse than not offering
+/// it, because the user then believes the problem is elsewhere.
+fn coolbits_would_help() -> bool {
+    let on_wayland = std::env::var("XDG_SESSION_TYPE")
+        .map(|kind| kind.eq_ignore_ascii_case("wayland"))
+        .unwrap_or(false)
+        || std::env::var_os("WAYLAND_DISPLAY").is_some();
+
+    !on_wayland && !nvml_offsets_available() && !coolbits_configured()
 }
 
 /// Runs one fix under `pkexec`. Returns what ran and what it said, so a
@@ -169,6 +245,23 @@ pub fn grant(action: &str) -> Result<Value, String> {
                 "modprobe acpi_call && \
                  mkdir -p /etc/modules-load.d && \
                  printf 'acpi_call\\n' > /etc/modules-load.d/pyren-acpi-call.conf",
+            ])
+            .output(),
+        // `8` is the offsets bit, and only that one: 4 would add fan
+        // control this project does through the EC instead, and 31 is the
+        // number forum posts recommend without saying what it turns on.
+        // Written as its own file rather than into an existing
+        // xorg.conf, which may not exist and is not ours to edit.
+        Grant::EnableCoolbits => Command::new("pkexec")
+            .args([
+                "/bin/sh",
+                "-c",
+                "mkdir -p /etc/X11/xorg.conf.d && \
+                 printf 'Section \"Device\"\\n\
+                 \x20   Identifier \"pyren-nvidia\"\\n\
+                 \x20   Driver \"nvidia\"\\n\
+                 \x20   Option \"Coolbits\" \"8\"\\n\
+                 EndSection\\n' > /etc/X11/xorg.conf.d/20-pyren-coolbits.conf",
             ])
             .output(),
     };

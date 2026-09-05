@@ -155,6 +155,7 @@ dependencies = [
 name = "pyren-overclock"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "pyren-config",
  "pyren-core",
  "serde",

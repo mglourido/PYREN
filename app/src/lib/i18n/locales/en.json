@@ -892,7 +892,12 @@
     "acpiCall": "acpi_call kernel module",
     "acpiCallOk": "/proc/acpi/call is available, so the fan cleaner and the lightbar can reach the firmware.",
     "acpiCallNotLoaded": "installed but not loaded. Loading it also arranges for it to load at boot.",
-    "acpiCallMissing": "not built for this kernel. Install acpi_call-dkms (Arch), acpi-call-dkms (Debian/Ubuntu) or akmod-acpi_call (Fedora), then come back here."
+    "acpiCallMissing": "not built for this kernel. Install acpi_call-dkms (Arch), acpi-call-dkms (Debian/Ubuntu) or akmod-acpi_call (Fedora), then come back here.",
+    "gpuOffsets": "GPU clock offsets",
+    "gpuOffsetsNvml": "available through the driver's own library (NVML), which needs no X server and no Coolbits.",
+    "gpuOffsetsCoolbitsSet": "Coolbits is set in the Xorg config. The offsets work once the X server has been restarted.",
+    "gpuOffsetsNeedsCoolbits": "this driver is too old for NVML's offset support, so nvidia-settings has to do it — and that needs Coolbits enabled. Applying this writes the Xorg snippet; the X server has to be restarted afterwards.",
+    "gpuOffsetsWayland": "not available on this session. Coolbits configures an X screen driven by the NVIDIA driver, and a Wayland desktop never creates one — writing it would change nothing. A driver new enough for NVML would work here without any of it."
   },
   "overclock": {
     "clamp": {

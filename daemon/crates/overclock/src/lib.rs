@@ -61,6 +61,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod nvidia;
+pub mod nvml;
 pub mod plan;
 pub mod probe;
 
