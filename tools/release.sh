@@ -188,6 +188,7 @@ install -Dm644 "$ROOT/app/src-tauri/icons/128x128@2x.png" "$DEST/share/icons/hic
 install -m644 "$ROOT/app/src-tauri/icons/icon.svg" "$DEST/share/icons/hicolor/scalable/apps/pyren.svg"
 
 install -m644 "$ROOT/osd/pyren-osd.service" "$DEST/lib/systemd/user/pyren-osd.service"
+install -m644 "$ROOT/osd/pyren-osd.path" "$DEST/lib/systemd/user/pyren-osd.path"
 
 install -m755 "$ROOT/install/install.sh" "$DEST/install.sh"
 install -m755 "$ROOT/install/uninstall.sh" "$DEST/uninstall.sh"

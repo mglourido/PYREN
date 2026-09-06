@@ -73,6 +73,9 @@ APP_DEST="$PREFIX/share/applications"
 ICON_DEST="$PREFIX/share/icons/hicolor"
 USER_UNIT_DEST="$PREFIX/lib/systemd/user"
 OSD_UNIT=pyren-osd.service
+# The watcher that starts the widget on a desktop systemd does not manage;
+# see the comment at the top of osd/pyren-osd.path for why it is needed.
+OSD_PATH_UNIT=pyren-osd.path
 BINARIES="pyren pyren-daemon pyren-ctl pyren-check pyren-osd"
 
 say() { printf '\033[1m==> %s\033[0m\n' "$1"; }
@@ -163,11 +166,13 @@ if [ "$MODE" = archive ]; then
     DRIVER_SRC="$BASE/share/pyren/driver"
     DESKTOP_SRC="$BASE/share/applications/pyren.desktop"
     OSD_UNIT_SRC="$BASE/lib/systemd/user/$OSD_UNIT"
+    OSD_PATH_SRC="$BASE/lib/systemd/user/$OSD_PATH_UNIT"
     ICON_SRC="$BASE/share/icons/hicolor"
 else
     DRIVER_SRC="$BASE/driver"
     DESKTOP_SRC="$BASE/install/pyren.desktop"
     OSD_UNIT_SRC="$BASE/osd/$OSD_UNIT"
+    OSD_PATH_SRC="$BASE/osd/$OSD_PATH_UNIT"
     ICON_SRC="$BASE/app/src-tauri/icons"
 fi
 
@@ -197,7 +202,8 @@ if [ "$action" = uninstall ]; then
         "$ICON_DEST/128x128/apps/pyren.png" \
         "$ICON_DEST/256x256/apps/pyren.png" \
         "$ICON_DEST/scalable/apps/pyren.svg" \
-        "$USER_UNIT_DEST/$OSD_UNIT"; do
+        "$USER_UNIT_DEST/$OSD_UNIT" \
+        "$USER_UNIT_DEST/$OSD_PATH_UNIT"; do
         if [ -e "$p" ] || [ "$dry_run" = yes ]; then
             as_root rm -rf "$p"
             done_line "removed $p"
@@ -233,7 +239,8 @@ for b in $BINARIES; do
         missing=yes
     fi
 done
-for p in "$DRIVER_SRC/dkms.conf" "$DRIVER_SRC/hp-wmi-omen/hp-wmi.c" "$DESKTOP_SRC" "$OSD_UNIT_SRC"; do
+for p in "$DRIVER_SRC/dkms.conf" "$DRIVER_SRC/hp-wmi-omen/hp-wmi.c" "$DESKTOP_SRC" \
+    "$OSD_UNIT_SRC" "$OSD_PATH_SRC"; do
     if [ -e "$p" ]; then
         echo "  ok       $(rel "$p")"
     else
@@ -288,6 +295,16 @@ else
     rm -f "$tmp"
     echo "  installed $USER_UNIT_DEST/$OSD_UNIT"
 fi
+
+# Copied verbatim, unlike the service above: it names no path of its own,
+# only the unit it triggers and the %t systemd expands per user.
+say "widget path unit -> $USER_UNIT_DEST/$OSD_PATH_UNIT"
+if [ "$dry_run" = yes ]; then
+    echo "  would install $USER_UNIT_DEST/$OSD_PATH_UNIT"
+else
+    as_root install -Dm644 "$OSD_PATH_SRC" "$USER_UNIT_DEST/$OSD_PATH_UNIT"
+    echo "  installed $USER_UNIT_DEST/$OSD_PATH_UNIT"
+fi
 user_systemctl daemon-reload
 
 if [ "$with_service" = yes ]; then
@@ -328,7 +345,12 @@ Two things left, both in your own session:
      daemon. Until then you get a permission error.
 
   2. To start the performance-key widget with your session:
-       systemctl --user enable --now $OSD_UNIT
+       systemctl --user enable --now $OSD_PATH_UNIT
+
+     That watches for your compositor to come up, so it works on any
+     desktop. On GNOME or KDE "systemctl --user enable --now $OSD_UNIT"
+     does the same job. To stop the widget, stop the .path first or it
+     will start it again.
 
 Then launch Pyren from your app menu, or run 'pyren'. 'pyren-check' reports
 what this laptop can be told to do.
