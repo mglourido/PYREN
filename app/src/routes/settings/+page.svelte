@@ -312,6 +312,15 @@
           ariaLabel={t("settings.widgetAtLogin")}
         />
       </div>
+
+      <!-- The widget starts on its own — its `.path` unit needs neither the
+           app nor a session manager — but it reads and changes power modes
+           over the daemon's socket. Enabled without the daemon it comes up
+           at login with nothing to talk to, which is a worse failure than
+           not starting, because it looks like it worked. -->
+      {#if services?.osd.startsAtLogin && privileges && !privileges.serviceEnabled}
+        <p class="notice warn">{t("settings.widgetNeedsDaemon")}</p>
+      {/if}
     {/if}
 
     <div class="row">
@@ -322,16 +331,14 @@
         ariaLabel={t("settings.autostart")}
       />
     </div>
-    <!-- Written correctly and then read by nobody is the one failure both
-         of these had, so where that is the case it is stated rather than
-         left looking like toggles that do nothing. One notice for the two,
-         because it is one fact about the session — but only the lines for
-         what the user actually switched on. -->
-    {#if services && !services.loginWorks && (autostartOn || services.osd.startsAtLogin)}
+    <!-- Only the app needs saying now. The widget gets a `.path` unit that
+         watches for the compositor's Wayland socket, so it comes up on any
+         desktop; the app cannot use the same trick, because a path unit
+         re-triggers when what it started stops, and quitting Pyren has to
+         mean quit. -->
+    {#if services && !services.loginWorks && autostartOn}
       <p class="notice warn">{t("settings.autostartUnmanaged")}</p>
-      <code class="block">{#if services.osd.startsAtLogin}exec-once = {services.osd
-          .loginCommand}{/if}{#if services.osd.startsAtLogin && autostartOn}{"\n"}{/if}{#if autostartOn}exec-once = {services
-          .app.loginCommand}{/if}</code>
+      <code class="block">exec-once = {services.app.loginCommand}</code>
     {/if}
 
     <div class="row">

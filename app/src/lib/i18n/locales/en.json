@@ -371,6 +371,7 @@
     "daemonAtBootHint": "Runs pyren-daemon as a system service, loads acpi_call for the lightbar and the fan cleaner, and adds you to the pyren group. This is what fan curves, RGB, power profiles and automatic profile switching need in order to work before Pyren is open and to keep working after you close it. Asks for your password once. Turning it off only stops the service.",
     "needsPolkit": "No polkit agent is available, so this cannot ask for your password. Install one, or run: sudo systemctl enable --now pyren-daemon.service",
     "noDaemonBinary": "The pyren-daemon binary was not found, so the service cannot be installed from here.",
+    "widgetNeedsDaemon": "The widget shows and changes power modes through pyren-daemon, so it also needs “Hardware control at boot” above. Without it the widget starts at login with nothing to talk to.",
     "widgetAtLoginHint": "Gives the widget its own user service, so the performance key works without Pyren having been opened.",
     "services": "Services",
     "servicesHint": "The daemon runs as root and is started by systemd at boot, so the fan curve and the performance key work before anyone logs in. The widget draws on your screen, so it runs in your session — Pyren starts it when it opens.",

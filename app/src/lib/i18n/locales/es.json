@@ -371,6 +371,7 @@
     "daemonAtBootHint": "Ejecuta pyren-daemon como servicio del sistema, carga acpi_call para la barra RGB y el limpiador de ventiladores, y te añade al grupo pyren. Es lo que necesitan las curvas del ventilador, el RGB, los perfiles de energía y el cambio automático de perfil para funcionar antes de abrir Pyren y para seguir funcionando al cerrarlo. Pide la contraseña una vez. Desactivarlo solo para el servicio.",
     "needsPolkit": "No hay ningún agente de polkit disponible, así que esto no puede pedirte la contraseña. Instala uno, o ejecuta: sudo systemctl enable --now pyren-daemon.service",
     "noDaemonBinary": "No se ha encontrado el binario pyren-daemon, así que el servicio no se puede instalar desde aquí.",
+    "widgetNeedsDaemon": "El widget muestra y cambia los modos de energía a través de pyren-daemon, así que necesita también «Control del hardware al arrancar» de arriba. Sin él, el widget arranca al iniciar sesión sin nada con lo que hablar.",
     "widgetAtLoginHint": "Le da al widget su propio servicio de usuario, así la tecla de rendimiento funciona sin haber abierto Pyren.",
     "services": "Servicios",
     "servicesHint": "El daemon corre como root y lo arranca systemd al encender, así que la curva del ventilador y la tecla de rendimiento funcionan antes de que nadie inicie sesión. El widget dibuja en tu pantalla, así que corre en tu sesión: Pyren lo arranca al abrirse.",
