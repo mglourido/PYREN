@@ -638,7 +638,7 @@ fn probe_value(current: &str) -> u8 {
     if current > 128 {
         current.saturating_sub(37).max(crate::curve::MIN_COMMANDED_PWM)
     } else {
-        current.saturating_add(37).min(255)
+        current.saturating_add(37)
     }
 }
 

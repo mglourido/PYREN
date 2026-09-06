@@ -19,7 +19,9 @@
 
   const W = 620;
   const H = 260;
-  const PAD = { top: 16, right: 16, bottom: 30, left: 40 };
+  // Right pad leaves room for the 100° label to sit under the last gridline
+  // without spilling off the edge.
+  const PAD = { top: 16, right: 24, bottom: 30, left: 40 };
 
   let svg = $state<SVGSVGElement | null>(null);
   let dragging = $state<number | null>(null);
@@ -91,7 +93,7 @@
     <line x1={PAD.left} x2={W - PAD.right} y1={y(percent)} y2={y(percent)} class="grid" />
     <text x={PAD.left - 8} y={y(percent) + 4} class="axis" text-anchor="end">{percent}</text>
   {/each}
-  {#each [40, 50, 60, 70, 80, 90] as temp (temp)}
+  {#each [40, 50, 60, 70, 80, 90, 100] as temp (temp)}
     <line x1={x(temp)} x2={x(temp)} y1={PAD.top} y2={H - PAD.bottom} class="grid" />
     <text x={x(temp)} y={H - 10} class="axis" text-anchor="middle">{temp}°</text>
   {/each}
@@ -127,8 +129,10 @@
 
 <style>
   .curve {
+    display: block;
     width: 100%;
     max-width: 680px;
+    margin-inline: auto;
     touch-action: none;
   }
 

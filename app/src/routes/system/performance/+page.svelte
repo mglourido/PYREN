@@ -12,7 +12,7 @@
    * the power mode is, so gating it on Unlimited only hid a control that
    * already worked.
    */
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import Banner from "$lib/components/Banner.svelte";
   import FanCurve from "$lib/components/FanCurve.svelte";
   import Icon from "$lib/components/Icon.svelte";
@@ -226,11 +226,11 @@
   const curveProfile = $derived(curveProfileChoice ?? mode);
   const editingCurve = $derived(hardware.curveFor(curveProfile));
 
-  /** The curve editor is the point of curve mode, and the shape a manual
-   *  session is drawn against. */
-  const showCurve = $derived(
-    canSetSpeed && (hardware.state.fanMode === "manual" || hardware.state.fanMode === "curve"),
-  );
+  /** The fixed-speed slider belongs to `manual` and nothing else. */
+  const showManualSlider = $derived(canSetSpeed && hardware.state.fanMode === "manual");
+  /** The curve editor belongs to `curve` and nothing else - in `manual`
+   *  the fans run at one number the curve has no part in. */
+  const showCurve = $derived(canSetSpeed && hardware.state.fanMode === "curve");
 
   /**
    * The daemon's supervisor stays out of the way for a while after a manual
@@ -267,9 +267,27 @@
       void hardware.syncFromDaemon();
     }
   });
+
+  /**
+   * Leaving `curve` mode removes a tall block, and the scroll container
+   * does not always pull the viewport back up on its own - it sits parked
+   * past the new bottom until the user nudges it. Clamp it by hand
+   * whenever the fan sub-controls shrink.
+   */
+  let pageEl = $state<HTMLDivElement | null>(null);
+  const fanControlsTall = $derived(showCurve || showManualSlider);
+  $effect(() => {
+    void fanControlsTall;
+    void tick().then(() => {
+      const scroller = pageEl?.closest(".tab-content");
+      if (!scroller) return;
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      if (scroller.scrollTop > max) scroller.scrollTop = Math.max(0, max);
+    });
+  });
 </script>
 
-<div class="page">
+<div class="page" bind:this={pageEl}>
   <Banner kind="warning" title="⚠">{t("performance.warning")}</Banner>
 
   <div class="inner">
@@ -396,23 +414,25 @@
           {/if}
         </div>
 
-        {#if showCurve}
+        {#if showManualSlider}
           <div class="manual">
-            {#if hardware.state.fanMode === "manual"}
-              <div class="manual-slider">
-                <Slider
-                  value={hardware.state.fanPercent}
-                  min={0}
-                  max={100}
-                  minLabel="0%"
-                  maxLabel="100%"
-                  ariaLabel={t("performance.fanSpeed")}
-                  onchange={(v) => hardware.setFanPercent(v)}
-                />
-                <span class="pct">{hardware.state.fanPercent}%</span>
-              </div>
-            {/if}
+            <div class="manual-slider">
+              <Slider
+                value={hardware.state.fanPercent}
+                min={0}
+                max={100}
+                minLabel="0%"
+                maxLabel="100%"
+                ariaLabel={t("performance.fanSpeed")}
+                onchange={(v) => hardware.setFanPercent(v)}
+              />
+              <span class="pct">{hardware.state.fanPercent}%</span>
+            </div>
+          </div>
+        {/if}
 
+        {#if showCurve}
+          <div class="manual curve-editor">
             <h3 class="curve-title">{t("performance.fanCurve")}</h3>
             <p class="curve-desc">{t("performance.fanCurveDesc")}</p>
 
@@ -458,12 +478,14 @@
               {/if}
             {/if}
 
-            <!-- The temperature marker is only honest on the profile that
-                 is actually running: on any other it would point at where
-                 a curve nothing is reading would be read. -->
+            <!-- The marker sits at the temperature right now on every
+                 profile's curve, not only the running one: "at 46 C this
+                 shape would command 31%" is exactly what you want to see
+                 while tuning a profile you are not currently in. The line
+                 above already says whether it is the one in force. -->
             <FanCurve
               curve={editingCurve}
-              currentTempC={curveProfile === mode ? curveTempC : null}
+              currentTempC={curveTempC}
               onchange={(curve) => hardware.setFanCurve(curve, curveProfile)}
             />
           </div>
@@ -766,6 +788,20 @@
   .manual {
     width: min(720px, 100%);
     margin-top: 10px;
+  }
+
+  /* The editor and its controls are centred as blocks in the fan area;
+     the label text inside them stays left-aligned. */
+  .curve-editor {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: left;
+  }
+
+  .curve-editor .tuning-scope,
+  .curve-editor .sensor-row {
+    justify-content: center;
   }
 
   .manual-slider {

@@ -24,8 +24,16 @@ import {
 import { tm } from "$lib/i18n/index.svelte";
 import { DiskBacked } from "./persistence";
 
-/** Coalesces a slider drag or a dragged curve point into one daemon call. */
+/** Coalesces a slider drag into one daemon call after it settles. */
 const FAN_PUSH_DEBOUNCE_MS = 200;
+
+/**
+ * Longer wait for a curve edit: dragging one point, adding another and
+ * nudging a third is one act of shaping, not three settings. The daemon
+ * write (and the re-apply it triggers) waits until the shape has been left
+ * alone for this long.
+ */
+const FAN_CURVE_PUSH_DEBOUNCE_MS = 3000;
 
 /**
  * The 0-255 the driver takes. Never 0 for a positive percentage: `pwm1 = 0`
@@ -146,6 +154,9 @@ class HardwareStore {
 
   private disk = new DiskBacked<HardwareState>("ui", defaults);
   private fanPushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The debounced fan write waiting to go out, kept so `flush()` can send
+   *  it now rather than lose it if the window closes mid-wait. */
+  private pendingFanPush: (() => Promise<FanStatus>) | null = null;
   private powerTuningTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Synchronous, for the first render. */
@@ -358,8 +369,12 @@ class HardwareStore {
   setFanCurve(curve: CurvePoint[], profile?: PowerMode) {
     const target = profile ?? this.state.powerMode;
     this.set("fanCurves", { ...this.state.fanCurves, [target]: curve });
-    this.pushFanSoon(() =>
-      daemon.setFanCurve(curve, undefined, this.state.fanReferenceSensor, target),
+    // Held for 3 s after the last edit: the local state (and the graph) is
+    // already up to date, so there is nothing to see by pushing sooner, and
+    // a whole re-shaping session becomes one write instead of a dozen.
+    this.pushFanSoon(
+      () => daemon.setFanCurve(curve, undefined, this.state.fanReferenceSensor, target),
+      FAN_CURVE_PUSH_DEBOUNCE_MS,
     );
   }
 
@@ -514,18 +529,32 @@ class HardwareStore {
 
   /**
    * Same, but coalesced: a slider drag or a dragged curve point fires on
-   * every pixel, and each of these is a socket round trip.
+   * every pixel, and each of these is a socket round trip. `delayMs`
+   * defaults to a drag's settle time; a curve edit passes a longer one.
    */
-  private pushFanSoon(send: () => Promise<FanStatus>) {
+  private pushFanSoon(send: () => Promise<FanStatus>, delayMs = FAN_PUSH_DEBOUNCE_MS) {
     if (this.fanPushTimer !== null) clearTimeout(this.fanPushTimer);
+    this.pendingFanPush = send;
     this.fanPushTimer = setTimeout(() => {
       this.fanPushTimer = null;
+      this.pendingFanPush = null;
       void this.pushFan(send);
-    }, FAN_PUSH_DEBOUNCE_MS);
+    }, delayMs);
   }
 
-  /** Writes immediately, e.g. before the window closes. */
+  /** Writes immediately, e.g. before the window closes. Also sends any
+   *  debounced fan write still waiting, so a curve edit made in the last
+   *  few seconds is not lost from the daemon. */
   flush() {
+    if (this.fanPushTimer !== null) {
+      clearTimeout(this.fanPushTimer);
+      this.fanPushTimer = null;
+    }
+    if (this.pendingFanPush) {
+      const send = this.pendingFanPush;
+      this.pendingFanPush = null;
+      void this.pushFan(send);
+    }
     return this.disk.flush();
   }
 
