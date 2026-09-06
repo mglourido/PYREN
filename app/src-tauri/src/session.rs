@@ -30,6 +30,16 @@ use serde_json::{json, Value};
 const OSD_BINARY: &str = "pyren-osd";
 const OSD_UNIT: &str = "pyren-osd.service";
 
+/// The watcher that starts the widget on a desktop systemd does not manage.
+///
+/// `graphical-session.target` is the correct thing for a user unit to be
+/// wanted by, and it is never reached on a bare wlroots compositor - so on
+/// Hyprland or Sway the widget's unit sat enabled and idle forever. This
+/// watches for the compositor's Wayland socket instead, which every
+/// compositor creates, and which appears at exactly the moment the widget
+/// has something to draw on.
+const OSD_PATH_UNIT: &str = "pyren-osd.path";
+
 /// The desktop entry that starts the app at login, if the user asks for it.
 const AUTOSTART_ENTRY: &str = "pyren.desktop";
 
@@ -57,8 +67,10 @@ pub fn status() -> Value {
             "running": osd_is_running(),
             "binary": binary.as_ref().map(|p| p.display().to_string()),
             "unitInstalled": user_unit_path().exists(),
-            "startsAtLogin": unit_enabled(OSD_UNIT),
-            "loginCommand": format!("systemctl --user start {OSD_UNIT}"),
+            // Either is enough, and on a bare compositor the watcher is the
+            // one that actually fires - so a session where only it is
+            // enabled still starts the widget at login.
+            "startsAtLogin": unit_enabled(OSD_UNIT) || unit_enabled(OSD_PATH_UNIT),
         },
         "app": {
             // Either mechanism counts: turning the setting on writes both,
@@ -115,6 +127,11 @@ pub fn start_osd() -> Result<bool, String> {
             .status()
             .map_err(|e| format!("running systemctl: {e}"))?;
         if started.success() {
+            // Re-arm the watcher `stop_osd` put down, so the widget is
+            // covered again if it falls over later in the session.
+            if osd_path_unit_path().exists() {
+                let _ = systemctl_user(&["start", OSD_PATH_UNIT]);
+            }
             return Ok(true);
         }
         // Fall through: a unit that fails to start is not a reason to go
@@ -180,6 +197,18 @@ pub fn show_osd() -> Result<(), String> {
 /// `Ok(false)` if nothing was running - which is not a failure, it is the
 /// state being asked for.
 pub fn stop_osd() -> Result<bool, String> {
+    // The watcher first, and this ordering is not cosmetic. A `.path` unit
+    // goes back to watching the moment the unit it triggers stops, and the
+    // Wayland socket it watches for is still very much there - so stopping
+    // only the service would have systemd start the widget again
+    // immediately, and the off switch would do nothing at all.
+    //
+    // Stopped, not disabled: whether the widget returns at the next login
+    // is the other toggle's business, exactly as below.
+    if osd_path_unit_path().exists() {
+        let _ = systemctl_user(&["stop", OSD_PATH_UNIT]);
+    }
+
     // Through systemd when it owns the process: killing a unit's process
     // directly would have it restarted by `Restart=on-failure`, and the
     // widget would come straight back.
@@ -216,8 +245,15 @@ pub fn set_osd_at_login(enabled: bool) -> Result<Value, String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
         std::fs::write(&path, unit_text(&binary))
             .map_err(|e| format!("writing {}: {e}", path.display()))?;
+        // The watcher alongside it, so the widget comes up on a desktop
+        // that never reaches `graphical-session.target`. Best-effort: the
+        // service unit above is what a systemd-managed session needs, and
+        // failing the whole call over the fallback would take that away.
+        let watcher = osd_path_unit_path();
+        let _ = std::fs::write(&watcher, path_unit_text());
         systemctl_user(&["daemon-reload"])?;
         systemctl_user(&["enable", OSD_UNIT])?;
+        let _ = systemctl_user(&["enable", OSD_PATH_UNIT]);
         // `enable` and `start` separately, and the start only when nothing
         // is up yet. `enable --now` on a widget the app already spawned
         // would launch a second copy, which the single-instance widget
@@ -226,13 +262,22 @@ pub fn set_osd_at_login(enabled: bool) -> Result<Value, String> {
         if !osd_is_running() {
             systemctl_user(&["start", OSD_UNIT])?;
         }
+        // Arm the watcher for *this* session too, not only from the next
+        // login. Harmless with the widget already up: a path unit whose
+        // service is running simply waits.
+        let _ = systemctl_user(&["start", OSD_PATH_UNIT]);
     } else {
         // Disable before removing: systemd cannot remove the symlinks for
         // a unit whose file has already gone, and would leave the widget
-        // enabled-but-missing.
+        // enabled-but-missing. The watcher goes first, or stopping the
+        // service would only have it start the widget again.
+        let _ = systemctl_user(&["disable", "--now", OSD_PATH_UNIT]);
         let _ = systemctl_user(&["disable", "--now", OSD_UNIT]);
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| format!("removing {}: {e}", path.display()))?;
+        for file in [osd_path_unit_path(), path.clone()] {
+            if file.exists() {
+                std::fs::remove_file(&file)
+                    .map_err(|e| format!("removing {}: {e}", file.display()))?;
+            }
         }
         let _ = systemctl_user(&["daemon-reload"]);
     }
@@ -330,6 +375,32 @@ fn desktop_reads_autostart() -> bool {
         let name = name.trim().to_ascii_lowercase();
         DESKTOPS_WITH_A_SESSION_MANAGER.iter().any(|known| name.contains(known))
     })
+}
+
+/// The watcher, as a `.path` unit.
+///
+/// `%t` is the user's `XDG_RUNTIME_DIR`, and `wayland-*` is the socket the
+/// compositor puts there when it comes up. `WantedBy=default.target`, not
+/// `graphical-session.target`: `default.target` is reached whenever the
+/// user's systemd instance starts, which happens at login on every desktop.
+/// That is the whole point: to stop depending on a target a bare compositor
+/// never activates.
+///
+/// The race this quietly wins: the socket appears slightly before the
+/// compositor imports `WAYLAND_DISPLAY` into the systemd environment, so
+/// the first launch can still find nothing to connect to. The service's own
+/// `Restart=on-failure` covers that - it is a second or two, once, at login.
+fn path_unit_text() -> String {
+    format!(
+        "# Written by Pyren. Delete it, or turn the setting off, to remove it.\n\
+         [Unit]\n\
+         Description=Watch for a graphical session to put the Pyren widget in\n\n\
+         [Path]\n\
+         PathExistsGlob=%t/wayland-*\n\
+         Unit={OSD_UNIT}\n\n\
+         [Install]\n\
+         WantedBy=default.target\n"
+    )
 }
 
 fn unit_text(binary: &Path) -> String {
@@ -496,6 +567,10 @@ fn user_unit_path() -> PathBuf {
     config_home().join("systemd/user").join(OSD_UNIT)
 }
 
+fn osd_path_unit_path() -> PathBuf {
+    config_home().join("systemd/user").join(OSD_PATH_UNIT)
+}
+
 fn autostart_path() -> PathBuf {
     config_home().join("autostart").join(AUTOSTART_ENTRY)
 }
@@ -555,6 +630,21 @@ mod tests {
         assert!(text.starts_with("[Desktop Entry]"));
         assert!(text.contains("Exec=/usr/bin/pyren"));
         assert!(text.contains("Type=Application"));
+    }
+
+    /// The whole point of the watcher: it must not depend on the target a
+    /// bare wlroots compositor never reaches, and it must trigger the
+    /// widget's own unit rather than duplicate it.
+    #[test]
+    fn the_watcher_waits_on_the_wayland_socket_and_not_on_a_session_target() {
+        let text = path_unit_text();
+        assert!(text.contains("PathExistsGlob=%t/wayland-*"));
+        assert!(text.contains(&format!("Unit={OSD_UNIT}")));
+        assert!(
+            text.contains("WantedBy=default.target"),
+            "graphical-session.target is exactly what this exists to stop depending on"
+        );
+        assert!(!text.contains("WantedBy=graphical-session.target"));
     }
 
     /// Quitting from the tray has to mean quit: a `Restart=` here would

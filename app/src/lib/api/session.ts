@@ -23,9 +23,11 @@ export type SessionStatus = {
     binary: string | null;
     /** `~/.config/systemd/user/pyren-osd.service` exists. */
     unitInstalled: boolean;
+    /** Its service unit or its `.path` watcher is enabled. The watcher is
+     *  what fires on a compositor that never reaches
+     *  `graphical-session.target`, so the widget needs no `loginWorks`
+     *  caveat the way the app does. */
     startsAtLogin: boolean;
-    /** The line that starts the widget where `loginWorks` is false. */
-    loginCommand: string;
   };
   app: {
     startsAtLogin: boolean;
