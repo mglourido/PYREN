@@ -1,0 +1,33 @@
+# Starts the widget when a graphical session appears.
+#
+#   systemctl --user enable --now pyren-osd.path
+#
+# Why this exists next to pyren-osd.service, which is already wanted by
+# graphical-session.target: that target is reached by GNOME, KDE and by a
+# compositor run under uwsm, and by nothing else. On a bare wlroots session
+# - Hyprland, Sway, river, niri - it is never activated, so the widget's
+# unit sat enabled and idle forever and the only way out was an exec-once
+# in the compositor's own config.
+#
+# default.target *is* reached, on every desktop, whenever the user's
+# systemd instance starts at login. So this waits there and watches for the
+# thing that actually says a session is up: the compositor's Wayland socket
+# in $XDG_RUNTIME_DIR (%t). No desktop configuration, no root, and no
+# running Pyren - the widget comes up on its own.
+#
+# One caveat worth knowing. A path unit goes back to watching the moment the
+# unit it triggered stops, and the socket is still there - so stopping
+# pyren-osd.service alone starts it straight back. Stop this first:
+#
+#   systemctl --user stop pyren-osd.path pyren-osd.service
+
+[Unit]
+Description=Watch for a graphical session to put the Pyren widget in
+Documentation=https://github.com/mglourido/PYREN
+
+[Path]
+PathExistsGlob=%t/wayland-*
+Unit=pyren-osd.service
+
+[Install]
+WantedBy=default.target
