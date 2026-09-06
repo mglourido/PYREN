@@ -18,6 +18,9 @@ export type Settings = {
   tempUnit: TempUnit;
   pollIntervalMs: number;
   startMinimized: boolean;
+  /** Closing the window puts Pyren in the tray instead of quitting it.
+   *  Read by the Tauri shell straight out of this file - see `closes_to_tray`. */
+  closeToTray: boolean;
   autostart: boolean;
   demoData: boolean;
   /** TODO item: the "driver missing" notice has a don't-show-again box. */
@@ -32,6 +35,10 @@ function defaults(): Settings {
     tempUnit: "c",
     pollIntervalMs: 2000,
     startMinimized: false,
+    // Off by default: the close button quitting is what every user already
+    // expects, and a tray icon nobody's desktop draws would make an app that
+    // silently refuses to close.
+    closeToTray: false,
     autostart: false,
     demoData: true,
     hideDriverNotice: false,

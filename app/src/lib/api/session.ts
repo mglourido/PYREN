@@ -24,12 +24,29 @@ export type SessionStatus = {
     /** `~/.config/systemd/user/pyren-osd.service` exists. */
     unitInstalled: boolean;
     startsAtLogin: boolean;
+    /** The line that starts the widget where `loginWorks` is false. */
+    loginCommand: string;
   };
   app: {
     startsAtLogin: boolean;
     /** The XDG autostart entry this toggle writes. */
     entry: string;
+    /** …and the systemd user unit it writes alongside it. */
+    unit: string;
+    /** The line that starts the app where `loginWorks` is false. */
+    loginCommand: string;
   };
+  /**
+   * Whether anything in this session acts on an autostart entry or reaches
+   * `graphical-session.target`. False on a bare wlroots compositor
+   * (Hyprland, Sway), which has neither — both "at login" toggles then write
+   * correct files that nobody reads, which is why it is said out loud rather
+   * than left looking like two switches that do nothing.
+   *
+   * Says nothing about the daemon: that is a system service started at boot,
+   * long before any compositor.
+   */
+  loginWorks: boolean;
 };
 
 export const session = {

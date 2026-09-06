@@ -12,6 +12,8 @@ use std::os::unix::net::UnixStream;
 
 use pyren_config::{ConfigStore, LoadOutcome};
 use serde_json::{json, Map, Value};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 
 /// Config namespaces the frontend is allowed to read and write.
@@ -590,6 +592,119 @@ fn workaround_webkit_dmabuf() {
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
 }
 
+/// One of the frontend's own booleans, read back from the file it writes.
+///
+/// `~/.config/pyren/app.json` is the only thing the two halves share: the
+/// settings page owns the toggles, this shell owns the window. Re-read on
+/// every use rather than cached at launch, because a toggle flipped while
+/// the app is up has to change what the window does *now* - a value read an
+/// hour ago would leave the close button doing something the settings page
+/// no longer says.
+fn app_flag(name: &str) -> bool {
+    ConfigStore::user()
+        .load::<JsonDocument>("app")
+        .value
+        .fields
+        .get(name)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Whether the window should never appear at launch.
+fn starts_hidden() -> bool {
+    app_flag("startMinimized")
+}
+
+/// Whether closing the window means "put Pyren away" rather than "quit".
+///
+/// Its own setting and not a consequence of [`starts_hidden`], because they
+/// answer different questions. Pyren is what starts `pyren-osd` at launch,
+/// so somebody who wants the widget there without a window open needs the
+/// app to *keep running* after they close it - which is this - and that is
+/// a want quite separate from whether the window shows up at login.
+fn closes_to_tray() -> bool {
+    app_flag("closeToTray")
+}
+
+/// The tray menu's two labels, in the language the settings file names.
+///
+/// Not the frontend's catalog: that is TypeScript, loaded by the webview,
+/// and this menu is drawn by the desktop before any webview exists. Two
+/// strings duplicated is a smaller price than a menu that is English on a
+/// Spanish desktop, and if a third locale is ever added the fallback here
+/// is the same English the rest of the app falls back to.
+fn tray_labels() -> (&'static str, &'static str) {
+    let language = ConfigStore::user()
+        .load::<JsonDocument>("app")
+        .value
+        .fields
+        .get("mainLanguage")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_default();
+
+    match language.as_str() {
+        "es" => ("Abrir Pyren", "Salir de Pyren"),
+        _ => ("Open Pyren", "Quit Pyren"),
+    }
+}
+
+/// Brings the window back from hidden, minimised, or merely buried.
+///
+/// All three, in that order, because "show me Pyren" is one gesture and the
+/// window can be in any of those states: `show` on a minimised window
+/// leaves it minimised, and `set_focus` on a hidden one does nothing at all.
+fn reveal_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The tray icon - what makes "start minimised" a state the user can get
+/// back out of.
+///
+/// On Wayland the only tray is StatusNotifierItem over D-Bus, and whether
+/// the icon is ever *drawn* depends on the desktop running a tray host
+/// (waybar's `tray` module, ags, the GNOME extension). Nothing here can
+/// check that, which is why [`run`] shows the window anyway when this
+/// fails: an app hidden behind an icon nobody renders is unreachable.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let (open, quit) = tray_labels();
+    let open = MenuItem::with_id(app, "open", open, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", quit, true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &PredefinedMenuItem::separator(app)?, &quit])?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(tauri::include_image!("icons/32x32.png"))
+        .tooltip("Pyren")
+        .menu(&menu)
+        // Right-click opens the menu; a left click just shows the window,
+        // which is what clicking a tray icon means on every desktop.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => reveal_window(app),
+            // The only way out when the window is hidden, so it really
+            // exits rather than hiding again.
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                reveal_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 /// What is running in this session, and what starts at login.
 #[tauri::command(async)]
 fn session_status() -> Value {
@@ -784,18 +899,41 @@ pub fn run() {
         // bringing the existing window forward rather than opening a rival
         // one that would fight over the config files.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            // Also the way back in when the tray is not being drawn: running
+            // `pyren` again reveals the window this copy started hidden.
+            reveal_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        // Closing the window means quit, unless the user asked for it to
+        // mean "put Pyren away" instead. Read from the file each time, so
+        // flipping the toggle changes what the close button does straight
+        // away rather than at the next launch.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && closes_to_tray() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             watch_daemon_events(app.handle().clone());
             // On a thread: it may shell out to systemctl, and nothing about
             // starting the widget should hold up the window.
             std::thread::spawn(session::ensure_running);
+
+            // The window is `"visible": false` in tauri.conf.json and is
+            // shown here instead, so that starting minimised is a window
+            // that never appears rather than one that flashes up and is
+            // yanked away. Which means every path out of this block has to
+            // end in either a shown window or a working tray icon.
+            let tray = build_tray(app);
+            if let Err(e) = &tray {
+                eprintln!("pyren: could not create the tray icon: {e}");
+            }
+            if !starts_hidden() || tray.is_err() {
+                reveal_window(&app.handle().clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

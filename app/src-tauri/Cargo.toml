@@ -28,7 +28,12 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `tray-icon` is what "start minimised to the tray" needs: on Wayland the
+# only tray there is is StatusNotifierItem over D-Bus, which this pulls in
+# (libappindicator). `image-png` is for `include_image!`, which embeds the
+# icon at compile time so the tray does not depend on the icon theme having
+# been installed.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 # One running app per user. Without it a second launch is a second process
 # with its own window, and the two race each other's writes to

@@ -8,6 +8,7 @@
   import { hardware } from "$lib/stores/hardware.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { session, type SessionStatus } from "$lib/api/session";
+  import { admin, type AdminStatus } from "$lib/api/admin";
   import { daemon, errorText, type HotkeyStatus } from "$lib/api/daemon";
 
   /**
@@ -35,11 +36,56 @@
   /** The last learn window that closed with nothing pressed. */
   let learnTimedOut = $state(false);
 
+  /**
+   * The privileges the daemon needs, as the shell sees them. Separate from
+   * `services` because it answers a different question — that one is about
+   * this login session, this one is about the machine — and because it is
+   * the only thing here whose fixes cost a password.
+   */
+  let privileges = $state<AdminStatus | null>(null);
+  /** True while a polkit prompt is up, so the toggle cannot be double-fired. */
+  let elevating = $state(false);
+
   onMount(() => {
     if (!session.available()) return;
     void run(() => session.status());
+    void refreshPrivileges();
     void refreshHotkey();
   });
+
+  async function refreshPrivileges() {
+    try {
+      privileges = await admin.status();
+    } catch {
+      // Not reported: every row that reads this already renders as
+      // "unknown", and a settings page is not where a broken shell call
+      // should become a red banner.
+      privileges = null;
+    }
+  }
+
+  /**
+   * The one switch that makes the hardware work: the daemon as a system
+   * service, the socket group, and `acpi_call` for the lightbar and the
+   * cleaner. Turning it off only stops the service — see `Grant::DisableService`.
+   *
+   * The status is re-read from the machine afterwards rather than assumed
+   * from the answer, because the user can dismiss the password dialog and
+   * a toggle that stayed where they left it would be a lie.
+   */
+  async function setDaemonAtBoot(enabled: boolean) {
+    elevating = true;
+    try {
+      const result = await admin.grant(enabled ? "enableAtBoot" : "disableService");
+      if (!result.applied && !result.cancelled) serviceError = result.detail;
+      else serviceError = null;
+    } catch (e) {
+      serviceError = errorText(e);
+    } finally {
+      elevating = false;
+      await refreshPrivileges();
+    }
+  }
 
   async function run(action: () => Promise<SessionStatus>) {
     try {
@@ -109,6 +155,9 @@
     await run(() => session.setAppAtLogin(enabled));
     if (!serviceError) settings.set("autostart", enabled);
   }
+
+  /** The files on disk when we have read them, the stored setting until then. */
+  const autostartOn = $derived(services?.app.startsAtLogin ?? settings.current.autostart);
 
   const widgetState = $derived(
     !services
@@ -223,20 +272,89 @@
   </Panel>
 
   <Panel title={t("settings.startup")}>
+    <!-- The machine first, then the session, then this window. The daemon
+         is what makes the hardware answer at all, and it is the only row
+         here that is not merely a convenience — so it goes at the top and
+         says what it costs. -->
+    {#if privileges}
+      <div class="row">
+        <span>
+          {t("settings.daemonAtBoot")}
+          <small class="hint-inline">{t("settings.daemonAtBootHint")}</small>
+        </span>
+        <Toggle
+          checked={privileges.serviceEnabled}
+          disabled={elevating || !privileges.canElevate || !privileges.daemonBinary}
+          onchange={(v) => void setDaemonAtBoot(v)}
+          ariaLabel={t("settings.daemonAtBoot")}
+        />
+      </div>
+
+      {#if !privileges.canElevate}
+        <p class="notice warn">{t("settings.needsPolkit")}</p>
+      {:else if !privileges.daemonBinary}
+        <p class="notice warn">{t("settings.noDaemonBinary")}</p>
+      {:else if privileges.needsRelogin}
+        <p class="notice warn">{t("admin.groupNeedsRelogin")}</p>
+      {/if}
+    {/if}
+
+    {#if session.available()}
+      <div class="row">
+        <span>
+          {t("settings.widgetAtLogin")}
+          <small class="hint-inline">{t("settings.widgetAtLoginHint")}</small>
+        </span>
+        <Toggle
+          checked={services?.osd.startsAtLogin ?? false}
+          disabled={!services?.osd.binary}
+          onchange={(v) => void run(() => session.setOsdAtLogin(v))}
+          ariaLabel={t("settings.widgetAtLogin")}
+        />
+      </div>
+    {/if}
+
     <div class="row">
       <span>{t("settings.autostart")}</span>
       <Toggle
-        checked={services?.app.startsAtLogin ?? settings.current.autostart}
+        checked={autostartOn}
         onchange={(v) => void setAppAtLogin(v)}
         ariaLabel={t("settings.autostart")}
       />
     </div>
+    <!-- Written correctly and then read by nobody is the one failure both
+         of these had, so where that is the case it is stated rather than
+         left looking like toggles that do nothing. One notice for the two,
+         because it is one fact about the session — but only the lines for
+         what the user actually switched on. -->
+    {#if services && !services.loginWorks && (autostartOn || services.osd.startsAtLogin)}
+      <p class="notice warn">{t("settings.autostartUnmanaged")}</p>
+      <code class="block">{#if services.osd.startsAtLogin}exec-once = {services.osd
+          .loginCommand}{/if}{#if services.osd.startsAtLogin && autostartOn}{"\n"}{/if}{#if autostartOn}exec-once = {services
+          .app.loginCommand}{/if}</code>
+    {/if}
+
     <div class="row">
-      <span>{t("settings.startMinimized")}</span>
+      <span>
+        {t("settings.startMinimized")}
+        <small class="hint-inline">{t("settings.startMinimizedHint")}</small>
+      </span>
       <Toggle
         checked={settings.current.startMinimized}
         onchange={(v) => settings.set("startMinimized", v)}
         ariaLabel={t("settings.startMinimized")}
+      />
+    </div>
+
+    <div class="row">
+      <span>
+        {t("settings.closeToTray")}
+        <small class="hint-inline">{t("settings.closeToTrayHint")}</small>
+      </span>
+      <Toggle
+        checked={settings.current.closeToTray}
+        onchange={(v) => settings.set("closeToTray", v)}
+        ariaLabel={t("settings.closeToTray")}
       />
     </div>
   </Panel>
@@ -322,15 +440,10 @@
         </button>
       </div>
 
-      <div class="row">
-        <span>{t("settings.widgetAtLogin")}</span>
-        <Toggle
-          checked={services?.osd.startsAtLogin ?? false}
-          disabled={!services?.osd.binary}
-          onchange={(v) => void run(() => session.setOsdAtLogin(v))}
-          ariaLabel={t("settings.widgetAtLogin")}
-        />
-      </div>
+      <!-- "Widget at login" used to live here. It moved to Startup, next
+           to the other three things that start on their own: two toggles
+           writing the same unit would have been two answers to one
+           question. This panel keeps what is running *now*. -->
 
       {#if serviceError}
         <p class="notice err">{t("settings.serviceFailed", { error: serviceError })}</p>
@@ -515,6 +628,17 @@
     padding: 3px 8px;
     border-radius: var(--radius-sm);
     user-select: text;
+  }
+
+  /* A line the user has to copy, so it gets room and does not wrap in the
+     middle of a path. */
+  code.block {
+    display: block;
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    color: var(--text);
+    overflow-x: auto;
+    white-space: pre;
   }
 
   .state {
