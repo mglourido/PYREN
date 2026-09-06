@@ -54,6 +54,34 @@ pub enum Grant {
     InstallService,
     /// Enable and start an already-installed unit.
     EnableService,
+    /// Everything the daemon needs to control this machine, at boot and
+    /// from now on, behind one authentication.
+    ///
+    /// The individual fixes below are the drivers page's business: it
+    /// shows a checklist, and each row is one thing that is wrong and one
+    /// button that fixes it. This is the settings page's version of the
+    /// same question, which is not "what is missing" but "make the
+    /// hardware work" - fan curves, the RGB lightbar, power profiles and
+    /// the automatic profile switching all need the daemon running as
+    /// root at boot, the socket group to reach it, and `acpi_call` for
+    /// the two features that go through ACPI.
+    ///
+    /// One `pkexec` rather than three because the alternative is three
+    /// password prompts for one switch. It runs the very same commands
+    /// [`Self::InstallService`], [`Self::EnableService`],
+    /// [`Self::LoadAcpiCall`] and [`Self::JoinGroup`] run - not a second
+    /// implementation - and each step is allowed to fail without taking
+    /// the rest down, because a machine with no `acpi_call` packaged
+    /// should still come out of this with a running daemon.
+    EnableAtBoot,
+    /// Stop it and keep it from coming back at boot.
+    ///
+    /// The other direction of [`Self::EnableService`], and not the same as
+    /// uninstalling: the unit file stays, so turning it back on is one
+    /// click and not a reinstall. Losing the daemon means losing fan and
+    /// power control entirely - the settings toggle that reaches this says
+    /// so rather than presenting it as a preference like the others.
+    DisableService,
     /// Load `acpi_call` now, and arrange for it to be loaded at boot.
     ///
     /// Not the same shape as the others: it is a kernel module rather
@@ -87,6 +115,8 @@ impl Grant {
             "joinGroup" => Ok(Self::JoinGroup),
             "installService" => Ok(Self::InstallService),
             "enableService" => Ok(Self::EnableService),
+            "enableAtBoot" => Ok(Self::EnableAtBoot),
+            "disableService" => Ok(Self::DisableService),
             "loadAcpiCall" => Ok(Self::LoadAcpiCall),
             "enableCoolbits" => Ok(Self::EnableCoolbits),
             other => Err(format!("unknown admin action '{other}'")),
@@ -233,6 +263,48 @@ pub fn grant(action: &str) -> Result<Value, String> {
         }
         Grant::EnableService => Command::new("pkexec")
             .args(["systemctl", "enable", "--now", SERVICE])
+            .output(),
+        // Deliberately *not* `set -e`: `acpi_call` is packaged separately
+        // and is missing on plenty of machines, and a daemon that failed
+        // to be enabled because an optional kernel module is absent would
+        // be the worst outcome here. Every step is best-effort, and the
+        // status re-read afterwards is what says how far it got.
+        //
+        // The daemon binary, the group and the username arrive as
+        // positional arguments, never interpolated into the script - and
+        // none of the three comes from the webview in the first place.
+        Grant::EnableAtBoot => {
+            let binary = daemon_binary()
+                .ok_or_else(|| "cannot find the pyren-daemon binary to install".to_string())?;
+            let user = username().ok_or_else(|| "cannot determine the current user".to_string())?;
+            Command::new("pkexec")
+                .args([
+                    "/bin/sh",
+                    "-c",
+                    "if ! [ -f /etc/systemd/system/pyren-daemon.service ] && \
+                        ! [ -f /usr/lib/systemd/system/pyren-daemon.service ]; then \
+                         \"$1\" --install-service || true; \
+                     fi; \
+                     systemctl enable --now \"$2\" || true; \
+                     if modprobe acpi_call 2>/dev/null; then \
+                         mkdir -p /etc/modules-load.d && \
+                         printf 'acpi_call\\n' > /etc/modules-load.d/pyren-acpi-call.conf; \
+                     fi; \
+                     groupadd -f \"$3\" && usermod -aG \"$3\" \"$4\"",
+                    "--",
+                    &binary,
+                    SERVICE,
+                    SOCKET_GROUP,
+                    &user,
+                ])
+                .output()
+        }
+        // Only the service. The group and the `acpi_call` drop-in are left
+        // alone on purpose: neither costs anything while the daemon is
+        // stopped, and quietly undoing them would make this switch far
+        // more destructive than the label on it suggests.
+        Grant::DisableService => Command::new("pkexec")
+            .args(["systemctl", "disable", "--now", SERVICE])
             .output(),
         // `modprobe` alone lasts until the next reboot, and a feature that
         // works today and not tomorrow is worse than one that never did -

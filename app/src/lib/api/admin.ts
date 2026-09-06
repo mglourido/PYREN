@@ -57,6 +57,11 @@ export type AdminAction =
   | "joinGroup"
   | "installService"
   | "enableService"
+  /** Everything the daemon needs at boot, behind one password: the unit,
+   *  the socket group and `acpi_call`. The settings page's one switch for
+   *  "make the hardware work"; the drivers page keeps the itemised fixes. */
+  | "enableAtBoot"
+  | "disableService"
   | "loadAcpiCall"
   | "enableCoolbits";
 
