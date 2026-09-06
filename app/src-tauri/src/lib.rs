@@ -190,11 +190,14 @@ fn fan_set_mode(mode: String, pwm: Option<u8>) -> Result<Value, String> {
     call_daemon("fan", "setMode", json!({ "mode": mode, "pwm": pwm }))
 }
 
+/// `profile` picks which power profile's curve to write: `None` writes the
+/// one the machine is in, and `Some("")` the shared fallback.
 #[tauri::command(async)]
 fn fan_set_curve(
     curve: Value,
     interpolation: Option<String>,
     reference_sensor: Option<String>,
+    profile: Option<String>,
 ) -> Result<Value, String> {
     call_daemon(
         "fan",
@@ -203,6 +206,7 @@ fn fan_set_curve(
             "curve": curve,
             "interpolation": interpolation,
             "referenceSensor": reference_sensor,
+            "profile": profile,
         }),
     )
 }
@@ -447,6 +451,15 @@ fn fan_diagnose(allow_writes: bool) -> Result<Value, String> {
 #[tauri::command(async)]
 fn fan_calibrate(seconds: Option<u64>) -> Result<Value, String> {
     call_daemon("fan", "calibrate", json!({ "seconds": seconds }))
+}
+
+/// Holds the fans at a speed they are not at and watches whether they
+/// follow. Blocks like `fan_calibrate` does, and for the same reason: the
+/// caller is waiting on a physical process. The daemon ends early as soon
+/// as the fans answer, so a machine that obeys is done in a few seconds.
+#[tauri::command(async)]
+fn fan_probe_speed_control(seconds: Option<u64>) -> Result<Value, String> {
+    call_daemon("fan", "probeSpeedControl", json!({ "seconds": seconds }))
 }
 
 #[tauri::command(async)]
@@ -789,6 +802,7 @@ pub fn run() {
             fan_get_status,
             fan_diagnose,
             fan_calibrate,
+            fan_probe_speed_control,
             fan_set_mode,
             fan_set_curve,
             fan_set_restore_on_start,

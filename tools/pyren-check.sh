@@ -257,8 +257,12 @@ else
 	esac
 fi
 
-# The only check that writes. It writes the value that is already set, so
-# no fan changes speed, and restores the previous mode even on failure.
+# The only check that writes. It writes a value the channel is *not*
+# already at - a round trip of the current one cannot fail, and on a board
+# whose pwm1 reports the measured speed it passed on hardware that ignores
+# the value entirely - and restores the previous mode even on failure. The
+# probe value is in force for milliseconds, far below the driver's 90 s
+# keep-alive, so no fan has time to react to it.
 if [ -z "$PWM" ] || [ ! -e "$PWM" ] || [ ! -e "$PWM_ENABLE" ]; then
 	record skip pwm-write "PWM accepts writes" "no PWM channel to write to"
 elif [ "$ALLOW_WRITES" -eq 0 ]; then
@@ -268,9 +272,25 @@ elif [ ! -w "$PWM" ] || [ ! -w "$PWM_ENABLE" ]; then
 else
 	original_mode="$(read_value "$PWM_ENABLE")"
 	original_pwm="$(read_value "$PWM")"
+
+	# A value that is not the one already there. Never 0, which the driver
+	# reads as HP_FAN_SPEED_AUTOMATIC rather than as a speed.
+	case "$original_pwm" in
+	'' | *[!0-9]*) probe_pwm=128 ;;
+	*)
+		if [ "$original_pwm" -gt 128 ]; then
+			probe_pwm=$((original_pwm - 37))
+			[ "$probe_pwm" -lt 1 ] && probe_pwm=1
+		else
+			probe_pwm=$((original_pwm + 37))
+			[ "$probe_pwm" -gt 255 ] && probe_pwm=255
+		fi
+		;;
+	esac
+
 	write_ok=1
 	printf '1' >"$PWM_ENABLE" 2>/dev/null || write_ok=0
-	[ "$write_ok" -eq 1 ] && { printf '%s' "$original_pwm" >"$PWM" 2>/dev/null || write_ok=0; }
+	[ "$write_ok" -eq 1 ] && { printf '%s' "$probe_pwm" >"$PWM" 2>/dev/null || write_ok=0; }
 	readback="$(read_value "$PWM" 2>/dev/null || echo '')"
 
 	# Restore before interpreting anything.
@@ -280,19 +300,28 @@ else
 
 	if [ "$write_ok" -eq 0 ]; then
 		record fail pwm-write "PWM accepts writes" "the driver rejected the write"
-	elif [ "$readback" = "$original_pwm" ]; then
+	elif [ "$readback" = "$probe_pwm" ]; then
 		if [ "$restored" -eq 1 ]; then
 			record pass pwm-write "PWM accepts writes" \
-				"wrote and read back pwm1 = $original_pwm without changing fan speed"
+				"wrote pwm1 = $probe_pwm and read the same value back, so the channel holds a setpoint. Whether the fans obey it is a separate question"
 		else
 			record warn pwm-write "PWM accepts writes" \
 				"write worked, but the original fan mode could not be restored; set it manually or reboot"
 		fi
 	else
 		record warn pwm-write "PWM accepts writes" \
-			"wrote $original_pwm but read back $readback; the driver may quantise or ignore values"
+			"wrote $probe_pwm but read back $readback, so pwm1 is not storing a setpoint - it is most likely reporting the measured fan speed. That is the signature of a board whose embedded controller ignores the value"
 	fi
 fi
+
+# Whether the fans then *move*, which is the only form of the question with
+# a useful answer - board 8D2F passes every check above and has never once
+# obeyed a commanded speed. Always skipped here: settling it means holding
+# the fans at a speed for several seconds and putting them back afterwards,
+# which needs the daemon's state to do safely and is not something a
+# dependency-free probe should do behind the user's back.
+record skip pwm-effect "Fans follow a commanded speed" \
+	"not attempted here; run 'pyren-ctl fan probe-speed' to spin the fans and settle it"
 
 # What the hwmon node actually exposes. Without this a missing pwm1 is a
 # dead end: the report says the file isn't there but not what is, which is
@@ -693,7 +722,8 @@ case "$fan1_status$fan2_status" in *pass* | *warn*) CAN_READ=1 ;; esac
 
 CAN_WRITE=0
 if [ "$(status_of pwm1)" = "pass" ] && [ "$(status_of pwm1_enable)" = "pass" ] &&
-	[ "$(status_of pwm-write)" != "fail" ]; then
+	[ "$(status_of pwm-write)" != "fail" ] &&
+	[ "$(status_of pwm-effect)" != "fail" ]; then
 	CAN_WRITE=1
 fi
 

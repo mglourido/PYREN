@@ -477,7 +477,7 @@ are the questions, and neither can be asked without doing it. It puts the
 machine back in the mode it found it in on the way out, including on
 Ctrl-C.
 
-### The energy settings, and the fan modes Unlimited unlocks
+### The energy settings, and what the frontend groups with Unlimited
 
 A third suite answers a different question - not *which* profile a mode
 selects, but whether the **envelope** it carries reaches the hardware:
@@ -499,11 +499,22 @@ owners at once:
 **Those three never call each other**, and half this file is about
 keeping it that way: changing the power mode must not write to the fans,
 changing the fan mode must not write to the envelope, and an overclock
-request must not reach the CPU's power limits. The app presents Unlimited
-as the mode that unlocks manual power limits *and* manual fan control,
-but that grouping is the frontend's policy - the daemon will set a fan
-curve in Eco perfectly happily, and the tests say so rather than
-pretending otherwise.
+request must not reach the CPU's power limits. The app groups manual
+power limits with Unlimited, but that grouping is the frontend's policy -
+the daemon will set a fan curve in Eco perfectly happily, and the tests
+say so rather than pretending otherwise. (Manual fan control used to be
+grouped with Unlimited too; the app now offers the `manual` and `curve`
+fan modes in every power mode, since the daemon never tied the two
+together.)
+
+**The one deliberate exception**, added with per-profile fan curves: the
+power mode now decides *which stored curve* the fan module reads. It still
+does not command a fan speed, and the two crates still know nothing about
+each other - `power` announces on the event bus, `fan` subscribes to it,
+and the daemon binary is what connects them. `profile` is an opaque string
+inside `pyren-fan` precisely so that this stays true; the moment that crate
+grows a list of mode names, the separation has gone. See
+`docs/01-ipc-protocol.md` §"One curve per power profile".
 
 Two deliberate limits on what it does:
 

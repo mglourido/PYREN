@@ -7,10 +7,20 @@
 //! "the stock driver already does this", and the useful thing is to prove
 //! it rather than to replace it.
 //!
-//! Every check is **read-only by default**. The one check that has to write
-//! to hardware is opt-in, writes the value that is already set (so no fan
-//! actually changes speed), and restores the previous mode afterwards even
-//! if it fails partway.
+//! Every check is **read-only by default**. Two are not, and both are
+//! opt-in behind `allow_writes`:
+//!
+//! - `pwm-write` asks whether `pwm1` *stores* what it is given. It writes a
+//!   value the channel is not already at - a round trip of the current one
+//!   proves nothing, see [`check_write`] - and restores the previous mode
+//!   afterwards even if it fails partway. No fan has time to react.
+//! - `pwm-effect` asks whether the fans then **move**, which is the only
+//!   form of the question with a useful answer. It costs several seconds of
+//!   fan noise, so the run belongs to the caller ([`crate::speed_probe`])
+//!   and this module only reports it.
+//!
+//! The distinction is not academic: board `8D2F` passes every other check
+//! in this file and its fans have never once obeyed a commanded speed.
 
 use std::fs;
 use std::path::Path;
@@ -20,6 +30,7 @@ use std::path::PathBuf;
 use pyren_core::{msg, Msg};
 use serde::Serialize;
 
+use crate::speed_probe::{self, SpeedProbe};
 use crate::FanPaths;
 
 /// Board ids known to work, used only to warn - never to gate anything.
@@ -117,9 +128,19 @@ impl Diagnosis {
     }
 }
 
-/// Runs the self-test. `allow_writes` enables the one check that touches
-/// hardware; without it that check is reported as skipped.
-pub(crate) fn diagnose(paths: &FanPaths, allow_writes: bool) -> Diagnosis {
+/// Runs the self-test.
+///
+/// `allow_writes` enables the readback check, which touches hardware
+/// without moving anything. `probe` is a [`crate::speed_probe`] run the
+/// caller already made - the check that actually spins the fans - and
+/// `None` reports it as not attempted. Both are reported as skipped rather
+/// than passed when they did not run: an untested question is not a
+/// question answered yes.
+pub(crate) fn diagnose(
+    paths: &FanPaths,
+    allow_writes: bool,
+    probe: Option<&SpeedProbe>,
+) -> Diagnosis {
     let mut checks = Vec::new();
 
     let hp_wmi = Path::new("/sys/devices/platform/hp-wmi").exists();
@@ -184,6 +205,7 @@ pub(crate) fn diagnose(paths: &FanPaths, allow_writes: bool) -> Diagnosis {
     checks.push(check_pwm(paths.pwm1.as_deref()));
     checks.push(check_pwm_enable(paths.pwm1_enable.as_deref()));
     checks.push(check_write(paths, allow_writes));
+    checks.push(check_effect(probe));
     checks.push(check_hwmon_attributes(paths.hwmon_dir.as_deref()));
     checks.push(check_kernel_log());
     checks.push(check_platform_profile());
@@ -206,7 +228,11 @@ pub(crate) fn diagnose(paths: &FanPaths, allow_writes: bool) -> Diagnosis {
         // Only an actual write failure rules control out. A skipped write
         // test (not requested, or no permission) leaves it untested, not
         // disproven - the summary says which.
-        && status_of("pwm-write") != Some(CheckStatus::Fail);
+        && status_of("pwm-write") != Some(CheckStatus::Fail)
+        // The one that catches board 8D2F, where every check above passes
+        // and the fans never move. Skipped leaves it untested, as with the
+        // readback; only a watched refusal counts against the machine.
+        && status_of("pwm-effect") != Some(CheckStatus::Fail);
 
     let verdict = match (can_read, can_write) {
         (_, true) => Verdict::FullControl,
@@ -479,10 +505,23 @@ fn check_pwm_enable(path: Option<&Path>) -> Check {
     }
 }
 
-/// The only check that writes.
+/// Whether `pwm1` stores what it is given.
 ///
-/// It writes the value that is *already* set, so no fan changes speed, and
-/// it puts the previous mode back afterwards - including when the readback
+/// **This used to write back the value that was already there**, read it,
+/// find it unchanged and call that a pass. On board `8D2F` that is a
+/// guaranteed pass on a channel the hardware ignores entirely: `pwm1` there
+/// reads back the *measured* speed scaled to 0-255, so writing 57 to a fan
+/// turning at 1200 rpm and reading 57 back proves only that the fan is still
+/// turning at 1200 rpm. A round trip of the current value cannot fail.
+///
+/// So it writes a value the channel is *not* already at. A driver that keeps
+/// a setpoint reads it straight back; one that reports a measurement does
+/// not, and that mismatch is the cheap signature of the 8D2F case.
+///
+/// It is still only half the question - a driver could store the setpoint
+/// faithfully while the embedded controller ignores it - and the half that
+/// settles it is [`crate::speed_probe`], reported by `check_effect` below.
+/// The previous mode is put back afterwards, including when the readback
 /// fails, which is why the restore is not conditional on success.
 fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
     const ID: &str = "pwm-write";
@@ -526,9 +565,15 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
     };
     let (original_mode, original_pwm) = (original_mode.trim(), original_pwm.trim());
 
-    // Manual mode, then re-write the value that is already set.
+    // A value the channel is demonstrably not already at, so that reading it
+    // back means something. Which side it moves to does not matter, only
+    // that it differs - and it is in force for milliseconds, far below the
+    // driver's 90 s keep-alive, so no fan has time to react to it.
+    let probe_value = probe_value(original_pwm);
+
+    // Manual mode, then a value that is not the one already there.
     let result = fs::write(enable, "1")
-        .and_then(|()| fs::write(pwm, original_pwm))
+        .and_then(|()| fs::write(pwm, probe_value.to_string()))
         .and_then(|()| fs::read_to_string(pwm));
 
     // Restore before interpreting anything, so an early return can't leave
@@ -537,20 +582,23 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
     let restored = fs::write(enable, original_mode);
 
     let (status, detail) = match result {
-        Ok(readback) if readback.trim() == original_pwm => (
+        Ok(readback) if readback.trim() == probe_value.to_string() => (
             CheckStatus::Pass,
             msg!(
                 "diagnostics.checks.pwm-write.ok",
-                { "value" => original_pwm },
-                "wrote and read back pwm1 = {value} without changing fan speed"
+                { "value" => probe_value },
+                "wrote pwm1 = {value} and read the same value back, so the channel holds a \
+                 setpoint. Whether the fans obey it is a separate question - see the next check"
             ),
         ),
         Ok(readback) => (
             CheckStatus::Warn,
             msg!(
                 "diagnostics.checks.pwm-write.mismatch",
-                { "wrote" => original_pwm, "readback" => readback.trim() },
-                "wrote {wrote} but read back {readback}; the driver may quantise or ignore values"
+                { "wrote" => probe_value, "readback" => readback.trim() },
+                "wrote {wrote} but read back {readback}, so pwm1 is not storing a setpoint - \
+                 it is most likely reporting the measured fan speed. That is the signature of \
+                 a board whose embedded controller ignores the value"
             ),
         ),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => (
@@ -579,6 +627,82 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
             ),
         );
     }
+    Check::new(ID, title(), status, detail)
+}
+
+/// A PWM value that is not `current`, so that reading it back says
+/// something. Stays inside the driver's own range and never lands on 0,
+/// which is `HP_FAN_SPEED_AUTOMATIC` rather than a speed.
+fn probe_value(current: &str) -> u8 {
+    let current: u8 = current.parse().unwrap_or(0);
+    if current > 128 {
+        current.saturating_sub(37).max(crate::curve::MIN_COMMANDED_PWM)
+    } else {
+        current.saturating_add(37).min(255)
+    }
+}
+
+/// Whether writing a speed **moves the fans**, which is the only form of
+/// this question with an answer worth having.
+///
+/// Reported from a [`crate::speed_probe`] run the caller made, rather than
+/// run here: it holds the fans at a speed for several seconds, and that
+/// belongs to one deliberate call rather than to every construction of a
+/// report. `None` means it was not attempted.
+fn check_effect(probe: Option<&SpeedProbe>) -> Check {
+    const ID: &str = "pwm-effect";
+    let title = || msg!("diagnostics.checks.pwm-effect.title", "Fans follow a commanded speed");
+
+    let Some(probe) = probe else {
+        return Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.pwm-effect.notAttempted",
+                "not attempted; enable writes to spin the fans and test this"
+            ),
+        );
+    };
+
+    let (status, detail) = match probe.verdict {
+        speed_probe::Verdict::Honoured => (
+            CheckStatus::Pass,
+            msg!(
+                "diagnostics.checks.pwm-effect.honoured",
+                { "target" => probe.target_pwm, "from" => probe.baseline_rpm,
+                  "to" => probe.reached_rpm },
+                "pwm1 = {target} moved the fans from {from} to {to} rpm"
+            ),
+        ),
+        // The case this whole check exists for. A failure, not a warning:
+        // manual and curve cannot work here, and the verdict below has to
+        // stop calling such a machine fully controllable.
+        speed_probe::Verdict::Ignored => (
+            CheckStatus::Fail,
+            msg!(
+                "diagnostics.checks.pwm-effect.ignored",
+                { "target" => probe.target_pwm, "rpm" => probe.baseline_rpm,
+                  "seconds" => probe.seconds },
+                "pwm1 = {target} was accepted and changed nothing: the fans stayed at {rpm} \
+                 rpm for {seconds}s. The embedded controller keeps them on the firmware's own \
+                 curve, so manual and curve modes cannot work on this board. Auto and max are \
+                 a different firmware call and still do"
+            ),
+        ),
+        speed_probe::Verdict::NoReading => (
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.pwm-effect.noReading",
+                "no fan reported a speed during the run, so there was nothing to watch"
+            ),
+        ),
+        speed_probe::Verdict::NoChannel => (
+            CheckStatus::Skip,
+            msg!("diagnostics.checks.pwm-effect.noChannel", "no PWM channel to write to"),
+        ),
+    };
+
     Check::new(ID, title(), status, detail)
 }
 
@@ -967,7 +1091,7 @@ mod tests {
     fn a_machine_with_no_interface_at_all_is_unsupported() {
         // Reads the ACPI interface: no redirection may run under it.
         let _acpi = crate::testenv::real();
-        let diagnosis = diagnose(&FanPaths::default(), false);
+        let diagnosis = diagnose(&FanPaths::default(), false, None);
         assert_eq!(diagnosis.verdict, Verdict::Unsupported);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Skip);
     }
@@ -983,7 +1107,7 @@ mod tests {
         write(&dir, "pwm1_enable", "2\n");
         // No fan2_input: the path is discovered, the file does not exist.
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(check(&diagnosis, "fan2").status, CheckStatus::Skip);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
     }
@@ -1003,7 +1127,7 @@ mod tests {
         write(&dir, "fan2_input", "2300\n");
         // No pwm1 or pwm1_enable written: the paths exist, the files don't.
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(diagnosis.verdict, Verdict::MonitoringOnly);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Pass);
         assert_eq!(check(&diagnosis, "pwm1").status, CheckStatus::Fail);
@@ -1031,7 +1155,7 @@ mod tests {
             return;
         }
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), true);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), true, None);
         let write_check = check(&diagnosis, "pwm-write");
         assert_eq!(write_check.status, CheckStatus::Skip);
         assert!(write_check.detail.contains("root"), "got: {}", write_check.detail);
@@ -1047,7 +1171,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
         // ...but it must say the write path is unverified.
         assert!(diagnosis.summary.contains("Re-run"), "got: {}", diagnosis.summary);
@@ -1063,7 +1187,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
         assert_eq!(check(&diagnosis, "pwm1").status, CheckStatus::Pass);
         assert!(check(&diagnosis, "pwm1_enable").detail.contains("automatic"));
@@ -1079,7 +1203,7 @@ mod tests {
         write(&dir, "pwm1", "100\n");
         write(&dir, "pwm1_enable", "1\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         let fan1 = check(&diagnosis, "fan1");
         assert_eq!(fan1.status, CheckStatus::Warn);
         assert!(fan1.detail.contains("2400 rpm"), "got: {}", fan1.detail);
@@ -1094,7 +1218,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Skip);
         assert!(!diagnosis.wrote_to_hardware);
     }
@@ -1107,11 +1231,95 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true);
+        let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None);
         assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Pass);
         // Automatic mode, and the same speed, exactly as before.
         assert_eq!(fs::read_to_string(dir.join("pwm1_enable")).unwrap().trim(), "2");
         assert_eq!(fs::read_to_string(dir.join("pwm1")).unwrap().trim(), "128");
+    }
+
+    /// The bug this check had for its whole life: it wrote back the value
+    /// already there, so on a driver whose `pwm1` reports the *measured*
+    /// speed the readback matched by construction and the check could not
+    /// fail. Whatever is written now, it must not be what was there.
+    #[test]
+    fn the_write_test_never_round_trips_the_value_already_set() {
+        for current in ["0", "1", "57", "128", "200", "254", "255"] {
+            let probe = probe_value(current);
+            assert_ne!(
+                probe.to_string(),
+                current,
+                "writing back {current} would pass on a channel that ignores it"
+            );
+            assert!(probe >= crate::curve::MIN_COMMANDED_PWM, "0 is the automatic sentinel");
+        }
+    }
+
+    fn probe_with(verdict: speed_probe::Verdict) -> SpeedProbe {
+        SpeedProbe {
+            verdict,
+            baseline_rpm: 1200,
+            aiming_up: true,
+            target_pwm: 200,
+            expected_rpm: Some(4156),
+            reached_rpm: 1300,
+            response_rpm: 100,
+            seconds: 15,
+            samples: Vec::new(),
+            restored_mode: "auto",
+            restore_error: None,
+            detail: String::new(),
+        }
+    }
+
+    /// Board 8D2F: every other check passes and the fans never move. Before
+    /// the effect check existed this machine was reported `fullControl`.
+    #[test]
+    fn fans_that_ignore_a_commanded_speed_are_not_full_control() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let dir = fixture("ignored");
+        write(&dir, "fan1_input", "1200\n");
+        write(&dir, "pwm1", "57\n");
+        write(&dir, "pwm1_enable", "1\n");
+
+        let probe = probe_with(speed_probe::Verdict::Ignored);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), true, Some(&probe));
+
+        assert_eq!(check(&diagnosis, "pwm-effect").status, CheckStatus::Fail);
+        assert_eq!(diagnosis.verdict, Verdict::MonitoringOnly);
+    }
+
+    #[test]
+    fn fans_that_follow_a_commanded_speed_are_full_control() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let dir = fixture("honoured");
+        write(&dir, "fan1_input", "2400\n");
+        write(&dir, "pwm1", "128\n");
+        write(&dir, "pwm1_enable", "1\n");
+
+        let probe = probe_with(speed_probe::Verdict::Honoured);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), true, Some(&probe));
+
+        assert_eq!(check(&diagnosis, "pwm-effect").status, CheckStatus::Pass);
+        assert_eq!(diagnosis.verdict, Verdict::FullControl);
+    }
+
+    /// An unrun probe leaves the question open. It must not be read as a
+    /// refusal, or every read-only report would condemn the machine.
+    #[test]
+    fn an_effect_test_that_was_never_asked_for_does_not_rule_control_out() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let dir = fixture("effect-untested");
+        write(&dir, "fan1_input", "2400\n");
+        write(&dir, "pwm1", "128\n");
+        write(&dir, "pwm1_enable", "2\n");
+
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        assert_eq!(check(&diagnosis, "pwm-effect").status, CheckStatus::Skip);
+        assert_eq!(diagnosis.verdict, Verdict::FullControl);
     }
 
     /// The notice logic is tested through `conclude` directly, because
@@ -1161,7 +1369,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(diagnosis.summary.key, "diagnostics.summary.fullControlUntested");
         let pwm1 = check(&diagnosis, "pwm1");
         assert_eq!(pwm1.title.key, "diagnostics.checks.pwm1.title");
@@ -1179,7 +1387,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Fail);
     }
 }

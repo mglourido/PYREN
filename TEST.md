@@ -20,7 +20,8 @@ tools/power-soak.sh                     # 31 checks, against real hardware
 | **Automatic switching** (battery / load / heat) | ✅ **yes** | soaked; one switch per half hour under load, no flapping |
 | **Fan modes** auto / max / curve | ✅ **yes** | tested against a fixture |
 | **Fan mode** manual | ⚠️ **partly** | tested lightly — accepted where the driver exposes `pwm1`, refused where not |
-| **One fan curve per profile** | ❌ **does not exist** | there is a single global curve; the fan module does not know the power mode. Would be a new feature |
+| **Fan curve / manual in any power mode** | ✅ **yes** | the app offers `manual` and `curve` in every power mode, not just Unlimited; the fan module never tied them to the mode |
+| **One fan curve *per* profile** | ⚠️ **built, not verified on hardware** | each power profile has its own curve; the fan module hears `power.mode` on the event bus and swaps. Covered by tests — but on this laptop no curve reaches the fans at all (see the row above), so the *switch* has never been watched move a real fan |
 | **GPU overclocking** | ✅ **yes** | verified on hardware — +50 MHz applied and reverted, through NVML. Needs no X and no `Coolbits` |
 | **Reverting an unconfirmed offset on a reported fault** | ⚠️ **partly** | the decision logic is tested and the driver registration is verified on hardware; **no real fault has ever been seen firing** — see below |
 

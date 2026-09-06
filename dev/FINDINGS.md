@@ -4,6 +4,67 @@ Things that took real work to establish. Written down so nobody has to
 re-derive them, and so that a surprising piece of code has a reason
 attached.
 
+## `pwm1` exists on 8D2F and is ignored — measured on 2026-09-06
+
+The patched driver gives board `8D2F` a `pwm1`. **The embedded controller
+does not honour it.** Every layer above says fan control works, and the
+fans have never followed a commanded speed on this machine — not in any
+power mode, and not before the app started offering the curve outside
+Unlimited.
+
+Measured through the running daemon, `fan_max_rpm` 5300:
+
+| commanded | `platform_profile` | what the fans did |
+|---|---|---|
+| `manual --pwm 200` (~4100 rpm) | `cool` | wandered 300 → 1300 rpm on their own curve |
+| `manual --pwm 200` | `performance` | same, 0 → 1200 rpm |
+| curve, `targetPwm: 246` (~5100 rpm) | `cool` | pinned at 1200 rpm for a minute |
+| **`max`** (`pwm1_enable=0`) | either | ✅ **2100 → 5200 rpm, both fans, held** |
+
+So `auto` and `max` work and `manual`/`curve` do not, which is exactly the
+split `control.rs` documents — except the reason is not a missing `pwm1`
+this time. It is there and the write is accepted; the EC simply keeps the
+fans. `max` survives because it is a different firmware call that needs no
+per-board parameters.
+
+**The platform profile is not the variable.** Testing under `performance`
+was the obvious hypothesis (that the EC only releases the fans in the
+firmware's own performance profile) and it is wrong — the trace above is
+identical in both.
+
+### Why every check passed
+
+**`pwm1` reads back the measured speed, not the setpoint.** Every reading
+taken is `rpm ÷ 5300 × 255` to the unit:
+
+| `fan1_input` | `pwm1` | `rpm ÷ 5300 × 255` |
+|---|---|---|
+| 700 | 33 | 33.7 |
+| 1200 | 57 | 57.7 |
+| 1300 | 62 | 62.5 |
+
+That is what made this invisible for so long, and it took two things down
+with it:
+
+- **`fan.diagnose`'s write check was a guaranteed pass.** It wrote back the
+  value that was already there and compared. On a channel that reports a
+  measurement, writing 57 to a fan turning at 1200 rpm and reading 57 back
+  *cannot fail*. It reported, in as many words, `wrote and read back
+  pwm1 = 62 without changing fan speed` → `[ pass ]` → `verdict
+  fullControl`. It now writes a value the channel is not at, and a mismatch
+  is the cheap signature of this whole class of board.
+- **`Capabilities::detect` only ever checked that the file exists**, which
+  on this board is a false positive. Hence `fan.probeSpeedControl`: command
+  a speed the fans are not at, watch the tachometer, remember the answer in
+  `fan.json`'s `speedControl`. An `ignored` machine reports
+  `capabilities.setSpeed: false` from then on, so clients stop drawing a
+  curve editor for a curve nothing follows.
+
+**Not tried:** the driver exposes `pwm2` as well and the daemon writes only
+`pwm1`. During a manual run `fan2_input` sat at 0 while `max` spun both, so
+writing both is worth ruling out — though it cannot explain `fan1` ignoring
+its own channel.
+
 ## Board 8D2F: why a fan *percentage* can't be set on the test laptop
 
 The one HP machine this has run on is an **OMEN Gaming Laptop 16-am0xxx,
@@ -84,7 +145,16 @@ messages). The driver is not failing on this board; it simply never enters
 the code path, exactly as a board missing from `hp_wmi_feature_boards`
 would.
 
-## The patched driver works on 8D2F — settled on 2026-09-04
+## The patched driver adds `pwm1` on 8D2F — settled on 2026-09-04
+
+> **Corrected on 2026-09-06.** This section used to be titled "the patched
+> driver *works* on 8D2F", and it does not: the files appear, the driver
+> accepts writes to them, and **the fans have never once obeyed a commanded
+> speed**. See §"`pwm1` exists on 8D2F and is ignored" below. The evidence
+> table here is itself the artefact that hid it — `pwm1=102` with fans at
+> 2100 rpm is 102 = 2100 ÷ 5300 × 255, i.e. the *measured* speed scaled,
+> not a setpoint. Nobody noticed because nothing ever wrote a value and
+> checked the fans afterwards.
 
 Installed from the wizard's automatic mode, on the laptop, and it is the
 first time the installer's execution path has ever run. It confirms the

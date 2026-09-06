@@ -51,7 +51,14 @@ export type HardwareState = {
   autoPerformance: boolean;
   fanMode: FanMode;
   fanPercent: number;
+  /** The shared curve: what a profile with none of its own falls back to,
+   *  and the only one on a machine whose power module controls nothing. */
   fanCurve: CurvePoint[];
+  /** One curve per power profile. Empty for a profile the user has never
+   *  drawn, which then follows `fanCurve` - the same rule the daemon
+   *  applies, and the two have to agree or the editor shows a shape the
+   *  fans are not following. */
+  fanCurves: Partial<Record<PowerMode, CurvePoint[]>>;
   /** Which sensor the curve follows; `gpu` falls back to the CPU while
    *  the card is asleep. Mirrored from the daemon, which is the
    *  authority - this copy only exists so the first frame has a value. */
@@ -97,6 +104,11 @@ function defaults(): HardwareState {
       { tempC: 80, percent: 80 },
       { tempC: 90, percent: 100 },
     ],
+    // Empty on purpose: every profile starts as the shared curve above and
+    // gains one of its own the first time it is edited. Seeding four
+    // identical copies here would only make an untouched profile look
+    // deliberately chosen.
+    fanCurves: {},
     smartBoostEnabled: true,
     smartBoostW: 30,
     maxBatteryDrain: 40,
@@ -230,9 +242,9 @@ class HardwareStore {
 
   async setPowerMode(mode: PowerMode) {
     this.set("powerMode", mode);
-    // Unlimited is the only mode that hands fan control to the user; every
-    // other mode is the firmware's own curve, mirroring the reference app.
-    if (mode !== "unlimited" && this.state.fanMode === "manual") this.set("fanMode", "auto");
+    // The fan mode is the user's choice in every power mode now, not just
+    // Unlimited - the daemon keeps one curve and honours it whatever the
+    // power mode is - so a mode change leaves `fanMode` alone.
     try {
       this.lastApply = await daemon.setPowerMode(mode);
       this.lastError = null;
@@ -321,13 +333,34 @@ class HardwareStore {
   }
 
   /**
-   * The curve is stored daemon-side whatever the current mode is, so that
-   * switching to `curve` later follows the shape the user drew rather than
-   * an empty one.
+   * The curve stored for one power profile.
+   *
+   * Falls back to the shared curve for a profile that has never been
+   * edited, which is the same rule `FanConfig::curve_for` applies in the
+   * daemon. The two must agree: this is what the editor draws, and that is
+   * what the fans follow.
    */
-  setFanCurve(curve: CurvePoint[]) {
-    this.set("fanCurve", curve);
-    this.pushFanSoon(() => daemon.setFanCurve(curve, undefined, this.state.fanReferenceSensor));
+  curveFor(profile: PowerMode): CurvePoint[] {
+    const own = this.state.fanCurves[profile];
+    return own && own.length > 0 ? own : this.state.fanCurve;
+  }
+
+  /**
+   * The curve is stored daemon-side whatever the current fan mode is, so
+   * that switching to `curve` later follows the shape the user drew rather
+   * than an empty one.
+   *
+   * `profile` says which power profile is being edited; it defaults to the
+   * one the machine is in. Editing a profile the machine is *not* in
+   * changes a stored curve and nothing else until it switches - the page
+   * says so rather than leaving it to be inferred.
+   */
+  setFanCurve(curve: CurvePoint[], profile?: PowerMode) {
+    const target = profile ?? this.state.powerMode;
+    this.set("fanCurves", { ...this.state.fanCurves, [target]: curve });
+    this.pushFanSoon(() =>
+      daemon.setFanCurve(curve, undefined, this.state.fanReferenceSensor, target),
+    );
   }
 
   /**
@@ -337,8 +370,12 @@ class HardwareStore {
    */
   async setFanReferenceSensor(sensor: FanReferenceSensor) {
     this.set("fanReferenceSensor", sensor);
+    // Re-sends the running profile's own curve, unchanged. Sending the
+    // shared one here would quietly overwrite that profile's curve with
+    // the fallback - a sensor toggle is not an edit.
+    const profile = this.state.powerMode;
     await this.pushFan(() =>
-      daemon.setFanCurve(this.state.fanCurve, undefined, sensor),
+      daemon.setFanCurve(this.curveFor(profile), undefined, sensor, profile),
     );
   }
 

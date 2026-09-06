@@ -506,8 +506,10 @@ accepts an unprivileged caller through polkit, which is why a daemon run
 with `cargo run` can still change that one.
 
 `Unlimited` maps onto the same firmware profile as `Performance` — what
-makes it different is the manual fan and power limits applied on top, not a
-different platform profile.
+makes it different is the per-mode power envelope applied on top, not a
+different platform profile. (Manual fan control is not tied to it: the
+`fan` module honours a `manual` or `curve` mode whatever the power mode
+is, and the app offers those in every mode.)
 
 ### Automatic switching
 
@@ -859,9 +861,10 @@ which is why `stage-source` comes before `patch-source` in every plan.
 | `fan.getStatus` | none | the status object below | ✅ implemented, read-only, no privileges needed |
 | `fan.diagnose` | `{ "allowWrites": bool }` | full self-test report (see below) | ✅ implemented |
 | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the status object | ✅ implemented, needs root |
-| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the status object | ✅ implemented |
+| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu", "profile"?: string }` | the status object | ✅ implemented |
 | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
 | `fan.calibrate` | `{ "seconds"?: 10-120 }` | the calibration report below | ✅ implemented, needs root, **blocks and spins the fans** |
+| `fan.probeSpeedControl` | `{ "seconds"?: 8-60 }` | the speed probe below | ✅ implemented, needs root, **blocks and spins the fans** |
 | `fan.cleanerStatus` | `{ "refresh"?: bool }` | the cleaner status below | ✅ implemented, read-only (`refresh` puts two ACPI *queries*) |
 | `fan.startCleaning` | `{ "speed"?: 10-39, "seconds"?: 5-60, "force"?: bool }` | the cleaner status | ✅ implemented, needs root and `acpi_call`, **reverses the fans** |
 | `fan.stopCleaning` | none | the cleaner status | ✅ implemented, idempotent |
@@ -926,6 +929,94 @@ Two further things a client must not assume:
   the *hardware* was found in, not what the config file says — unless
   `restoreModeOnStart` is on. Until someone asks for a mode, the daemon
   watches and does not write.
+
+### One curve per power profile
+
+Each power profile has its own fan curve, and the one that drives the fans
+follows the machine.
+
+- `fan.getStatus` reports **`curve`** — the curve *in force* — plus
+  `profileCurves` (every profile's stored shape, keyed by the power mode's
+  own name), `sharedCurve` (the fallback) and `activeProfile`. A client that
+  knows nothing about profiles reads `curve` and is right.
+- `fan.setCurve`'s **`profile`** names which one to write. Omitted, it
+  writes whichever profile the machine is in — so that same client edits
+  the curve it can see running. `""` writes the shared fallback.
+- A profile with no curve of its own, an unrecognised profile name, and a
+  daemon that has never heard a profile at all **all fall back to
+  `sharedCurve`**, so the fans are never left without a curve.
+- The first time a profile is heard of, its curve is seeded from
+  `sharedCurve`. Without that, an upgrade would silently drop a curve
+  someone had tuned: all four profiles would fall back, look identical, and
+  then diverge one edit at a time from a shape nobody chose.
+
+**How the fan module learns the profile, without the two modules knowing
+about each other.** `power` announces every mode change on the event bus
+and does not know who listens (`pyren_power::Announcer`); `fan` gets told
+through `EventBus::subscribe`, an in-process listener that — unlike the
+`core.nextEvent` ring — never drops events, because a curve that switches
+on *most* mode changes is worse than one that never does. The wiring lives
+in the daemon binary, the one place entitled to know about both. So
+`profile` is an **opaque string** to the fan module: `eco`/`balanced`/… is
+the power module's vocabulary, and a table of them in the fan crate would
+be the same coupling by another route.
+
+This is the one exception to "changing the power mode must not write to the
+fans" in `docs/02-development.md`, and it is a deliberate one: the mode does
+not *command* a fan speed, it selects which stored curve is read.
+
+### `fan.probeSpeedControl`
+
+Answers the question `capabilities.setSpeed` only *looks* like it answers:
+**does writing `pwm1` actually move the fans?**
+
+Capability detection checks that the `pwm1` file exists. On board `8D2F`
+with the patched driver it does, the driver accepts every write, and the
+embedded controller goes on running the firmware's own curve — so `manual`
+and `curve` are offered, accepted, and do nothing. Worse, `pwm1` there
+reads back the *measured* speed scaled to 0-255 rather than the setpoint,
+so a readback test passes by construction: write 57 to a fan turning at
+1200 rpm, read 57 back.
+
+The probe commands a speed the fans are **not** at (aiming down instead of
+up when they are already fast, so a hot machine cannot pass on a rise its
+own temperature produced), watches the tachometer, and puts back the mode
+it found. It ends as soon as the fans answer, so a machine that obeys is
+done in a few seconds; the full budget is only ever spent proving a
+negative.
+
+```json
+{
+  "verdict": "honoured" | "ignored" | "noReading" | "noChannel",
+  "baselineRpm": 1200,
+  "aimingUp": true,
+  "targetPwm": 200,
+  "expectedRpm": 4156,
+  "reachedRpm": 1300,
+  "responseRpm": 100,
+  "seconds": 15,
+  "samples": [{ "atSecs": 1, "rpm": 900, "isReverse": false }],
+  "restoredMode": "curve",
+  "restoreError": null,
+  "detail": "pwm1 = 200 was accepted and changed nothing: …",
+  "status": { "…": "the usual fan status" }
+}
+```
+
+- **The answer is remembered**, in `fan.json`'s `speedControl`
+  (`untested` | `honoured` | `ignored`), and `fan.getStatus` reports it.
+  An `ignored` machine has `capabilities.setSpeed: false` from then on, so
+  every client hides the controls rather than offering a curve nothing
+  follows — and `fan.setMode` refuses `manual`/`curve` with
+  `fan.err.speedIgnored`, which is deliberately *not* the same refusal as
+  "there is no `pwm1`". One sends you to install a driver; the other must
+  not, because the driver is already there.
+- **`noReading` and `noChannel` settle nothing** and never overwrite a
+  stored answer. An untested machine is offered speed control: most boards
+  that expose `pwm1` do honour it, and refusing on suspicion would be worse
+  than an occasional control that turns out to do nothing.
+- Selecting `manual` or `curve` on a machine the probe has just refused
+  drops it back to `auto`, since that mode was not driving anything.
 
 ### `fan.calibrate`
 

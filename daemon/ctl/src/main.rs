@@ -58,11 +58,23 @@ FANS
   fan get                      speed, temperature, mode, capabilities
   fan set <auto|max|manual|curve> [--pwm 0-255]
   fan curve <t:pct,...> [--interpolation smooth|discrete] [--sensor cpu|gpu]
+              [--profile eco|balanced|performance|unlimited|shared]
                                e.g. fan curve 40:20,60:50,85:100
                                --sensor gpu follows the graphics card and
-                               falls back to the CPU while it is asleep
+                               falls back to the CPU while it is asleep.
+                               Each power profile has its own curve; without
+                               --profile this edits the one the machine is
+                               in. --profile shared edits the fallback used
+                               where no profile has been announced
   fan restore-on-start <on|off>
   fan diagnose [--write]       the fan-control self-test
+  fan probe-speed [--seconds N]
+                               hold the fans at a speed they are not at and
+                               watch whether they follow. The only way to
+                               tell a driver that honours pwm1 from one
+                               that takes the value and ignores it; the
+                               answer is remembered, and a machine that
+                               ignores it stops being offered manual/curve
   fan calibrate [--seconds N]  run the fans at max and measure what full
                                speed is on this machine, then put back the
                                mode it found. Loud, and the only way to
@@ -315,6 +327,13 @@ fn run(command: &args::Command) -> Run {
             if let Some(sensor) = command.option("sensor") {
                 params["referenceSensor"] = json!(sensor);
             }
+            // Without `--profile` this edits whichever profile the machine
+            // is in, which is the curve the user can see running.
+            // `--profile shared` reaches the fallback the daemon uses when
+            // nothing has announced a profile at all.
+            if let Some(profile) = command.option("profile") {
+                params["profile"] = json!(if profile == "shared" { "" } else { profile });
+            }
             show(command, client::call("fan", "setCurve", params)?, print_fan)
         }
         ["fan", "restore-on-start", value] => {
@@ -328,6 +347,14 @@ fn run(command: &args::Command) -> Run {
                 None => Value::Null,
             };
             show(command, client::call("fan", "calibrate", params)?, print_calibration)
+        }
+        ["fan", "probe-speed"] => {
+            let seconds = command.number("seconds")?;
+            let params = match seconds {
+                Some(seconds) => json!({ "seconds": seconds.round().max(0.0) as u64 }),
+                None => Value::Null,
+            };
+            show(command, client::call("fan", "probeSpeedControl", params)?, print_speed_probe)
         }
         ["fan", "cleaner"] => show(
             command,
@@ -1022,12 +1049,22 @@ fn print_fan(status: &Value) {
                 "nothing - no fan control interface on this machine".to_string()
             } else if speed {
                 "auto, max, manual, curve".to_string()
+            } else if text(status, "speedControl") == "ignored" {
+                // The distinction that matters on board 8D2F: the file is
+                // there and the fans ignore it. Telling this user to go and
+                // install a driver would send them after one they have.
+                "auto and max only - a probe found this machine's controller \
+                 accepts pwm1 and ignores it"
+                    .to_string()
             } else {
                 "auto and max only - this driver exposes no pwm1, so a speed \
                  cannot be commanded"
                     .to_string()
             },
         );
+        if speed && text(status, "speedControl") == "untested" {
+            row("speed control", "untested - run 'fan probe-speed' to confirm the fans obey");
+        }
     }
 
     if let Some(points) = status.get("curve").and_then(Value::as_array) {
@@ -1042,7 +1079,37 @@ fn print_fan(status: &Value) {
                     )
                 })
                 .collect();
-            row("curve", drawn.join(","));
+            row(
+                "curve",
+                match status.get("activeProfile").and_then(Value::as_str) {
+                    Some(profile) => format!("{} ({profile})", drawn.join(",")),
+                    None => drawn.join(","),
+                },
+            );
+        }
+    }
+
+    // The other profiles' curves, so `fan get` shows what is stored rather
+    // than only what is running - editing one and seeing no confirmation
+    // that the others survived is how this feature loses someone's work.
+    if let Some(profiles) = status.get("profileCurves").and_then(Value::as_object) {
+        let active = status.get("activeProfile").and_then(Value::as_str);
+        for (profile, points) in profiles.iter().filter(|(name, _)| Some(name.as_str()) != active) {
+            let Some(points) = points.as_array() else { continue };
+            if points.is_empty() {
+                continue;
+            }
+            let drawn: Vec<String> = points
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{}:{}",
+                        p.get("tempC").and_then(Value::as_f64).unwrap_or(0.0),
+                        p.get("percent").and_then(Value::as_f64).unwrap_or(0.0)
+                    )
+                })
+                .collect();
+            row(&format!("  {profile}"), drawn.join(","));
         }
     }
 
@@ -1126,6 +1193,35 @@ fn print_cleaner(status: &Value) {
     }
     if let Some(error) = msg_line(status, "error") {
         println!("  ! {error}");
+    }
+}
+
+fn print_speed_probe(result: &Value) {
+    row("verdict", text(result, "verdict"));
+    println!("  {}", text(result, "detail"));
+    row(
+        "run",
+        format!(
+            "pwm1 = {} for {}s, {} rpm -> {} rpm ({} rpm of movement), restored to {}",
+            result.get("targetPwm").and_then(Value::as_u64).unwrap_or(0),
+            result.get("seconds").and_then(Value::as_u64).unwrap_or(0),
+            result.get("baselineRpm").and_then(Value::as_i64).unwrap_or(0),
+            result.get("reachedRpm").and_then(Value::as_i64).unwrap_or(0),
+            result.get("responseRpm").and_then(Value::as_i64).unwrap_or(0),
+            text(result, "restoredMode"),
+        ),
+    );
+    if let Some(error) = result.get("restoreError").and_then(Value::as_str) {
+        println!("  ! could not put the fans back: {error}");
+    }
+    if let Some(samples) = result.get("samples").and_then(Value::as_array) {
+        let drawn: Vec<String> = samples
+            .iter()
+            .map(|s| s.get("rpm").and_then(Value::as_i64).unwrap_or(0).to_string())
+            .collect();
+        if !drawn.is_empty() {
+            row("trace", format!("{} rpm", drawn.join(", ")));
+        }
     }
 }
 

@@ -75,12 +75,24 @@ struct Ring {
     oldest: u64,
 }
 
+/// An in-process listener. See [`EventBus::subscribe`].
+type Listener = Box<dyn Fn(&str, &Value) + Send + Sync>;
+
 /// The daemon's published events. Cheap to clone the `Arc` around; every
 /// publisher and every reader shares one.
-#[derive(Debug)]
 pub struct EventBus {
     ring: Mutex<Ring>,
     published: Condvar,
+    /// Listeners inside this process, as opposed to clients polling the
+    /// ring. Kept apart from it on purpose - see [`EventBus::subscribe`].
+    listeners: Mutex<Vec<Listener>>,
+}
+
+impl std::fmt::Debug for EventBus {
+    /// Hand-written because a listener is a closure and cannot derive it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventBus").field("ring", &self.ring).finish_non_exhaustive()
+    }
 }
 
 /// One answer to `core.nextEvent`.
@@ -114,7 +126,34 @@ impl Default for EventBus {
 
 impl EventBus {
     pub fn new() -> Self {
-        Self { ring: Mutex::new(Ring::default()), published: Condvar::new() }
+        Self {
+            ring: Mutex::new(Ring::default()),
+            published: Condvar::new(),
+            listeners: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Calls `listener` on every event published from now on, in this
+    /// process, synchronously.
+    ///
+    /// Deliberately **not** the ring: that is a mailbox for clients that
+    /// may be between polls, and it drops events rather than stalling the
+    /// daemon. Dropping is right for an OSD redrawing a badge and wrong for
+    /// a module whose behaviour depends on the event - the fan module's
+    /// per-profile curve has to switch on *every* `power.mode`, not on the
+    /// ones that happened to survive a busy ring.
+    ///
+    /// This is what keeps modules from calling each other (see
+    /// `pyren_power::Announcer`): power announces without knowing who
+    /// listens, and fan listens without knowing who announced. The wiring
+    /// lives in the daemon binary, which is the one place that legitimately
+    /// knows about both.
+    ///
+    /// **A listener must be quick and must not publish.** It runs on the
+    /// publishing thread with no ring lock held, so publishing from inside
+    /// one would recurse rather than deadlock - still not something to do.
+    pub fn subscribe(&self, listener: impl Fn(&str, &Value) + Send + Sync + 'static) {
+        self.listeners.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(listener));
     }
 
     /// Publishes one event and wakes every waiting poll. Returns its
@@ -124,11 +163,16 @@ impl EventBus {
     /// of the ring and that is the end of it. A hardware daemon must not
     /// be able to stall because a GUI stopped reading its socket.
     pub fn publish(&self, topic: impl Into<String>, payload: Value) -> u64 {
+        let topic = topic.into();
         let seq = {
             let mut ring = self.lock();
             ring.latest += 1;
-            let event =
-                Event { seq: ring.latest, topic: topic.into(), payload, at: Instant::now() };
+            let event = Event {
+                seq: ring.latest,
+                topic: topic.clone(),
+                payload: payload.clone(),
+                at: Instant::now(),
+            };
             ring.events.push_back(event);
             while ring.events.len() > CAPACITY {
                 if let Some(dropped) = ring.events.pop_front() {
@@ -138,6 +182,13 @@ impl EventBus {
             ring.latest
         };
         self.published.notify_all();
+
+        // After the ring lock is released, so a listener that reaches back
+        // into the bus cannot deadlock against it. See `subscribe`.
+        let listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        for listener in listeners.iter() {
+            listener(&topic, &payload);
+        }
         seq
     }
 
@@ -254,6 +305,48 @@ mod tests {
 
     /// The whole point of the long poll: the OSD is woken by the key press,
     /// not by its next scheduled question.
+    /// The reliable half of the bus. The ring drops events under load,
+    /// which is right for an OSD redrawing a badge and wrong for the fan
+    /// module's per-profile curve: it has to switch on *every* mode change,
+    /// not on the ones that survived.
+    #[test]
+    fn an_in_process_listener_sees_every_event_even_past_the_ring_capacity() {
+        let bus = EventBus::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        bus.subscribe(move |topic, payload| {
+            if topic == "power.mode" {
+                let mode = payload["mode"].as_str().unwrap_or_default().to_string();
+                recorder.lock().unwrap().push(mode);
+            }
+        });
+
+        for _ in 0..(CAPACITY * 2) {
+            bus.publish("power.mode", json!({ "mode": "eco" }));
+            bus.publish("hotkey.pressed", json!({}));
+        }
+
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            CAPACITY * 2,
+            "a listener must not lose events the ring evicted"
+        );
+    }
+
+    /// A listener that reaches back into the bus must not deadlock against
+    /// the ring lock, which is why they are called after it is released.
+    #[test]
+    fn a_listener_may_read_the_bus_it_was_called_from() {
+        let bus = Arc::new(EventBus::new());
+        let inner = Arc::clone(&bus);
+        let latest = Arc::new(Mutex::new(0u64));
+        let recorder = Arc::clone(&latest);
+        bus.subscribe(move |_, _| *recorder.lock().unwrap() = inner.latest());
+
+        bus.publish("power.mode", json!({ "mode": "balanced" }));
+        assert_eq!(*latest.lock().unwrap(), 1);
+    }
+
     #[test]
     fn a_waiting_poll_is_woken_by_a_publish() {
         let bus = Arc::new(EventBus::new());

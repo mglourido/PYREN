@@ -4,9 +4,13 @@
    * reference layout: power mode tiles on top, then a temperature/power
    * settings switch, the fan control, and the temperature readouts.
    *
-   * Which controls are available depends on the selected mode, exactly as
-   * on Windows: only "Unlimited" exposes manual power limits and manual
-   * fan control, everything else hands the curve back to the firmware.
+   * Which controls are available depends on the selected mode: manual
+   * power limits stay grouped with Performance / Unlimited, as on Windows.
+   * Manual fan control (the "manual" and "curve" fan modes and the
+   * editable curve) is offered in *every* power mode where the driver can
+   * be told a speed - the daemon keeps one curve and applies it whatever
+   * the power mode is, so gating it on Unlimited only hid a control that
+   * already worked.
    */
   import { onMount } from "svelte";
   import Banner from "$lib/components/Banner.svelte";
@@ -18,7 +22,7 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
-  import { daemon, type HotkeyStatus } from "$lib/api/daemon";
+  import { daemon, errorText, type HotkeyStatus } from "$lib/api/daemon";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { formatTemp } from "$lib/stores/settings.svelte";
   import { telemetry, tempColor } from "$lib/stores/telemetry.svelte";
@@ -60,7 +64,7 @@
   );
 
   const mode = $derived(hardware.state.powerMode);
-  /** Manual power limits and manual fan control are Unlimited-only. */
+  /** Manual power limits are Unlimited-only; manual fan control is not. */
   const unlimited = $derived(mode === "unlimited");
   const powerTabAvailable = $derived(mode === "performance" || mode === "unlimited");
 
@@ -84,8 +88,42 @@
    */
   const canSetSpeed = $derived(hardware.fan?.capabilities.setSpeed ?? true);
 
+  /**
+   * Why `canSetSpeed` is what it is. `ignored` is board 8D2F: `pwm1` is
+   * there, the driver takes the write, and the embedded controller keeps
+   * the fans on the firmware's own curve - so the two "no speed control"
+   * cases need different sentences. One is "your driver is missing a
+   * file", the other is "your driver has the file and your hardware
+   * ignores it", and sending someone to install a driver they already have
+   * is the wrong end of a long afternoon.
+   */
+  const speedControl = $derived(hardware.fan?.speedControl ?? "untested");
+
+  /** The probe is loud and blocking, so it says so and reports what it found. */
+  let probing = $state(false);
+  let probeResult = $state<{ ok: boolean; text: string } | null>(null);
+
+  async function probeSpeed() {
+    probing = true;
+    probeResult = null;
+    try {
+      const probe = await daemon.probeFanSpeedControl();
+      hardware.observeFan(probe.status);
+      probeResult =
+        probe.verdict === "honoured"
+          ? { ok: true, text: t("performance.probeHonoured", { rpm: probe.reachedRpm }) }
+          : probe.verdict === "ignored"
+            ? { ok: false, text: t("performance.probeIgnored") }
+            : { ok: false, text: t("performance.probeInconclusive") };
+    } catch (e) {
+      probeResult = { ok: false, text: errorText(e) };
+    } finally {
+      probing = false;
+    }
+  }
+
   const fanModeOptions = $derived(
-    unlimited && canSetSpeed
+    canSetSpeed
       ? (["max", "auto", "manual", "curve"] as FanMode[])
       : (["auto", "max"] as FanMode[]),
   );
@@ -175,6 +213,18 @@
       ? hardware.fan.gpuTempC
       : telemetry.cpuTempC,
   );
+
+  /**
+   * Which profile's curve the editor is showing.
+   *
+   * The same shape as `tuningModeChoice` above, and for the same reason:
+   * each power profile has its own curve, so the editor has to say which
+   * one is on screen. `null` means "whichever the machine is in", so it
+   * opens on the running one and follows it if something else moves it.
+   */
+  let curveProfileChoice = $state<PowerMode | null>(null);
+  const curveProfile = $derived(curveProfileChoice ?? mode);
+  const editingCurve = $derived(hardware.curveFor(curveProfile));
 
   /** The curve editor is the point of curve mode, and the shape a manual
    *  session is drawn against. */
@@ -320,7 +370,7 @@
       <div class="fan-area">
         <h2 class="fan-title">{t("performance.fanSpeed")}</h2>
 
-        {#if unlimited}
+        {#if canSetSpeed}
           <Segmented
             value={hardware.state.fanMode}
             options={fanModeOptions.map((value) => ({
@@ -346,7 +396,7 @@
           {/if}
         </div>
 
-        {#if unlimited && showCurve}
+        {#if showCurve}
           <div class="manual">
             {#if hardware.state.fanMode === "manual"}
               <div class="manual-slider">
@@ -365,6 +415,28 @@
 
             <h3 class="curve-title">{t("performance.fanCurve")}</h3>
             <p class="curve-desc">{t("performance.fanCurveDesc")}</p>
+
+            <!-- Each profile has its own curve, so the editor has to say
+                 which one is on screen - and whether editing it does
+                 anything right now. Mirrors the power tab's selector. -->
+            <div class="tuning-scope">
+              <span class="limit-scope">{t("performance.curveBelongsTo")}</span>
+              <Segmented
+                value={curveProfile}
+                options={modes.map(({ id }) => ({
+                  value: id,
+                  label: t(`performance.modes.${id}`),
+                }))}
+                onchange={(v) => (curveProfileChoice = v as PowerMode)}
+              />
+            </div>
+            <p class="limit-scope">
+              {curveProfile === mode
+                ? t("performance.curveAppliesNow")
+                : t("performance.curveAppliesLater", {
+                    mode: t(`performance.modes.${curveProfile}`),
+                  })}
+            </p>
 
             {#if gpuSensorAvailable}
               <div class="sensor-row">
@@ -386,16 +458,39 @@
               {/if}
             {/if}
 
+            <!-- The temperature marker is only honest on the profile that
+                 is actually running: on any other it would point at where
+                 a curve nothing is reading would be read. -->
             <FanCurve
-              curve={hardware.state.fanCurve}
-              currentTempC={curveTempC}
-              onchange={(curve) => hardware.setFanCurve(curve)}
+              curve={editingCurve}
+              currentTempC={curveProfile === mode ? curveTempC : null}
+              onchange={(curve) => hardware.setFanCurve(curve, curveProfile)}
             />
           </div>
         {/if}
 
+        <!-- Two different machines, two different sentences. See `speedControl`. -->
         {#if !canSetSpeed}
-          <p class="fan-note">{t("performance.fanSpeedUnavailable")}</p>
+          <p class="fan-note">
+            {speedControl === "ignored"
+              ? t("performance.fanSpeedIgnored")
+              : t("performance.fanSpeedUnavailable")}
+          </p>
+        {/if}
+
+        <!-- The curve is only worth drawing if the fans follow it, and only
+             a probe can say. Offered while that is unknown, and again after
+             a refusal so a driver change can be re-tested. -->
+        {#if hardware.fan && (speedControl !== "honoured")}
+          <div class="probe">
+            <button class="probe-btn" onclick={probeSpeed} disabled={probing}>
+              {probing ? t("performance.probing") : t("performance.probeSpeed")}
+            </button>
+            <span class="fan-note">{t("performance.probeSpeedHint")}</span>
+          </div>
+          {#if probeResult}
+            <p class="feedback {probeResult.ok ? 'ok' : 'err'}">{probeResult.text}</p>
+          {/if}
         {/if}
       </div>
     {:else}
@@ -737,6 +832,41 @@
     color: var(--text-mute);
     font-size: 13px;
     line-height: 1.5;
+  }
+
+  .probe {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    max-width: 62ch;
+  }
+
+  .probe .fan-note {
+    margin: 0;
+    flex: 1 1 34ch;
+  }
+
+  .probe-btn {
+    padding: 7px 14px;
+    background: #2a2a2e;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .probe-btn:hover:not(:disabled) {
+    border-color: var(--text-dim);
+  }
+
+  .probe-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .power-area {

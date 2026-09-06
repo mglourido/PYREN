@@ -19,13 +19,32 @@ export type { Msg };
 /** False when the page is served by Vite in a normal browser, not Tauri. */
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-/** What this machine's hp-wmi driver actually exposes. */
+/**
+ * What this machine's hp-wmi driver actually accepts.
+ *
+ * `setSpeed` is the *effective* answer, not a file listing: a board whose
+ * `pwm1` exists and whose embedded controller ignores it reports false
+ * here once a probe has watched that happen. `FanStatus.speedControl` says
+ * which of the two it is.
+ */
 export type FanCapabilities = {
   /** `pwm1_enable`: auto and max can be commanded. */
   switchMode: boolean;
-  /** `pwm1`: a specific speed can be commanded. */
+  /** `pwm1` exists *and* a commanded speed is not known to be ignored. */
   setSpeed: boolean;
 };
+
+/**
+ * Whether a commanded fan speed was ever found to reach the hardware.
+ *
+ * `pwm1` existing does not settle it. Board 8D2F takes the write, reports
+ * it back as the *measured* speed, and goes on running the firmware's own
+ * curve - so manual and curve modes do nothing there while every cheap
+ * check passes. Only `fan.probeSpeedControl` can tell the two apart, and
+ * only by spinning the fans, so the answer is remembered rather than
+ * re-asked. `untested` is the default and offers speed control.
+ */
+export type FanSpeedControl = "untested" | "honoured" | "ignored";
 
 export type FanDaemonMode = "auto" | "max" | "manual" | "curve";
 
@@ -49,7 +68,18 @@ export type FanStatus = {
   pwm: number | null;
   targetPwm: number | null;
   manualPwm: number;
+  /** The curve actually in force — the active profile's, or the shared
+   *  one where no profile applies. Read this to know what is running. */
   curve: FanCurvePoint[];
+  /** Every profile's stored curve, keyed by the power mode's own name.
+   *  A profile with no entry uses `sharedCurve`. */
+  profileCurves: Partial<Record<PowerMode, FanCurvePoint[]>>;
+  /** The fallback for a profile nobody has drawn, and for a machine whose
+   *  power module never announces one. */
+  sharedCurve: FanCurvePoint[];
+  /** Which profile `curve` came from; `null` while nothing has announced
+   *  one and the shared curve is in force. */
+  activeProfile: PowerMode | null;
   interpolation: "smooth" | "discrete";
   /** The sensor the curve is *set* to follow. */
   referenceSensor: FanReferenceSensor;
@@ -58,6 +88,9 @@ export type FanStatus = {
   referenceSensorInUse: FanReferenceSensor | null;
   /** Whether this machine has a GPU sensor to offer in the first place. */
   gpuSensorAvailable: boolean;
+  /** Why `capabilities.setSpeed` is what it is - so a UI can say "measured,
+   *  and it does nothing here" rather than only hiding the control. */
+  speedControl: FanSpeedControl;
   restoreModeOnStart: boolean;
   /** Whether a cleaning cycle owns the fans - through both transitions,
    *  not only while they are actually reversed. `fanCleanerStatus` is the
@@ -490,6 +523,36 @@ export type FanCalibration = {
   detail: string;
   /** `null` when the run measured nothing worth storing. */
   pinned: FanPinned | null;
+};
+
+/** One reading from a speed probe; the trace is the evidence for the verdict. */
+export type FanProbeSample = { atSecs: number; rpm: number; isReverse: boolean };
+
+/**
+ * What `fan.probeSpeedControl` found. `honoured` and `ignored` are the two
+ * that settle anything; the other two mean the question could not be put
+ * and must not be shown as a refusal.
+ */
+export type FanSpeedProbe = {
+  verdict: "honoured" | "ignored" | "noReading" | "noChannel";
+  baselineRpm: number;
+  /** Whether the probe asked for more speed or less. It aims down when the
+   *  fans are already fast, so a hot machine cannot pass on its own rise. */
+  aimingUp: boolean;
+  targetPwm: number;
+  /** What that implies in rpm, where a calibration has measured the
+   *  ceiling. `null` only makes the sentence vaguer, never the verdict. */
+  expectedRpm: number | null;
+  /** The reading furthest in the commanded direction. */
+  reachedRpm: number;
+  responseRpm: number;
+  seconds: number;
+  samples: FanProbeSample[];
+  restoredMode: string;
+  restoreError: string | null;
+  detail: string;
+  /** The same shape every other fan write returns. */
+  status: FanStatus;
 };
 
 /** Overall conclusion of the fan-control self-test. */
@@ -964,6 +1027,7 @@ const DAEMON_ROUTES: Record<
   fan_get_status: { module: "fan", method: "getStatus" },
   fan_diagnose: { module: "fan", method: "diagnose" },
   fan_calibrate: { module: "fan", method: "calibrate" },
+  fan_probe_speed_control: { module: "fan", method: "probeSpeedControl" },
   fan_set_mode: { module: "fan", method: "setMode" },
   fan_set_curve: { module: "fan", method: "setCurve" },
   fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
@@ -1179,15 +1243,33 @@ export const daemon = {
    * `pinned` in the reply.
    */
   calibrateFans: (seconds?: number) => call<FanCalibration>("fan_calibrate", { seconds }),
+  /**
+   * Holds the fans at a speed they are not at and watches whether they
+   * follow — the only way to tell a driver that honours `pwm1` from one
+   * that takes the value and ignores it. **Audible, and it blocks**, though
+   * the daemon stops as soon as the fans answer, so a machine that obeys is
+   * done in a few seconds. The answer is remembered: a machine that ignores
+   * it reports `setSpeed: false` from then on.
+   */
+  probeFanSpeedControl: (seconds?: number) =>
+    call<FanSpeedProbe>("fan_probe_speed_control", { seconds }),
   /** `pwm` (0-255) is required for `manual` and ignored otherwise. */
   setFanMode: (mode: FanDaemonMode, pwm?: number) =>
     call<FanStatus>("fan_set_mode", { mode, pwm }),
-  /** Stores the curve; it only drives the fans while the mode is `curve`. */
+  /**
+   * Stores a curve; it only drives the fans while the mode is `curve`.
+   *
+   * Each power profile has its own. `profile` names which one to write —
+   * omitted, it writes whichever profile the machine is in, so a caller
+   * that ignores profiles edits the curve it can see running. `""` writes
+   * the shared fallback.
+   */
   setFanCurve: (
     curve: FanCurvePoint[],
     interpolation?: "smooth" | "discrete",
     referenceSensor?: FanReferenceSensor,
-  ) => call<FanStatus>("fan_set_curve", { curve, interpolation, referenceSensor }),
+    profile?: PowerMode | "",
+  ) => call<FanStatus>("fan_set_curve", { curve, interpolation, referenceSensor, profile }),
   setFanRestoreOnStart: (enabled: boolean) =>
     call<FanStatus>("fan_set_restore_on_start", { enabled }),
   /** `refresh` re-asks the firmware what it can do (two ACPI calls); the

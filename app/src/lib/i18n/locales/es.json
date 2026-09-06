@@ -127,7 +127,7 @@
       "eco": "El menor consumo y los ventiladores más silenciosos. Ideal para la batería.",
       "balanced": "Decide el firmware. Buen valor predeterminado para el día a día.",
       "performance": "Límites de potencia más altos y una curva de ventilador más agresiva.",
-      "unlimited": "Desbloquea los límites de potencia manuales y el control manual del ventilador."
+      "unlimited": "Desbloquea los límites de potencia manuales y la temperatura límite del chasis."
     },
     "tempSettings": "Ajustes de temperatura",
     "powerSettings": "Ajustes de energía",
@@ -136,6 +136,13 @@
     "fanCurve": "Curva del ventilador",
     "fanCurveDesc": "Arrastra los puntos para fijar la velocidad del ventilador en cada temperatura.",
     "fanSpeedUnavailable": "El controlador de esta máquina puede alternar los ventiladores entre automático y máximo, pero no fijar una velocidad: expone pwm1_enable y no pwm1. Ejecuta la comprobación de hardware para ver los detalles.",
+    "fanSpeedIgnored": "El controlador de esta máquina tiene pwm1 y acepta escrituras, pero una prueba observó que los ventiladores ignoran el valor y siguen la curva del propio firmware. Los modos manual y curva no pueden funcionar aquí, así que se ocultan; automático y máximo usan otra llamada del firmware y sí funcionan. Instalar un controlador no ayudará: este ya está puesto.",
+    "probeSpeed": "Probar el control de velocidad",
+    "probing": "Probando…",
+    "probeSpeedHint": "Mantiene los ventiladores unos segundos a una velocidad en la que no están y observa si obedecen. Es audible, y se detiene en cuanto responden. Es la única forma de distinguir un controlador que honra una velocidad ordenada de uno que acepta el valor y lo ignora.",
+    "probeHonoured": "Los ventiladores siguieron la velocidad ordenada y alcanzaron {rpm} rpm. Los modos manual y curva funcionan en esta máquina.",
+    "probeIgnored": "Los ventiladores ignoraron la velocidad ordenada y siguieron la curva del propio firmware. Los modos manual y curva no pueden funcionar aquí; automático y máximo sí.",
+    "probeInconclusive": "La prueba no resolvió nada: ningún ventilador informó una velocidad que observar. No se ha cambiado nada.",
     "turbo": "Turbo boost",
     "turboHint": "Permite que la CPU suba por encima de su frecuencia base. Desactivarlo es lo que más reduce el ruido de los ventiladores y el gasto de batería.",
     "smartBoost": "Aumento de rendimiento inteligente",
@@ -159,6 +166,9 @@
     "sensorCpu": "CPU",
     "sensorGpu": "GPU",
     "curveSensorAsleep": "La tarjeta gráfica no está informando de nada ahora mismo, así que la curva está siguiendo a la CPU.",
+    "curveBelongsTo": "Curva del perfil:",
+    "curveAppliesNow": "Es el modo en el que está la máquina, así que esta es la curva que siguen los ventiladores.",
+    "curveAppliesLater": "La máquina no está en {mode} ahora mismo, así que esta curva se aplicará cuando cambie a él.",
     "limitsBelongTo": "Ajustando el perfil:",
     "limitsApplyNow": "Es el modo en el que está la máquina, así que los cambios se aplican al momento.",
     "limitsApplyLater": "La máquina no está en {mode} ahora mismo, así que esto se aplicará cuando cambie a ese modo."

@@ -127,7 +127,7 @@
       "eco": "Lowest power draw and the quietest fans. Best for battery life.",
       "balanced": "The firmware decides. Good default for everyday use.",
       "performance": "Higher power limits and a more aggressive fan curve.",
-      "unlimited": "Unlocks manual power limits and manual fan control."
+      "unlimited": "Unlocks manual power limits and the chassis temperature limit."
     },
     "tempSettings": "Temperature settings",
     "powerSettings": "Power settings",
@@ -136,6 +136,13 @@
     "fanCurve": "Fan curve",
     "fanCurveDesc": "Drag the points to set the fan speed for each temperature.",
     "fanSpeedUnavailable": "This machine's driver can switch the fans between automatic and maximum, but cannot set a speed: it exposes pwm1_enable and no pwm1. Run the hardware check for the details.",
+    "fanSpeedIgnored": "This machine's driver has pwm1 and accepts writes to it, but a probe watched the fans ignore the value and stay on the firmware's own curve. Manual and curve modes cannot work here, so they are hidden; automatic and maximum go through a different firmware call and still do. Installing a driver will not help — this one is already in place.",
+    "probeSpeed": "Test fan speed control",
+    "probing": "Testing…",
+    "probeSpeedHint": "Holds the fans at a speed they are not at for a few seconds and watches whether they follow. Audible, and it stops as soon as they answer. It is the only way to tell a driver that honours a commanded speed from one that accepts the value and ignores it.",
+    "probeHonoured": "The fans followed the commanded speed, reaching {rpm} rpm. Manual and curve modes work on this machine.",
+    "probeIgnored": "The fans ignored the commanded speed and stayed on the firmware's own curve. Manual and curve modes cannot work here; automatic and maximum still do.",
+    "probeInconclusive": "The test settled nothing — no fan reported a speed to watch. Nothing has been changed.",
     "turbo": "Turbo boost",
     "turboHint": "Lets the CPU burst above its base frequency. Turning it off is the single biggest thing you can do for fan noise and battery life.",
     "smartBoost": "Smart performance boost",
@@ -159,6 +166,9 @@
     "sensorCpu": "CPU",
     "sensorGpu": "GPU",
     "curveSensorAsleep": "The graphics card is reporting nothing right now, so the curve is following the CPU.",
+    "curveBelongsTo": "Curve for the profile:",
+    "curveAppliesNow": "This is the mode the machine is in, so this is the curve the fans are following.",
+    "curveAppliesLater": "The machine is not in {mode} right now, so this curve takes effect when it next switches to it.",
     "limitsBelongTo": "Tuning the profile:",
     "limitsApplyNow": "This is the mode the machine is in, so changes take effect straight away.",
     "limitsApplyLater": "The machine is not in {mode} right now, so these take effect when it next switches to it."

@@ -25,6 +25,7 @@
 //! putting the two in different modules would mean one calling the other -
 //! which this project's modules never do.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -43,11 +44,13 @@ pub mod cleaner;
 mod control;
 pub mod curve;
 pub mod diagnostics;
+pub mod speed_probe;
 
 pub use calibration::Calibration;
 pub use cleaner::Cycle;
 pub use control::{Capabilities, FanMode};
 pub use curve::{CurvePoint, Interpolation};
+pub use speed_probe::{SpeedControl, SpeedProbe};
 
 const HWMON_ROOT: &str = "/sys/devices/platform/hp-wmi/hwmon";
 
@@ -117,7 +120,21 @@ pub struct FanConfig {
     /// 0-255, used when `mode` is `manual`. 128 is the driver's own
     /// default and a sane half-speed to land on.
     pub manual_pwm: u8,
+    /// The curve used when no profile-specific one applies: a daemon that
+    /// has never heard a `power.mode`, an unknown profile name, or a
+    /// profile the user has not drawn yet. Also what
+    /// [`FanConfig::migrate_profile_curves`] seeds the per-profile ones
+    /// from, so an upgrade keeps the shape that was already there.
     pub curve: Vec<CurvePoint>,
+    /// One curve per power profile, keyed by the profile's own name.
+    ///
+    /// **The key is opaque here on purpose.** The fan module must not learn
+    /// what profiles exist - `eco`/`balanced`/... is the power module's
+    /// vocabulary, and a table of them in this crate would be the two
+    /// modules knowing about each other by another route. What arrives is
+    /// whatever `power.mode` announced; an unrecognised name simply has no
+    /// curve and falls back to [`FanConfig::curve`].
+    pub profile_curves: BTreeMap<String, Vec<CurvePoint>>,
     pub interpolation: Interpolation,
     /// Which sensor the curve reads. See [`ReferenceSensor`]; a `gpu`
     /// setting falls back to the CPU rather than failing, because the
@@ -136,6 +153,17 @@ pub struct FanConfig {
     /// the numbers.
     pub fan1_max_rpm: Option<i64>,
     pub fan2_max_rpm: Option<i64>,
+    /// Whether a commanded speed was ever found to reach the fans.
+    ///
+    /// `pwm1` existing does not mean the embedded controller honours it —
+    /// board `8D2F` takes the write, reports it back as the *measured*
+    /// speed, and goes on running its own curve. Only
+    /// [`speed_probe`] can tell the two apart, and only by spinning the
+    /// fans, so this remembers the answer rather than re-asking. Defaults
+    /// to `Untested`, which offers speed control: most machines that expose
+    /// `pwm1` do honour it, and refusing on suspicion would be worse than
+    /// an occasional slider that turns out to do nothing.
+    pub speed_control: SpeedControl,
     /// Off by default, like the power module's equivalent: putting a
     /// machine's fans somewhere the user last left them, at boot, before
     /// they have asked for anything, is not a decision this should make on
@@ -156,16 +184,57 @@ impl Default for FanConfig {
             mode: FanMode::Auto,
             manual_pwm: 128,
             curve: Vec::new(),
+            profile_curves: BTreeMap::new(),
             interpolation: Interpolation::default(),
             reference_sensor: ReferenceSensor::default(),
             ma_window: 5,
             fan_max_rpm: None,
             fan1_max_rpm: None,
             fan2_max_rpm: None,
+            speed_control: SpeedControl::default(),
             restore_mode_on_start: false,
             cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
             cleaner_speed: None,
         }
+    }
+}
+
+impl FanConfig {
+    /// The curve that should be driving the fans, given the profile the
+    /// machine is in.
+    ///
+    /// Falls back to the shared [`FanConfig::curve`] for a profile with no
+    /// curve of its own, and for a daemon that has never been told a
+    /// profile at all. Falling back rather than refusing matters: a machine
+    /// whose `power` module is unsupported still gets a working curve.
+    pub fn curve_for(&self, profile: Option<&str>) -> &[CurvePoint] {
+        profile
+            .and_then(|p| self.profile_curves.get(p))
+            .filter(|points| !points.is_empty())
+            .map(Vec::as_slice)
+            .unwrap_or(&self.curve)
+    }
+
+    /// Gives every profile a curve of its own the first time per-profile
+    /// curves are used, copying the one shared shape the user already drew.
+    ///
+    /// Without this, turning four profiles loose on an empty map would
+    /// silently drop the curve someone had tuned: they would all fall back
+    /// to `curve`, look identical, and then diverge one edit at a time from
+    /// a shape nobody chose. Seeded only for profiles that have no entry,
+    /// so it can never overwrite one.
+    pub fn migrate_profile_curves(&mut self, profiles: &[&str]) -> bool {
+        if self.curve.is_empty() {
+            return false;
+        }
+        let mut seeded = false;
+        for profile in profiles {
+            if !self.profile_curves.contains_key(*profile) {
+                self.profile_curves.insert((*profile).to_string(), self.curve.clone());
+                seeded = true;
+            }
+        }
+        seeded
     }
 }
 
@@ -219,6 +288,16 @@ struct State {
     /// anyone asking. Nothing is written until someone asks - or until
     /// `restoreModeOnStart` says they already did.
     owned: bool,
+    /// The power profile the machine is in, as last announced on the event
+    /// bus - the key `config.profile_curves` is looked up by.
+    ///
+    /// Deliberately **not** persisted: it is an observation about the
+    /// machine right now, and the power module is its owner. A daemon that
+    /// restarts has not heard an announcement yet and uses the shared
+    /// curve until it does, which is the same rule as `mode` not being
+    /// restored unless `restoreModeOnStart` says so. `None` also covers
+    /// every machine whose `power` module found nothing to control.
+    active_profile: Option<String>,
     hysteresis: curve::Hysteresis,
     smoother: curve::TempSmoother,
     /// A calibration run has the fans, and the control loop must not take
@@ -277,6 +356,19 @@ impl FanModule {
 
     fn caps(&self) -> Capabilities {
         lock_hw(&self.hardware).caps
+    }
+
+    /// What this machine can be *told*, as opposed to what files it has.
+    ///
+    /// The difference is board `8D2F`: `pwm1` is there, the driver accepts
+    /// writes to it, and the fans never move. Once [`speed_probe`] has
+    /// caught that, `setSpeed` has to go false or every client goes on
+    /// offering a slider that does nothing - which is the exact failure
+    /// [`control`] was written to avoid, one layer further in.
+    fn effective_caps(&self) -> Capabilities {
+        let caps = self.caps();
+        let ignored = lock(&self.state).config.speed_control.is_ignored();
+        Capabilities { set_speed: caps.set_speed && !ignored, ..caps }
     }
 
     /// Look at the hardware again, because the driver under it changed.
@@ -372,6 +464,7 @@ impl FanModule {
             smoother: curve::TempSmoother::new(config.ma_window),
             config,
             mode,
+            active_profile: None,
             owned: restoring,
             hysteresis: curve::Hysteresis::new(),
             calibrating: false,
@@ -450,6 +543,7 @@ impl FanModule {
                 smoother: curve::TempSmoother::new(config.ma_window),
                 mode: observed_mode(&paths).unwrap_or(FanMode::Auto),
                 config,
+                active_profile: None,
                 owned: false,
                 hysteresis: curve::Hysteresis::new(),
                 calibrating: false,
@@ -467,15 +561,66 @@ impl FanModule {
 
     /// Runs the fan-control self-test against this machine.
     ///
-    /// `allow_writes` opts into the one check that touches hardware; it
-    /// rewrites the value already set and restores the previous mode, so no
-    /// fan changes speed.
+    /// `allow_writes` opts into the two checks that touch hardware: whether
+    /// `pwm1` stores what it is given, and - the only question that actually
+    /// settles anything - whether the fans then move. The second one spins
+    /// them for a few seconds and puts back what it found. Both are off
+    /// without `allow_writes`, and the report says they were not attempted
+    /// rather than passing them by default.
     pub fn diagnose(&self, allow_writes: bool) -> diagnostics::Diagnosis {
-        diagnostics::diagnose(&self.paths(), allow_writes)
+        // A failed probe is not a failed diagnosis: the check reports it as
+        // untested and the rest of the report is still worth having.
+        let probe =
+            if allow_writes { self.run_speed_probe(speed_probe::DEFAULT_SECONDS).ok() } else { None };
+        diagnostics::diagnose(&self.paths(), allow_writes, probe.as_ref())
     }
 
+    /// What this machine accepts, with a measured refusal taken into
+    /// account. `pyren-check`'s verdict reads this, and it should say what
+    /// was found to work rather than what exists.
     pub fn capabilities(&self) -> Capabilities {
-        self.caps()
+        self.effective_caps()
+    }
+
+    /// Tells this module which power profile the machine is now in, so a
+    /// curve drawn for that profile is the one that drives the fans.
+    ///
+    /// Called from the daemon binary's subscription to `power.mode`, which
+    /// is the only place that knows about both modules - the `fan` and
+    /// `power` crates still have no idea the other exists, and `profile` is
+    /// an opaque string here for exactly that reason (see
+    /// [`FanConfig::profile_curves`]).
+    ///
+    /// Seeds the per-profile curves from the shared one the first time a
+    /// profile is heard of, so an upgrade does not silently drop a curve
+    /// somebody tuned.
+    ///
+    /// Takes effect immediately rather than on the next tick: a mode change
+    /// is exactly when someone is listening to the fans.
+    pub fn set_active_profile(&self, profile: &str) {
+        {
+            let mut state = lock(&self.state);
+            if state.active_profile.as_deref() == Some(profile) {
+                return;
+            }
+            state.active_profile = Some(profile.to_string());
+            if state.config.migrate_profile_curves(&[profile]) {
+                persist(&self.store, &mut state);
+            }
+            // A different curve is in force, so what the hysteresis last
+            // wrote says nothing about whether the new target is close.
+            state.hysteresis.reset();
+        }
+        // Only does anything in `curve` mode, and only when this daemon
+        // owns the fans - the other modes do not read a curve at all.
+        let _ = self.tick_once();
+    }
+
+    /// The profile whose curve is in force. `getStatus` reads the state
+    /// directly; this exists for the tests that assert the switch happened.
+    #[cfg(test)]
+    fn active_profile(&self) -> Option<String> {
+        lock(&self.state).active_profile.clone()
     }
 
     fn status(&self) -> Value {
@@ -487,7 +632,16 @@ impl FanModule {
 
         json!({
             "driverInstalled": self.paths().hwmon_dir.is_some(),
-            "capabilities": self.caps(),
+            // The *effective* capabilities: `pwm1` existing is not the same
+            // as the fans obeying it. See `effective_caps`.
+            "capabilities": Capabilities {
+                set_speed: self.caps().set_speed && !state.config.speed_control.is_ignored(),
+                ..self.caps()
+            },
+            // Why `capabilities.setSpeed` is what it is, so a client can say
+            // "measured, and it does nothing" rather than only hiding the
+            // control. `untested` until somebody runs `fan.probeSpeedControl`.
+            "speedControl": state.config.speed_control.as_str(),
             "cpuTempC": cpu_temp_c,
             "gpuTempC": gpu_temp_c,
             "fanRpm": fan_rpm,
@@ -496,7 +650,17 @@ impl FanModule {
             "pwm": control::read_pwm(&self.paths()),
             "targetPwm": state.last_target_pwm,
             "manualPwm": state.config.manual_pwm,
-            "curve": state.config.curve,
+            // The curve actually in force. Still called `curve` and still
+            // the first thing a client should read: a caller that knows
+            // nothing about profiles goes on getting the right shape.
+            "curve": state.config.curve_for(state.active_profile.as_deref()),
+            // Every profile's curve, for an editor that wants to show them
+            // all, plus the shared fallback under its own name.
+            "profileCurves": state.config.profile_curves,
+            "sharedCurve": state.config.curve,
+            // Which of them `curve` came from; null when nothing has
+            // announced a profile and the shared one is in force.
+            "activeProfile": state.active_profile,
             "interpolation": state.config.interpolation,
             "referenceSensor": state.config.reference_sensor.as_str(),
             // What the curve is *actually* reading right now, which is not
@@ -537,6 +701,24 @@ impl FanModule {
             ));
         }
 
+        // A separate refusal from the one above, and deliberately so: that
+        // one is "there is no pwm1", this one is "there is, and a probe
+        // watched the fans ignore it". Conflating them would send someone
+        // to install a driver they already have.
+        if mode.needs_pwm() && lock(&self.state).config.speed_control.is_ignored() {
+            return Err(ModuleError::localised(
+                ErrorKind::NotCapable,
+                msg!(
+                    "fan.err.speedIgnored",
+                    { "mode" => mode.as_str() },
+                    "'{mode}' needs a commanded fan speed, and a probe found that this \
+                     machine's embedded controller accepts pwm1 and ignores it - the fans \
+                     stay on the firmware's own curve. Auto and max still work. Re-run \
+                     fan.probeSpeedControl to test again."
+                ),
+            ));
+        }
+
         {
             let mut state = lock(&self.state);
             if let Some(pwm) = pwm {
@@ -557,11 +739,19 @@ impl FanModule {
         Ok(self.status())
     }
 
+    /// Stores a curve.
+    ///
+    /// `profile` picks which one: a name writes that profile's curve, and
+    /// `None` writes the profile the machine is *in* - so a client that
+    /// knows nothing about profiles goes on editing the curve it can see,
+    /// which is the one running. `Some("")` is the escape hatch for the
+    /// shared fallback, used by `pyren-ctl --profile shared`.
     fn set_curve(
         &self,
         curve: Vec<CurvePoint>,
         interpolation: Option<Interpolation>,
         reference_sensor: Option<ReferenceSensor>,
+        profile: Option<&str>,
     ) -> ModuleResult {
         if curve.is_empty() {
             return Err(ModuleError::localised(
@@ -582,7 +772,22 @@ impl FanModule {
 
         {
             let mut state = lock(&self.state);
-            state.config.curve = curve;
+            // Which curve this call is editing. An explicit name wins; then
+            // the profile in force; and with neither, the shared one - the
+            // case for a machine whose power module controls nothing.
+            let target = match profile {
+                Some("") => None,
+                Some(name) => Some(name.to_string()),
+                None => state.active_profile.clone(),
+            };
+            match target {
+                Some(name) => {
+                    state.config.profile_curves.insert(name, curve);
+                }
+                // Kept in step so a client that never mentions profiles
+                // sees the shape it drew come back as the fallback too.
+                None => state.config.curve = curve,
+            }
             if let Some(interpolation) = interpolation {
                 state.config.interpolation = interpolation;
             }
@@ -606,6 +811,86 @@ impl FanModule {
         persist(&self.store, &mut state);
         drop(state);
         Ok(self.status())
+    }
+
+    /// Asks whether a commanded speed reaches the fans, and remembers the
+    /// answer.
+    ///
+    /// Blocks for up to `seconds` while the fans are held at a speed they
+    /// were not at. Same shape as [`Self::calibrate`], and it borrows the
+    /// same `calibrating` flag to keep the control loop off the fans -
+    /// there is one set of fans and only one of these may have them.
+    fn probe_speed_control(&self, seconds: u64) -> ModuleResult {
+        let probe = self.run_speed_probe(seconds)?;
+        let mut result =
+            serde_json::to_value(&probe).map_err(|e| ModuleError::Internal(e.to_string()))?;
+        // The same shape every other fan write returns, so a caller never
+        // has to follow one with a read.
+        result["status"] = self.status();
+        Ok(result)
+    }
+
+    /// The probe itself: drives the fans, stores what it learned, and hands
+    /// back the trace. Shared with [`Self::diagnose`], which asks the same
+    /// question as one check among many.
+    fn run_speed_probe(&self, seconds: u64) -> Result<SpeedProbe, ModuleError> {
+        {
+            let mut state = lock(&self.state);
+            if state.calibrating {
+                return Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!("fan.err.calibrating", "a calibration run is already in progress"),
+                ));
+            }
+            if !state.cleaning.is_idle() {
+                return Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!(
+                        "fan.err.cleaningHoldsFans",
+                        "a fan-cleaning cycle has the fans; wait for it to finish"
+                    ),
+                ));
+            }
+            state.calibrating = true;
+        }
+
+        let fan_max_rpm = lock(&self.state).config.fan_max_rpm;
+        let outcome = speed_probe::run(&self.paths(), self.caps(), fan_max_rpm, seconds);
+
+        let mut state = lock(&self.state);
+        state.calibrating = false;
+        // The fans were moved out from under the hysteresis, so what it
+        // last wrote says nothing about where they are now.
+        state.hysteresis.reset();
+
+        let probe = match outcome {
+            Ok(probe) => probe,
+            Err(e) => {
+                state.last_control_error = Some(e.to_msg());
+                return Err(control_error(e));
+            }
+        };
+
+        // A run that settled nothing must not erase one that did.
+        if let Some(answer) = Option::<SpeedControl>::from(probe.verdict) {
+            state.config.speed_control = answer;
+            // A mode that needs a speed is not doing anything on a machine
+            // that ignores one. Leaving it selected would leave the UI
+            // showing a curve nothing is following - the very thing this
+            // probe exists to stop - so it goes back to the mode where the
+            // firmware openly owns the fans.
+            if answer.is_ignored() && state.mode.needs_pwm() {
+                state.mode = FanMode::Auto;
+                state.config.mode = FanMode::Auto;
+            }
+            persist(&self.store, &mut state);
+        }
+        drop(state);
+
+        // Re-assert whatever the mode in force is, now rather than up to a
+        // TICK later. Only does anything when this daemon owns the fans.
+        let _ = self.tick_once();
+        Ok(probe)
     }
 
     /// Measures what full speed is on this machine and remembers it.
@@ -1006,7 +1291,12 @@ impl FanModule {
                 };
                 let avg = state.smoother.push(temp_c as f64);
                 let interpolation = state.config.interpolation;
-                match curve::target_pwm(&state.config.curve, avg, interpolation) {
+                // The curve for the profile the machine is in, which is the
+                // whole point of `profile_curves`. Cloned rather than
+                // borrowed: `state` is mutably borrowed for the smoother
+                // above and the error below.
+                let points = state.config.curve_for(state.active_profile.as_deref()).to_vec();
+                match curve::target_pwm(&points, avg, interpolation) {
                     Some(pwm) => Some(pwm),
                     None => {
                         state.last_control_error =
@@ -1154,7 +1444,20 @@ impl Module for FanModule {
                         })?,
                     ),
                 };
-                self.set_curve(points, interpolation, reference_sensor)
+                // Absent edits whichever profile is running; a name edits
+                // that one; "" edits the shared fallback. Anything that is
+                // not a string is a mistake worth refusing rather than
+                // silently writing the running profile's curve.
+                let profile = match params.get("profile") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(name)) => Some(name.clone()),
+                    Some(_) => {
+                        return Err(ModuleError::InvalidParams(
+                            "params.profile must be a string".into(),
+                        ))
+                    }
+                };
+                self.set_curve(points, interpolation, reference_sensor, profile.as_deref())
             }
 
             "setRestoreOnStart" => {
@@ -1174,6 +1477,17 @@ impl Module for FanModule {
                     .and_then(Value::as_u64)
                     .unwrap_or(calibration::DEFAULT_SECONDS);
                 self.calibrate(seconds)
+            }
+
+            "probeSpeedControl" => {
+                // Like `calibrate`, the method name is the consent: it holds
+                // the fans at a speed they were not at for a few seconds,
+                // and puts back what it found.
+                let seconds = params
+                    .get("seconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(speed_probe::DEFAULT_SECONDS);
+                self.probe_speed_control(seconds)
             }
 
             "cleanerStatus" => {
@@ -1791,5 +2105,179 @@ mod tests {
             gpu_speed: 39,
         });
         assert_eq!(module.status()["cleaning"], json!(true));
+    }
+
+    /// Board 8D2F: `pwm1` is there, the driver takes the write, the fans
+    /// never move. Once a probe has watched that happen, every client has
+    /// to stop being told a speed can be set - otherwise the app goes on
+    /// drawing a curve editor for a curve nothing follows, which is the
+    /// bug that started this.
+    #[test]
+    fn a_measured_refusal_takes_speed_control_out_of_the_capabilities() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let module = module("ignored-speed");
+        let dir = std::env::temp_dir().join(format!("pyren-fan-caps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["pwm1", "pwm1_enable", "fan1_input"] {
+            std::fs::write(dir.join(f), "2\n").unwrap();
+        }
+        let paths = FanPaths {
+            hwmon_dir: Some(dir.clone()),
+            pwm1: Some(dir.join("pwm1")),
+            pwm1_enable: Some(dir.join("pwm1_enable")),
+            fan1_input: Some(dir.join("fan1_input")),
+            fan2_input: None,
+            cpu_temp: None,
+            gpu_temp: None,
+        };
+        *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
+
+        // Untested is the default, and it offers speed control: most boards
+        // that expose pwm1 do honour it.
+        assert!(module.capabilities().set_speed);
+        assert_eq!(module.status()["speedControl"], json!("untested"));
+        assert_eq!(module.status()["capabilities"]["setSpeed"], json!(true));
+
+        lock(&module.state).config.speed_control = SpeedControl::Ignored;
+
+        assert!(!module.capabilities().set_speed, "a watched refusal must reach pyren-check too");
+        assert_eq!(module.status()["speedControl"], json!("ignored"));
+        assert_eq!(module.status()["capabilities"]["setSpeed"], json!(false));
+        // ...and the modes that need a speed are refused, with a reason that
+        // is not "install a driver" - the driver is already there.
+        let err = module.set_mode(FanMode::Curve, None).expect_err("curve must be refused");
+        assert!(format!("{err:?}").contains("speedIgnored"), "got {err:?}");
+        // The two that go through a different firmware call still work.
+        assert!(module.caps().supports(FanMode::Max));
+        assert!(module.set_mode(FanMode::Auto, None).is_ok());
+    }
+
+    /// The inconclusive verdicts exist so that a probe which learned nothing
+    /// cannot erase one that did.
+    #[test]
+    fn an_inconclusive_probe_does_not_overwrite_a_stored_answer() {
+        use crate::speed_probe::Verdict;
+        assert_eq!(Option::<SpeedControl>::from(Verdict::NoReading), None);
+        assert_eq!(Option::<SpeedControl>::from(Verdict::NoChannel), None);
+        assert_eq!(Option::<SpeedControl>::from(Verdict::Ignored), Some(SpeedControl::Ignored));
+    }
+
+    fn points(pairs: &[(f64, f64)]) -> Vec<CurvePoint> {
+        pairs.iter().map(|(t, p)| CurvePoint { temp_c: *t, percent: *p }).collect()
+    }
+
+    /// The point of the whole feature: two profiles, two shapes, and the
+    /// one that drives the fans follows the machine.
+    #[test]
+    fn each_profile_keeps_its_own_curve_and_the_active_one_drives() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let module = module("per-profile");
+
+        module.set_active_profile("eco");
+        module.set_curve(points(&[(40.0, 10.0)]), None, None, None).unwrap();
+        module.set_active_profile("performance");
+        module.set_curve(points(&[(40.0, 90.0)]), None, None, None).unwrap();
+
+        // Each was stored where it belongs, not over the other.
+        let state = lock(&module.state);
+        assert_eq!(state.config.profile_curves["eco"], points(&[(40.0, 10.0)]));
+        assert_eq!(state.config.profile_curves["performance"], points(&[(40.0, 90.0)]));
+        drop(state);
+
+        // ...and `curve` in the status is whichever one is in force.
+        assert_eq!(module.active_profile().as_deref(), Some("performance"));
+        assert_eq!(module.status()["curve"], json!(points(&[(40.0, 90.0)])));
+        module.set_active_profile("eco");
+        assert_eq!(module.status()["curve"], json!(points(&[(40.0, 10.0)])));
+    }
+
+    /// A client that has never heard of profiles edits the one running,
+    /// which is the only one it can see.
+    #[test]
+    fn a_curve_written_without_a_profile_edits_the_one_in_force() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let module = module("implicit-profile");
+        module.set_active_profile("balanced");
+        module.set_curve(points(&[(50.0, 42.0)]), None, None, None).unwrap();
+
+        let state = lock(&module.state);
+        assert_eq!(state.config.profile_curves["balanced"], points(&[(50.0, 42.0)]));
+        assert!(state.config.curve.is_empty(), "the shared fallback is not the one being edited");
+    }
+
+    /// A machine whose power module controls nothing never announces a
+    /// profile, and must still have a working curve rather than none.
+    #[test]
+    fn with_no_profile_announced_the_shared_curve_is_used_and_edited() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let module = module("no-profile");
+        assert_eq!(module.active_profile(), None);
+
+        module.set_curve(points(&[(60.0, 55.0)]), None, None, None).unwrap();
+        let state = lock(&module.state);
+        assert_eq!(state.config.curve, points(&[(60.0, 55.0)]));
+        assert!(state.config.profile_curves.is_empty());
+        assert_eq!(state.config.curve_for(None), points(&[(60.0, 55.0)]));
+    }
+
+    /// Upgrading must not quietly discard the curve someone already tuned:
+    /// every profile starts as a copy of it, then diverges by editing.
+    #[test]
+    fn the_existing_curve_seeds_every_profile_rather_than_vanishing() {
+        let mut config = FanConfig { curve: points(&[(45.0, 30.0)]), ..FanConfig::default() };
+        assert!(config.migrate_profile_curves(&["eco", "balanced"]));
+        assert_eq!(config.profile_curves["eco"], points(&[(45.0, 30.0)]));
+        assert_eq!(config.profile_curves["balanced"], points(&[(45.0, 30.0)]));
+
+        // Seeding runs once per profile and never overwrites a real curve.
+        config.profile_curves.insert("eco".into(), points(&[(70.0, 100.0)]));
+        assert!(!config.migrate_profile_curves(&["eco", "balanced"]));
+        assert_eq!(config.profile_curves["eco"], points(&[(70.0, 100.0)]));
+    }
+
+    /// A profile nobody has drawn for - and any name this build has never
+    /// heard of - falls back rather than leaving the fans with no curve.
+    #[test]
+    fn an_undrawn_or_unknown_profile_falls_back_to_the_shared_curve() {
+        let mut config = FanConfig { curve: points(&[(50.0, 40.0)]), ..FanConfig::default() };
+        config.profile_curves.insert("eco".into(), points(&[(50.0, 10.0)]));
+
+        assert_eq!(config.curve_for(Some("eco")), points(&[(50.0, 10.0)]));
+        assert_eq!(config.curve_for(Some("balanced")), points(&[(50.0, 40.0)]));
+        assert_eq!(config.curve_for(Some("turbo-plus")), points(&[(50.0, 40.0)]));
+        assert_eq!(config.curve_for(None), points(&[(50.0, 40.0)]));
+
+        // An empty stored curve is not a curve of "no fan at all".
+        config.profile_curves.insert("balanced".into(), Vec::new());
+        assert_eq!(config.curve_for(Some("balanced")), points(&[(50.0, 40.0)]));
+    }
+
+    /// `profile: ""` is the only way to reach the fallback explicitly, and
+    /// `pyren-ctl --profile shared` depends on it.
+    #[test]
+    fn an_empty_profile_name_edits_the_shared_curve() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let module = module("shared-curve");
+        module.set_active_profile("eco");
+        module.set_curve(points(&[(55.0, 65.0)]), None, None, Some("")).unwrap();
+
+        let state = lock(&module.state);
+        assert_eq!(state.config.curve, points(&[(55.0, 65.0)]));
+        assert!(!state.config.profile_curves.contains_key("eco"));
+    }
+
+    /// Old `fan.json` files predate the field entirely, and must not come
+    /// back as "this machine refuses speeds".
+    #[test]
+    fn a_config_without_the_speed_control_field_is_untested_not_ignored() {
+        let config: FanConfig = serde_json::from_value(json!({ "mode": "auto" })).unwrap();
+        assert_eq!(config.speed_control, SpeedControl::Untested);
+        assert!(!config.speed_control.is_ignored());
     }
 }

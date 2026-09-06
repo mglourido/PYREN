@@ -92,6 +92,23 @@ impl PowerMode {
             _ => None,
         }
     }
+
+    /// The name this mode goes out under, and the same string serde writes
+    /// for it.
+    ///
+    /// The two must not drift: the `power.mode` event carries the serde
+    /// form, and the fan module keys its per-profile curves off whatever
+    /// arrives there. A daemon that seeded a curve under `Eco` and then
+    /// looked it up under `eco` would lose it on the first mode change -
+    /// `the_wire_name_is_the_serde_name` is the test that pins this.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Eco => "eco",
+            Self::Balanced => "balanced",
+            Self::Performance => "performance",
+            Self::Unlimited => "unlimited",
+        }
+    }
 }
 
 /// What is persisted to `power.json`.
@@ -808,6 +825,20 @@ mod tests {
     use super::*;
 
     const W: u64 = 1_000_000;
+
+    /// `as_str` is what seeds a fan curve's profile key at startup and
+    /// serde is what the `power.mode` event carries. If they ever disagree,
+    /// a curve drawn for a profile stops being found the moment the mode
+    /// changes - silently, and looking exactly like "the curve reset
+    /// itself". Cheap to pin, miserable to debug.
+    #[test]
+    fn the_wire_name_is_the_serde_name() {
+        for mode in PowerMode::ALL {
+            let serde_name = serde_json::to_value(mode).unwrap();
+            assert_eq!(serde_name, json!(mode.as_str()), "{mode:?}");
+            assert_eq!(PowerMode::parse(mode.as_str()), Some(*mode));
+        }
+    }
 
     /// The ratchet this guards against: reading the envelope at startup
     /// while Eco is in force would otherwise record Eco's reduced limit as

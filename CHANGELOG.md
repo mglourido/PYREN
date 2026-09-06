@@ -9,6 +9,58 @@ the IPC protocol and on-disk config.
 
 ## [Unreleased]
 
+### Added
+
+- **One fan curve per power profile.** Eco, Balanced, Performance and
+  Unlimited each keep their own curve, and the one driving the fans follows
+  the machine — including when the performance key, the OSD or the daemon's
+  own supervisor moves the mode with no app open. The performance page gets
+  a profile selector above the curve editor, mirroring the one the power
+  limits already had, and says whether the curve on screen is the one
+  running. `fan.setCurve` takes an optional `profile`; `pyren-ctl fan curve`
+  takes `--profile`. Existing curves are copied to every profile on first
+  use, so nothing tuned is lost.
+  - The fan module learns the profile by **subscribing to `power.mode` on
+    the event bus**, not by either module calling the other: `power` already
+    announced without knowing who listened, and `EventBus::subscribe` is the
+    listening half. The profile is an opaque string inside `pyren-fan`, so
+    it still has no idea what a power mode is.
+
+- **`fan.probeSpeedControl`** (`pyren-ctl fan probe-speed`, and a button on
+  the performance page): holds the fans at a speed they are not at and
+  watches whether they follow. It is the only way to tell a driver that
+  honours `pwm1` from one that accepts the value and ignores it — board
+  `8D2F` is the second kind, and every check before this passed on it. The
+  answer is remembered in `fan.json` (`speedControl`); a machine that
+  ignores a commanded speed reports `capabilities.setSpeed: false` from
+  then on, so clients stop offering a curve nothing follows, and
+  `fan.setMode` refuses `manual`/`curve` with a reason that is explicitly
+  *not* "install a driver".
+
+### Fixed
+
+- **`fan.diagnose`'s write check could not fail.** It wrote back the value
+  already in `pwm1` and compared — but on a driver whose `pwm1` reports the
+  *measured* fan speed rather than the setpoint, that is a tautology. It
+  reported `wrote and read back pwm1 = 62 without changing fan speed` as a
+  pass and concluded `fullControl` about hardware that has never obeyed a
+  commanded speed. It now writes a value the channel is not already at, and
+  a mismatch is reported as the signature of that class of board. The same
+  fix is in `tools/pyren-check.sh`.
+- The self-test gained a `pwm-effect` check, fed by the probe above, so
+  `fullControl` now means the fans were watched to move rather than that a
+  file exists.
+
+### Changed
+
+- **Fan control is no longer Unlimited-only.** The `manual` and `curve`
+  fan modes and the editable fan curve are now offered in every power
+  mode (Eco / Balanced / Performance / Unlimited) on machines whose
+  driver can be told a fan speed. The daemon already kept one curve and
+  applied it regardless of the power mode; only the app's UI had tied the
+  two together. Manual *power* limits stay grouped with Performance and
+  Unlimited.
+
 ## [0.1.0] — 2026-09-05
 
 First public release. Everything below is built, wired end to end

@@ -262,7 +262,10 @@ impl Run {
 /// Puts back the mode the machine was found in, whatever happens to the
 /// run in between - including a panic, which is why this is a guard and
 /// not a line at the end.
-struct Restore<'a> {
+///
+/// Shared with [`crate::speed_probe`], which drives the fans for the same
+/// kind of reason and must put them back with the same certainty.
+pub(crate) struct Restore<'a> {
     paths: &'a FanPaths,
     caps: Capabilities,
     mode: FanMode,
@@ -270,12 +273,16 @@ struct Restore<'a> {
     done: bool,
 }
 
-impl Restore<'_> {
+impl<'a> Restore<'a> {
+    pub(crate) fn new(paths: &'a FanPaths, caps: Capabilities, mode: FanMode, pwm: u8) -> Self {
+        Self { paths, caps, mode, pwm, done: false }
+    }
+
     /// Restores explicitly, so the outcome can be reported rather than
     /// swallowed. Falling back to `auto` is deliberate: it is the mode
     /// where the firmware owns the fans, and leaving a machine at full
     /// speed because the restore failed would be the worse failure.
-    fn finish(mut self) -> (&'static str, Option<String>) {
+    pub(crate) fn finish(mut self) -> (&'static str, Option<String>) {
         self.done = true;
         match control::apply(self.paths, self.caps, self.mode, self.pwm) {
             Ok(()) => (self.mode.as_str(), None),
@@ -316,7 +323,7 @@ pub(crate) fn run(
     let baseline = sample(paths, 0).faster();
 
     control::apply(paths, caps, FanMode::Max, 0)?;
-    let restore = Restore { paths, caps, mode: before_mode, pwm: before_pwm, done: false };
+    let restore = Restore::new(paths, caps, before_mode, before_pwm);
 
     let mut measurement = Run::new(baseline, before_mode == FanMode::Max, limit);
     let started = Instant::now();

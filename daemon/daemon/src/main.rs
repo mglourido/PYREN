@@ -260,6 +260,33 @@ fn main() {
     // the supervisor - is announced on this, so an open UI never sits
     // showing a mode the machine has already left.
     power.publish_to(Arc::clone(&events));
+
+    // ...and the fan module listens to that announcement, so the curve
+    // drawn for a profile is the one that runs while the machine is in it.
+    //
+    // Through the bus rather than a call, and the wiring is *here* rather
+    // than in either crate: `pyren-power` does not know a fan module
+    // exists, `pyren-fan` does not know what a power profile is (the name
+    // is an opaque key to it - see `FanConfig::profile_curves`), and this
+    // binary is the one place entitled to know both. Doing it the other way
+    // is how "changing the power mode must not write to the fans" would
+    // have quietly become two modules calling each other.
+    {
+        let fan = fan.clone();
+        events.subscribe(move |topic, payload| {
+            if topic != "power.mode" {
+                return;
+            }
+            if let Some(mode) = payload.get("mode").and_then(|m| m.as_str()) {
+                fan.set_active_profile(mode);
+            }
+        });
+    }
+    // The first announcement only comes with the first *change*, so without
+    // this a daemon that starts in Eco and is left alone would follow the
+    // shared curve until something moved the mode.
+    fan.set_active_profile(power.mode().as_str());
+
     registry.register(Box::new(system));
     registry.register(Box::new(power.clone()));
     registry.register(Box::new(fan.clone()));
