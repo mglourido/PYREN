@@ -8,6 +8,8 @@ SvelteKit), The project aims to be modular to facilitate the import of external 
 
 To create this application, the codebase was derived from the [`omen-fan-control`](https://github.com/arfelious/omen-fan-control) repositories; specifically, the patched **Linux driver**, its Python-based installer (v2.0), and the reverse ventilation logic, while [`omen-rgb-linux`](https://github.com/arfelious/omen-rgb-linux.git) was used to create the RGB control system.
 
+Some of the visible features in the app [FEATURES](FEATURES.md)
+
 **To install it, see [`install/INSTALL.md`](install/INSTALL.md)** (or the
 [Installing](#installing) section below).
 
