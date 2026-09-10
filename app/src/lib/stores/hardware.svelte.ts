@@ -497,6 +497,10 @@ class HardwareStore {
     await this.pushFan(() => daemon.setFanRestoreOnStart(enabled));
   }
 
+  async setKeepDriverFloor(enabled: boolean) {
+    await this.pushFan(() => daemon.setKeepDriverFloor(enabled));
+  }
+
   /**
    * The daemon's own view of the fans, from the telemetry poll. It is the
    * authority on what is actually in force - a machine that cannot do the

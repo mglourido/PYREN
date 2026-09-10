@@ -97,9 +97,20 @@ export type FanStatus = {
    *  detail; this is here so any page can grey out a fan control. */
   cleaning: boolean;
   fanMaxRpm: number | null;
-  /** The slowest the fans hold when commanded, from a calibration. Null
-   *  until one has measured it. */
+  /** The floor in force: the driver's or Pyren's, per `keepDriverFloor`.
+   *  Null where neither is known. */
   fanMinRpm: number | null;
+  /** The driver's floor - its fan table's slowest entry. */
+  driverMinRpm: number | null;
+  /** Pyren's floor: the slowest the fans held with the driver's clamp
+   *  lifted, the step below failing. Null until a calibration has measured it. */
+  pyrenMinRpm: number | null;
+  /** What the sweep measured, before Pyren's floor adds its step of margin. */
+  slowestHeldRpm: number | null;
+  /** Keep the driver's floor rather than Pyren's. */
+  keepDriverFloor: boolean;
+  /** Whether the installed driver can be told a floor other than its own. */
+  floorOverrideSupported: boolean;
   /** Speeds below this 0-255 value hand the fans to the firmware, which is
    *  what stops them on a board whose fans have a floor. 0: never. */
   stopBelowPwm: number;
@@ -525,6 +536,8 @@ export type FanCalibration = {
   fan2MaxRpm: number | null;
   /** The slowest the fans settle at when commanded the minimum. */
   fanMinRpm: number | null;
+  /** Pyren's floor, where the driver let the sweep lift its clamp. */
+  fanStableMinRpm: number | null;
   baselineRpm: number | null;
   startedAtMax: boolean;
   seconds: number;
@@ -1042,6 +1055,7 @@ const DAEMON_ROUTES: Record<
   fan_set_mode: { module: "fan", method: "setMode" },
   fan_set_curve: { module: "fan", method: "setCurve" },
   fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
+  fan_set_keep_driver_floor: { module: "fan", method: "setKeepDriverFloor" },
   fan_cleaner_status: { module: "fan", method: "cleanerStatus" },
   fan_start_cleaning: { module: "fan", method: "startCleaning" },
   fan_stop_cleaning: { module: "fan", method: "stopCleaning" },
@@ -1283,6 +1297,9 @@ export const daemon = {
   ) => call<FanStatus>("fan_set_curve", { curve, interpolation, referenceSensor, profile }),
   setFanRestoreOnStart: (enabled: boolean) =>
     call<FanStatus>("fan_set_restore_on_start", { enabled }),
+  /** Keep the driver's floor (true) or use the lower one Pyren measured. */
+  setKeepDriverFloor: (enabled: boolean) =>
+    call<FanStatus>("fan_set_keep_driver_floor", { enabled }),
   /** `refresh` re-asks the firmware what it can do (two ACPI calls); the
    *  polling read leaves it off and uses the daemon's cached answer. */
   fanCleanerStatus: (refresh = false) =>

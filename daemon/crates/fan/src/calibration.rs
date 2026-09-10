@@ -117,9 +117,14 @@ pub struct Calibration {
     pub fan1_max_rpm: Option<i64>,
     pub fan2_max_rpm: Option<i64>,
     /// The slowest the fans turn when commanded the least a speed can be,
-    /// measured after the ceiling (see [`FloorRun`]). `None` when the
-    /// machine cannot be given a speed, or the fans did not come down.
+    /// measured after the ceiling (see [`FloorRun`]) - or, on a driver that
+    /// reports it, the floor that driver enforces. `None` when the machine
+    /// cannot be given a speed, or the fans did not come down.
     pub fan_min_rpm: Option<i64>,
+    /// Pyren's floor: the slowest speed the fans held with the driver's
+    /// clamp lifted, the next step down having failed. Only on a driver
+    /// that lets the clamp be lifted; see [`sweep_floor`].
+    pub fan_stable_min_rpm: Option<i64>,
     /// The reading before anything was written.
     pub baseline_rpm: i64,
     /// Whether the fans were already at max, in which case no rise is
@@ -253,6 +258,7 @@ impl Run {
             fan2_max_rpm: measured.then(|| self.peak_of(|s| s.fan2_rpm)).flatten(),
             // Filled in by `run`, from the second half of the run.
             fan_min_rpm: None,
+            fan_stable_min_rpm: None,
             baseline_rpm: self.baseline,
             started_at_max: self.started_at_max,
             seconds: elapsed_secs,
@@ -405,7 +411,15 @@ pub(crate) fn run(
 
     let mut calibration = measurement.finish(elapsed);
     if calibration.verdict.worth_storing() && caps.supports(FanMode::Manual) {
-        measure_floor(paths, caps, limit, &mut calibration);
+        // A driver that reports its floor needs it measured no more; what
+        // is worth measuring there is how far below it the fans can go.
+        match control::read_driver_floor(paths).filter(|_| control::floor_override_supported(paths)) {
+            Some(driver_floor) => {
+                calibration.fan_min_rpm = Some(driver_floor);
+                sweep_floor(paths, caps, driver_floor, &mut calibration);
+            }
+            None => measure_floor(paths, caps, limit, &mut calibration),
+        }
     }
     let (restored_mode, restore_error) = restore.finish();
     calibration.restored_mode = restored_mode;
@@ -439,6 +453,178 @@ fn measure_floor(paths: &FanPaths, caps: Capabilities, limit: u64, calibration: 
     if let Some(min) = calibration.fan_min_rpm {
         calibration.detail.push_str(&format!("; told the slowest speed, the fans settle at {min} rpm"));
     }
+}
+
+// --- Pyren's floor ------------------------------------------------------
+//
+// The driver's floor is the fan table's slowest entry: the bottom of the
+// firmware's *automatic* curve, not the slowest the fans can turn. With the
+// clamp lifted on board 8D2F they held every speed down to 600 rpm on one
+// run; asked for 400 they went 900 -> 1400, and at 200 they stalled and
+// were kicked back to 500. On another run 600 itself kicked once - 700,
+// 1600, 800 - so the edge is not a fixed number, and a floor sitting on it
+// is a fan that restarts itself every so often. That kick, a motor that has
+// stalled being restarted by its controller, is what the sweep looks for.
+//
+// Each step is commanded through the driver's own floor rather than through
+// pwm: the override is set to the step and pwm to 1, which the driver clamps
+// up to exactly the override on both fans. Converting rpm to pwm here would
+// need the ceiling the *loaded* driver scales by, which a calibration that
+// has just measured a new one and pinned it for the next load does not
+// have - that mismatch put every step of the first sweep 100 rpm low.
+
+/// Size of each step down while well clear of any stall.
+pub const SWEEP_COARSE_STEP_RPM: i64 = 200;
+/// Below this the steps are fine, since this is where the floor is.
+pub const SWEEP_FINE_BELOW_RPM: i64 = 1000;
+/// Size of each step down near the floor. The floor is the last one held,
+/// so the next step down - which failed - is its margin.
+pub const SWEEP_FINE_STEP_RPM: i64 = 100;
+/// Lowest speed tried. Below this nothing is a speed.
+pub const SWEEP_LOWEST_RPM: i64 = 200;
+/// How far from the commanded speed a settled reading may be. The
+/// tachometer reports hundreds.
+pub const SWEEP_TOLERANCE_RPM: i64 = 150;
+/// A rise this big between two readings while stepping *down* is a kick:
+/// the fan stalled and its controller restarted it.
+pub const SWEEP_KICK_RPM: i64 = 300;
+/// Readings at the end of a step that have to be at the speed.
+pub const SWEEP_HOLD_SAMPLES: usize = 3;
+/// How long each step is watched, whole, so a kick anywhere in it counts.
+/// Short where no fan stalls, longer near the floor, where one kicked
+/// within two seconds on board 8D2F.
+pub const SWEEP_COARSE_SECS: u64 = 4;
+pub const SWEEP_FINE_SECS: u64 = 6;
+/// Longest the coast from full speed down to the driver's floor may take.
+/// Measured at twelve to fifteen seconds from 5500 on board 8D2F.
+pub const SWEEP_SETTLE_SECS: u64 = 25;
+
+/// Which fans the sweep watches: the ones the ceiling saw turning. A
+/// machine with one fan must not fail every step on the one it lacks.
+#[derive(Debug, Clone, Copy)]
+pub struct Fans {
+    pub fan1: bool,
+    pub fan2: bool,
+}
+
+impl Fans {
+    fn readings(self, sample: &Sample) -> impl Iterator<Item = i64> {
+        [(self.fan1, sample.fan1_rpm), (self.fan2, sample.fan2_rpm)]
+            .into_iter()
+            .filter_map(|(watched, rpm)| watched.then_some(rpm))
+    }
+}
+
+/// Whether the last few readings show every watched fan at `expected`.
+/// Enough to know a coast has arrived; not enough to call a step held.
+pub fn holding(samples: &[Sample], expected: i64, fans: Fans) -> bool {
+    samples.len() >= SWEEP_HOLD_SAMPLES
+        && samples[samples.len() - SWEEP_HOLD_SAMPLES..].iter().all(|s| {
+            fans.readings(s).all(|rpm| rpm > 0 && (rpm - expected).abs() <= SWEEP_TOLERANCE_RPM)
+        })
+}
+
+/// Whether a whole step shows the fans turning at `expected`: arrived and
+/// steady at the end, and at no point in it stopped or kicked back up.
+pub fn step_held(samples: &[Sample], expected: i64, fans: Fans) -> bool {
+    let stopped = samples.iter().any(|s| fans.readings(s).any(|rpm| rpm <= 0));
+    let kicked = samples.windows(2).any(|pair| {
+        fans.readings(&pair[0])
+            .zip(fans.readings(&pair[1]))
+            .any(|(before, after)| after - before > SWEEP_KICK_RPM)
+    });
+    !stopped && !kicked && holding(samples, expected, fans)
+}
+
+/// The steps a sweep from `driver_floor` tries, in order: coarse while
+/// clear of [`SWEEP_FINE_BELOW_RPM`], fine below it.
+pub fn next_step(rpm: i64) -> Option<(i64, bool)> {
+    let coarse = rpm - SWEEP_COARSE_STEP_RPM >= SWEEP_FINE_BELOW_RPM;
+    let next = rpm - if coarse { SWEEP_COARSE_STEP_RPM } else { SWEEP_FINE_STEP_RPM };
+    (next >= SWEEP_LOWEST_RPM).then_some((next, coarse))
+}
+
+/// Puts the driver's floor override back however the sweep ends. Left at
+/// a step's value, it would be the floor for every manual write after -
+/// ours or anyone's.
+struct OverrideGuard<'a> {
+    paths: &'a FanPaths,
+    value: u8,
+}
+
+impl Drop for OverrideGuard<'_> {
+    fn drop(&mut self) {
+        let _ = control::set_floor_override(self.paths, self.value);
+    }
+}
+
+/// Runs the sweep straight after the ceiling. Never fails the calibration.
+fn sweep_floor(paths: &FanPaths, caps: Capabilities, driver_floor: i64, calibration: &mut Calibration) {
+    let fans = Fans { fan1: calibration.fan1_max_rpm.is_some(), fan2: calibration.fan2_max_rpm.is_some() };
+    if !fans.fan1 && !fans.fan2 {
+        return;
+    }
+    let before = control::read_floor_override(paths).unwrap_or(0);
+    let _guard = OverrideGuard { paths, value: before };
+
+    let mut clock = calibration.seconds;
+    let mut trace = Vec::new();
+    // Commands exactly `rpm` on both fans: the driver clamps pwm 1 up to
+    // its floor, and the floor is set to `rpm`. `settle` ends as soon as
+    // the fans arrive; a step is watched whole.
+    let mut run = |rpm: i64, secs: u64, settle: bool| -> bool {
+        let Ok(hundreds) = u8::try_from(rpm / 100) else { return false };
+        if control::set_floor_override(paths, hundreds).is_err()
+            || control::apply(paths, caps, FanMode::Manual, 1).is_err()
+        {
+            return false;
+        }
+        let mut step = Vec::new();
+        for _ in 0..secs {
+            sleep(SAMPLE_INTERVAL);
+            clock += 1;
+            step.push(sample(paths, clock));
+            if settle && holding(&step, rpm, fans) {
+                break;
+            }
+        }
+        let held = if settle { holding(&step, rpm, fans) } else { step_held(&step, rpm, fans) };
+        trace.extend(step);
+        held
+    };
+
+    // From full speed to the driver's floor first, so no step is judged
+    // on a coast that takes longer than a step is watched.
+    if !run(driver_floor, SWEEP_SETTLE_SECS, true) {
+        return;
+    }
+    let mut last_held = None;
+    let mut rpm = driver_floor;
+    while let Some((next, coarse)) = next_step(rpm) {
+        if run(next, if coarse { SWEEP_COARSE_SECS } else { SWEEP_FINE_SECS }, false) {
+            last_held = Some(next);
+            rpm = next;
+            continue;
+        }
+        // A coarse step can jump past the floor; the speed it skipped is
+        // worth one fine try before settling for the one above.
+        let skipped = next + SWEEP_FINE_STEP_RPM;
+        if coarse && skipped < rpm && run(skipped, SWEEP_FINE_SECS, false) {
+            last_held = Some(skipped);
+        }
+        break;
+    }
+
+    let floor = last_held.unwrap_or(driver_floor);
+    calibration.samples.extend(trace);
+    calibration.fan_stable_min_rpm = Some(floor);
+    calibration.detail.push_str(&match last_held {
+        Some(held) => format!(
+            "; with the driver's {driver_floor} rpm floor lifted the fans held {held} rpm \
+             and not a step below; Pyren's floor keeps a step clear of that"
+        ),
+        None => format!("; the fans would not hold anything below the driver's {driver_floor} rpm"),
+    });
 }
 
 fn sample(paths: &FanPaths, at_secs: u64) -> Sample {
@@ -571,6 +757,97 @@ mod tests {
         assert_eq!(floor.finish(5300), Some(0));
     }
 
+    const BOTH: Fans = Fans { fan1: true, fan2: true };
+
+    fn readings(pairs: &[(i64, i64)]) -> Vec<Sample> {
+        pairs.iter().enumerate().map(|(i, (a, b))| sample_at(i as u64 + 1, *a, *b)).collect()
+    }
+
+    /// The EC experiment on board 8D2F, step by step: 600 held exactly.
+    #[test]
+    fn a_speed_read_back_steadily_is_held() {
+        assert!(holding(&readings(&[(1000, 1000), (600, 600), (600, 600), (600, 600)]), 600, BOTH));
+    }
+
+    /// ...400 did not: 900 at six seconds, 1400 at ten.
+    #[test]
+    fn a_fan_hunting_around_a_speed_does_not_hold_it() {
+        assert!(!holding(&readings(&[(900, 800), (1100, 1000), (1400, 1400)]), 400, BOTH));
+    }
+
+    /// ...and 200 stalled outright before being kicked back up.
+    #[test]
+    fn a_stalled_fan_does_not_hold_even_a_slow_speed() {
+        assert!(!holding(&readings(&[(200, 200), (0, 0), (200, 200)]), 200, BOTH));
+    }
+
+    /// Both fans have to hold it: one stalled fan is a stalled speed.
+    #[test]
+    fn every_watched_fan_has_to_hold() {
+        assert!(!holding(&readings(&[(600, 0), (600, 0), (600, 0)]), 600, BOTH));
+    }
+
+    /// A machine with one fan is judged on that fan.
+    #[test]
+    fn a_missing_fan_is_not_held_against_the_speed() {
+        let one = Fans { fan1: true, fan2: false };
+        assert!(holding(&readings(&[(600, 0), (600, 0), (600, 0)]), 600, one));
+    }
+
+    #[test]
+    fn too_few_readings_prove_nothing() {
+        assert!(!holding(&readings(&[(600, 600), (600, 600)]), 600, BOTH));
+    }
+
+    /// The installer log from board 8D2F's second sweep, at 600: arrived,
+    /// then kicked to 1600 and back. The last three readings are fine, and
+    /// the step still did not hold.
+    #[test]
+    fn a_kick_anywhere_in_a_step_fails_it() {
+        let step = readings(&[(700, 700), (1600, 1600), (800, 800), (600, 600), (600, 600), (600, 600)]);
+        assert!(holding(&step, 600, BOTH), "the tail alone looks settled");
+        assert!(!step_held(&step, 600, BOTH));
+    }
+
+    #[test]
+    fn a_clean_step_down_holds() {
+        let step = readings(&[(850, 850), (700, 700), (700, 700), (700, 700), (700, 700), (700, 700)]);
+        assert!(step_held(&step, 700, BOTH));
+    }
+
+    /// Falling on the way to a step is the step arriving, not a kick.
+    #[test]
+    fn falling_readings_are_not_kicks() {
+        let step = readings(&[(1600, 1600), (1200, 1200), (1000, 1000), (1000, 1000), (1000, 1000)]);
+        assert!(step_held(&step, 1000, BOTH));
+    }
+
+    /// A fan that reads 0 for one second has stalled, whatever it does next.
+    #[test]
+    fn a_zero_anywhere_in_a_step_fails_it() {
+        let step = readings(&[(600, 600), (0, 600), (500, 600), (600, 600), (600, 600), (600, 600)]);
+        assert!(!step_held(&step, 600, BOTH));
+    }
+
+    /// 1800 down in 200s to 1000, then 100s, stopping at 200.
+    #[test]
+    fn the_steps_are_coarse_then_fine() {
+        let mut steps = Vec::new();
+        let mut rpm = 1800;
+        while let Some((next, coarse)) = next_step(rpm) {
+            steps.push((next, coarse));
+            rpm = next;
+        }
+        assert_eq!(
+            steps,
+            vec![
+                (1600, true), (1400, true), (1200, true), (1000, true),
+                (900, false), (800, false), (700, false), (600, false),
+                (500, false), (400, false), (300, false), (200, false),
+            ]
+        );
+    }
+
     /// The failure this whole verdict exists for: max is accepted, nothing
     /// spins up, and the idle speed must not be recorded as the ceiling.
     #[test]
@@ -662,6 +939,7 @@ mod tests {
             fan2_input: Some(dir.join("fan2_input")),
             cpu_temp: None,
             gpu_temp: None,
+            driver_params: None,
         }
     }
 

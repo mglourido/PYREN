@@ -271,6 +271,38 @@
     </div>
   </Panel>
 
+  <!-- The fans' floor. Only where a speed can be commanded at all: on a
+       machine limited to auto and max there is no floor to choose. -->
+  {#if hardware.fan?.capabilities.setSpeed}
+    {@const fan = hardware.fan}
+    <Panel title={t("settings.fans")}>
+      <div class="row">
+        <span>
+          {t("settings.keepDriverFloor")}
+          <small class="hint-inline">
+            {t("settings.keepDriverFloorHint", {
+              driver: fan.driverMinRpm !== null ? String(fan.driverMinRpm) : "?",
+              pyren: fan.pyrenMinRpm !== null ? String(fan.pyrenMinRpm) : "?",
+            })}
+          </small>
+        </span>
+        <!-- Turning it off needs both a driver that can be told another
+             floor and a floor to tell it; turning it back on never does. -->
+        <Toggle
+          checked={fan.keepDriverFloor}
+          disabled={fan.keepDriverFloor && (!fan.floorOverrideSupported || fan.pyrenMinRpm === null)}
+          onchange={(v) => void hardware.setKeepDriverFloor(v)}
+          ariaLabel={t("settings.keepDriverFloor")}
+        />
+      </div>
+      {#if !fan.floorOverrideSupported}
+        <p class="notice warn">{t("settings.floorNeedsDriver")}</p>
+      {:else if fan.pyrenMinRpm === null}
+        <p class="notice warn">{t("settings.floorNotMeasured")}</p>
+      {/if}
+    </Panel>
+  {/if}
+
   <Panel title={t("settings.startup")}>
     <!-- The machine first, then the session, then this window. The daemon
          is what makes the hardware answer at all, and it is the only row
