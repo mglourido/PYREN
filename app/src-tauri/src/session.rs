@@ -46,6 +46,23 @@ const AUTOSTART_ENTRY: &str = "pyren.desktop";
 /// …and the user unit that does the same job where nothing reads the entry.
 const APP_UNIT: &str = "pyren.service";
 
+/// What both of those launch the app with, so it can tell a launch the
+/// desktop made at login from one somebody made by hand.
+///
+/// "Start minimised" means the first kind only. Someone who opens Pyren
+/// from the launcher is asking to see it, and a window that stays hidden
+/// then reads as the app failing to open.
+pub const AUTOSTART_ARG: &str = "--autostart";
+
+/// Whether `args` is a launch made by the login entries.
+///
+/// Anywhere in the list rather than at `[1]`: the single-instance plugin
+/// hands over a second launch's argv, and nothing promises it keeps the
+/// program name in front.
+pub fn is_login_launch<S: AsRef<str>>(args: impl IntoIterator<Item = S>) -> bool {
+    args.into_iter().any(|arg| arg.as_ref() == AUTOSTART_ARG)
+}
+
 /// Desktops whose session manager reads `~/.config/autostart` itself.
 ///
 /// An allowlist, and not the list of compositors that do not: the case this
@@ -104,6 +121,24 @@ pub fn ensure_running() {
         Ok(true) => println!("pyren: started {OSD_BINARY}"),
         Ok(false) => {}
         Err(e) => eprintln!("pyren: could not start {OSD_BINARY}: {e}"),
+    }
+    upgrade_app_at_login();
+}
+
+/// Rewrites login entries written before [`AUTOSTART_ARG`] existed.
+///
+/// Those launch the app bare, which now reads as a launch by hand - so
+/// "start minimised" would quietly stop working at login for anyone who
+/// turned "start on login" on before, until they happened to flip it off
+/// and on again.
+fn upgrade_app_at_login() {
+    let is_old = |path: PathBuf| {
+        std::fs::read_to_string(path).is_ok_and(|text| !text.contains(AUTOSTART_ARG))
+    };
+    if is_old(autostart_path()) || is_old(app_unit_path()) {
+        if let Err(e) = set_app_at_login(true) {
+            eprintln!("pyren: could not update the login entries: {e}");
+        }
     }
 }
 
@@ -434,7 +469,7 @@ fn app_unit_text(binary: &Path) -> String {
          After=graphical-session.target\n\n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={}\n\
+         ExecStart={} {AUTOSTART_ARG}\n\
          Restart=no\n\n\
          [Install]\n\
          WantedBy=graphical-session.target\n",
@@ -448,7 +483,7 @@ fn desktop_entry(binary: &Path) -> String {
          Type=Application\n\
          Name=Pyren\n\
          Comment=Gaming hub for HP OMEN laptops\n\
-         Exec={}\n\
+         Exec={} {AUTOSTART_ARG}\n\
          Terminal=false\n\
          X-GNOME-Autostart-enabled=true\n",
         binary.display()
@@ -628,8 +663,23 @@ mod tests {
     fn the_autostart_entry_is_a_desktop_file_any_desktop_will_honour() {
         let text = desktop_entry(Path::new("/usr/bin/pyren"));
         assert!(text.starts_with("[Desktop Entry]"));
-        assert!(text.contains("Exec=/usr/bin/pyren"));
+        assert!(text.contains("Exec=/usr/bin/pyren --autostart"));
         assert!(text.contains("Type=Application"));
+    }
+
+    /// "Start minimised" is for the login launch only. Both login entries
+    /// have to say they are one, and nothing else may be mistaken for it -
+    /// that mix-up is what kept the window hidden when opened by hand.
+    #[test]
+    fn only_the_login_entries_mark_a_launch_as_a_login_launch() {
+        let binary = Path::new("/usr/bin/pyren");
+        assert!(desktop_entry(binary).contains(AUTOSTART_ARG));
+        assert!(app_unit_text(binary).contains(&format!("ExecStart=/usr/bin/pyren {AUTOSTART_ARG}")));
+
+        assert!(is_login_launch(["/usr/bin/pyren", "--autostart"]));
+        assert!(is_login_launch(["--autostart"]), "argv may arrive without the program name");
+        assert!(!is_login_launch(["/usr/bin/pyren"]));
+        assert!(!is_login_launch(Vec::<String>::new()));
     }
 
     /// The whole point of the watcher: it must not depend on the target a
@@ -653,7 +703,7 @@ mod tests {
     #[test]
     fn the_apps_unit_does_not_restart_itself() {
         let text = app_unit_text(Path::new("/usr/local/bin/pyren"));
-        assert!(text.contains("ExecStart=/usr/local/bin/pyren"));
+        assert!(text.contains("ExecStart=/usr/local/bin/pyren --autostart"));
         assert!(text.contains("Restart=no"));
         assert!(text.contains("WantedBy=graphical-session.target"));
         assert!(text.contains("Written by Pyren"), "it must say who to blame for the file");

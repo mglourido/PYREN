@@ -621,8 +621,12 @@ fn app_flag(name: &str) -> bool {
 }
 
 /// Whether the window should never appear at launch.
+///
+/// Both halves, not just the setting: "start minimised" is about the launch
+/// the desktop makes at login, and a launch from the app menu with the
+/// setting on still has to open the window.
 fn starts_hidden() -> bool {
-    app_flag("startMinimized")
+    session::is_login_launch(std::env::args()) && app_flag("startMinimized")
 }
 
 /// Whether closing the window means "put Pyren away" rather than "quit".
@@ -908,7 +912,14 @@ pub fn run() {
         // its argv to the instance already running and exits; we answer by
         // bringing the existing window forward rather than opening a rival
         // one that would fight over the config files.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Except a second *login* launch, which is not somebody asking
+            // for the window: a desktop that honours both the autostart
+            // entry and the user unit starts Pyren twice, and the second one
+            // would otherwise undo "start minimised".
+            if session::is_login_launch(&args) {
+                return;
+            }
             // Also the way back in when the tray is not being drawn: running
             // `pyren` again reveals the window this copy started hidden.
             reveal_window(app);

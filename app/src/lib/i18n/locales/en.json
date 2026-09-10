@@ -384,7 +384,7 @@
     "temperatureUnit": "Temperature unit",
     "startup": "Startup",
     "startMinimized": "Start minimised to the tray",
-    "startMinimizedHint": "Pyren opens with no window, as a tray icon. Your desktop needs a tray for the icon to appear.",
+    "startMinimizedHint": "When it starts on login, Pyren opens with no window, as a tray icon. Opening it yourself always shows the window. Your desktop needs a tray for the icon to appear.",
     "closeToTray": "Close to the tray",
     "closeToTrayHint": "The close button puts Pyren away instead of quitting it. Pyren is what starts the performance widget, so leaving it running is what keeps the widget there without a window open.",
     "autostart": "Start on login",

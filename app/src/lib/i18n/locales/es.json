@@ -384,7 +384,7 @@
     "temperatureUnit": "Unidad de temperatura",
     "startup": "Inicio",
     "startMinimized": "Iniciar minimizado en la bandeja",
-    "startMinimizedHint": "Pyren se abre sin ventana, como icono en la bandeja. Tu escritorio necesita una bandeja para que el icono aparezca.",
+    "startMinimizedHint": "Cuando arranca al iniciar sesión, Pyren se abre sin ventana, como icono en la bandeja. Si lo abres tú, siempre muestra la ventana. Tu escritorio necesita una bandeja para que el icono aparezca.",
     "closeToTray": "Cerrar a la bandeja",
     "closeToTrayHint": "El botón de cerrar guarda Pyren en vez de salir. Pyren es quien arranca el widget de rendimiento, así que dejarlo en marcha es lo que mantiene el widget disponible sin tener la ventana abierta.",
     "autostart": "Iniciar al arrancar sesión",
