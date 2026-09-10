@@ -1138,6 +1138,14 @@ fn print_fan(status: &Value) {
             None => "not calibrated - run 'fan calibrate'".to_string(),
         },
     );
+    // The floor, and what it does: below it the firmware has the fans.
+    if let Some(rpm) = status.get("fanMinRpm").and_then(Value::as_i64) {
+        let stop_below = status.get("stopBelowPwm").and_then(Value::as_i64).unwrap_or(0);
+        row("slowest", format!("{rpm} rpm, measured; below pwm {stop_below} the firmware stops them"));
+    }
+    if status.get("fansReleased").and_then(Value::as_bool) == Some(true) {
+        row("now", "below the floor - the firmware has the fans".to_string());
+    }
     if let Some(error) = msg_line(status, "error") {
         println!("  ! {error}");
     }

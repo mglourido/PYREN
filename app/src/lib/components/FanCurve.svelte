@@ -13,9 +13,23 @@
     currentTempC?: number | null;
     minTemp?: number;
     maxTemp?: number;
+    /** Below this percentage the fans are handed to the firmware, which
+     *  stops them - shaded so a point dragged into it is not a surprise.
+     *  `null` where no floor has been measured. */
+    stopBelowPercent?: number | null;
+    /** Label for that band. */
+    stopLabel?: string;
     onchange: (curve: CurvePoint[]) => void;
   };
-  let { curve, currentTempC = null, minTemp = 30, maxTemp = 100, onchange }: Props = $props();
+  let {
+    curve,
+    currentTempC = null,
+    minTemp = 30,
+    maxTemp = 100,
+    stopBelowPercent = null,
+    stopLabel = "",
+    onchange,
+  }: Props = $props();
 
   const W = 620;
   const H = 260;
@@ -98,6 +112,19 @@
     <text x={x(temp)} y={H - 10} class="axis" text-anchor="middle">{temp}°</text>
   {/each}
 
+  {#if stopBelowPercent !== null && stopBelowPercent > 0}
+    <rect
+      x={PAD.left}
+      y={y(stopBelowPercent)}
+      width={plotW}
+      height={y(0) - y(stopBelowPercent)}
+      class="stop-band"
+    />
+    <text x={W - PAD.right - 6} y={y(stopBelowPercent) + 14} class="stop-label" text-anchor="end">
+      {stopLabel}
+    </text>
+  {/if}
+
   <polygon points={area} class="area" />
   <polyline points={line} class="line" />
 
@@ -148,6 +175,16 @@
 
   .area {
     fill: rgba(229, 23, 140, 0.12);
+  }
+
+  .stop-band {
+    fill: var(--line-soft);
+    opacity: 0.5;
+  }
+
+  .stop-label {
+    fill: var(--text-mute);
+    font-size: 11px;
   }
 
   .line {

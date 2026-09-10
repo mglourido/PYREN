@@ -10,8 +10,10 @@ To create this application, the codebase was derived from the [`omen-fan-control
 
 Some of the visible features in the app [FEATURES](FEATURES.md)
 
+
 **To install it, see [`install/INSTALL.md`](install/INSTALL.md)** (or the
 [Installing](#installing) section below).
+**Note**: The driver installed by Pyren is the hp-wmi driver but with unofficial modifications; this means it may include changes that resolve incompatibility issues found in the official version, but it could also exhibit unexpected or different behavior on other devices (future app updates will allow users to install either the official driver or the Pyren version).
 
 [`TEST.md`](TEST.md) is what has actually been tested and verified on
 real hardware.

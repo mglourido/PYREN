@@ -895,12 +895,24 @@ never has to follow a write with a read:
   "fanMaxRpm": null,
   "fan1MaxRpm": null,
   "fan2MaxRpm": null,
+  "fanMinRpm": null,
+  "stopBelowPwm": 0,
+  "fansReleased": false,
   "calibrating": false,
   "error": null,
   "saved": true,
   "saveError": null
 }
 ```
+
+`fanMinRpm` is the slowest the fans hold when commanded the minimum,
+measured by `fan.calibrate` after the ceiling (null until then). Below it
+a `manual` or `curve` speed is one the fans cannot hold, so the daemon
+hands them to the firmware instead — on board 8D2F the driver cannot
+command less than 1800 rpm, and the firmware is the only thing that stops
+them. `stopBelowPwm` is that threshold on the 0-255 scale (0: never), and
+`fansReleased` is true while it is in effect; `mode` stays what the user
+chose. The fans come back under the daemon a deadband (8/255) above it.
 
 ### What `capabilities` is for
 
@@ -1039,6 +1051,7 @@ and there it is the only way to learn the number the driver's own
   "fanMaxRpm": 3915,
   "fan1MaxRpm": 3915,
   "fan2MaxRpm": 3745,
+  "fanMinRpm": 1800,
   "baselineRpm": 2093,
   "startedAtMax": false,
   "seconds": 12,

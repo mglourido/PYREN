@@ -260,9 +260,20 @@
 
   /** Calibrated ceiling, if `fan.calibrate` has ever been run here. */
   const measuredMaxRpm = $derived(hardware.fan?.fanMaxRpm ?? null);
+  /**
+   * The floor a calibration measures on a machine that takes a speed.
+   * Missing on every calibration made before it was measured, and it is
+   * what lets 0 % in a curve stop the fans - so a ceiling alone is not a
+   * finished calibration there.
+   */
+  const measuredMinRpm = $derived(hardware.fan?.fanMinRpm ?? null);
+  const floorMissing = $derived(
+    (hardware.fan?.capabilities.setSpeed ?? false) && measuredMinRpm === null,
+  );
 
   /**
-   * Whether to measure the ceiling once the install is done.
+   * Whether to measure the fans' range - ceiling, then floor - once the
+   * install is done.
    *
    * Defaults to on for a machine that has never been calibrated, which is
    * every machine at its first install - that is the case where nobody
@@ -275,7 +286,7 @@
   let calibrateAfter = $state(false);
   let calibrateTouched = $state(false);
   $effect(() => {
-    if (!calibrateTouched) calibrateAfter = measuredMaxRpm === null;
+    if (!calibrateTouched) calibrateAfter = measuredMaxRpm === null || floorMissing;
   });
 
   async function inspect() {
@@ -383,7 +394,7 @@
       id: "calibrate",
       description: {
         key: "install.step.calibrate",
-        text: "Measure what full speed is on this machine",
+        text: "Measure the fans' fastest and slowest speeds",
       },
       status: null,
       detail: null,
@@ -776,7 +787,16 @@
             />
             <span>
               <strong>{t("install.calibrateAfter")}</strong>
-              <em>{measuredMaxRpm ? t("install.calibrateAgainHint", { rpm: String(measuredMaxRpm) }) : t("install.calibrateFirstHint")}</em>
+              <em>{measuredMaxRpm
+                  ? floorMissing
+                    ? t("install.calibrateFloorHint", { rpm: String(measuredMaxRpm) })
+                    : measuredMinRpm !== null
+                      ? t("install.calibrateAgainRangeHint", {
+                          min: String(measuredMinRpm),
+                          max: String(measuredMaxRpm),
+                        })
+                      : t("install.calibrateAgainHint", { rpm: String(measuredMaxRpm) })
+                  : t("install.calibrateFirstHint")}</em>
             </span>
           </label>
         </div>

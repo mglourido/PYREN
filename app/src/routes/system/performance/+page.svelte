@@ -233,6 +233,20 @@
   const showCurve = $derived(canSetSpeed && hardware.state.fanMode === "curve");
 
   /**
+   * The first percentage the fans can actually hold, where a calibration
+   * has measured their floor; `null` where none has. Anything below it is
+   * handed to the firmware, which stops the fans when the machine is cool
+   * - on board 8D2F the driver cannot command less than 1800 rpm, so this
+   * is the only way 0 % means off. The daemon compares PWM values, so this
+   * is the smallest percentage whose PWM clears its threshold.
+   */
+  const stopBelowPercent = $derived.by(() => {
+    const pwm = hardware.fan?.stopBelowPwm ?? 0;
+    return pwm > 0 ? Math.ceil(((pwm - 0.5) * 100) / 255) : null;
+  });
+  const fansReleased = $derived(hardware.fan?.fansReleased ?? false);
+
+  /**
    * The daemon's supervisor stays out of the way for a while after a manual
    * mode change, and reports how long it has left. That figure is a
    * snapshot from the last power-state read, not a live counter - left
@@ -413,6 +427,9 @@
             <span class="reverse"><Icon name="refresh" size={14} /> {t("performance.fanReverse")}</span>
           {/if}
         </div>
+        {#if fansReleased && (showManualSlider || showCurve)}
+          <p class="fan-note">{t("performance.fanStoppedByFirmware")}</p>
+        {/if}
 
         {#if showManualSlider}
           <div class="manual">
@@ -428,6 +445,11 @@
               />
               <span class="pct">{hardware.state.fanPercent}%</span>
             </div>
+            {#if stopBelowPercent !== null}
+              <p class="fan-note">
+                {t("performance.fanStopBelow", { percent: String(stopBelowPercent) })}
+              </p>
+            {/if}
           </div>
         {/if}
 
@@ -486,8 +508,15 @@
             <FanCurve
               curve={editingCurve}
               currentTempC={curveTempC}
+              {stopBelowPercent}
+              stopLabel={t("performance.fanStopBand")}
               onchange={(curve) => hardware.setFanCurve(curve, curveProfile)}
             />
+            {#if stopBelowPercent !== null}
+              <p class="fan-note">
+                {t("performance.fanStopBelow", { percent: String(stopBelowPercent) })}
+              </p>
+            {/if}
           </div>
         {/if}
 
