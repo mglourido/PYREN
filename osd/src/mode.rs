@@ -74,11 +74,11 @@ impl Mode {
             (Lang::En, Mode::Eco) => "Lowest power draw and the quietest fans. Best for battery life.",
             (Lang::En, Mode::Balanced) => "The firmware decides. Good default for everyday use.",
             (Lang::En, Mode::Performance) => "Higher power limits and a more aggressive fan curve.",
-            (Lang::En, Mode::Unlimited) => "Unlocks manual power limits and manual fan control.",
+            (Lang::En, Mode::Unlimited) => "Unlocks manual power limits and the chassis temperature limit.",
             (Lang::Es, Mode::Eco) => "El menor consumo y los ventiladores más silenciosos. Ideal para la batería.",
             (Lang::Es, Mode::Balanced) => "Decide el firmware. Buen valor predeterminado para el día a día.",
             (Lang::Es, Mode::Performance) => "Límites de potencia más altos y una curva de ventilador más agresiva.",
-            (Lang::Es, Mode::Unlimited) => "Desbloquea los límites de potencia manuales y el control manual del ventilador.",
+            (Lang::Es, Mode::Unlimited) => "Desbloquea los límites de potencia manuales y la temperatura límite del chasis.",
         }
     }
 }
