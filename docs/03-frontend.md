@@ -145,6 +145,16 @@ one and not at all in the other until the user logs back in, and treating
 them as one thing is how you get a checklist that says "fixed" while
 nothing works.
 
+Every grant the panel applies can be taken back from the same row, with a
+**Revoke** button beside (or instead of) Fix: `disableService` stops the
+service and removes it from boot (the unit file stays), `leaveGroup` runs
+`gpasswd -d` (the same log-out gap applies in reverse, reported as
+`leaveNeedsRelogin`), `unloadAcpiCall` removes Pyren's modules-load.d
+drop-in and unloads the module, and `disableCoolbits` deletes Pyren's Xorg
+snippet. Where the grant is a file, Revoke is only offered when it is the
+file Pyren wrote (`acpiCallAtBoot`, `coolbitsOurs`) — configuration some
+other tool or the user put there is not the panel's to delete.
+
 ## i18n
 
 `lib/i18n/index.svelte.ts` keeps the three-tier fallback (main language →

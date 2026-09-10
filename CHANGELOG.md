@@ -11,6 +11,15 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **Permissions can be revoked from the Permissions panel.** Each row on
+  `/drivers` that the panel can grant now also offers **Revoke** once it
+  is granted: stop and disable the service, leave the `pyren` group, unload
+  `acpi_call` (and drop Pyren's boot-time drop-in), or delete Pyren's
+  Coolbits snippet. File-based grants are only revoked when the file is
+  Pyren's own. New `admin_grant` actions `leaveGroup`, `unloadAcpiCall`,
+  `disableCoolbits`; new `admin_status` fields `leaveNeedsRelogin`,
+  `acpiCallAtBoot`, `coolbitsOurs`.
+
 - **Notifications in the app.** A bell in the header, with an unread badge,
   opens a box in the middle of the window listing what the daemon has
   reported — for now just the fan stall watch raising the fan floor

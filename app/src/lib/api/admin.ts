@@ -28,12 +28,18 @@ export type AdminStatus = {
   sessionHasGroup: boolean;
   /** Member on paper only: nothing works until the user logs back in. */
   needsRelogin: boolean;
+  /** The reverse: removed from the group, but this session still carries
+   *  it until the user logs back in. */
+  leaveNeedsRelogin: boolean;
   /** `/proc/acpi/call` is there, which is the only state in which the
    *  fan cleaner and the RGB lightbar work at all. */
   acpiCallLoaded: boolean;
   /** Built for this kernel, whether or not it is loaded. Told apart
    *  because one is a `modprobe` and the other is a package. */
   acpiCallInstalled: boolean;
+  /** Pyren's modules-load.d drop-in is there, i.e. Pyren arranged for
+   *  `acpi_call` to load at boot. */
+  acpiCallAtBoot: boolean;
   /** Whether a polkit agent is available to authenticate a fix. */
   canElevate: boolean;
   /** The pyren-daemon binary, needed to install the service. Null when it
@@ -46,6 +52,8 @@ export type AdminStatus = {
   nvmlOffsets: boolean;
   /** Whether some Xorg config already sets Coolbits. */
   coolbitsSet: boolean;
+  /** Whether that is Pyren's own snippet, the only one it will remove. */
+  coolbitsOurs: boolean;
   /** Whether writing the Coolbits snippet would change anything. False on
    *  a Wayland session, where there is no NVIDIA X screen for it to apply
    *  to — offering it there is a button that changes nothing. */
@@ -63,7 +71,12 @@ export type AdminAction =
   | "enableAtBoot"
   | "disableService"
   | "loadAcpiCall"
-  | "enableCoolbits";
+  | "enableCoolbits"
+  // The reverses, for taking back a permission already given.
+  // `disableService` above is the service's.
+  | "leaveGroup"
+  | "unloadAcpiCall"
+  | "disableCoolbits";
 
 export type GrantResult = {
   applied: boolean;

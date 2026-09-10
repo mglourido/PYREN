@@ -71,6 +71,7 @@
       const result = await admin.grant(action);
       // A dismissed polkit dialog is a decision, not a failure.
       if (result.applied && action === "joinGroup") reloginNeeded = true;
+      if (result.applied && action === "leaveGroup") reloginNeeded = false;
       await refreshPrivileges();
     } catch (e) {
       grantError = errorText(e);
@@ -90,6 +91,11 @@
     title: string;
     detail: string;
     action?: AdminAction;
+    /** Takes back what `action` grants. Only offered for something that is
+     *  granted - and, where it is a file, a file Pyren wrote. */
+    revoke?: AdminAction;
+    /** What revoking costs, shown on hover. */
+    revokeHint?: string;
   };
 
   const rows = $derived.by<Row[]>(() => {
@@ -116,6 +122,10 @@
           : p.daemonBinary
             ? "installService"
             : undefined,
+        // Enabled-but-failed counts too: it would come back at boot. The
+        // unit file stays, so granting it again is the enable above.
+        revoke: p.serviceActive || p.serviceEnabled ? "disableService" : undefined,
+        revokeHint: t("admin.revokeService"),
       },
       {
         id: "group",
@@ -123,10 +133,16 @@
         title: t("admin.group", { group: p.groupName }),
         detail: p.needsRelogin
           ? t("admin.groupNeedsRelogin")
-          : p.sessionHasGroup
-            ? t("admin.groupOk")
-            : t("admin.groupMissing", { group: p.groupName }),
-        action: p.sessionHasGroup || p.needsRelogin ? undefined : "joinGroup",
+          : p.leaveNeedsRelogin
+            ? t("admin.groupLeftNeedsRelogin")
+            : p.sessionHasGroup
+              ? t("admin.groupOk")
+              : t("admin.groupMissing", { group: p.groupName }),
+        // Keyed on the database, not the session: both halves of the
+        // log-out gap are one click from being undone.
+        action: p.inGroupDatabase ? undefined : "joinGroup",
+        revoke: p.inGroupDatabase ? "leaveGroup" : undefined,
+        revokeHint: t("admin.revokeGroup", { group: p.groupName }),
       },
       {
         id: "socket",
@@ -167,6 +183,8 @@
         // installed the fix is a package, which is not this button's job
         // and is named in the detail instead.
         action: !p.acpiCallLoaded && p.acpiCallInstalled ? "loadAcpiCall" : undefined,
+        revoke: p.acpiCallLoaded || p.acpiCallAtBoot ? "unloadAcpiCall" : undefined,
+        revokeHint: t("admin.revokeAcpiCall"),
       },
       {
         // The GPU offsets. Three outcomes rather than two, because "not
@@ -184,6 +202,10 @@
               ? t("admin.gpuOffsetsNeedsCoolbits")
               : t("admin.gpuOffsetsWayland"),
         action: p.coolbitsWouldHelp ? "enableCoolbits" : undefined,
+        // Only our own snippet: a Coolbits line somebody else wrote into
+        // their xorg.conf is not this button's to delete.
+        revoke: p.coolbitsOurs ? "disableCoolbits" : undefined,
+        revokeHint: t("admin.revokeCoolbits"),
       },
       {
         id: "root",
@@ -235,15 +257,27 @@
               <span class="check-title">{row.title}</span>
               <span class="detail">{row.detail}</span>
             </div>
-            {#if row.action}
-              <button
-                class="fix"
-                disabled={granting !== null || !privileges?.canElevate}
-                onclick={() => applyGrant(row.action!)}
-              >
-                {granting === row.action ? t("admin.applying") : t("admin.fix")}
-              </button>
-            {/if}
+            <div class="actions">
+              {#if row.action}
+                <button
+                  class="fix"
+                  disabled={granting !== null || !privileges?.canElevate}
+                  onclick={() => applyGrant(row.action!)}
+                >
+                  {granting === row.action ? t("admin.applying") : t("admin.fix")}
+                </button>
+              {/if}
+              {#if row.revoke}
+                <button
+                  class="fix revoke"
+                  title={row.revokeHint}
+                  disabled={granting !== null || !privileges?.canElevate}
+                  onclick={() => applyGrant(row.revoke!)}
+                >
+                  {granting === row.revoke ? t("admin.revoking") : t("admin.revoke")}
+                </button>
+              {/if}
+            </div>
           </li>
         {/each}
       </ul>
@@ -355,9 +389,15 @@
     font-size: 24px;
   }
 
-  .fix {
+  .actions {
     flex: 0 0 auto;
     align-self: center;
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+  }
+
+  .fix {
     padding: 6px 16px;
     border: 1px solid var(--accent-2);
     border-radius: 2px;
@@ -366,6 +406,17 @@
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+
+  /* Quieter than a fix: it is the way back, not the thing the row asks for. */
+  .fix.revoke {
+    border-color: var(--line);
+    color: var(--text-dim);
+  }
+
+  .fix.revoke:not(:disabled):hover {
+    border-color: var(--danger);
+    color: var(--danger);
   }
 
   .fix:disabled {

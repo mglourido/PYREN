@@ -15,6 +15,9 @@
 //!   which puts the authentication in the desktop's hands rather than
 //!   ours. There is no free-form command: the frontend picks an action
 //!   from a closed set, and nothing it sends reaches a shell.
+//! - **Can we take it back?** Every grant the panel can apply has its
+//!   reverse in the same closed set, so a permission given here can be
+//!   withdrawn here, rather than by hunting down the files it wrote.
 //!
 //! Installing the systemd unit is the one privileged action that cannot go
 //! through the daemon's IPC: the unit is what *makes* the daemon
@@ -41,6 +44,11 @@ const UNIT_PATHS: &[&str] = &[
     "/etc/systemd/system/pyren-daemon.service",
     "/usr/lib/systemd/system/pyren-daemon.service",
 ];
+/// The files the fixes below write. Their presence is how the panel tells
+/// "Pyren granted this" from "it was already like that", which is what
+/// decides whether revoking it is ours to offer.
+const ACPI_CALL_DROP_IN: &str = "/etc/modules-load.d/pyren-acpi-call.conf";
+const COOLBITS_SNIPPET: &str = "/etc/X11/xorg.conf.d/20-pyren-coolbits.conf";
 
 /// What the frontend may ask to have changed. A closed set on purpose: the
 /// alternative is a command string arriving from a webview and being run
@@ -107,6 +115,22 @@ pub enum Grant {
     /// for NVML's offset symbols. It also needs the X server restarted,
     /// which no button can do.
     EnableCoolbits,
+    /// Take this user back out of the socket group.
+    ///
+    /// The other direction of [`Self::JoinGroup`], with the same catch in
+    /// reverse: the login session keeps the groups it started with, so the
+    /// socket stays open to this session until the user logs out. The
+    /// group itself is left in place - other users may be in it.
+    LeaveGroup,
+    /// Unload `acpi_call` and remove the drop-in that loads it at boot.
+    ///
+    /// The other direction of [`Self::LoadAcpiCall`]. Only our drop-in is
+    /// removed: a module some other config asks for comes back at the next
+    /// boot, and editing that config is not ours to do.
+    UnloadAcpiCall,
+    /// Delete the Xorg snippet [`Self::EnableCoolbits`] wrote. Any
+    /// `Coolbits` set elsewhere is not ours and stays.
+    DisableCoolbits,
 }
 
 impl Grant {
@@ -119,6 +143,9 @@ impl Grant {
             "disableService" => Ok(Self::DisableService),
             "loadAcpiCall" => Ok(Self::LoadAcpiCall),
             "enableCoolbits" => Ok(Self::EnableCoolbits),
+            "leaveGroup" => Ok(Self::LeaveGroup),
+            "unloadAcpiCall" => Ok(Self::UnloadAcpiCall),
+            "disableCoolbits" => Ok(Self::DisableCoolbits),
             other => Err(format!("unknown admin action '{other}'")),
         }
     }
@@ -154,11 +181,15 @@ pub fn status(socket_path: &str) -> Value {
         // The fix is applied but the session predates it: nothing else will
         // work until the user logs out, and no button can do it for them.
         "needsRelogin": in_group_database && !session_has_group,
+        // The same gap after a revoke: out of the group on paper, but this
+        // session still carries it, and the socket still opens to it.
+        "leaveNeedsRelogin": session_has_group && !in_group_database,
         // Loaded is the only state the feature works in; installed but
         // unloaded is one `modprobe` away, and neither is one `pacman`
         // away. Three states, because the remedy differs for each.
         "acpiCallLoaded": Path::new("/proc/acpi/call").exists(),
         "acpiCallInstalled": Path::new("/proc/acpi/call").exists() || modinfo_finds_acpi_call(),
+        "acpiCallAtBoot": Path::new(ACPI_CALL_DROP_IN).exists(),
         "canElevate": which("pkexec"),
         "daemonBinary": daemon_binary(),
         "user": username(),
@@ -167,6 +198,7 @@ pub fn status(socket_path: &str) -> Value {
         // "neither Coolbits nor a permission".
         "nvmlOffsets": nvml_offsets_available(),
         "coolbitsSet": coolbits_configured(),
+        "coolbitsOurs": Path::new(COOLBITS_SNIPPET).exists(),
         "coolbitsWouldHelp": coolbits_would_help(),
     })
 }
@@ -335,6 +367,33 @@ pub fn grant(action: &str) -> Result<Value, String> {
                  \x20   Option \"Coolbits\" \"8\"\\n\
                  EndSection\\n' > /etc/X11/xorg.conf.d/20-pyren-coolbits.conf",
             ])
+            .output(),
+        // `gpasswd -d` rather than rewriting the member list with `usermod
+        // -G`, which would have to restate every other group the user is in.
+        Grant::LeaveGroup => Command::new("pkexec")
+            .args([
+                "gpasswd",
+                "-d",
+                &username().ok_or_else(|| "cannot determine the current user".to_string())?,
+                SOCKET_GROUP,
+            ])
+            .output(),
+        // The drop-in goes first: if the module is busy and refuses to
+        // unload, it at least no longer comes back at boot, and the error
+        // `modprobe -r` prints is what the user sees.
+        Grant::UnloadAcpiCall => Command::new("pkexec")
+            .args([
+                "/bin/sh",
+                "-c",
+                "rm -f \"$1\" && \
+                 if [ -e /proc/acpi/call ]; then modprobe -r acpi_call; fi",
+                "--",
+                ACPI_CALL_DROP_IN,
+            ])
+            .output(),
+        // Takes effect when the X server restarts, like writing it did.
+        Grant::DisableCoolbits => Command::new("pkexec")
+            .args(["rm", "-f", COOLBITS_SNIPPET])
             .output(),
     };
 
