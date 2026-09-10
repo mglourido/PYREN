@@ -9,6 +9,7 @@
 //! | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the new status |
 //! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the new status |
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
+//! | `fan.setKeepDriverFloor` | `{ "enabled": bool }` | the new status |
 //! | `fan.calibrate` | `{ "seconds"?: 10-120 }` | what full speed measured, see [`calibration`] |
 //! | `fan.cleanerStatus` | `{ "refresh"?: bool }` | what the fan cleaner can do here, see [`cleaner`] |
 //! | `fan.startCleaning` | `{ "speed"?: 10-39, "seconds"?: 5-60, "force"?: bool }` | the cleaner status |
@@ -79,6 +80,9 @@ pub(crate) struct FanPaths {
     /// integrated-only machine has nothing here, and so does one whose
     /// card is powered down at discovery time.
     pub(crate) gpu_temp: Option<PathBuf>,
+    /// `hp_wmi`'s module parameters, where Pyren's driver reports the fan
+    /// table's floor and takes a replacement for it. See `control`.
+    pub(crate) driver_params: Option<PathBuf>,
 }
 
 /// Which temperature the curve follows.
@@ -158,10 +162,23 @@ pub struct FanConfig {
     pub fan1_max_rpm: Option<i64>,
     pub fan2_max_rpm: Option<i64>,
     /// The slowest the fans hold when commanded the minimum, measured by
-    /// the same `fan.calibrate`. Below it a curve or a manual speed hands
-    /// the fans to the firmware, which is the only thing that stops them
-    /// on a board with a floor - see [`curve::stop_below_pwm`].
+    /// the same `fan.calibrate` - which, with the upstream driver's clamp
+    /// in place, is that clamp. Below the floor in force a curve or a
+    /// manual speed hands the fans to the firmware, which is the only thing
+    /// that stops them - see [`curve::stop_below_pwm`]. A driver that
+    /// reports its floor (`control::read_driver_floor`) is believed over
+    /// this; it is kept for one that does not.
     pub fan_min_rpm: Option<i64>,
+    /// The slowest speed `fan.calibrate` found the fans holding - no
+    /// stall, no kick - with the driver's clamp lifted, the step below it
+    /// having failed (see `calibration::sweep_floor`). Pyren's floor is a
+    /// step above it ([`FLOOR_MARGIN_RPM`]): 600 held on board 8D2F, whose
+    /// fan table says 1800, so 700.
+    pub fan_stable_min_rpm: Option<i64>,
+    /// Keep the upstream driver's floor rather than Pyren's. On by default:
+    /// the table's floor is the vendor's choice, and running below it is
+    /// something to opt into.
+    pub keep_driver_floor: bool,
     /// Whether a commanded speed was ever found to reach the fans.
     ///
     /// `pwm1` existing does not mean the embedded controller honours it —
@@ -201,6 +218,8 @@ impl Default for FanConfig {
             fan1_max_rpm: None,
             fan2_max_rpm: None,
             fan_min_rpm: None,
+            fan_stable_min_rpm: None,
+            keep_driver_floor: true,
             speed_control: SpeedControl::default(),
             restore_mode_on_start: false,
             cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
@@ -380,6 +399,32 @@ impl FanModule {
 
     fn caps(&self) -> Capabilities {
         lock_hw(&self.hardware).caps
+    }
+
+    /// The floor in force for `config` on the driver loaded right now. A
+    /// driver that reports its own floor is believed over a measurement of
+    /// it, which is only a fallback for one that does not.
+    fn floor(&self, config: &FanConfig) -> Floor {
+        let paths = self.paths();
+        let driver = control::read_driver_floor(&paths).or(config.fan_min_rpm);
+        floor_in_force(
+            driver,
+            pyren_floor(config.fan_stable_min_rpm, driver),
+            config.keep_driver_floor,
+            control::floor_override_supported(&paths),
+        )
+    }
+
+    /// Tells the driver the floor in force. A read when it already knows,
+    /// which is every tick but the first after a driver reload - that
+    /// resets the parameter, and this is what puts it back.
+    fn sync_floor_override(&self, floor: Floor) -> Result<(), control::ControlError> {
+        let Some(want) = floor.override_hundreds else { return Ok(()) };
+        let paths = self.paths();
+        if control::read_floor_override(&paths) == Some(want) {
+            return Ok(());
+        }
+        control::set_floor_override(&paths, want)
     }
 
     /// What this machine can be *told*, as opposed to what files it has.
@@ -655,6 +700,7 @@ impl FanModule {
         let (fan_rpm, is_reverse) =
             read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
         let state = lock(&self.state);
+        let floor = self.floor(&state.config);
 
         json!({
             "driverInstalled": self.paths().hwmon_dir.is_some(),
@@ -704,10 +750,26 @@ impl FanModule {
             "fanMaxRpm": state.config.fan_max_rpm,
             "fan1MaxRpm": state.config.fan1_max_rpm,
             "fan2MaxRpm": state.config.fan2_max_rpm,
-            "fanMinRpm": state.config.fan_min_rpm,
+            // The floor in force: the driver's or Pyren's, per
+            // `keepDriverFloor`. Below it the firmware gets the fans.
+            "fanMinRpm": floor.rpm,
+            // The two it is chosen from. The driver's is what it reports
+            // (or, on a driver that does not, what calibration measured);
+            // Pyren's is null until a calibration has swept for it.
+            "driverMinRpm": control::read_driver_floor(&self.paths()).or(state.config.fan_min_rpm),
+            "pyrenMinRpm": pyren_floor(
+                state.config.fan_stable_min_rpm,
+                control::read_driver_floor(&self.paths()).or(state.config.fan_min_rpm),
+            ),
+            // What the sweep measured, before the margin.
+            "slowestHeldRpm": state.config.fan_stable_min_rpm,
+            "keepDriverFloor": state.config.keep_driver_floor,
+            // Whether the driver can be told a floor other than its own at
+            // all; false on a driver installed before Pyren's patch did it.
+            "floorOverrideSupported": control::floor_override_supported(&self.paths()),
             // Targets below this PWM hand the fans to the firmware; 0 when
-            // there is no measured floor and nothing is handed over.
-            "stopBelowPwm": curve::stop_below_pwm(state.config.fan_min_rpm, state.config.fan_max_rpm),
+            // there is no known floor and nothing is handed over.
+            "stopBelowPwm": curve::stop_below_pwm(floor.rpm, state.config.fan_max_rpm),
             // True while that is the case right now: the mode is still
             // manual or curve, but the fans are the firmware's.
             "fansReleased": state.released,
@@ -985,7 +1047,16 @@ impl FanModule {
             if calibration.fan_min_rpm.is_some() {
                 state.config.fan_min_rpm = calibration.fan_min_rpm;
             }
+            if calibration.fan_stable_min_rpm.is_some() {
+                state.config.fan_stable_min_rpm = calibration.fan_stable_min_rpm;
+            }
             persist(&self.store, &mut state);
+            // The sweep put back the override it found; the floor in force
+            // may be a different one now that Pyren's has been measured.
+            let floor = self.floor(&state.config);
+            if let Err(e) = self.sync_floor_override(floor) {
+                log_warn!("could not set the driver's fan floor after calibrating: {e}");
+            }
             pinned = Some(pin_ceiling(&calibration));
         }
         drop(state);
@@ -1007,6 +1078,25 @@ impl FanModule {
         // TICK later. Only does anything when this daemon owns the fans.
         let _ = self.tick_once();
         Ok(result)
+    }
+
+    /// Chooses between the upstream driver's floor and Pyren's.
+    ///
+    /// Takes effect now: the driver's clamp is set straight away - this is
+    /// the user asking, so it is written whether or not this daemon owns
+    /// the fans - and the curve re-decides against the new threshold.
+    fn set_keep_driver_floor(&self, keep: bool) -> ModuleResult {
+        let floor = {
+            let mut state = lock(&self.state);
+            state.config.keep_driver_floor = keep;
+            persist(&self.store, &mut state);
+            // The threshold for handing the fans over has moved.
+            state.forget_writes();
+            self.floor(&state.config)
+        };
+        self.sync_floor_override(floor).map_err(control_error)?;
+        let _ = self.tick_once();
+        Ok(self.status())
     }
 
     fn set_restore_on_start(&self, enabled: bool) -> ModuleResult {
@@ -1354,8 +1444,8 @@ impl FanModule {
         // auto needs no re-asserting, and the next write after this -
         // whenever the target climbs back - switches to manual first.
         if let Some(target) = target.filter(|_| mode.needs_pwm()) {
-            let stop_below =
-                curve::stop_below_pwm(state.config.fan_min_rpm, state.config.fan_max_rpm);
+            let floor = self.floor(&state.config);
+            let stop_below = curve::stop_below_pwm(floor.rpm, state.config.fan_max_rpm);
             let release = curve::release_fans(target, stop_below, state.released);
             if release && state.released {
                 return Ok(());
@@ -1369,6 +1459,18 @@ impl FanModule {
             if state.released {
                 state.released = false;
                 state.hysteresis.reset();
+            }
+            // A speed is about to be commanded, so the driver has to be
+            // clamping at the same floor this just decided against. Failing
+            // leaves it at its own, higher one: the fans run a little
+            // faster than asked, never slower than they can hold.
+            // Warned once: this runs every tick, and a daemon without the
+            // right to write it will not gain one between ticks.
+            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if let Err(e) = self.sync_floor_override(floor) {
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    log_warn!("could not set the driver's fan floor: {e}");
+                }
             }
         }
 
@@ -1518,6 +1620,13 @@ impl Module for FanModule {
                 self.set_restore_on_start(enabled)
             }
 
+            "setKeepDriverFloor" => {
+                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
+                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                })?;
+                self.set_keep_driver_floor(enabled)
+            }
+
             "calibrate" => {
                 // Unlike `diagnose`, there is no read-only version of this
                 // to default to: measuring full speed means reaching it.
@@ -1609,6 +1718,57 @@ fn control_error(e: control::ControlError) -> ModuleError {
         control::ControlError::Io(_, _) => ErrorKind::Io,
     };
     ModuleError::localised(kind, e.to_msg())
+}
+
+/// Which floor is in force, and what the driver has to be told for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Floor {
+    /// The slowest speed that is commanded rather than handed to the
+    /// firmware, in rpm; `None` when no floor is known at all.
+    rpm: Option<i64>,
+    /// What the driver's `min_rpm_override` should hold, in hundreds of
+    /// rpm; `None` on a driver that has no such parameter.
+    override_hundreds: Option<u8>,
+}
+
+/// One step above the slowest speed the sweep saw the fans hold.
+///
+/// That speed is the edge, and the edge moves: board 8D2F held 600 rpm
+/// cleanly on one sweep and kicked back up from it on the one before. A
+/// floor on the edge is a fan that stalls and restarts itself now and
+/// then, so the floor is a fine step clear of it - 700 there. Applied here
+/// rather than in the stored measurement, so that is what it says it is.
+pub const FLOOR_MARGIN_RPM: i64 = calibration::SWEEP_FINE_STEP_RPM;
+
+/// Pyren's floor from the slowest speed held; never above the driver's,
+/// since a floor that high is the driver's already.
+fn pyren_floor(slowest_held: Option<i64>, driver: Option<i64>) -> Option<i64> {
+    slowest_held.map(|held| {
+        let floor = held + FLOOR_MARGIN_RPM;
+        driver.map_or(floor, |driver| floor.min(driver))
+    })
+}
+
+/// Pyren's floor only when asked for, measured, and possible; otherwise the
+/// driver's, with its override cleared so the driver enforces its own.
+fn floor_in_force(
+    driver: Option<i64>,
+    pyren: Option<i64>,
+    keep_driver: bool,
+    override_supported: bool,
+) -> Floor {
+    if !override_supported {
+        return Floor { rpm: driver, override_hundreds: None };
+    }
+    match (keep_driver, pyren) {
+        (false, Some(rpm)) => Floor {
+            rpm: Some(rpm),
+            // Rounded up, so the driver's clamp is never below the speed
+            // the daemon stops commanding at.
+            override_hundreds: Some(((rpm + 99) / 100).clamp(1, 255) as u8),
+        },
+        _ => Floor { rpm: driver, override_hundreds: Some(0) },
+    }
 }
 
 /// Keeps the outcome of a control write for `getStatus`, and hands it on.
@@ -1752,7 +1912,19 @@ fn discover_paths() -> FanPaths {
 
     paths.cpu_temp = find_cpu_temp_path();
     paths.gpu_temp = find_gpu_temp_path();
+    paths.driver_params = find_driver_params();
     paths
+}
+
+/// `hp_wmi`'s module parameters. Under `PYREN_HWMON_DIR` they are looked
+/// for beside the fixture instead: a self-test pointed at a fixture must
+/// not read - let alone write - the real driver's floor.
+fn find_driver_params() -> Option<PathBuf> {
+    let dir = match std::env::var("PYREN_HWMON_DIR") {
+        Ok(fixture) => PathBuf::from(fixture).join("parameters"),
+        Err(_) => PathBuf::from("/sys/module/hp_wmi/parameters"),
+    };
+    dir.is_dir().then_some(dir)
 }
 
 /// Mirrors `FanController._find_paths` (`glob.glob(HWMON_PATH_PATTERN)`
@@ -2198,6 +2370,7 @@ mod tests {
             fan2_input: None,
             cpu_temp: None,
             gpu_temp: None,
+            driver_params: None,
         };
         *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
 
@@ -2359,6 +2532,10 @@ mod tests {
             fs::write(dir.join(file), value).unwrap();
         }
         fs::write(dir.join("temp1_input"), format!("{}", temp_c * 1000)).unwrap();
+        // Pyren's driver: the table's floor reported, the override cleared.
+        fs::create_dir_all(dir.join("parameters")).unwrap();
+        fs::write(dir.join("parameters/min_rpm_table"), "18").unwrap();
+        fs::write(dir.join("parameters/min_rpm_override"), "0").unwrap();
         let paths = FanPaths {
             hwmon_dir: Some(dir.clone()),
             pwm1: Some(dir.join("pwm1")),
@@ -2366,6 +2543,7 @@ mod tests {
             pwm1_enable: Some(dir.join("pwm1_enable")),
             fan1_input: Some(dir.join("fan1_input")),
             cpu_temp: Some(dir.join("temp1_input")),
+            driver_params: Some(dir.join("parameters")),
             ..Default::default()
         };
         *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
@@ -2422,10 +2600,129 @@ mod tests {
     fn without_a_floor_a_low_curve_still_commands_a_speed() {
         let (module, dir) = driven_on_a_fixture("nofloor", 40);
         lock(&module.state).config.fan_min_rpm = None;
+        // A driver that read no fan table reports no floor either.
+        fs::write(dir.join("parameters/min_rpm_table"), "0").unwrap();
 
         module.tick_once().unwrap();
 
         assert_eq!(read_file(&dir, "pwm1_enable"), "1");
         assert_eq!(read_file(&dir, "pwm1"), curve::MIN_COMMANDED_PWM.to_string());
+    }
+
+    #[test]
+    fn the_drivers_floor_is_the_default() {
+        let floor = floor_in_force(Some(1800), Some(700), true, true);
+        assert_eq!(floor, Floor { rpm: Some(1800), override_hundreds: Some(0) });
+    }
+
+    #[test]
+    fn pyrens_floor_is_used_when_asked_for_and_measured() {
+        let floor = floor_in_force(Some(1800), Some(700), false, true);
+        assert_eq!(floor, Floor { rpm: Some(700), override_hundreds: Some(7) });
+    }
+
+    /// Asked for, but never measured: there is no lower floor to use.
+    #[test]
+    fn an_unmeasured_pyren_floor_falls_back_to_the_drivers() {
+        assert_eq!(floor_in_force(Some(1800), None, false, true).rpm, Some(1800));
+    }
+
+    /// A driver that cannot be told another floor enforces its own, and
+    /// the daemon must not pretend otherwise.
+    #[test]
+    fn a_driver_without_the_override_keeps_its_floor_whatever_is_chosen() {
+        let floor = floor_in_force(Some(1800), Some(700), false, false);
+        assert_eq!(floor, Floor { rpm: Some(1800), override_hundreds: None });
+    }
+
+    /// The clamp is rounded up, never below the speed the daemon commands.
+    #[test]
+    fn the_override_rounds_up_to_the_next_hundred() {
+        assert_eq!(floor_in_force(Some(1800), Some(750), false, true).override_hundreds, Some(8));
+    }
+
+    /// With Pyren's floor, a speed the driver's would have handed to the
+    /// firmware is commanded - and the driver is told to allow it.
+    #[test]
+    fn pyrens_floor_commands_what_the_drivers_would_have_released() {
+        // 50 C on 40:0 -> 60:50 is 25 %: pwm 64, 1300 rpm of 5300.
+        let (module, dir) = driven_on_a_fixture("pyren-floor", 50);
+        {
+            let mut state = lock(&module.state);
+            state.config.fan_stable_min_rpm = Some(600);
+            state.config.keep_driver_floor = false;
+        }
+
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "7");
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        assert_eq!(read_file(&dir, "pwm1"), "64");
+        assert_eq!(module.status()["fanMinRpm"], json!(700));
+    }
+
+    /// The same speed with the driver's floor kept is below it.
+    #[test]
+    fn the_drivers_floor_releases_that_same_speed() {
+        let (module, dir) = driven_on_a_fixture("driver-floor", 50);
+        lock(&module.state).config.fan_stable_min_rpm = Some(600);
+
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2");
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "0");
+        assert_eq!(module.status()["fanMinRpm"], json!(1800));
+    }
+
+    /// Flipping the setting reaches the driver now, and re-decides.
+    #[test]
+    fn choosing_the_floor_takes_effect_at_once() {
+        let (module, dir) = driven_on_a_fixture("toggle-floor", 50);
+        lock(&module.state).config.fan_stable_min_rpm = Some(600);
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2", "released under the driver's floor");
+
+        let status = module.set_keep_driver_floor(false).unwrap();
+
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "7");
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1", "commanded under Pyren's");
+        assert_eq!(status["keepDriverFloor"], json!(false));
+        assert_eq!(status["pyrenMinRpm"], json!(700));
+        assert_eq!(status["driverMinRpm"], json!(1800));
+
+        module.set_keep_driver_floor(true).unwrap();
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "0");
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2");
+    }
+
+    /// A reload resets the driver's parameter; the next tick restores it.
+    #[test]
+    fn a_reset_override_is_put_back_before_the_next_speed() {
+        let (module, dir) = driven_on_a_fixture("override-reset", 60);
+        {
+            let mut state = lock(&module.state);
+            state.config.fan_stable_min_rpm = Some(600);
+            state.config.keep_driver_floor = false;
+        }
+        module.tick_once().unwrap();
+        fs::write(dir.join("parameters/min_rpm_override"), "0").unwrap();
+
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "7");
+    }
+
+    /// 600 held, so 700: the edge plus one fine step.
+    #[test]
+    fn pyrens_floor_is_a_step_above_the_slowest_speed_held() {
+        assert_eq!(pyren_floor(Some(600), Some(1800)), Some(700));
+        assert_eq!(pyren_floor(None, Some(1800)), None);
+    }
+
+    /// Held only just below the driver's floor: the margin cannot lift it
+    /// past the driver's.
+    #[test]
+    fn pyrens_floor_never_rises_above_the_drivers() {
+        assert_eq!(pyren_floor(Some(1750), Some(1800)), Some(1800));
     }
 }

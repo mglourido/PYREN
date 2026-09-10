@@ -77,6 +77,53 @@ static void hp_wmi_apply_measured_max_rpm(struct hp_wmi_hwmon_priv *priv)
 }
 "#;
 
+/// The clamp every manual speed passes through, as upstream has it.
+///
+/// `priv->min_rpm` is the slowest entry of the firmware's fan table - the
+/// bottom of its *automatic* curve, not the slowest the fans can turn.
+/// Measured on board 8D2F with this clamp removed: the fans hold every
+/// speed down to 600 rpm exactly, and only stall below ~500. The table
+/// says 1800.
+const MIN_RPM_CLAMP: &str = "rpm = clamp_val(rpm, priv->min_rpm, max_rpm);";
+const MIN_RPM_CLAMP_PATCHED: &str = "rpm = clamp_val(rpm, hp_wmi_min_rpm(priv, max_rpm), max_rpm);";
+
+/// Module parameters the daemon reads and writes to set the fans' floor.
+pub const MIN_RPM_TABLE_PARAM: &str = "min_rpm_table";
+pub const MIN_RPM_OVERRIDE_PARAM: &str = "min_rpm_override";
+
+const MIN_RPM_SOURCE: &str = r#"
+/*
+ * Pyren: the slowest speed a manual write may command.
+ *
+ * min_rpm_table reports the fan table's slowest entry, which is the floor
+ * the upstream driver enforces. min_rpm_override replaces it when
+ * non-zero, and is writable at runtime so the choice between the two
+ * needs no reload. Both in hundreds of RPM. The override still clamps:
+ * below the fans' own minimum they stall and restart in a loop, and no
+ * writer should be able to ask for that.
+ */
+static u8 min_rpm_table;
+module_param(min_rpm_table, byte, 0444);
+MODULE_PARM_DESC(min_rpm_table,
+		 "Slowest entry of the firmware's fan table, in hundreds of RPM (report only)");
+static u8 min_rpm_override;
+module_param(min_rpm_override, byte, 0644);
+MODULE_PARM_DESC(min_rpm_override,
+		 "Slowest manual fan speed, in hundreds of RPM (0: the fan table's)");
+
+static void hp_wmi_record_min_rpm(struct hp_wmi_hwmon_priv *priv)
+{
+	min_rpm_table = priv->min_rpm;
+}
+
+static u8 hp_wmi_min_rpm(struct hp_wmi_hwmon_priv *priv, u8 max_rpm)
+{
+	u8 override = READ_ONCE(min_rpm_override);
+
+	return min_t(u8, override ? override : priv->min_rpm, max_rpm);
+}
+"#;
+
 /// The driver's two PWM <-> RPM conversions, exactly as upstream has them.
 ///
 /// Both truncate, and a manual write runs through three of them - pwm to
@@ -303,6 +350,47 @@ pub fn add_measured_rpm_params(source: &str) -> Result<(String, Option<String>),
     ))
 }
 
+/// Makes the manual-speed floor a runtime choice: reports the fan table's,
+/// and lets the daemon replace it (see [`MIN_RPM_SOURCE`]).
+pub fn add_min_rpm_params(source: &str) -> Result<(String, Option<String>), PatchError> {
+    if source.contains(MIN_RPM_OVERRIDE_PARAM) {
+        return Ok((source.to_string(), None));
+    }
+    let define_start = find_define(source, PARAM_ANCHOR)
+        .ok_or_else(|| PatchError::AnchorMissing(PARAM_ANCHOR.to_string()))?;
+    let line_end = source[define_start..]
+        .find('\n')
+        .map(|i| define_start + i + 1)
+        .unwrap_or(source.len());
+    if !source.contains(PARAM_CALL_ANCHOR) {
+        return Err(PatchError::AnchorMissing(
+            "the hp_wmi_setup_fan_settings call in hwmon init".to_string(),
+        ));
+    }
+    if source.matches(MIN_RPM_CLAMP).count() != 1 {
+        return Err(PatchError::AnchorMissing(MIN_RPM_CLAMP.to_string()));
+    }
+
+    let mut patched = String::with_capacity(source.len() + MIN_RPM_SOURCE.len() + 128);
+    patched.push_str(&source[..line_end]);
+    patched.push_str(MIN_RPM_SOURCE);
+    patched.push_str(&source[line_end..]);
+    // Recorded after the fan table has been read, which is inside the
+    // setup call; the recorded value is what `priv` ended up with.
+    let patched = patched
+        .replacen(
+            PARAM_CALL_ANCHOR,
+            &format!("{PARAM_CALL_ANCHOR}\thp_wmi_record_min_rpm(priv);\n"),
+            1,
+        )
+        .replacen(MIN_RPM_CLAMP, MIN_RPM_CLAMP_PATCHED, 1);
+
+    Ok((
+        patched,
+        Some(format!("{MIN_RPM_TABLE_PARAM}/{MIN_RPM_OVERRIDE_PARAM} module parameters added")),
+    ))
+}
+
 /// Swaps the driver's truncating PWM <-> RPM conversions for rounding ones.
 /// See [`RPM_CONVERSION_ORIGINAL`] for what the truncation cost.
 pub fn round_rpm_conversions(source: &str) -> Result<(String, Option<String>), PatchError> {
@@ -492,6 +580,10 @@ pub fn patch_driver_tree(
     applied.extend(change);
 
     let (patched, change) = round_rpm_conversions(&source)?;
+    source = patched;
+    applied.extend(change);
+
+    let (patched, change) = add_min_rpm_params(&source)?;
     source = patched;
     applied.extend(change);
 
@@ -764,6 +856,36 @@ mod upstream_source_tests {
 
         let (twice, change) = round_rpm_conversions(&patched).unwrap();
         assert_eq!(twice, patched, "rounding twice changes nothing");
+        assert!(change.is_none());
+    }
+
+    /// The floor parameters touch three places; all three have to land,
+    /// in an order that compiles, and the clamp must no longer read the
+    /// table directly.
+    #[test]
+    fn the_floor_parameters_splice_into_the_real_driver() {
+        let Some(source) = real_source() else {
+            eprintln!("skipped: driver sources not found");
+            return;
+        };
+        // After the ceiling patch, as patch_driver_tree applies them: both
+        // splice after the same line and must not trip over each other.
+        let (with_max, _) = add_measured_rpm_params(&source).unwrap();
+        let (patched, change) = add_min_rpm_params(&with_max).expect("floor anchors missing");
+
+        assert!(change.is_some());
+        assert_eq!(patched.matches("module_param(min_rpm_override, byte, 0644)").count(), 1);
+        assert_eq!(patched.matches("\thp_wmi_record_min_rpm(priv);").count(), 1);
+        assert_eq!(patched.matches("\thp_wmi_apply_measured_max_rpm(priv);").count(), 1);
+        assert!(!patched.contains(MIN_RPM_CLAMP), "the clamp still reads the table directly");
+
+        let helper_at = patched.find("static u8 hp_wmi_min_rpm").unwrap();
+        let used_at = patched.find(MIN_RPM_CLAMP_PATCHED).unwrap();
+        let struct_at = patched.find("struct hp_wmi_hwmon_priv {").unwrap();
+        assert!(struct_at < helper_at && helper_at < used_at);
+
+        let (twice, change) = add_min_rpm_params(&patched).unwrap();
+        assert_eq!(twice, patched);
         assert!(change.is_none());
     }
 

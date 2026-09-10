@@ -403,6 +403,11 @@
     "advanced": "Avanzado",
     "demoMode": "Datos de demostración cuando el daemon no responde",
     "resetSettings": "Restablecer todos los ajustes",
+    "fans": "Ventiladores",
+    "keepDriverFloor": "Mantener el límite mínimo de velocidad del driver oficial",
+    "keepDriverFloorHint": "Activado: los ventiladores nunca giran por debajo de {driver} rpm, el mínimo del driver oficial. Desactivado: bajan hasta {pyren} rpm: lo más lento que Pyren midió que aguantan, más un escalón de margen para que no se calen. Por debajo del mínimo en uso, el firmware se encarga de ellos y los para mientras el equipo está frío.",
+    "floorNeedsDriver": "El driver instalado es anterior a esta opción y solo admite su propio mínimo. Reinstálalo desde Drivers.",
+    "floorNotMeasured": "Pyren todavía no ha medido cuánto pueden bajar estos ventiladores. Reinstala el driver desde Drivers con la medición de ventiladores activada.",
     "storage": "Almacenamiento",
     "configFile": "Archivo de ajustes",
     "daemonConfigFile": "Archivo de ajustes del daemon",
@@ -1013,11 +1018,11 @@
     "failedNote": "Algo ha fallado. El registro de arriba dice en qué paso y por qué.",
     "close": "Cerrar",
     "calibrateAfter": "Medir el rango de los ventiladores al terminar la instalación",
-    "calibrateFirstHint": "Mide la velocidad máxima y la mínima que aguantan los ventiladores; con ellas la curva sabe hasta dónde llega y cuándo tiene que pararlos. Nada ha medido esta máquina todavía, y no podía: hace falta el controlador instalado primero. Unos 40 segundos, y con ruido.",
+    "calibrateFirstHint": "Mide la velocidad máxima y la mínima que aguantan los ventiladores; con ellas la curva sabe hasta dónde llega y cuándo tiene que pararlos. Nada ha medido esta máquina todavía, y no podía: hace falta el controlador instalado primero. Alrededor de un minuto, y con ruido al principio.",
     "calibrateAgainHint": "Ya medida en {rpm} rpm. Solo merece la pena repetirlo si has limpiado o cambiado los ventiladores. Unos 20 segundos, y con ruido.",
-    "calibrateAgainRangeHint": "Ya medido: de {min} a {max} rpm. Solo merece la pena repetirlo si has limpiado o cambiado los ventiladores, o reinstalado el controlador. Unos 40 segundos, y con ruido.",
-    "calibrateFloorHint": "La velocidad máxima ya está medida en {rpm} rpm, pero no la mínima que aguantan los ventiladores, que es lo que permite que el 0% los pare. Unos 40 segundos, y con ruido.",
-    "calibrateLoud": "los ventiladores suben al máximo hasta que la lectura se estabilice, y después bajan a su velocidad mínima",
+    "calibrateAgainRangeHint": "Ya medido: de {min} a {max} rpm. Solo merece la pena repetirlo si has limpiado o cambiado los ventiladores. Alrededor de un minuto, y con ruido al principio.",
+    "calibrateFloorHint": "La velocidad máxima ya está medida en {rpm} rpm, pero no cuánto pueden bajar los ventiladores por debajo del mínimo del driver oficial. Sin eso, la opción de Ajustes para usar el mínimo de Pyren no puede activarse. Alrededor de un minuto, y con ruido al principio.",
+    "calibrateLoud": "los ventiladores suben al máximo hasta que la lectura se estabilice, y después bajan paso a paso hasta la velocidad más lenta que aguantan",
     "step": {
       "calibrate": "Medir la velocidad máxima y mínima de los ventiladores"
     }

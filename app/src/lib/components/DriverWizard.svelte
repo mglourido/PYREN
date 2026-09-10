@@ -266,7 +266,11 @@
    * what lets 0 % in a curve stop the fans - so a ceiling alone is not a
    * finished calibration there.
    */
-  const measuredMinRpm = $derived(hardware.fan?.fanMinRpm ?? null);
+  /** Pyren's floor, which is the one a calibration has to sweep for; the
+   *  driver's it simply reads. The driver being installed is the one that
+   *  lets the sweep lift the clamp, so this is asked of every machine that
+   *  takes a speed, whatever driver it has now. */
+  const measuredMinRpm = $derived(hardware.fan?.pyrenMinRpm ?? null);
   const floorMissing = $derived(
     (hardware.fan?.capabilities.setSpeed ?? false) && measuredMinRpm === null,
   );

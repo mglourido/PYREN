@@ -11,6 +11,26 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **Fans can run below the driver's 1800 rpm floor.** The upstream driver
+  clamps every manual speed to its fan table's slowest entry, which is the
+  bottom of the firmware's *automatic* curve rather than the slowest the
+  fans can turn: with the clamp lifted, board 8D2F's fans held every speed
+  down to 600 rpm exactly, and only stalled below ~500. The driver patch
+  now reports the table's floor (`min_rpm_table`) and takes a replacement
+  at runtime (`min_rpm_override`), still clamped, so no writer can ask for
+  a stalling speed. `fan.calibrate` sweeps down from the driver's floor —
+  200 rpm steps, then 100 below 1000 — commanding each step through that
+  override so both fans get it exactly, and finds the slowest one held
+  with no stall and no kick back up (a stalled motor being restarted).
+  Pyren's floor is one 100 rpm step above that, because the edge moves
+  between runs: 8D2F held 600 on one sweep and kicked from it on another,
+  so its floor is 700.
+  A new setting chooses between the two, **on the driver's by default**:
+  Settings → Fans, `fan.setKeepDriverFloor`, `pyren-ctl fan floor
+  driver|pyren`. `fan.getStatus` reports `driverMinRpm`, `pyrenMinRpm`,
+  `keepDriverFloor` and `floorOverrideSupported`; `fanMinRpm` is now the
+  floor in force. Needs a driver reinstall and a calibration.
+
 - **0 % can stop the fans.** On boards whose fans have a floor — 8D2F's
   driver cannot command less than 1800 rpm, so everything from 0 to a
   third of the scale sounded the same — a curve or manual speed below that

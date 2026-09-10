@@ -67,6 +67,12 @@ FANS
                                in. --profile shared edits the fallback used
                                where no profile has been announced
   fan restore-on-start <on|off>
+  fan floor <driver|pyren>     the slowest speed the fans are commanded
+                               at: the driver's (its fan table's, 1800 rpm
+                               on board 8D2F) or Pyren's, which
+                               'fan calibrate' measures lower. Below it
+                               the firmware gets the fans and stops them
+                               when cool
   fan diagnose [--write]       the fan-control self-test
   fan probe-speed [--seconds N]
                                hold the fans at a speed they are not at and
@@ -339,6 +345,14 @@ fn run(command: &args::Command) -> Run {
         ["fan", "restore-on-start", value] => {
             let enabled = word_switch("restore-on-start", value)?;
             show(command, client::call("fan", "setRestoreOnStart", json!({ "enabled": enabled }))?, print_fan)
+        }
+        ["fan", "floor", which] => {
+            let keep = match *which {
+                "driver" => true,
+                "pyren" => false,
+                other => return Err(format!("fan floor: expected driver or pyren, got '{other}'").into()),
+            };
+            show(command, client::call("fan", "setKeepDriverFloor", json!({ "enabled": keep }))?, print_fan)
         }
         ["fan", "calibrate"] => {
             let seconds = command.number("seconds")?;
@@ -1141,7 +1155,26 @@ fn print_fan(status: &Value) {
     // The floor, and what it does: below it the firmware has the fans.
     if let Some(rpm) = status.get("fanMinRpm").and_then(Value::as_i64) {
         let stop_below = status.get("stopBelowPwm").and_then(Value::as_i64).unwrap_or(0);
-        row("slowest", format!("{rpm} rpm, measured; below pwm {stop_below} the firmware stops them"));
+        let rpm_of = |key: &str| status.get(key).and_then(Value::as_i64).map_or("-".to_string(), |r| format!("{r}"));
+        let keep = status.get("keepDriverFloor").and_then(Value::as_bool) != Some(false);
+        let which = match (keep, status.get("floorOverrideSupported").and_then(Value::as_bool)) {
+            (_, Some(false)) => "the driver's; it cannot be told another",
+            (true, _) => "the driver's",
+            (false, _) if status.get("pyrenMinRpm").and_then(Value::as_i64).is_none() => {
+                "the driver's, until 'fan calibrate' measures Pyren's"
+            }
+            (false, _) => "Pyren's",
+        };
+        row("slowest", format!("{rpm} rpm ({which}); below pwm {stop_below} the firmware stops them"));
+        row(
+            "floors",
+            format!(
+                "driver {} rpm, pyren {} rpm (the fans held {})",
+                rpm_of("driverMinRpm"),
+                rpm_of("pyrenMinRpm"),
+                rpm_of("slowestHeldRpm")
+            ),
+        );
     }
     if status.get("fansReleased").and_then(Value::as_bool) == Some(true) {
         row("now", "below the floor - the firmware has the fans".to_string());

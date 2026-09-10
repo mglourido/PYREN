@@ -226,6 +226,52 @@ pub fn read_pwm(paths: &FanPaths) -> Option<u8> {
     raw.trim().parse::<u8>().ok()
 }
 
+// --- the manual-speed floor --------------------------------------------
+//
+// Pyren's driver patch (`installer::patch::add_min_rpm_params`) reports the
+// fan table's slowest entry, which is what the upstream driver clamps every
+// manual speed up to, and lets that clamp be replaced at runtime. Both are
+// module parameters in hundreds of rpm. A driver without them is one where
+// the table's floor is the only floor there is.
+
+const MIN_RPM_TABLE: &str = "min_rpm_table";
+const MIN_RPM_OVERRIDE: &str = "min_rpm_override";
+
+fn read_param(paths: &FanPaths, name: &str) -> Option<u8> {
+    let raw = fs::read_to_string(paths.driver_params.as_deref()?.join(name)).ok()?;
+    raw.trim().parse::<u8>().ok()
+}
+
+/// The floor the upstream driver enforces - the fan table's slowest entry -
+/// in rpm. `None` on a driver that does not report it, or read no table.
+pub fn read_driver_floor(paths: &FanPaths) -> Option<i64> {
+    read_param(paths, MIN_RPM_TABLE).filter(|&v| v > 0).map(|v| i64::from(v) * 100)
+}
+
+/// Whether this driver lets the floor be replaced.
+pub fn floor_override_supported(paths: &FanPaths) -> bool {
+    paths.driver_params.as_deref().is_some_and(|dir| dir.join(MIN_RPM_OVERRIDE).exists())
+}
+
+/// The replacement floor in force, in hundreds of rpm; 0 is the table's.
+pub fn read_floor_override(paths: &FanPaths) -> Option<u8> {
+    read_param(paths, MIN_RPM_OVERRIDE)
+}
+
+/// Replaces the driver's floor; `0` gives the table's back. Takes effect on
+/// the next speed written, not on the one already running.
+pub fn set_floor_override(paths: &FanPaths, hundreds: u8) -> Result<(), ControlError> {
+    let dir = paths
+        .driver_params
+        .as_deref()
+        .ok_or(ControlError::Unsupported("a floor override", MIN_RPM_OVERRIDE))?;
+    let path = dir.join(MIN_RPM_OVERRIDE);
+    if !path.exists() {
+        return Err(ControlError::Unsupported("a floor override", MIN_RPM_OVERRIDE));
+    }
+    write_sysfs(&path, &hundreds.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +298,7 @@ mod tests {
             fan2_input: Some(dir.join("fan2_input")),
             cpu_temp: None,
             gpu_temp: None,
+            driver_params: Some(dir.join("parameters")),
         }
     }
 
@@ -357,6 +404,52 @@ mod tests {
         let (enable, pwm1) = (Path::new("e"), Path::new("p1"));
 
         assert_eq!(speed_writes(enable, pwm1, None, None, 120)[0], (enable, "1".to_string()));
+    }
+
+    fn with_params(dir: &Path, table: &str) {
+        fs::create_dir_all(dir.join("parameters")).unwrap();
+        fs::write(dir.join("parameters/min_rpm_table"), format!("{table}\n")).unwrap();
+        fs::write(dir.join("parameters/min_rpm_override"), "0\n").unwrap();
+    }
+
+    #[test]
+    fn the_drivers_floor_is_read_in_rpm() {
+        let dir = fixture("floor", &["pwm1_enable", "pwm1"]);
+        with_params(&dir, "18");
+        let p = paths(&dir);
+
+        assert_eq!(read_driver_floor(&p), Some(1800));
+        assert!(floor_override_supported(&p));
+    }
+
+    /// A table the driver could not read reports 0, which is no floor.
+    #[test]
+    fn a_zero_table_floor_is_no_floor() {
+        let dir = fixture("floor-zero", &["pwm1_enable", "pwm1"]);
+        with_params(&dir, "0");
+        assert_eq!(read_driver_floor(&paths(&dir)), None);
+    }
+
+    #[test]
+    fn the_override_is_written_in_hundreds() {
+        let dir = fixture("override", &["pwm1_enable", "pwm1"]);
+        with_params(&dir, "18");
+        let p = paths(&dir);
+
+        set_floor_override(&p, 7).unwrap();
+        assert_eq!(read_floor_override(&p), Some(7));
+    }
+
+    /// A driver built before the parameter existed: the table's floor is
+    /// the only one, and asking for another is an error, not a silent no-op.
+    #[test]
+    fn a_driver_without_the_override_refuses_one() {
+        let dir = fixture("no-override", &["pwm1_enable", "pwm1"]);
+        let p = paths(&dir);
+
+        assert!(!floor_override_supported(&p));
+        assert!(matches!(set_floor_override(&p, 7), Err(ControlError::Unsupported(..))));
+        assert!(!dir.join("parameters/min_rpm_override").exists());
     }
 
     #[test]

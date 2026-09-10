@@ -896,6 +896,10 @@ never has to follow a write with a read:
   "fan1MaxRpm": null,
   "fan2MaxRpm": null,
   "fanMinRpm": null,
+  "driverMinRpm": null,
+  "pyrenMinRpm": null,
+  "keepDriverFloor": true,
+  "floorOverrideSupported": false,
   "stopBelowPwm": 0,
   "fansReleased": false,
   "calibrating": false,
@@ -913,6 +917,17 @@ command less than 1800 rpm, and the firmware is the only thing that stops
 them. `stopBelowPwm` is that threshold on the 0-255 scale (0: never), and
 `fansReleased` is true while it is in effect; `mode` stays what the user
 chose. The fans come back under the daemon a deadband (8/255) above it.
+
+There are two floors to choose from. `driverMinRpm` is the upstream
+driver's: its fan table's slowest entry, which it clamps every manual
+speed to. `slowestHeldRpm` is the slowest the fans held with that clamp
+lifted — no stall, no kick — swept for by `fan.calibrate`, and
+`pyrenMinRpm` is one 100 rpm step above it (null until then; 600 held and
+700 used on 8D2F, against the driver's 1800). `keepDriverFloor` picks one —
+`fan.setKeepDriverFloor { "enabled": bool }`, on by default — and
+`fanMinRpm` is the one in force. Lifting the clamp needs Pyren's driver
+patch (`floorOverrideSupported`); the daemon then sets the driver's
+`min_rpm_override` to match, and puts it back after a driver reload.
 
 ### What `capabilities` is for
 
@@ -1052,6 +1067,7 @@ and there it is the only way to learn the number the driver's own
   "fan1MaxRpm": 3915,
   "fan2MaxRpm": 3745,
   "fanMinRpm": 1800,
+  "fanStableMinRpm": 700,
   "baselineRpm": 2093,
   "startedAtMax": false,
   "seconds": 12,

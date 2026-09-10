@@ -403,6 +403,11 @@
     "advanced": "Advanced",
     "demoMode": "Demo data when the daemon is unreachable",
     "resetSettings": "Reset all settings",
+    "fans": "Fans",
+    "keepDriverFloor": "Keep the official driver's minimum fan speed",
+    "keepDriverFloorHint": "On: the fans never turn slower than {driver} rpm, the official driver's minimum. Off: they go down to {pyren} rpm - the slowest Pyren measured them holding, plus a step of margin so they do not stall. Below the minimum in use the firmware takes them and stops them while the machine is cool.",
+    "floorNeedsDriver": "The installed driver predates this option and only allows its own minimum. Reinstall it from Drivers.",
+    "floorNotMeasured": "Pyren has not measured how slowly these fans can turn yet. Reinstall the driver from Drivers with the fan measurement ticked.",
     "storage": "Storage",
     "configFile": "Settings file",
     "daemonConfigFile": "Daemon settings file",
@@ -1013,11 +1018,11 @@
     "failedNote": "Something went wrong. The log above says which step and why.",
     "close": "Close",
     "calibrateAfter": "Measure the fans' speed range when the install finishes",
-    "calibrateFirstHint": "Measures the fastest and the slowest the fans will hold, which is how the curve knows how far it goes and when to stop them. Nothing has measured this machine yet, and it could not have: it takes the driver being installed first. About 40 seconds, and loud.",
+    "calibrateFirstHint": "Measures the fastest and the slowest the fans will hold, which is how the curve knows how far it goes and when to stop them. Nothing has measured this machine yet, and it could not have: it takes the driver being installed first. About a minute, loud at first.",
     "calibrateAgainHint": "Already measured at {rpm} rpm. Only worth repeating if the fans have been cleaned or replaced. About 20 seconds, and loud.",
-    "calibrateAgainRangeHint": "Already measured: {min} to {max} rpm. Only worth repeating if the fans have been cleaned or replaced, or the driver reinstalled. About 40 seconds, and loud.",
-    "calibrateFloorHint": "Full speed is already measured at {rpm} rpm, but not the slowest speed the fans hold - which is what lets 0% stop them. About 40 seconds, and loud.",
-    "calibrateLoud": "the fans go to full speed until the reading settles, then down to their slowest",
+    "calibrateAgainRangeHint": "Already measured: {min} to {max} rpm. Only worth repeating if the fans have been cleaned or replaced. About a minute, loud at first.",
+    "calibrateFloorHint": "Full speed is already measured at {rpm} rpm, but not how far below the official driver's minimum the fans can go. Without it, the Settings option to use Pyren's minimum cannot be turned on. About a minute, loud at first.",
+    "calibrateLoud": "the fans go to full speed until the reading settles, then step down to the slowest speed they hold",
     "step": {
       "calibrate": "Measure the fans' fastest and slowest speeds"
     }
