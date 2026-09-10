@@ -223,6 +223,11 @@ fn fan_set_keep_driver_floor(enabled: bool) -> Result<Value, String> {
     call_daemon("fan", "setKeepDriverFloor", json!({ "enabled": enabled }))
 }
 
+#[tauri::command(async)]
+fn fan_clear_floor_notices() -> Result<Value, String> {
+    call_daemon("fan", "clearFloorNotices", json!({}))
+}
+
 /// The fan cleaner. `refresh` re-asks the firmware what it can do, which
 /// costs two ACPI calls - the polling status read leaves it off.
 #[tauri::command(async)]
@@ -909,6 +914,11 @@ pub fn run() {
             reveal_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        // The frontend fires an OS notification when the daemon reports it
+        // has nudged the fan floor up while the window was closed or in the
+        // tray. Nothing here calls it directly - see the notifications
+        // store - so this is only the plugin the JS side needs to exist.
+        .plugin(tauri_plugin_notification::init())
         // Closing the window means quit, unless the user asked for it to
         // mean "put Pyren away" instead. Read from the file each time, so
         // flipping the toggle changes what the close button does straight
@@ -950,6 +960,7 @@ pub fn run() {
             fan_set_curve,
             fan_set_restore_on_start,
             fan_set_keep_driver_floor,
+            fan_clear_floor_notices,
             fan_cleaner_status,
             fan_start_cleaning,
             fan_stop_cleaning,

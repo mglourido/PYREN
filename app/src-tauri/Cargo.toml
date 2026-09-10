@@ -35,6 +35,9 @@ tauri-build = { version = "2", features = [] }
 # been installed.
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
+# OS notifications: the app raises one when the daemon reports it has
+# nudged the fan floor up and the window is not in front to show it.
+tauri-plugin-notification = "2"
 # One running app per user. Without it a second launch is a second process
 # with its own window, and the two race each other's writes to
 # ~/.config/pyren/{app,ui}.json (whole-file, last-writer-wins - no merge).
