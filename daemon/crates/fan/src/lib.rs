@@ -66,6 +66,10 @@ const TICK: Duration = Duration::from_secs(2);
 pub(crate) struct FanPaths {
     pub(crate) hwmon_dir: Option<PathBuf>,
     pub(crate) pwm1: Option<PathBuf>,
+    /// The second fan's setpoint. Optional even with the driver loaded:
+    /// only `pwm1` is required for speed control, so capabilities are
+    /// never derived from this one.
+    pub(crate) pwm2: Option<PathBuf>,
     pub(crate) pwm1_enable: Option<PathBuf>,
     pub(crate) fan1_input: Option<PathBuf>,
     pub(crate) fan2_input: Option<PathBuf>,
@@ -153,6 +157,11 @@ pub struct FanConfig {
     /// the numbers.
     pub fan1_max_rpm: Option<i64>,
     pub fan2_max_rpm: Option<i64>,
+    /// The slowest the fans hold when commanded the minimum, measured by
+    /// the same `fan.calibrate`. Below it a curve or a manual speed hands
+    /// the fans to the firmware, which is the only thing that stops them
+    /// on a board with a floor - see [`curve::stop_below_pwm`].
+    pub fan_min_rpm: Option<i64>,
     /// Whether a commanded speed was ever found to reach the fans.
     ///
     /// `pwm1` existing does not mean the embedded controller honours it —
@@ -191,6 +200,7 @@ impl Default for FanConfig {
             fan_max_rpm: None,
             fan1_max_rpm: None,
             fan2_max_rpm: None,
+            fan_min_rpm: None,
             speed_control: SpeedControl::default(),
             restore_mode_on_start: false,
             cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
@@ -299,6 +309,10 @@ struct State {
     /// every machine whose `power` module found nothing to control.
     active_profile: Option<String>,
     hysteresis: curve::Hysteresis,
+    /// In `manual` or `curve`, the speed asked for is below the fans' floor
+    /// and they have been handed to the firmware so it can stop them. The
+    /// mode is still the user's; only the hardware is in auto.
+    released: bool,
     smoother: curve::TempSmoother,
     /// A calibration run has the fans, and the control loop must not take
     /// them back mid-measurement - it would drop them out of max and the
@@ -318,6 +332,16 @@ struct State {
     last_target_pwm: Option<u8>,
     last_control_error: Option<Msg>,
     last_save_error: Option<String>,
+}
+
+impl State {
+    /// Forget what was last written, so the next tick applies whatever it
+    /// decides unconditionally - including handing the fans to the
+    /// firmware again, which the hardware may no longer be in.
+    fn forget_writes(&mut self) {
+        self.hysteresis.reset();
+        self.released = false;
+    }
 }
 
 /// What this module knows about the hardware it is driving: where the
@@ -467,6 +491,7 @@ impl FanModule {
             active_profile: None,
             owned: restoring,
             hysteresis: curve::Hysteresis::new(),
+            released: false,
             calibrating: false,
             cleaning: Cleaning::Idle,
             cleaner_probe: None,
@@ -546,6 +571,7 @@ impl FanModule {
                 active_profile: None,
                 owned: false,
                 hysteresis: curve::Hysteresis::new(),
+                released: false,
                 calibrating: false,
                 cleaning: Cleaning::Idle,
                 cleaner_probe: None,
@@ -609,7 +635,7 @@ impl FanModule {
             }
             // A different curve is in force, so what the hysteresis last
             // wrote says nothing about whether the new target is close.
-            state.hysteresis.reset();
+            state.forget_writes();
         }
         // Only does anything in `curve` mode, and only when this daemon
         // owns the fans - the other modes do not read a curve at all.
@@ -678,6 +704,13 @@ impl FanModule {
             "fanMaxRpm": state.config.fan_max_rpm,
             "fan1MaxRpm": state.config.fan1_max_rpm,
             "fan2MaxRpm": state.config.fan2_max_rpm,
+            "fanMinRpm": state.config.fan_min_rpm,
+            // Targets below this PWM hand the fans to the firmware; 0 when
+            // there is no measured floor and nothing is handed over.
+            "stopBelowPwm": curve::stop_below_pwm(state.config.fan_min_rpm, state.config.fan_max_rpm),
+            // True while that is the case right now: the mode is still
+            // manual or curve, but the fans are the firmware's.
+            "fansReleased": state.released,
             "calibrating": state.calibrating,
             // Enough for a caller that only wants to know the fans are not
             // its to command; `cleanerStatus` is the detail.
@@ -728,7 +761,7 @@ impl FanModule {
             state.mode = mode;
             state.owned = true;
             // A mode change must land now, whatever the last write was.
-            state.hysteresis.reset();
+            state.forget_writes();
             state.smoother = curve::TempSmoother::new(state.config.ma_window);
         }
 
@@ -802,7 +835,7 @@ impl FanModule {
                 }
             }
             // The shape changed under the current target; re-evaluate.
-            state.hysteresis.reset();
+            state.forget_writes();
         }
 
         // Only touches hardware if the curve is the mode in force.
@@ -861,7 +894,7 @@ impl FanModule {
         state.calibrating = false;
         // The fans were moved out from under the hysteresis, so what it
         // last wrote says nothing about where they are now.
-        state.hysteresis.reset();
+        state.forget_writes();
 
         let probe = match outcome {
             Ok(probe) => probe,
@@ -931,7 +964,7 @@ impl FanModule {
         state.calibrating = false;
         // The fans were moved out from under the hysteresis, so what it
         // last wrote says nothing about where they are now.
-        state.hysteresis.reset();
+        state.forget_writes();
 
         let calibration = match outcome {
             Ok(calibration) => calibration,
@@ -947,6 +980,11 @@ impl FanModule {
             state.config.fan_max_rpm = calibration.fan_max_rpm;
             state.config.fan1_max_rpm = calibration.fan1_max_rpm;
             state.config.fan2_max_rpm = calibration.fan2_max_rpm;
+            // Same rule one level down: a floor that could not be measured
+            // this time does not erase one that was.
+            if calibration.fan_min_rpm.is_some() {
+                state.config.fan_min_rpm = calibration.fan_min_rpm;
+            }
             persist(&self.store, &mut state);
             pinned = Some(pin_ceiling(&calibration));
         }
@@ -1196,7 +1234,7 @@ impl FanModule {
             // The fans were moved out from under the hysteresis by
             // something that does not speak PWM at all, so what it last
             // wrote says nothing about where they are.
-            state.hysteresis.reset();
+            state.forget_writes();
         }
         // Re-asserts the configured mode now rather than up to a TICK
         // later. Only does anything when this daemon owns the fans.
@@ -1307,6 +1345,33 @@ impl FanModule {
             }
         };
 
+        if mode == FanMode::Curve {
+            state.last_target_pwm = target;
+        }
+
+        // A speed below the floor is one the fans cannot hold, so they go
+        // to the firmware, which stops them when the machine is cool. Once:
+        // auto needs no re-asserting, and the next write after this -
+        // whenever the target climbs back - switches to manual first.
+        if let Some(target) = target.filter(|_| mode.needs_pwm()) {
+            let stop_below =
+                curve::stop_below_pwm(state.config.fan_min_rpm, state.config.fan_max_rpm);
+            let release = curve::release_fans(target, stop_below, state.released);
+            if release && state.released {
+                return Ok(());
+            }
+            if release {
+                state.released = true;
+                state.hysteresis.reset();
+                let result = control::apply(&self.paths(), self.caps(), FanMode::Auto, 0);
+                return record_write(&mut state, result);
+            }
+            if state.released {
+                state.released = false;
+                state.hysteresis.reset();
+            }
+        }
+
         let should = match (mode, target) {
             (FanMode::Auto, _) => state.hysteresis.last_written().is_none(),
             (_, Some(target)) => {
@@ -1316,10 +1381,6 @@ impl FanModule {
             }
             (_, None) => false,
         };
-
-        if mode == FanMode::Curve {
-            state.last_target_pwm = target;
-        }
         if !should {
             return Ok(());
         }
@@ -1329,17 +1390,7 @@ impl FanModule {
         // Recorded even when the write failed, so a machine that cannot be
         // written to is retried once a minute rather than every tick.
         state.hysteresis.applied(pwm, now_secs);
-
-        match result {
-            Ok(()) => {
-                state.last_control_error = None;
-                Ok(())
-            }
-            Err(e) => {
-                state.last_control_error = Some(e.to_msg());
-                Err(control_error(e))
-            }
-        }
+        record_write(&mut state, result)
     }
 
     /// The loop that keeps a curve tracking, and keeps a chosen mode from
@@ -1560,6 +1611,20 @@ fn control_error(e: control::ControlError) -> ModuleError {
     ModuleError::localised(kind, e.to_msg())
 }
 
+/// Keeps the outcome of a control write for `getStatus`, and hands it on.
+fn record_write(state: &mut State, result: Result<(), control::ControlError>) -> Result<(), ModuleError> {
+    match result {
+        Ok(()) => {
+            state.last_control_error = None;
+            Ok(())
+        }
+        Err(e) => {
+            state.last_control_error = Some(e.to_msg());
+            Err(control_error(e))
+        }
+    }
+}
+
 /// Cleaner failures, translated for the socket.
 ///
 /// `notCapable` against `failed` is the distinction that matters here, and
@@ -1678,6 +1743,7 @@ fn discover_paths() -> FanPaths {
 
     if let Some(hwmon_dir) = find_hp_wmi_hwmon_dir() {
         paths.pwm1 = Some(hwmon_dir.join("pwm1"));
+        paths.pwm2 = Some(hwmon_dir.join("pwm2"));
         paths.pwm1_enable = Some(hwmon_dir.join("pwm1_enable"));
         paths.fan1_input = Some(hwmon_dir.join("fan1_input"));
         paths.fan2_input = Some(hwmon_dir.join("fan2_input"));
@@ -2126,6 +2192,7 @@ mod tests {
         let paths = FanPaths {
             hwmon_dir: Some(dir.clone()),
             pwm1: Some(dir.join("pwm1")),
+            pwm2: None,
             pwm1_enable: Some(dir.join("pwm1_enable")),
             fan1_input: Some(dir.join("fan1_input")),
             fan2_input: None,
@@ -2279,5 +2346,86 @@ mod tests {
         let config: FanConfig = serde_json::from_value(json!({ "mode": "auto" })).unwrap();
         assert_eq!(config.speed_control, SpeedControl::Untested);
         assert!(!config.speed_control.is_ignored());
+    }
+
+    /// Fans on a fixture directory, driven by this module in curve mode,
+    /// with the floor board 8D2F measures: 1800 of 5300 rpm.
+    fn driven_on_a_fixture(tag: &str, temp_c: i64) -> (FanModule, PathBuf) {
+        let module = module(tag);
+        let dir = std::env::temp_dir().join(format!("pyren-fan-release-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for (file, value) in [("pwm1", "0"), ("pwm2", "0"), ("pwm1_enable", "2"), ("fan1_input", "0")] {
+            fs::write(dir.join(file), value).unwrap();
+        }
+        fs::write(dir.join("temp1_input"), format!("{}", temp_c * 1000)).unwrap();
+        let paths = FanPaths {
+            hwmon_dir: Some(dir.clone()),
+            pwm1: Some(dir.join("pwm1")),
+            pwm2: Some(dir.join("pwm2")),
+            pwm1_enable: Some(dir.join("pwm1_enable")),
+            fan1_input: Some(dir.join("fan1_input")),
+            cpu_temp: Some(dir.join("temp1_input")),
+            ..Default::default()
+        };
+        *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
+
+        let mut state = lock(&module.state);
+        state.owned = true;
+        state.mode = FanMode::Curve;
+        state.config.fan_min_rpm = Some(1800);
+        state.config.fan_max_rpm = Some(5300);
+        state.config.curve = points(&[(40.0, 0.0), (60.0, 50.0), (80.0, 100.0)]);
+        drop(state);
+        (module, dir)
+    }
+
+    fn read_file(dir: &Path, name: &str) -> String {
+        fs::read_to_string(dir.join(name)).unwrap().trim().to_string()
+    }
+
+    /// A curve asking for less than the fans can hold hands them to the
+    /// firmware, which is what stops them - and says so in the status.
+    #[test]
+    fn a_curve_below_the_floor_hands_the_fans_to_the_firmware() {
+        let (module, dir) = driven_on_a_fixture("below", 40);
+        fs::write(dir.join("pwm1_enable"), "1").unwrap();
+
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2");
+        assert_eq!(module.status()["fansReleased"], json!(true));
+        assert_eq!(module.status()["mode"], json!("curve"), "the mode is still the user's");
+    }
+
+    /// And takes them back, manual first, once the curve climbs clear.
+    #[test]
+    fn a_curve_that_climbs_back_takes_the_fans_again() {
+        let (module, dir) = driven_on_a_fixture("climb", 40);
+        module.tick_once().unwrap();
+        assert!(lock(&module.state).released);
+
+        fs::write(dir.join("temp1_input"), "60000").unwrap();
+        // A fresh window, so the average is the new temperature rather
+        // than a blend with the old one.
+        lock(&module.state).smoother = curve::TempSmoother::new(1);
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        assert_eq!(read_file(&dir, "pwm1"), "128");
+        assert_eq!(read_file(&dir, "pwm2"), "128");
+        assert_eq!(module.status()["fansReleased"], json!(false));
+    }
+
+    /// Without a measured floor 0 % stays the slowest commanded speed.
+    #[test]
+    fn without_a_floor_a_low_curve_still_commands_a_speed() {
+        let (module, dir) = driven_on_a_fixture("nofloor", 40);
+        lock(&module.state).config.fan_min_rpm = None;
+
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        assert_eq!(read_file(&dir, "pwm1"), curve::MIN_COMMANDED_PWM.to_string());
     }
 }

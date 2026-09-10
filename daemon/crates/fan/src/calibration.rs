@@ -1,4 +1,5 @@
-//! Calibration: measuring what "full speed" actually is on this machine.
+//! Calibration: measuring what "full speed" actually is on this machine -
+//! and, where a speed can be commanded, what the slowest one is.
 //!
 //! The hysteresis in [`crate::curve`] wants one number it has never had -
 //! the RPM the fans reach at full speed - so that "is the fan already going
@@ -115,6 +116,10 @@ pub struct Calibration {
     /// the driver numbers them and this module does the same.
     pub fan1_max_rpm: Option<i64>,
     pub fan2_max_rpm: Option<i64>,
+    /// The slowest the fans turn when commanded the least a speed can be,
+    /// measured after the ceiling (see [`FloorRun`]). `None` when the
+    /// machine cannot be given a speed, or the fans did not come down.
+    pub fan_min_rpm: Option<i64>,
     /// The reading before anything was written.
     pub baseline_rpm: i64,
     /// Whether the fans were already at max, in which case no rise is
@@ -246,6 +251,8 @@ impl Run {
             fan_max_rpm: measured.then_some(self.peak),
             fan1_max_rpm: measured.then(|| self.peak_of(|s| s.fan1_rpm)).flatten(),
             fan2_max_rpm: measured.then(|| self.peak_of(|s| s.fan2_rpm)).flatten(),
+            // Filled in by `run`, from the second half of the run.
+            fan_min_rpm: None,
             baseline_rpm: self.baseline,
             started_at_max: self.started_at_max,
             seconds: elapsed_secs,
@@ -256,6 +263,66 @@ impl Run {
             restore_error: None,
             detail,
         }
+    }
+}
+
+/// The second half of a run: from full speed, command the slowest speed
+/// there is and watch where the fans come to rest.
+///
+/// That resting point is the floor [`crate::curve::stop_below_pwm`] needs.
+/// It is not zero on board 8D2F: the driver clamps every manual speed to
+/// the slowest entry of the firmware's fan table (1800 rpm), which is why
+/// 0 % in a curve used to sound exactly like a third.
+///
+/// Settles the same way the ceiling does, mirrored: five samples without a
+/// meaningful *fall*. A controller that undershoots on the way down and
+/// climbs back counts the climb as settled, and the last reading - not the
+/// lowest - is the answer, so the undershoot is not mistaken for the floor.
+#[derive(Debug, Clone)]
+pub struct FloorRun {
+    limit_secs: u64,
+    samples: Vec<Sample>,
+    low: Option<i64>,
+    flat_for: usize,
+    saw_reverse: bool,
+}
+
+impl FloorRun {
+    pub fn new(limit_secs: u64) -> Self {
+        Self {
+            limit_secs: limit_secs.clamp(MIN_SECONDS, MAX_SECONDS),
+            samples: Vec::new(),
+            low: None,
+            flat_for: 0,
+            saw_reverse: false,
+        }
+    }
+
+    pub fn push(&mut self, sample: Sample) {
+        let faster = sample.faster();
+        match self.low {
+            Some(low) if faster >= low - SETTLED_RISE_RPM => self.flat_for += 1,
+            _ => self.flat_for = 0,
+        }
+        self.low = Some(self.low.map_or(faster, |low| low.min(faster)));
+        self.saw_reverse |= sample.is_reverse;
+        self.samples.push(sample);
+    }
+
+    pub fn is_done(&self, elapsed_secs: u64) -> bool {
+        elapsed_secs >= self.limit_secs
+            || (elapsed_secs >= MIN_SECONDS && self.flat_for >= SETTLED_SAMPLES)
+    }
+
+    /// The floor, given the ceiling the first half measured. `None` unless
+    /// the fans came well down from it: a machine that ignores the command
+    /// would otherwise report its full speed as its slowest.
+    pub fn finish(&self, peak: i64) -> Option<i64> {
+        if self.saw_reverse {
+            return None;
+        }
+        let rest = self.samples.last()?.faster();
+        (peak - rest >= MIN_RISE_RPM).then_some(rest)
     }
 }
 
@@ -337,10 +404,41 @@ pub(crate) fn run(
     };
 
     let mut calibration = measurement.finish(elapsed);
+    if calibration.verdict.worth_storing() && caps.supports(FanMode::Manual) {
+        measure_floor(paths, caps, limit, &mut calibration);
+    }
     let (restored_mode, restore_error) = restore.finish();
     calibration.restored_mode = restored_mode;
     calibration.restore_error = restore_error;
     Ok(calibration)
+}
+
+/// Runs a [`FloorRun`] straight after the ceiling, while the fans are
+/// still at it. Never fails the calibration: the ceiling is measured and
+/// worth keeping whatever happens here.
+fn measure_floor(paths: &FanPaths, caps: Capabilities, limit: u64, calibration: &mut Calibration) {
+    let Some(peak) = calibration.fan_max_rpm else { return };
+    if control::apply(paths, caps, FanMode::Manual, crate::curve::MIN_COMMANDED_PWM).is_err() {
+        return;
+    }
+
+    let offset = calibration.seconds;
+    let mut floor = FloorRun::new(limit);
+    let started = Instant::now();
+    loop {
+        sleep(SAMPLE_INTERVAL);
+        let elapsed = started.elapsed().as_secs();
+        floor.push(sample(paths, offset + elapsed));
+        if floor.is_done(elapsed) {
+            break;
+        }
+    }
+
+    calibration.samples.extend(floor.samples.iter().copied());
+    calibration.fan_min_rpm = floor.finish(peak);
+    if let Some(min) = calibration.fan_min_rpm {
+        calibration.detail.push_str(&format!("; told the slowest speed, the fans settle at {min} rpm"));
+    }
 }
 
 fn sample(paths: &FanPaths, at_secs: u64) -> Sample {
@@ -417,6 +515,60 @@ mod tests {
 
         assert!(elapsed >= MIN_SECONDS);
         assert_eq!(result.fan_max_rpm, Some(4200), "the second step must be seen");
+    }
+
+    fn feed_floor(run: &mut FloorRun, readings: &[i64]) -> u64 {
+        let mut elapsed = 0;
+        for (i, rpm) in readings.iter().enumerate() {
+            elapsed = i as u64 + 1;
+            run.push(sample_at(elapsed, *rpm, rpm - 100));
+            if run.is_done(elapsed) {
+                break;
+            }
+        }
+        elapsed
+    }
+
+    /// The coast-down measured on board 8D2F: from 5300 to the fan table's
+    /// 1800 in about ten seconds, then flat.
+    #[test]
+    fn the_floor_is_where_the_fans_come_to_rest() {
+        let mut floor = FloorRun::new(DEFAULT_SECONDS);
+        let readings = [4600, 3800, 2900, 2300, 2000, 1800, 1800, 1800, 1800, 1800, 1800, 1800];
+        let elapsed = feed_floor(&mut floor, &readings);
+
+        assert!(elapsed < DEFAULT_SECONDS, "a settled floor should end the run");
+        assert_eq!(floor.finish(5300), Some(1800));
+    }
+
+    /// Undershoot and recover: the resting point is the answer, not the dip.
+    #[test]
+    fn an_undershoot_on_the_way_down_is_not_the_floor() {
+        let mut floor = FloorRun::new(DEFAULT_SECONDS);
+        let readings = [4000, 2600, 1500, 1700, 1800, 1800, 1800, 1800, 1800, 1800, 1800];
+        feed_floor(&mut floor, &readings);
+
+        assert_eq!(floor.finish(5300), Some(1800));
+    }
+
+    /// Told the slowest speed and still at full: the command was ignored,
+    /// and full speed is no one's floor.
+    #[test]
+    fn fans_that_did_not_come_down_have_no_floor() {
+        let mut floor = FloorRun::new(DEFAULT_SECONDS);
+        feed_floor(&mut floor, &[5300; 30]);
+
+        assert_eq!(floor.finish(5300), None);
+    }
+
+    /// A fan that stops when told the minimum has a floor of zero, which
+    /// is an answer rather than a missing reading.
+    #[test]
+    fn fans_that_stop_on_command_have_a_floor_of_zero() {
+        let mut floor = FloorRun::new(DEFAULT_SECONDS);
+        feed_floor(&mut floor, &[3000, 1200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(floor.finish(5300), Some(0));
     }
 
     /// The failure this whole verdict exists for: max is accepted, nothing
@@ -504,6 +656,7 @@ mod tests {
         FanPaths {
             hwmon_dir: Some(dir.to_path_buf()),
             pwm1: dir.join("pwm1").exists().then(|| dir.join("pwm1")),
+            pwm2: None,
             pwm1_enable: Some(dir.join("pwm1_enable")),
             fan1_input: Some(dir.join("fan1_input")),
             fan2_input: Some(dir.join("fan2_input")),

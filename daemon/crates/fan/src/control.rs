@@ -16,6 +16,13 @@
 //! feature table. So a machine can perfectly well be able to do
 //! max/auto and not manual, and this module has to say so rather than
 //! offering a slider that silently does nothing.
+//!
+//! The third thing the file names do not say: on a board in that feature
+//! table, **writing `pwm1_enable = 1` overwrites both setpoints** with the
+//! speed the fans are turning at that moment (the "smooth transition" in
+//! `hp_wmi_hwmon_write`), and at 0 rpm that is `HP_FAN_SPEED_AUTOMATIC` -
+//! the firmware curve again. So the mode switch has to come first, and
+//! only when the driver is not already in manual; see [`speed_writes`].
 
 use std::fs;
 use std::io::ErrorKind;
@@ -137,13 +144,46 @@ fn write_sysfs(path: &Path, value: &str) -> Result<(), ControlError> {
     })
 }
 
+/// The writes that put the fans at `pwm`, in the order they must happen.
+///
+/// The mode switch goes first and is skipped when the driver already
+/// reports manual. The opposite order - speed, then mode - is what this
+/// used to do, and on a feature-table board it cannot work: the speed
+/// written while still in auto is thrown away by the auto path's reset,
+/// and the `pwm1_enable = 1` after it replaces the setpoint with the
+/// current fan speed. Re-sent every tick, it undid every curve step the
+/// moment it was made, and with the fans stopped it meant firmware auto.
+///
+/// On the older path the driver stores `pwm1` as given, so switching first
+/// runs its default of 128 for the microseconds until the next write -
+/// far too short for a fan to answer. That is also the order the Python
+/// original uses (`set_fan_pwm`).
+///
+/// `pwm2` is the GPU fan. The driver keeps a setpoint per fan, and a speed
+/// written only to `pwm1` leaves the second fan wherever the mode switch
+/// put it.
+fn speed_writes<'a>(
+    enable: &'a Path,
+    pwm1: &'a Path,
+    pwm2: Option<&'a Path>,
+    hardware_mode: Option<u8>,
+    pwm: u8,
+) -> Vec<(&'a Path, String)> {
+    let mut writes = Vec::with_capacity(3);
+    if hardware_mode != Some(1) {
+        writes.push((enable, "1".to_string()));
+    }
+    writes.push((pwm1, pwm.to_string()));
+    if let Some(pwm2) = pwm2 {
+        writes.push((pwm2, pwm.to_string()));
+    }
+    writes
+}
+
 /// Applies a mode to the hardware.
 ///
-/// `pwm` is only consulted for the modes that need one, and the order of
-/// the two writes is deliberate: writing `pwm1` first stores the value in
-/// the driver, so that switching to `PWM_MODE_MANUAL` immediately applies
-/// *it* rather than the driver's own default of 128 (a bare
-/// `pwm1_enable = 1` on a fresh boot means 50 %, chosen by nobody).
+/// `pwm` is only consulted for the modes that need one; see
+/// [`speed_writes`] for why those writes are ordered the way they are.
 pub fn apply(paths: &FanPaths, caps: Capabilities, mode: FanMode, pwm: u8) -> Result<(), ControlError> {
     if !caps.supports(mode) {
         return Err(ControlError::Unsupported(
@@ -162,8 +202,11 @@ pub fn apply(paths: &FanPaths, caps: Capabilities, mode: FanMode, pwm: u8) -> Re
         FanMode::Max => write_sysfs(enable, "0"),
         FanMode::Manual | FanMode::Curve => {
             let pwm1 = paths.pwm1.as_deref().ok_or(ControlError::Unsupported(mode.as_str(), "pwm1"))?;
-            write_sysfs(pwm1, &pwm.to_string())?;
-            write_sysfs(enable, "1")
+            let pwm2 = paths.pwm2.as_deref().filter(|p| p.exists());
+            for (path, value) in speed_writes(enable, pwm1, pwm2, read_hardware_mode(paths), pwm) {
+                write_sysfs(path, &value)?;
+            }
+            Ok(())
         }
     }
 }
@@ -203,6 +246,7 @@ mod tests {
         FanPaths {
             hwmon_dir: Some(dir.to_path_buf()),
             pwm1: Some(dir.join("pwm1")),
+            pwm2: Some(dir.join("pwm2")),
             pwm1_enable: Some(dir.join("pwm1_enable")),
             fan1_input: Some(dir.join("fan1_input")),
             fan2_input: Some(dir.join("fan2_input")),
@@ -258,17 +302,61 @@ mod tests {
         assert_eq!(read(&dir, "pwm1_enable"), "2");
     }
 
-    /// The speed has to be in place before the mode switch, or the driver
-    /// applies its own default of 128 for one keep-alive period.
     #[test]
-    fn manual_writes_the_speed_before_switching_mode() {
-        let dir = fixture("manual", &["pwm1_enable", "pwm1"]);
+    fn manual_sets_both_fans_and_the_mode() {
+        let dir = fixture("manual", &["pwm1_enable", "pwm1", "pwm2"]);
         let p = paths(&dir);
 
         apply(&p, Capabilities::detect(&p), FanMode::Manual, 200).unwrap();
 
         assert_eq!(read(&dir, "pwm1"), "200");
+        assert_eq!(read(&dir, "pwm2"), "200");
         assert_eq!(read(&dir, "pwm1_enable"), "1");
+    }
+
+    /// Plenty of drivers have no second channel; that is not an error.
+    #[test]
+    fn a_driver_without_pwm2_is_driven_through_pwm1_alone() {
+        let dir = fixture("manual-nopwm2", &["pwm1_enable", "pwm1"]);
+        let p = paths(&dir);
+
+        apply(&p, Capabilities::detect(&p), FanMode::Curve, 90).unwrap();
+
+        assert_eq!(read(&dir, "pwm1"), "90");
+        assert!(!dir.join("pwm2").exists(), "a missing channel must not be created");
+    }
+
+    /// On a feature-table board `pwm1_enable = 1` replaces the setpoints
+    /// with the current fan speed, so it has to come before the speed.
+    #[test]
+    fn the_mode_switch_comes_before_the_speed() {
+        let (enable, pwm1, pwm2) = (Path::new("e"), Path::new("p1"), Path::new("p2"));
+
+        let from_auto = speed_writes(enable, pwm1, Some(pwm2), Some(2), 200);
+
+        assert_eq!(
+            from_auto,
+            vec![(enable, "1".to_string()), (pwm1, "200".to_string()), (pwm2, "200".to_string())]
+        );
+    }
+
+    /// And a curve tick in a driver that is already in manual must not
+    /// switch again, or it undoes the speed it is about to set.
+    #[test]
+    fn a_driver_already_in_manual_is_not_switched_again() {
+        let (enable, pwm1) = (Path::new("e"), Path::new("p1"));
+
+        let writes = speed_writes(enable, pwm1, None, Some(1), 120);
+
+        assert_eq!(writes, vec![(pwm1, "120".to_string())]);
+    }
+
+    /// A mode that cannot be read is not known to be manual.
+    #[test]
+    fn an_unreadable_mode_is_switched_to_be_sure() {
+        let (enable, pwm1) = (Path::new("e"), Path::new("p1"));
+
+        assert_eq!(speed_writes(enable, pwm1, None, None, 120)[0], (enable, "1".to_string()));
     }
 
     #[test]

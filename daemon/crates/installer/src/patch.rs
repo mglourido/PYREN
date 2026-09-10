@@ -77,6 +77,45 @@ static void hp_wmi_apply_measured_max_rpm(struct hp_wmi_hwmon_priv *priv)
 }
 "#;
 
+/// The driver's two PWM <-> RPM conversions, exactly as upstream has them.
+///
+/// Both truncate, and a manual write runs through three of them - pwm to
+/// rpm to clamp it, rpm to pwm to store it, pwm to rpm again to send it -
+/// so every setting but full speed reached the firmware one step (100 rpm)
+/// below what was asked. Measured on board 8D2F: `pwm1 = 128` of a 5300
+/// rpm fan sent 2500 rather than 2700, and the table's slowest entry of
+/// 1800 went out as 1700.
+const RPM_CONVERSION_ORIGINAL: &str = "static inline u8 rpm_to_pwm(u8 rpm, u8 max_rpm)
+{
+\treturn fixp_linear_interpolate(0, 0, max_rpm, U8_MAX, clamp_val(rpm, 0, max_rpm));
+}
+
+static inline u8 pwm_to_rpm(u8 pwm, u8 max_rpm)
+{
+\treturn fixp_linear_interpolate(0, 0, U8_MAX, max_rpm, clamp_val(pwm, 0, U8_MAX));
+}
+";
+
+/// Rounded instead. With `max_rpm` under 255 a stored pwm is always within
+/// half a step of the rpm it came from, so the round trip is exact.
+const RPM_CONVERSION_ROUNDED: &str = "/*
+ * Pyren: rounded rather than truncated. A manual write converts
+ * pwm -> rpm -> pwm -> rpm on its way to the firmware, and truncating at
+ * each step sent one step (100 rpm) below the speed asked for.
+ */
+static inline u8 rpm_to_pwm(u8 rpm, u8 max_rpm)
+{
+\tif (!max_rpm)
+\t\treturn 0;
+\treturn DIV_ROUND_CLOSEST((unsigned int)clamp_val(rpm, 0, max_rpm) * U8_MAX, max_rpm);
+}
+
+static inline u8 pwm_to_rpm(u8 pwm, u8 max_rpm)
+{
+\treturn DIV_ROUND_CLOSEST((unsigned int)pwm * max_rpm, U8_MAX);
+}
+";
+
 #[derive(Debug, thiserror::Error)]
 pub enum PatchError {
     #[error("io error on {path}: {source}")]
@@ -264,6 +303,21 @@ pub fn add_measured_rpm_params(source: &str) -> Result<(String, Option<String>),
     ))
 }
 
+/// Swaps the driver's truncating PWM <-> RPM conversions for rounding ones.
+/// See [`RPM_CONVERSION_ORIGINAL`] for what the truncation cost.
+pub fn round_rpm_conversions(source: &str) -> Result<(String, Option<String>), PatchError> {
+    if source.contains(RPM_CONVERSION_ROUNDED) {
+        return Ok((source.to_string(), None));
+    }
+    if !source.contains(RPM_CONVERSION_ORIGINAL) {
+        return Err(PatchError::AnchorMissing("the rpm_to_pwm/pwm_to_rpm conversions".to_string()));
+    }
+    Ok((
+        source.replacen(RPM_CONVERSION_ORIGINAL, RPM_CONVERSION_ROUNDED, 1),
+        Some("pwm/rpm conversions rounded rather than truncated".to_string()),
+    ))
+}
+
 /// Rewrites the value of `#define <name> <value>`, keeping the rest of the
 /// line. Returns `None` when the define isn't present.
 fn replace_define_value(source: &str, define: &str, value: u32) -> Option<String> {
@@ -434,6 +488,10 @@ pub fn patch_driver_tree(
     // first install - the one case where there cannot be one yet - unable
     // to accept the calibration that follows it.
     let (patched, change) = add_measured_rpm_params(&source)?;
+    source = patched;
+    applied.extend(change);
+
+    let (patched, change) = round_rpm_conversions(&source)?;
     source = patched;
     applied.extend(change);
 
@@ -688,6 +746,25 @@ mod upstream_source_tests {
         let (twice, change) = add_measured_rpm_params(&once).unwrap();
         assert_eq!(once, twice);
         assert!(change.is_none(), "nothing to report when nothing changed");
+    }
+
+    /// The conversions are replaced whole, so the anchor is the exact text
+    /// upstream ships; a reformat there must fail here, not on install.
+    #[test]
+    fn the_rpm_conversions_are_rounded_in_the_real_driver() {
+        let Some(source) = real_source() else {
+            eprintln!("skipped: driver sources not found");
+            return;
+        };
+
+        let (patched, change) = round_rpm_conversions(&source).expect("conversion anchor missing");
+        assert!(change.is_some());
+        assert!(!patched.contains("fixp_linear_interpolate(0, 0, U8_MAX, max_rpm"));
+        assert_eq!(patched.matches("static inline u8 pwm_to_rpm").count(), 1);
+
+        let (twice, change) = round_rpm_conversions(&patched).unwrap();
+        assert_eq!(twice, patched, "rounding twice changes nothing");
+        assert!(change.is_none());
     }
 
     #[test]

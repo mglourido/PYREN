@@ -81,9 +81,9 @@ pub fn percent_at(curve: &[CurvePoint], temp_c: f64, interpolation: Interpolatio
 /// Percentage → the 0-255 value `pwm1` takes.
 ///
 /// Never returns 0 for a positive percentage, because 0 means "give up and
-/// let the firmware decide" (see [`MIN_COMMANDED_PWM`]). A curve asking for
-/// 0 % is asking for the slowest speed the hardware will hold, not for the
-/// firmware curve back.
+/// let the firmware decide" (see [`MIN_COMMANDED_PWM`]). Whether a speed
+/// this low is one the fans can hold at all is a separate question, and
+/// [`stop_below_pwm`] is where it is answered.
 pub fn percent_to_pwm(percent: f64) -> u8 {
     let clamped = percent.clamp(0.0, 100.0);
     let raw = (clamped / 100.0 * 255.0).round() as i64;
@@ -93,6 +93,46 @@ pub fn percent_to_pwm(percent: f64) -> u8 {
 /// Target PWM for a temperature, or `None` if the curve is empty.
 pub fn target_pwm(curve: &[CurvePoint], temp_c: f64, interpolation: Interpolation) -> Option<u8> {
     percent_at(curve, temp_c, interpolation).map(percent_to_pwm)
+}
+
+/// The PWM below which a commanded speed is not one the fans can hold, so
+/// the fans are handed to the firmware instead. `0` means never.
+///
+/// Board 8D2F is why: its fan table starts at 1800 rpm and the driver
+/// clamps every manual speed up to that, so everything from 0 to a third
+/// of the scale came out as the same audible 1800. The firmware, meanwhile,
+/// does stop the fans when the machine is cool - measured at 0 rpm within
+/// fifteen seconds of `pwm1_enable = 2` at 38 C. Nothing a speed command
+/// can say reaches 0 rpm here (0 is the driver's "automatic"), so a curve
+/// that asks for less than the floor gets the one thing that does.
+///
+/// Only with a measured floor (`fan.calibrate`): without one there is no
+/// telling a board with a floor from one that will turn at 1/255, and the
+/// latter should get the slow speed it was asked for. A measured floor of
+/// 0 is a fan that stops when told the minimum, and needs no hand-over.
+pub fn stop_below_pwm(fan_min_rpm: Option<i64>, fan_max_rpm: Option<i64>) -> u8 {
+    match (fan_min_rpm, fan_max_rpm) {
+        (Some(min), Some(max)) if min > 0 && max > 0 => {
+            // Rounded up: a target exactly at the floor is a speed the fans
+            // hold, and must not be read as one below it.
+            let pwm = (min * 255 + max - 1) / max;
+            pwm.clamp(MIN_COMMANDED_PWM as i64 + 1, 255) as u8
+        }
+        _ => 0,
+    }
+}
+
+/// Whether the fans should be with the firmware rather than at `target`.
+///
+/// Banded so a temperature sitting on the threshold does not start and
+/// stop the fans every tick, which is louder than either state: once
+/// stopped they restart only [`PWM_DEADBAND`] above the floor.
+pub fn release_fans(target: u8, stop_below: u8, released: bool) -> bool {
+    if stop_below == 0 {
+        return false;
+    }
+    let threshold = if released { stop_below.saturating_add(PWM_DEADBAND) } else { stop_below };
+    target < threshold
 }
 
 /// A fixed-size moving average over the last `window` temperatures.
@@ -277,6 +317,41 @@ mod tests {
     fn zero_percent_never_becomes_the_drivers_automatic_sentinel() {
         assert_eq!(percent_to_pwm(0.0), MIN_COMMANDED_PWM);
         assert_ne!(percent_to_pwm(0.0), 0);
+    }
+
+    /// Board 8D2F: 1800 of 5300 rpm is 86.6/255, so 87 is the first PWM
+    /// the fans can hold.
+    #[test]
+    fn the_floor_is_the_measured_minimum_on_the_pwm_scale() {
+        assert_eq!(stop_below_pwm(Some(1800), Some(5300)), 87);
+    }
+
+    #[test]
+    fn without_a_measured_floor_nothing_is_handed_over() {
+        assert_eq!(stop_below_pwm(None, Some(5300)), 0);
+        assert_eq!(stop_below_pwm(Some(1800), None), 0);
+        assert!(!release_fans(MIN_COMMANDED_PWM, 0, false));
+    }
+
+    /// A fan that stops when told the minimum needs no firmware to stop it.
+    #[test]
+    fn a_floor_of_zero_needs_no_hand_over() {
+        assert_eq!(stop_below_pwm(Some(0), Some(5300)), 0);
+    }
+
+    #[test]
+    fn below_the_floor_the_fans_go_to_the_firmware() {
+        assert!(release_fans(percent_to_pwm(0.0), 87, false));
+        assert!(release_fans(86, 87, false));
+        assert!(!release_fans(87, 87, false), "the floor itself is a speed");
+    }
+
+    /// Stopped fans restart a deadband above the floor, not at it.
+    #[test]
+    fn stopped_fans_restart_only_clear_of_the_floor() {
+        assert!(release_fans(87, 87, true));
+        assert!(release_fans(87 + PWM_DEADBAND - 1, 87, true));
+        assert!(!release_fans(87 + PWM_DEADBAND, 87, true));
     }
 
     #[test]

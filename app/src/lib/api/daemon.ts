@@ -97,6 +97,15 @@ export type FanStatus = {
    *  detail; this is here so any page can grey out a fan control. */
   cleaning: boolean;
   fanMaxRpm: number | null;
+  /** The slowest the fans hold when commanded, from a calibration. Null
+   *  until one has measured it. */
+  fanMinRpm: number | null;
+  /** Speeds below this 0-255 value hand the fans to the firmware, which is
+   *  what stops them on a board whose fans have a floor. 0: never. */
+  stopBelowPwm: number;
+  /** In manual or curve, the speed asked for is below that floor and the
+   *  firmware has the fans right now. */
+  fansReleased: boolean;
   /** Last failure from the control loop, e.g. a write that needed root.
    *  Translatable - render with `tm()`. */
   error: Msg | null;
@@ -514,6 +523,8 @@ export type FanCalibration = {
   fanMaxRpm: number | null;
   fan1MaxRpm: number | null;
   fan2MaxRpm: number | null;
+  /** The slowest the fans settle at when commanded the minimum. */
+  fanMinRpm: number | null;
   baselineRpm: number | null;
   startedAtMax: boolean;
   seconds: number;

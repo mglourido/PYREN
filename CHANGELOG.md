@@ -11,6 +11,17 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **0 % can stop the fans.** On boards whose fans have a floor — 8D2F's
+  driver cannot command less than 1800 rpm, so everything from 0 to a
+  third of the scale sounded the same — a curve or manual speed below that
+  floor now hands the fans to the firmware, which stops them while the
+  machine is cool and spins them up on its own if it is not. They come
+  back under the curve once it climbs a deadband clear of the floor.
+  `fan.calibrate` measures the floor after the ceiling (`fanMinRpm`); until
+  it has, nothing changes. `fan.getStatus` reports `fanMinRpm`,
+  `stopBelowPwm` and `fansReleased`, and the performance page shades the
+  band on the curve and says when the firmware has the fans.
+
 - **One fan curve per power profile.** Eco, Balanced, Performance and
   Unlimited each keep their own curve, and the one driving the fans follows
   the machine — including when the performance key, the OSD or the daemon's
@@ -39,6 +50,22 @@ the IPC protocol and on-disk config.
 
 ### Fixed
 
+- **Manual and curve fan modes did nothing on boards in the driver's
+  feature table** (8D2F among them, once the installer adds it). On those
+  boards `pwm1_enable = 1` replaces both setpoints with the speed the fans
+  are turning at, and at 0 rpm that is the driver's "automatic". Pyren
+  wrote the speed first and the mode second, on every tick, so each step
+  was undone the moment it was made. The mode now goes first and only when
+  the driver is not already in manual — the order the Python original
+  uses — and `pwm2`, the GPU fan, is written too. A `speedControl:
+  ignored` stored on such a board before this fix was very likely this bug
+  rather than the embedded controller; re-run `fan probe-speed`.
+- **Every manual speed reached the fans 100 rpm slow.** The driver's
+  pwm ↔ rpm conversions truncate, and a write goes through three of them:
+  on board 8D2F, `pwm1 = 128` of a 5300 rpm fan sent 2500 rather than
+  2700, and the fan table's slowest entry, 1800, went out as 1700. The
+  installer now patches both conversions to round, which makes the round
+  trip exact; a driver reinstall picks it up.
 - **`fan.diagnose`'s write check could not fail.** It wrote back the value
   already in `pwm1` and compared — but on a driver whose `pwm1` reports the
   *measured* fan speed rather than the setpoint, that is a tautology. It

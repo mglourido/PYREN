@@ -1000,6 +1000,7 @@ fn check_fan_cleaner() -> Check {
 fn paths_for_testing(hwmon_dir: PathBuf, cpu_temp: Option<PathBuf>) -> FanPaths {
     FanPaths {
         pwm1: Some(hwmon_dir.join("pwm1")),
+        pwm2: Some(hwmon_dir.join("pwm2")),
         pwm1_enable: Some(hwmon_dir.join("pwm1_enable")),
         fan1_input: Some(hwmon_dir.join("fan1_input")),
         fan2_input: Some(hwmon_dir.join("fan2_input")),

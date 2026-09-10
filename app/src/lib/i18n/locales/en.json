@@ -158,6 +158,9 @@
     "onMains": "On AC power",
     "applyToOsProfileHint": "Mirrors the selected mode onto the OS power profile (power-profiles-daemon / platform_profile), so applications that read it stay in sync.",
     "fanReverse": "reverse",
+    "fanStopBand": "fans stop",
+    "fanStopBelow": "Below {percent}% the fans cannot turn slowly enough, so the firmware takes them and stops them while the machine is cool. From {percent}% up they run at the speed you set.",
+    "fanStoppedByFirmware": "The speed asked for is below what these fans can hold, so the firmware has them: stopped while the machine is cool, and spinning up on its own if it gets hot.",
     "pl1Hint": "Sustained CPU power limit, in watts. This is the one the fans feel.",
     "pl2Hint": "Short-term boost limit, in watts.",
     "smartBoostHint": "Extra wattage the firmware may add on top of the base limit.",
@@ -1009,12 +1012,14 @@
     "done": "Done",
     "failedNote": "Something went wrong. The log above says which step and why.",
     "close": "Close",
-    "calibrateAfter": "Measure the fans when the install finishes",
-    "calibrateFirstHint": "Nothing has measured this machine yet, and it could not have: it takes the driver being installed first. About 20 seconds, and loud.",
+    "calibrateAfter": "Measure the fans' speed range when the install finishes",
+    "calibrateFirstHint": "Measures the fastest and the slowest the fans will hold, which is how the curve knows how far it goes and when to stop them. Nothing has measured this machine yet, and it could not have: it takes the driver being installed first. About 40 seconds, and loud.",
     "calibrateAgainHint": "Already measured at {rpm} rpm. Only worth repeating if the fans have been cleaned or replaced. About 20 seconds, and loud.",
-    "calibrateLoud": "the fans go to full speed until the reading settles",
+    "calibrateAgainRangeHint": "Already measured: {min} to {max} rpm. Only worth repeating if the fans have been cleaned or replaced, or the driver reinstalled. About 40 seconds, and loud.",
+    "calibrateFloorHint": "Full speed is already measured at {rpm} rpm, but not the slowest speed the fans hold - which is what lets 0% stop them. About 40 seconds, and loud.",
+    "calibrateLoud": "the fans go to full speed until the reading settles, then down to their slowest",
     "step": {
-      "calibrate": "Measure what full speed is on this machine"
+      "calibrate": "Measure the fans' fastest and slowest speeds"
     }
   }
 }
