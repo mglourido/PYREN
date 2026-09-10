@@ -944,8 +944,10 @@ lifts Pyren's floor with it, tells the driver, and appends to
 It only ever raises, never past the driver's own floor, and waits 5
 minutes between raises. `recentFanStalls` is faults seen but not yet acted
 on. `fan.clearFloorNotices` empties the log; `fan.floorRaised` on the
-event bus carries the same thing for a live client. A full `fan.calibrate`
-re-measures the floor properly and starts the log clean.
+event bus carries the same thing for a live client. The app reads
+`floorNotices` on every poll and shows them in its notification history,
+and fires an OS notification on a live `fan.floorRaised`. A full
+`fan.calibrate` re-measures the floor properly and starts the log clean.
 
 ### What `capabilities` is for
 

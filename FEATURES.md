@@ -9,6 +9,8 @@
   - **Auto** — managed by the active performance profile (firmware has its own curve per profile)
   - **Manual** — user sets a fixed fan speed (%) that stays constant
   - **Curve** — user defines a custom fan curve
+- **Sub-1800 rpm fan floor** — the patched driver lets the fans run below the firmware fan table's slowest entry; a calibration measures how slow they can hold, a setting chooses that floor or the driver's, and below it the firmware takes over and stops the fans when the machine is cool
+- **Automatic floor correction** — the daemon watches for the fans stalling near that floor and nudges it up on its own, with an entry in the app's notification history
 - **Fan cleaning mode** (fans spin in reverse to help clear out dust)
 - **Keyboard RGB control**
 - **Graphics switching** (toggle between "Integrated only" [iGPU only], "Hybrid" [switches between iGPU and dGPU], and "Discrete" [dGPU only])
@@ -23,6 +25,7 @@
 - **Feature compatibility checker**
 - **Safe installer** for the patched Linux kernel driver `hp-wmi`, supporting automatic (recommended) or manual installation (for testing or as a fallback if automatic install fails)
 - **App update checker**
+- **Notification centre** — a bell in the header opens a centre-screen history of daemon events (currently the automatic fan-floor corrections); live events also fire an OS notification
 
 ## Other app features
 

@@ -206,8 +206,9 @@ pub struct FanConfig {
     /// something to opt into.
     pub keep_driver_floor: bool,
     /// Times the stall watch has raised Pyren's floor because the fans kept
-    /// stalling at it, newest first. Kept for the app to show later; the
-    /// daemon has no way to notify yet. See [`FloorNotice`], [`stall`].
+    /// stalling at it, newest first. The app reads these from `getStatus`
+    /// and shows them in its notification history (the `fan.floorRaised`
+    /// event carries the same thing live). See [`FloorNotice`], [`stall`].
     pub fan_floor_notices: Vec<FloorNotice>,
     /// Whether a commanded speed was ever found to reach the fans.
     ///
