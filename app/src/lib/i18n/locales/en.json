@@ -423,6 +423,8 @@
     "demoMode": "Demo data when the daemon is unreachable",
     "resetSettings": "Reset all settings",
     "fans": "Fans",
+    "keepFanMode": "Keep the fan control mode across restarts",
+    "keepFanModeHint": "Off by default. On, the daemon remembers whichever fan mode was in force when it stopped - auto, manual, max or curve - and puts it back when it starts, whatever the power profile. Off, it leaves the fans on the firmware's own control at boot until you ask for something.",
     "keepDriverFloor": "Keep the official driver's minimum fan speed",
     "keepDriverFloorHint": "On: the fans never turn slower than {driver} rpm, the official driver's minimum. Off: they go down to {pyren} rpm - the slowest Pyren measured them holding, plus a step of margin so they do not stall. Below the minimum in use the firmware takes them and stops them while the machine is cool.",
     "floorNeedsDriver": "The installed driver predates this option and only allows its own minimum. Reinstall it from Drivers.",

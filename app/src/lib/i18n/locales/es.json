@@ -423,6 +423,8 @@
     "demoMode": "Datos de demostración cuando el daemon no responde",
     "resetSettings": "Restablecer todos los ajustes",
     "fans": "Ventiladores",
+    "keepFanMode": "Mantener el modo de control de los ventiladores entre reinicios",
+    "keepFanModeHint": "Desactivado por defecto. Activado, el daemon recuerda el modo de ventilador que estaba en uso cuando se detuvo (automático, manual, máximo o curva) y lo vuelve a aplicar al arrancar, sea cual sea el perfil de rendimiento. Desactivado, al arrancar deja los ventiladores bajo el control del firmware hasta que pidas algo.",
     "keepDriverFloor": "Mantener el límite mínimo de velocidad del driver oficial",
     "keepDriverFloorHint": "Activado: los ventiladores nunca giran por debajo de {driver} rpm, el mínimo del driver oficial. Desactivado: bajan hasta {pyren} rpm: lo más lento que Pyren midió que aguantan, más un escalón de margen para que no se calen. Por debajo del mínimo en uso, el firmware se encarga de ellos y los para mientras el equipo está frío.",
     "floorNeedsDriver": "El driver instalado es anterior a esta opción y solo admite su propio mínimo. Reinstálalo desde Drivers.",

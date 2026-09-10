@@ -271,11 +271,24 @@
     </div>
   </Panel>
 
-  <!-- The fans' floor. Only where a speed can be commanded at all: on a
-       machine limited to auto and max there is no floor to choose. -->
-  {#if hardware.fan?.capabilities.setSpeed}
+  <!-- Fan control settings. The keep-mode row needs only mode switching;
+       the floor rows below need a commandable speed, so on a machine
+       limited to auto and max there is no floor to choose. -->
+  {#if hardware.fan?.capabilities.switchMode}
     {@const fan = hardware.fan}
     <Panel title={t("settings.fans")}>
+      <div class="row">
+        <span>
+          {t("settings.keepFanMode")}
+          <small class="hint-inline">{t("settings.keepFanModeHint")}</small>
+        </span>
+        <Toggle
+          checked={fan.restoreModeOnStart}
+          onchange={(v) => void hardware.setFanRestoreOnStart(v)}
+          ariaLabel={t("settings.keepFanMode")}
+        />
+      </div>
+      {#if fan.capabilities.setSpeed}
       <div class="row">
         <span>
           {t("settings.keepDriverFloor")}
@@ -299,6 +312,7 @@
         <p class="notice warn">{t("settings.floorNeedsDriver")}</p>
       {:else if fan.pyrenMinRpm === null}
         <p class="notice warn">{t("settings.floorNotMeasured")}</p>
+      {/if}
       {/if}
     </Panel>
   {/if}
