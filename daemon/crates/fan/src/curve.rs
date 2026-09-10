@@ -178,7 +178,7 @@ const RPM_DEADBAND: i64 = 200;
 /// measures and most machines have never been asked for. 8/255 is a hair
 /// over 3 %, small enough to track a curve and large enough to swallow the
 /// jitter of a smoothed temperature.
-const PWM_DEADBAND: u8 = 8;
+pub const PWM_DEADBAND: u8 = 8;
 
 /// Longest a write may be suppressed for.
 ///

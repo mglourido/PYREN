@@ -260,6 +260,12 @@ fn main() {
     // the supervisor - is announced on this, so an open UI never sits
     // showing a mode the machine has already left.
     power.publish_to(Arc::clone(&events));
+    // The fan module publishes too, but only one thing: `fan.floorRaised`,
+    // when its stall watch has nudged the fans' minimum speed up because
+    // they kept giving out at it. Nothing in-process listens; it is for a
+    // future app notification, and until then `fan.getStatus` carries the
+    // same record.
+    fan.publish_to(Arc::clone(&events));
 
     // ...and the fan module listens to that announcement, so the curve
     // drawn for a profile is the one that runs while the machine is in it.

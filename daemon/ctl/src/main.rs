@@ -72,7 +72,10 @@ FANS
                                on board 8D2F) or Pyren's, which
                                'fan calibrate' measures lower. Below it
                                the firmware gets the fans and stops them
-                               when cool
+                               when cool. On Pyren's floor the daemon
+                               watches for the fans stalling and nudges it
+                               up if they keep doing so
+  fan notices clear            drop the log of those automatic nudges
   fan diagnose [--write]       the fan-control self-test
   fan probe-speed [--seconds N]
                                hold the fans at a speed they are not at and
@@ -353,6 +356,9 @@ fn run(command: &args::Command) -> Run {
                 other => return Err(format!("fan floor: expected driver or pyren, got '{other}'").into()),
             };
             show(command, client::call("fan", "setKeepDriverFloor", json!({ "enabled": keep }))?, print_fan)
+        }
+        ["fan", "notices", "clear"] => {
+            show(command, client::call("fan", "clearFloorNotices", json!({}))?, print_fan)
         }
         ["fan", "calibrate"] => {
             let seconds = command.number("seconds")?;
@@ -1178,6 +1184,36 @@ fn print_fan(status: &Value) {
     }
     if status.get("fansReleased").and_then(Value::as_bool) == Some(true) {
         row("now", "below the floor - the firmware has the fans".to_string());
+    }
+    if let Some(stalls) = status.get("recentFanStalls").and_then(Value::as_u64).filter(|&n| n > 0) {
+        row("stalls", format!("{stalls} in the last half hour, not enough to raise the floor yet"));
+    }
+    if let Some(notices) = status.get("floorNotices").and_then(Value::as_array).filter(|n| !n.is_empty()) {
+        for n in notices {
+            let at = |k| n.get(k).and_then(Value::as_i64).unwrap_or(0);
+            let ago = n.get("ageSecs").and_then(Value::as_u64).map_or_else(
+                || "?".to_string(),
+                |s| match s {
+                    0..=5400 => format!("{}m ago", s / 60),
+                    _ => format!("{}h ago", s / 3600),
+                },
+            );
+            let tail = if n.get("reachedDriverFloor").and_then(Value::as_bool) == Some(true) {
+                " (the driver's own now - recalibrate to re-measure)"
+            } else {
+                ""
+            };
+            row(
+                "raised",
+                format!(
+                    "floor {} -> {} rpm after {} stalls, {ago}{tail}",
+                    at("raisedFromRpm"),
+                    at("raisedToRpm"),
+                    at("stalls"),
+                ),
+            );
+        }
+        println!("           clear with 'fan notices clear'");
     }
     if let Some(error) = msg_line(status, "error") {
         println!("  ! {error}");
