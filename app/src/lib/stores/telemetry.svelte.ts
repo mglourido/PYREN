@@ -27,6 +27,7 @@ import {
   type TempReading,
 } from "$lib/api/daemon";
 import { hardware } from "./hardware.svelte";
+import { notifications } from "./notifications.svelte";
 import { settings } from "./settings.svelte";
 
 /** Number of samples kept for the sparkline graphs (~2 min at 2s). */
@@ -226,6 +227,9 @@ export class Telemetry {
       const status = fan.value;
       reachable = true;
       hardware.observeFan(status);
+      // The daemon persists its fan-floor-raise log, so a raise that
+      // happened with the app closed still reaches the bell on this poll.
+      notifications.observeFanStatus(status);
       this.driverInstalled = status.driverInstalled;
       this.fanReverse = status.isReverse;
       if (status.driverInstalled) {

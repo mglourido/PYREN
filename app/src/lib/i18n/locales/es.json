@@ -42,7 +42,8 @@
     "notSupported": "No compatible con este equipo",
     "comingSoon": "Próximamente",
     "yes": "Sí",
-    "no": "No"
+    "no": "No",
+    "close": "Cerrar"
   },
   "home": {
     "title": "Kit de herramientas para rendimiento de juegos",
@@ -354,6 +355,24 @@
     "daemonDownBody": "Mostrando datos simulados. Inicia el daemon para controlar tu hardware.",
     "unsupportedTitle": "Equipo no compatible",
     "unsupportedBody": "Esto no parece un portátil HP OMEN o Victus. La app funciona, pero el control de hardware no."
+  },
+  "notifications": {
+    "title": "Notificaciones",
+    "unread": "Notificaciones ({n} sin leer)",
+    "empty": "No hay nada que contar.",
+    "clear": "Borrar",
+    "recalibrate": "Recalibrar los ventiladores",
+    "age": {
+      "now": "ahora mismo",
+      "minutes": "hace {n} min",
+      "hours": "hace {n} h",
+      "days": "hace {n} d"
+    },
+    "floorRaised": {
+      "title": "Velocidad mínima de ventilador subida",
+      "body": "Los ventiladores se calaban a {from} rpm, así que la velocidad mínima se subió a {to} rpm.",
+      "bodyCapped": "Los ventiladores se calaban a {from} rpm. La velocidad mínima es ya la del propio controlador ({to} rpm) y no puede bajar más; recalibra para volver a medirla."
+    }
   },
   "settings": {
     "title": "Ajustes",

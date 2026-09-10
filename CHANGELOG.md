@@ -11,6 +11,19 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **Notifications in the app.** A bell in the header, with an unread badge,
+  opens a box in the middle of the window listing what the daemon has
+  reported — for now just the fan stall watch raising the fan floor
+  (`fan.floorRaised`). History survives an app restart: it is reconciled
+  from the daemon's persisted `floorNotices` on every telemetry poll and
+  from the live event bus when the window is open, deduped by a
+  content-derived id. A raise that reached the driver's own floor offers a
+  shortcut to the drivers page to recalibrate. Read/unread is a
+  `localStorage` convenience; "Clear" also empties the daemon's log via
+  `fan.clearFloorNotices`. A live raise fires an OS notification through
+  `tauri-plugin-notification` (permission requested on first use, a no-op
+  outside Tauri).
+
 - **Fans can run below the driver's 1800 rpm floor.** The upstream driver
   clamps every manual speed to its fan table's slowest entry, which is the
   bottom of the firmware's *automatic* curve rather than the slowest the
@@ -39,8 +52,8 @@ the IPC protocol and on-disk config.
   speed that reads near zero or jumps back up is a fault; three in half an
   hour raises the stored held-speed one 100 rpm step (and Pyren's floor
   with it), tells the driver, and appends to `fan.getStatus`'s new
-  `floorNotices` — kept for a future app notification, which is not built
-  yet. It only ever raises, never past the driver's own floor, and waits
+  `floorNotices` — which the app surfaces as a notification (see above).
+  It only ever raises, never past the driver's own floor, and waits
   five minutes between raises. `fan.floorRaised` carries it on the event
   bus too; `fan.clearFloorNotices` (`pyren-ctl fan notices clear`) empties
   the log; a full `fan.calibrate` re-measures the floor and starts it

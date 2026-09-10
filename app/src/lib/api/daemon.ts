@@ -53,6 +53,25 @@ export type FanCurvePoint = { tempC: number; percent: number };
 /** Which temperature the curve follows. */
 export type FanReferenceSensor = "cpu" | "gpu";
 
+/**
+ * One time the daemon's stall watch raised Pyren's fan floor because the
+ * fans kept giving out at it. The daemon persists these (newest first,
+ * capped at 5) and hands the same shape to the event bus as
+ * `fan.floorRaised`; the notifications store reconciles the two.
+ */
+export type FanFloorNotice = {
+  /** Wall-clock seconds, so a reader can turn it into an age of its own. */
+  atUnixSecs: number;
+  /** ...which the daemon does anyway, against its own clock. */
+  ageSecs: number;
+  raisedFromRpm: number;
+  raisedToRpm: number;
+  stalls: number;
+  /** The raise met the driver's own floor: nothing lower is left, and a
+   *  recalibration is the next step. */
+  reachedDriverFloor: boolean;
+};
+
 export type FanStatus = {
   driverInstalled: boolean;
   capabilities: FanCapabilities;
@@ -117,6 +136,13 @@ export type FanStatus = {
   /** In manual or curve, the speed asked for is below that floor and the
    *  firmware has the fans right now. */
   fansReleased: boolean;
+  /** Times the daemon raised Pyren's floor because the fans kept stalling
+   *  at it, newest first (capped at 5). The notifications store surfaces
+   *  these; `fan.clearFloorNotices` empties the log. */
+  floorNotices: FanFloorNotice[];
+  /** Stalls seen near Pyren's floor in the last half hour but not yet
+   *  enough to raise it. A hint that something is off before it acts. */
+  recentFanStalls: number;
   /** Last failure from the control loop, e.g. a write that needed root.
    *  Translatable - render with `tm()`. */
   error: Msg | null;
@@ -1056,6 +1082,7 @@ const DAEMON_ROUTES: Record<
   fan_set_curve: { module: "fan", method: "setCurve" },
   fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
   fan_set_keep_driver_floor: { module: "fan", method: "setKeepDriverFloor" },
+  fan_clear_floor_notices: { module: "fan", method: "clearFloorNotices" },
   fan_cleaner_status: { module: "fan", method: "cleanerStatus" },
   fan_start_cleaning: { module: "fan", method: "startCleaning" },
   fan_stop_cleaning: { module: "fan", method: "stopCleaning" },
@@ -1300,6 +1327,8 @@ export const daemon = {
   /** Keep the driver's floor (true) or use the lower one Pyren measured. */
   setKeepDriverFloor: (enabled: boolean) =>
     call<FanStatus>("fan_set_keep_driver_floor", { enabled }),
+  /** Empties the daemon's log of automatic floor raises. */
+  clearFloorNotices: () => call<FanStatus>("fan_clear_floor_notices"),
   /** `refresh` re-asks the firmware what it can do (two ACPI calls); the
    *  polling read leaves it off and uses the daemon's cached answer. */
   fanCleanerStatus: (refresh = false) =>

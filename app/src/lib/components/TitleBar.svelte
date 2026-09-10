@@ -8,9 +8,12 @@
   import Icon from "./Icon.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { hardware, type PowerMode } from "$lib/stores/hardware.svelte";
+  import { notifications } from "$lib/stores/notifications.svelte";
   import { goto } from "$app/navigation";
 
   const modes: PowerMode[] = ["eco", "balanced", "performance", "unlimited"];
+
+  const unread = $derived(notifications.unreadCount);
 </script>
 
 <header class="titlebar">
@@ -31,6 +34,18 @@
         {/each}
       </select>
     </label>
+
+    <button
+      class="icon-btn"
+      onclick={() => notifications.toggle()}
+      title={t("notifications.title")}
+      aria-label={unread > 0 ? t("notifications.unread", { n: unread }) : t("notifications.title")}
+    >
+      <Icon name="bell" size={18} />
+      {#if unread > 0}
+        <span class="badge">{unread > 9 ? "9+" : unread}</span>
+      {/if}
+    </button>
 
     <button class="icon-btn" onclick={() => goto("/settings")} title={t("settings.title")}>
       <Icon name="settings" size={18} />
@@ -113,6 +128,7 @@
   }
 
   .icon-btn {
+    position: relative;
     display: grid;
     place-items: center;
     width: 30px;
@@ -126,5 +142,22 @@
   .icon-btn:hover {
     background: var(--bg-card);
     color: var(--text);
+  }
+
+  .badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-pill);
+    background: var(--accent-2);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
   }
 </style>

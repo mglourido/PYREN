@@ -42,7 +42,8 @@
     "notSupported": "Not supported on this machine",
     "comingSoon": "Coming soon",
     "yes": "Yes",
-    "no": "No"
+    "no": "No",
+    "close": "Close"
   },
   "home": {
     "title": "Gaming performance toolkit",
@@ -354,6 +355,24 @@
     "daemonDownBody": "Showing simulated data. Start the daemon to control your hardware.",
     "unsupportedTitle": "Unsupported machine",
     "unsupportedBody": "This does not look like an HP OMEN or Victus laptop. The app runs, but hardware control will not work."
+  },
+  "notifications": {
+    "title": "Notifications",
+    "unread": "Notifications ({n} unread)",
+    "empty": "Nothing to report.",
+    "clear": "Clear",
+    "recalibrate": "Recalibrate the fans",
+    "age": {
+      "now": "just now",
+      "minutes": "{n} min ago",
+      "hours": "{n} h ago",
+      "days": "{n} d ago"
+    },
+    "floorRaised": {
+      "title": "Minimum fan speed raised",
+      "body": "The fans kept stalling at {from} rpm, so the minimum was raised to {to} rpm.",
+      "bodyCapped": "The fans kept stalling at {from} rpm. The minimum is now the driver's own ({to} rpm) and cannot go lower — recalibrate to measure it again."
+    }
   },
   "settings": {
     "title": "Settings",
