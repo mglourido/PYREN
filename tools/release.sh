@@ -5,7 +5,9 @@
 # Pyren is three Cargo workspaces plus a frontend (see docs/02-development.md),
 # and nothing wired them together for shipping. This does:
 #
-#   1. preflight  - tools present, tree clean, the five version strings agree,
+#   1. preflight  - asks which version to cut (Enter keeps the current one;
+#                   a new one is bumped and the run stops so you can commit),
+#                   tools present, tree clean, the five version strings agree,
 #                   the GUI libraries the app and widget need are installed
 #   2. checks     - the same tests + clippy + svelte-check CI runs
 #   3. build      - cargo --release for the daemon and the widget; the app
@@ -41,7 +43,7 @@ while [ $# -gt 0 ]; do
     --publish) publish=yes; shift ;;
     --allow-dirty) allow_dirty=yes; shift ;;
     -h | --help)
-        sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     *)
@@ -66,16 +68,33 @@ for tool in cargo bun git tar sha256sum install pkg-config; do
 done
 [ "$publish" = no ] || command -v gh >/dev/null 2>&1 || die "--publish needs the GitHub CLI (gh)"
 
-if [ "$allow_dirty" = no ] && [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
-    die "working tree is not clean (commit first, or pass --allow-dirty)"
-fi
-
 # The version string, read from each manifest the way bump-version.sh writes it.
 toml_version() { sed -n 's/^version = "\([^"]*\)".*/\1/p' "$1" | head -n1; }
 json_version() { sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$1" | head -n1; }
 
 VERSION=$(toml_version "$ROOT/daemon/Cargo.toml")
 [ -n "$VERSION" ] || die "could not read the version from daemon/Cargo.toml"
+
+# Ask which version we are cutting. The manifests' current value is the
+# default (just press Enter to keep it). Anything else is handed to
+# bump-version.sh, and the run stops so the bump can be reviewed and
+# committed - a release build wants a clean tree and a real commit to tag.
+if { true >/dev/tty; } 2>/dev/null; then
+    printf 'Version to release [%s]: ' "$VERSION" >/dev/tty
+    read -r want </dev/tty || want=
+    [ -n "$want" ] || want=$VERSION
+    if [ "$want" != "$VERSION" ]; then
+        printf '%s' "$want" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' ||
+            die "'$want' is not X.Y.Z"
+        say "bump to $want"
+        "$ROOT/tools/bump-version.sh" "$want"
+        die "version set to $want - review the changes, commit them, then run tools/release.sh again"
+    fi
+fi
+
+if [ "$allow_dirty" = no ] && [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+    die "working tree is not clean (commit first, or pass --allow-dirty)"
+fi
 
 check_version() {
     got=$2

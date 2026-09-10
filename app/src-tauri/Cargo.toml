@@ -1,6 +1,6 @@
 [package]
 name = "pyren"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pyren - gaming hub for Linux"
 authors = ["pyren contributors"]
 edition = "2021"
