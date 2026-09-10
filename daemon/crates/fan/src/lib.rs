@@ -10,6 +10,7 @@
 //! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the new status |
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `fan.setKeepDriverFloor` | `{ "enabled": bool }` | the new status |
+//! | `fan.clearFloorNotices` | none | the new status |
 //! | `fan.calibrate` | `{ "seconds"?: 10-120 }` | what full speed measured, see [`calibration`] |
 //! | `fan.cleanerStatus` | `{ "refresh"?: bool }` | what the fan cleaner can do here, see [`cleaner`] |
 //! | `fan.startCleaning` | `{ "speed"?: 10-39, "seconds"?: 5-60, "force"?: bool }` | the cleaner status |
@@ -46,6 +47,7 @@ mod control;
 pub mod curve;
 pub mod diagnostics;
 pub mod speed_probe;
+pub mod stall;
 
 pub use calibration::Calibration;
 pub use cleaner::Cycle;
@@ -120,6 +122,30 @@ impl ReferenceSensor {
     }
 }
 
+/// A record that the stall watch raised Pyren's floor because the fans
+/// kept stalling at it. Persisted so the app can surface it whenever it
+/// gains a way to - the daemon does not have one yet - and kept to a
+/// handful ([`FLOOR_NOTICE_CAP`]), newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloorNotice {
+    /// Wall-clock seconds. This outlives the process, so a monotonic value
+    /// would mean nothing after a restart; the reader turns it into an age.
+    pub at_unix_secs: u64,
+    /// Pyren's floor before and after the raise, in rpm.
+    pub raised_from_rpm: i64,
+    pub raised_to_rpm: i64,
+    /// How many stalls in the half-hour window triggered it.
+    pub stalls: usize,
+    /// True when the raise brought Pyren's floor up to the driver's own,
+    /// so there is nothing lower to fall back to and a real recalibration
+    /// is the next step.
+    pub reached_driver_floor: bool,
+}
+
+/// How many [`FloorNotice`]s are kept.
+pub const FLOOR_NOTICE_CAP: usize = 5;
+
 /// What is persisted to `fan.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -179,6 +205,10 @@ pub struct FanConfig {
     /// the table's floor is the vendor's choice, and running below it is
     /// something to opt into.
     pub keep_driver_floor: bool,
+    /// Times the stall watch has raised Pyren's floor because the fans kept
+    /// stalling at it, newest first. Kept for the app to show later; the
+    /// daemon has no way to notify yet. See [`FloorNotice`], [`stall`].
+    pub fan_floor_notices: Vec<FloorNotice>,
     /// Whether a commanded speed was ever found to reach the fans.
     ///
     /// `pwm1` existing does not mean the embedded controller honours it —
@@ -220,6 +250,7 @@ impl Default for FanConfig {
             fan_min_rpm: None,
             fan_stable_min_rpm: None,
             keep_driver_floor: true,
+            fan_floor_notices: Vec::new(),
             speed_control: SpeedControl::default(),
             restore_mode_on_start: false,
             cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
@@ -332,6 +363,9 @@ struct State {
     /// and they have been handed to the firmware so it can stop them. The
     /// mode is still the user's; only the hardware is in auto.
     released: bool,
+    /// Watches for the fans stalling at Pyren's floor, and nudges it up
+    /// when it keeps happening. See [`stall`]. In memory only.
+    stall: stall::StallWatch,
     smoother: curve::TempSmoother,
     /// A calibration run has the fans, and the control loop must not take
     /// them back mid-measurement - it would drop them out of max and the
@@ -360,6 +394,9 @@ impl State {
     fn forget_writes(&mut self) {
         self.hysteresis.reset();
         self.released = false;
+        // The last measured speed is about to stop meaning anything; the
+        // fault trail ages out by time and stays.
+        self.stall.idle();
     }
 }
 
@@ -380,11 +417,27 @@ struct Hardware {
     caps: Capabilities,
 }
 
+/// The daemon binary's event bus, once it has handed one over. Empty
+/// everywhere else - `pyren-check` and the tests build a `FanModule` with
+/// nobody listening, and publishing has to be a no-op there rather than a
+/// reason to require a bus. Mirrors `pyren_power::Announcer`.
+#[derive(Clone, Default)]
+pub struct Announcer(Arc<std::sync::OnceLock<Arc<pyren_core::EventBus>>>);
+
+impl Announcer {
+    fn publish(&self, topic: &str, payload: Value) {
+        if let Some(bus) = self.0.get() {
+            bus.publish(topic, payload);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FanModule {
     hardware: Arc<Mutex<Hardware>>,
     store: ConfigStore,
     state: Arc<Mutex<State>>,
+    announcer: Announcer,
 }
 
 impl FanModule {
@@ -537,6 +590,7 @@ impl FanModule {
             owned: restoring,
             hysteresis: curve::Hysteresis::new(),
             released: false,
+            stall: stall::StallWatch::default(),
             calibrating: false,
             cleaning: Cleaning::Idle,
             cleaner_probe: None,
@@ -546,7 +600,12 @@ impl FanModule {
             last_save_error: None,
         }));
 
-        let module = Self { hardware: Arc::new(Mutex::new(Hardware { paths, caps })), store, state };
+        let module = Self {
+            hardware: Arc::new(Mutex::new(Hardware { paths, caps })),
+            store,
+            state,
+            announcer: Announcer::default(),
+        };
         module.recover_interrupted_cycle();
         if caps.switch_mode {
             module.spawn_control_loop();
@@ -617,6 +676,7 @@ impl FanModule {
                 owned: false,
                 hysteresis: curve::Hysteresis::new(),
                 released: false,
+                stall: stall::StallWatch::default(),
                 calibrating: false,
                 cleaning: Cleaning::Idle,
                 cleaner_probe: None,
@@ -627,7 +687,16 @@ impl FanModule {
             })),
             store: ConfigStore::system(),
             hardware: Arc::new(Mutex::new(Hardware { paths, caps })),
+            announcer: Announcer::default(),
         }
+    }
+
+    /// Hands the module the daemon's event bus, so the stall watch can
+    /// announce a floor it raised. Call once, from the binary. A no-op
+    /// second call is tolerated rather than panicking - the binary is the
+    /// only caller and calls it once.
+    pub fn publish_to(&self, events: Arc<pyren_core::EventBus>) {
+        let _ = self.announcer.0.set(events);
     }
 
     /// Runs the fan-control self-test against this machine.
@@ -702,6 +771,23 @@ impl FanModule {
         let state = lock(&self.state);
         let floor = self.floor(&state.config);
 
+        let now = now_unix_secs();
+        let floor_notices: Vec<Value> = state
+            .config
+            .fan_floor_notices
+            .iter()
+            .map(|n| {
+                json!({
+                    "atUnixSecs": n.at_unix_secs,
+                    "ageSecs": now.saturating_sub(n.at_unix_secs),
+                    "raisedFromRpm": n.raised_from_rpm,
+                    "raisedToRpm": n.raised_to_rpm,
+                    "stalls": n.stalls,
+                    "reachedDriverFloor": n.reached_driver_floor,
+                })
+            })
+            .collect();
+
         json!({
             "driverInstalled": self.paths().hwmon_dir.is_some(),
             // The *effective* capabilities: `pwm1` existing is not the same
@@ -773,6 +859,16 @@ impl FanModule {
             // True while that is the case right now: the mode is still
             // manual or curve, but the fans are the firmware's.
             "fansReleased": state.released,
+            // Times the stall watch raised Pyren's floor because the fans
+            // kept stalling at it, newest first, for the app to surface.
+            // `clearFloorNotices` empties it. `ageSecs` is derived above so
+            // a reader never has to trust the daemon's clock against its
+            // own.
+            "floorNotices": floor_notices,
+            // Stalls seen in the last half hour but not yet enough to act;
+            // 0 almost always, and a hint to the app that something is off
+            // before a floor is actually raised.
+            "recentFanStalls": state.stall.recent_faults(),
             "calibrating": state.calibrating,
             // Enough for a caller that only wants to know the fans are not
             // its to command; `cleanerStatus` is the detail.
@@ -1439,6 +1535,10 @@ impl FanModule {
             state.last_target_pwm = target;
         }
 
+        // Published after the state lock is dropped, so a listener that
+        // reaches back into this module cannot deadlock against it.
+        let mut floor_event: Option<Value> = None;
+
         // A speed below the floor is one the fans cannot hold, so they go
         // to the firmware, which stops them when the machine is cool. Once:
         // auto needs no re-asserting, and the next write after this -
@@ -1472,6 +1572,37 @@ impl FanModule {
                     log_warn!("could not set the driver's fan floor: {e}");
                 }
             }
+
+            // Watch for the fans stalling, but only where they could: on
+            // Pyren's floor, with a speed near it commanded. `driver` is
+            // the clamp the fans would have had without the override, so
+            // `floor.rpm < driver` is "we lifted it".
+            let driver = control::read_driver_floor(&self.paths());
+            let on_pyrens_floor =
+                matches!((floor.rpm, driver), (Some(f), Some(d)) if f < d);
+            let expected = state
+                .config
+                .fan_max_rpm
+                .map(|max| i64::from(target) * max / 255);
+            match (on_pyrens_floor, floor.rpm, expected) {
+                (true, Some(floor_rpm), Some(expected))
+                    if expected <= floor_rpm + stall::NEAR_FLOOR_MARGIN_RPM =>
+                {
+                    // Steady: the hysteresis has a last write and it is
+                    // close to this target, so the fans have had time to
+                    // reach it rather than still be climbing.
+                    let steady = state
+                        .hysteresis
+                        .last_written()
+                        .is_some_and(|last| last.abs_diff(target) <= curve::PWM_DEADBAND);
+                    if let stall::Tick::RaiseFloor { faults } =
+                        state.stall.observe(now_secs, expected, rpm, steady)
+                    {
+                        floor_event = self.raise_floor_after_stalls(&mut state, faults, driver);
+                    }
+                }
+                _ => state.stall.idle(),
+            }
         }
 
         let should = match (mode, target) {
@@ -1484,6 +1615,8 @@ impl FanModule {
             (_, None) => false,
         };
         if !should {
+            drop(state);
+            self.publish_floor_event(floor_event);
             return Ok(());
         }
 
@@ -1492,7 +1625,86 @@ impl FanModule {
         // Recorded even when the write failed, so a machine that cannot be
         // written to is retried once a minute rather than every tick.
         state.hysteresis.applied(pwm, now_secs);
-        record_write(&mut state, result)
+        let outcome = record_write(&mut state, result);
+        drop(state);
+        self.publish_floor_event(floor_event);
+        outcome
+    }
+
+    fn publish_floor_event(&self, event: Option<Value>) {
+        if let Some(payload) = event {
+            self.announcer.publish("fan.floorRaised", payload);
+        }
+    }
+
+    /// The stall watch has seen the fans give out at Pyren's floor enough
+    /// times to act. Raise the stored slowest-held speed one step - which
+    /// lifts Pyren's floor with it - persist it, and hand back the event
+    /// payload for the caller to publish once the lock is clear.
+    ///
+    /// Only ever upward, and never past the driver's own floor: once
+    /// Pyren's reaches the driver's there is nothing lower to keep, and a
+    /// real `fan.calibrate` is what re-measures it. `None` when nothing
+    /// changed (already at that ceiling and already recorded).
+    fn raise_floor_after_stalls(
+        &self,
+        state: &mut State,
+        faults: usize,
+        driver: Option<i64>,
+    ) -> Option<Value> {
+        let held = state.config.fan_stable_min_rpm.unwrap_or(0);
+        let from = pyren_floor(Some(held), driver).unwrap_or(held + FLOOR_MARGIN_RPM);
+
+        let raised_held = held + calibration::SWEEP_FINE_STEP_RPM;
+        let to = pyren_floor(Some(raised_held), driver);
+        let reached_driver_floor = matches!((to, driver), (Some(t), Some(d)) if t >= d);
+
+        // Once a notice already says the floor is the driver's, the
+        // override is cleared and the watch stops firing - but a race
+        // could get here once more. Note the raise so the cooldown holds,
+        // and do nothing else.
+        let already_capped = reached_driver_floor
+            && state.config.fan_floor_notices.first().is_some_and(|n| n.reached_driver_floor);
+        if already_capped {
+            state.stall.note_raised(monotonic_secs());
+            return None;
+        }
+
+        state.config.fan_stable_min_rpm = Some(raised_held);
+        let to = to.unwrap_or(raised_held);
+
+        let notice = FloorNotice {
+            at_unix_secs: now_unix_secs(),
+            raised_from_rpm: from,
+            raised_to_rpm: to,
+            stalls: faults,
+            reached_driver_floor,
+        };
+        state.config.fan_floor_notices.insert(0, notice);
+        state.config.fan_floor_notices.truncate(FLOOR_NOTICE_CAP);
+        state.forget_writes();
+        persist(&self.store, state);
+        state.stall.note_raised(monotonic_secs());
+
+        let floor = self.floor(&state.config);
+        if let Err(e) = self.sync_floor_override(floor) {
+            log_warn!("could not raise the driver's fan floor after stalls: {e}");
+        }
+        log_info!(
+            "fans stalled {faults} times near {from} rpm; raised Pyren's floor to {to} rpm{}",
+            if reached_driver_floor {
+                " - the driver's own; recalibrate to re-measure"
+            } else {
+                ""
+            }
+        );
+
+        Some(json!({
+            "fromRpm": from,
+            "toRpm": to,
+            "stalls": faults,
+            "reachedDriverFloor": reached_driver_floor,
+        }))
     }
 
     /// The loop that keeps a curve tracking, and keeps a chosen mode from
@@ -1625,6 +1837,14 @@ impl Module for FanModule {
                     ModuleError::InvalidParams("params.enabled must be a boolean".into())
                 })?;
                 self.set_keep_driver_floor(enabled)
+            }
+
+            "clearFloorNotices" => {
+                let mut state = lock(&self.state);
+                state.config.fan_floor_notices.clear();
+                persist(&self.store, &mut state);
+                drop(state);
+                Ok(self.status())
             }
 
             "calibrate" => {
@@ -1761,7 +1981,11 @@ fn floor_in_force(
         return Floor { rpm: driver, override_hundreds: None };
     }
     match (keep_driver, pyren) {
-        (false, Some(rpm)) => Floor {
+        // Pyren's floor, but only while it is actually lower than the
+        // driver's. Once the stall watch has raised it to meet the
+        // driver's there is nothing to override, and the parameter goes
+        // back to 0 so the driver enforces its own.
+        (false, Some(rpm)) if driver.is_none_or(|d| rpm < d) => Floor {
             rpm: Some(rpm),
             // Rounded up, so the driver's clamp is never below the speed
             // the daemon stops commanding at.
@@ -1896,6 +2120,16 @@ fn monotonic_secs() -> u64 {
     use std::sync::OnceLock;
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_secs()
+}
+
+/// Wall-clock seconds since the epoch, for a record that outlives the
+/// process. 0 if the clock is somehow before 1970, which a reader will
+/// render as a very old age rather than crash on.
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn discover_paths() -> FanPaths {
@@ -2724,5 +2958,123 @@ mod tests {
     #[test]
     fn pyrens_floor_never_rises_above_the_drivers() {
         assert_eq!(pyren_floor(Some(1750), Some(1800)), Some(1800));
+    }
+
+    /// The fans keep giving out at Pyren's floor: three stalls in the
+    /// window and the daemon raises the floor a step, records it, and
+    /// tells the driver.
+    #[test]
+    fn repeated_stalls_raise_pyrens_floor_and_leave_a_notice() {
+        let (module, dir) = driven_on_a_fixture("stall-raise", 40);
+        {
+            let mut state = lock(&module.state);
+            state.mode = FanMode::Manual;
+            state.config.keep_driver_floor = false;
+            state.config.fan_stable_min_rpm = Some(600); // Pyren's floor: 700
+            // A commanded speed sitting on that floor: ~34/255 of 5300.
+            state.config.manual_pwm = 34;
+        }
+
+        // First tick commands the speed; the fans are allowed to be
+        // catching up, so it is not a fault.
+        fs::write(dir.join("fan1_input"), "700").unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(module.status()["floorNotices"].as_array().unwrap().len(), 0);
+
+        // Now they stall. Three ticks reading zero while a steady speed is
+        // commanded.
+        fs::write(dir.join("fan1_input"), "0").unwrap();
+        module.tick_once().unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(module.status()["recentFanStalls"], json!(2), "counted, not yet acted on");
+        module.tick_once().unwrap();
+
+        let status = module.status();
+        let notices = status["floorNotices"].as_array().unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0]["raisedFromRpm"], json!(700));
+        assert_eq!(notices[0]["raisedToRpm"], json!(800));
+        assert_eq!(notices[0]["stalls"], json!(3));
+        assert_eq!(notices[0]["reachedDriverFloor"], json!(false));
+        assert_eq!(status["fanMinRpm"], json!(800), "Pyren's floor moved up with it");
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "8", "and the driver was told");
+        assert_eq!(lock(&module.state).config.fan_stable_min_rpm, Some(700));
+    }
+
+    /// On the driver's floor, the watch does not run at all - the driver
+    /// clamps there and the firmware curve starts there, so our commands
+    /// cannot stall the fans.
+    #[test]
+    fn the_watch_is_quiet_on_the_drivers_floor() {
+        let (module, dir) = driven_on_a_fixture("stall-driver-floor", 40);
+        {
+            let mut state = lock(&module.state);
+            state.mode = FanMode::Manual;
+            state.config.keep_driver_floor = true;
+            state.config.fan_stable_min_rpm = Some(600);
+            state.config.manual_pwm = 34;
+        }
+        fs::write(dir.join("fan1_input"), "0").unwrap();
+        for _ in 0..5 {
+            module.tick_once().unwrap();
+        }
+        assert_eq!(module.status()["recentFanStalls"], json!(0));
+        assert_eq!(module.status()["floorNotices"].as_array().unwrap().len(), 0);
+    }
+
+    /// A raise that brings Pyren's floor up to the driver's says so, and is
+    /// the last one - there is nothing lower left to keep.
+    #[test]
+    fn a_raise_that_reaches_the_drivers_floor_is_marked_and_final() {
+        let (module, dir) = driven_on_a_fixture("stall-cap", 40);
+        {
+            let mut state = lock(&module.state);
+            state.mode = FanMode::Manual;
+            state.config.keep_driver_floor = false;
+            // Held 1600 -> Pyren's floor 1700, one step below the driver's.
+            state.config.fan_stable_min_rpm = Some(1600);
+            // A speed on that floor: ~82/255 of 5300 is ~1700.
+            state.config.manual_pwm = 82;
+        }
+        fs::write(dir.join("fan1_input"), "1700").unwrap();
+        module.tick_once().unwrap();
+        fs::write(dir.join("fan1_input"), "0").unwrap();
+        module.tick_once().unwrap();
+        module.tick_once().unwrap();
+        module.tick_once().unwrap();
+
+        let status = module.status();
+        let notices = status["floorNotices"].as_array().unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0]["raisedToRpm"], json!(1800));
+        assert_eq!(notices[0]["reachedDriverFloor"], json!(true));
+        assert_eq!(status["fanMinRpm"], json!(1800));
+        // The override is cleared: Pyren's floor is the driver's now.
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "0");
+
+        // And further stalls change nothing - the watch no longer runs.
+        for _ in 0..4 {
+            module.tick_once().unwrap();
+        }
+        assert_eq!(module.status()["floorNotices"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clearing_the_notices_empties_them() {
+        let (module, _dir) = driven_on_a_fixture("stall-clear", 40);
+        {
+            let mut state = lock(&module.state);
+            state.config.fan_floor_notices.push(FloorNotice {
+                at_unix_secs: 1,
+                raised_from_rpm: 700,
+                raised_to_rpm: 800,
+                stalls: 3,
+                reached_driver_floor: false,
+            });
+        }
+        assert_eq!(module.status()["floorNotices"].as_array().unwrap().len(), 1);
+
+        module.call("clearFloorNotices", json!({})).unwrap();
+        assert_eq!(module.status()["floorNotices"].as_array().unwrap().len(), 0);
     }
 }

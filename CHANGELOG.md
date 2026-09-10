@@ -31,6 +31,21 @@ the IPC protocol and on-disk config.
   `keepDriverFloor` and `floorOverrideSupported`; `fanMinRpm` is now the
   floor in force. Needs a driver reinstall and a calibration.
 
+- **The daemon watches for the fans stalling at Pyren's floor and raises
+  it when they do.** That floor sits on an edge that moves — dust, a
+  warmer bearing, a colder start — and when it moves up the fans stall at
+  the commanded speed and the controller kicks them back into motion. On
+  every control tick while Pyren's floor is in force, a commanded low
+  speed that reads near zero or jumps back up is a fault; three in half an
+  hour raises the stored held-speed one 100 rpm step (and Pyren's floor
+  with it), tells the driver, and appends to `fan.getStatus`'s new
+  `floorNotices` — kept for a future app notification, which is not built
+  yet. It only ever raises, never past the driver's own floor, and waits
+  five minutes between raises. `fan.floorRaised` carries it on the event
+  bus too; `fan.clearFloorNotices` (`pyren-ctl fan notices clear`) empties
+  the log; a full `fan.calibrate` re-measures the floor and starts it
+  clean.
+
 - **0 % can stop the fans.** On boards whose fans have a floor — 8D2F's
   driver cannot command less than 1800 rpm, so everything from 0 to a
   third of the scale sounded the same — a curve or manual speed below that

@@ -201,6 +201,7 @@ Topics so far:
 |---|---|---|
 | `hotkey.pressed` | the bound key was pressed (or `hotkey.press` was called) | `{ action: "show", device, mode }` — the mode in force, so the widget can draw it |
 | `power.mode` | the power mode actually moved, **whoever moved it** | `{ mode, source }` |
+| `fan.floorRaised` | the stall watch nudged Pyren's fan floor up because the fans kept giving out at it | `{ fromRpm, toRpm, stalls, reachedDriverFloor }` — `reachedDriverFloor` means it is now the driver's own and a recalibration is the next step |
 
 `power.mode` is published for *every* change that took effect, not only the
 ones this daemon was asked for by a key. `source` says who asked:
@@ -863,6 +864,8 @@ which is why `stage-source` comes before `patch-source` in every plan.
 | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the status object | ✅ implemented, needs root |
 | `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu", "profile"?: string }` | the status object | ✅ implemented |
 | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
+| `fan.setKeepDriverFloor` | `{ "enabled": bool }` | the status object | ✅ implemented, needs root — writes the driver's `min_rpm_override` |
+| `fan.clearFloorNotices` | none | the status object | ✅ implemented — drops the log of automatic floor raises |
 | `fan.calibrate` | `{ "seconds"?: 10-120 }` | the calibration report below | ✅ implemented, needs root, **blocks and spins the fans** |
 | `fan.probeSpeedControl` | `{ "seconds"?: 8-60 }` | the speed probe below | ✅ implemented, needs root, **blocks and spins the fans** |
 | `fan.cleanerStatus` | `{ "refresh"?: bool }` | the cleaner status below | ✅ implemented, read-only (`refresh` puts two ACPI *queries*) |
@@ -902,6 +905,8 @@ never has to follow a write with a read:
   "floorOverrideSupported": false,
   "stopBelowPwm": 0,
   "fansReleased": false,
+  "floorNotices": [],
+  "recentFanStalls": 0,
   "calibrating": false,
   "error": null,
   "saved": true,
@@ -928,6 +933,19 @@ lifted — no stall, no kick — swept for by `fan.calibrate`, and
 `fanMinRpm` is the one in force. Lifting the clamp needs Pyren's driver
 patch (`floorOverrideSupported`); the daemon then sets the driver's
 `min_rpm_override` to match, and puts it back after a driver reload.
+
+While Pyren's floor is in force the daemon watches the tachometer on every
+control tick: a commanded low speed that reads near zero, or one that
+jumps back up (a stalled fan being restarted), is a fault. Three faults in
+half an hour and it raises the stored held-speed one 100 rpm step, which
+lifts Pyren's floor with it, tells the driver, and appends to
+`floorNotices` (newest first, capped at 5; each carries `atUnixSecs`,
+`ageSecs`, `raisedFromRpm`, `raisedToRpm`, `stalls`, `reachedDriverFloor`).
+It only ever raises, never past the driver's own floor, and waits 5
+minutes between raises. `recentFanStalls` is faults seen but not yet acted
+on. `fan.clearFloorNotices` empties the log; `fan.floorRaised` on the
+event bus carries the same thing for a live client. A full `fan.calibrate`
+re-measures the floor properly and starts the log clean.
 
 ### What `capabilities` is for
 
