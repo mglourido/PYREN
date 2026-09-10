@@ -521,16 +521,7 @@
     </div>
 
     <div class="row">
-      <span>{t("settings.demoMode")}</span>
-      <Toggle
-        checked={settings.current.demoData}
-        onchange={(v) => settings.set("demoData", v)}
-        ariaLabel={t("settings.demoMode")}
-      />
-    </div>
-
-    <div class="row">
-      <span>{t("notices.driverMissingTitle")}</span>
+      <span>{t("settings.driverNotice")}</span>
       <Toggle
         checked={!settings.current.hideDriverNotice}
         onchange={(v) => settings.set("hideDriverNotice", !v)}

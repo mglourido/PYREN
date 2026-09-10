@@ -177,9 +177,10 @@ the daemon's Unix socket, so a browser tab sees exactly what the packaged
 app sees. Start the daemon first and it just works; `PYREN_SOCKET` is
 honoured there too.
 
-With no daemon running, the app falls back to simulated readings and still
-renders every page (see "Demo mode" in `docs/03-frontend.md`). The bridge
-is `apply: "serve"`, so it exists only in `vite dev` and never in a build.
+With no daemon running, the app still renders every page, with the last
+readings frozen (see "Daemon unreachable" in `docs/03-frontend.md`). The
+bridge is `apply: "serve"`, so it exists only in `vite dev` and never in a
+build.
 
 This starts the Vite dev server and the Tauri/Rust shell together, then
 opens the app window. First build compiles ~490 crates (WebKitGTK/GTK

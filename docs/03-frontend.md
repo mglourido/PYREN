@@ -99,25 +99,16 @@ window closes. Daemon calls are debounced separately and more tightly
 is a socket round trip that re-applies settings to hardware, which is a
 different cost from writing a JSON file.
 
-## Demo mode
+## Daemon unreachable
 
 When the daemon can't be reached, the telemetry store flags itself `demo`,
-synthesises a plausible signal, and the layout shows a dismissible notice.
-Pages then render their real layout with fake numbers instead of a wall of
-`--`. It can be turned off in Settings.
+keeps the last readings on screen (frozen, not synthesised), and the layout
+shows a dismissible notice. Before the first successful poll the panels
+show their empty state.
 
-A demo has to fill **every** panel it stands in for. Simulating only the
-scalar gauges and leaving storage, processes and the GPU list empty is
-worse than not simulating at all: half the page reads as plausible data and
-the other half as an unfinished feature, with nothing to say which is
-which. The synthetic signal therefore includes disks, processes, per-core
-usage, clocks, temperatures and a *hybrid* GPU pair, because that is the
-shape a real machine produces.
-
-Browser development no longer implies demo mode: `vite dev` carries a
-bridge to the daemon's socket (`app/dev-daemon-bridge.js`), so a browser
-tab shows real readings whenever the daemon is running. Demo mode is now
-what you get when there genuinely is no daemon.
+Browser development still reaches the daemon: `vite dev` carries a bridge
+to its socket (`app/dev-daemon-bridge.js`), so a browser tab shows real
+readings whenever the daemon is running.
 
 ## Admin mode
 

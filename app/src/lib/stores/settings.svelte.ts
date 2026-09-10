@@ -22,7 +22,6 @@ export type Settings = {
    *  Read by the Tauri shell straight out of this file - see `closes_to_tray`. */
   closeToTray: boolean;
   autostart: boolean;
-  demoData: boolean;
   /** TODO item: the "driver missing" notice has a don't-show-again box. */
   hideDriverNotice: boolean;
   vitalsAdvancedView: boolean;
@@ -40,7 +39,6 @@ function defaults(): Settings {
     // silently refuses to close.
     closeToTray: false,
     autostart: false,
-    demoData: true,
     hideDriverNotice: false,
     vitalsAdvancedView: false,
   };

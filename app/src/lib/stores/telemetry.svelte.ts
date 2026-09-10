@@ -12,9 +12,8 @@
  * - `fan.getStatus` is HP-only and is allowed to fail on its own without
  *   taking the rest of the readings down with it.
  *
- * When the daemon itself can't be reached the store falls back to a
- * synthetic signal and flags itself `demo`, so pages show real layouts with
- * plausible numbers instead of a wall of "--".
+ * When the daemon itself can't be reached the store keeps the last readings
+ * and flags itself `demo`, and the pages draw a "daemon unreachable" notice.
  */
 
 import {
@@ -41,45 +40,8 @@ function pushCapped(values: number[], value: number): number[] {
   return next;
 }
 
-/** Shape of the machine the demo signal pretends to be. */
-const DEMO_CORES = Array.from({ length: 8 });
-
-const DEMO_DISKS: DiskUsage[] = [
-  {
-    mount: "/",
-    device: "/dev/nvme0n1p2",
-    fstype: "ext4",
-    totalBytes: 1_000_204_886_016,
-    freeBytes: 412_316_860_416,
-  },
-  {
-    mount: "/home",
-    device: "/dev/nvme0n1p3",
-    fstype: "ext4",
-    totalBytes: 2_000_398_934_016,
-    freeBytes: 1_331_439_861_760,
-  },
-];
-
-const DEMO_PROCESSES = [
-  "chrome",
-  "code",
-  "pyren",
-  "gnome-shell",
-  "steam",
-  "node",
-  "Xorg",
-  "pipewire",
-];
-
-/** Smooth pseudo-random walk, kept inside [min, max]. */
-function drift(previous: number, min: number, max: number, step: number): number {
-  const next = previous + (Math.random() - 0.5) * step * 2;
-  return Math.min(max, Math.max(min, next));
-}
-
 export class Telemetry {
-  /** True while the daemon is unreachable and the numbers are synthetic. */
+  /** True while the daemon is unreachable. */
   demo = $state(true);
   daemonError = $state<string | null>(null);
   /** Whether the patched hp-wmi driver is present (HP machines only). */
@@ -216,7 +178,6 @@ export class Telemetry {
     } else {
       const e = metrics.reason;
       this.daemonError = e instanceof DaemonUnavailable ? e.message : String(e);
-      if (settings.current.demoData) this.simulate();
     }
 
     // Applied after the metrics and not before: `applyMetrics` reads
@@ -240,13 +201,11 @@ export class Telemetry {
       this.driverInstalled = false;
     }
 
-    // A daemon that goes away swaps real telemetry for a random walk that
-    // looks exactly like real telemetry, and nothing on screen says so - so
-    // the console has to.
+    // A daemon that goes away leaves the last readings frozen on screen; the
+    // pages show a notice, and the console spells it out too.
     if (reachable !== this.lastReachable) {
       if (!reachable) {
-        const data = settings.current.demoData ? "simulated demo data" : "stale";
-        console.warn(`pyren: daemon unreachable (${this.daemonError ?? "no reason given"});`, `vitals are ${data}`);
+        console.warn(`pyren: daemon unreachable (${this.daemonError ?? "no reason given"});`, "vitals are stale");
       } else if (this.lastReachable === false) {
         console.info("pyren: daemon reachable again; vitals are live");
       }
@@ -291,78 +250,6 @@ export class Telemetry {
       this.fanRpm = metrics.fans.reduce((max, fan) => Math.max(max, fan.rpm), 0);
       this.fanReverse = false;
     }
-  }
-
-  private simulate() {
-    this.cpuUsage = drift(this.cpuUsage, 2, 100, 9);
-    this.cpuTempC = drift(this.cpuTempC, 42, 92, 2.5);
-    this.gpuUsage = drift(this.gpuUsage ?? 4, 0, 100, 7);
-    this.gpuTempC = drift(this.gpuTempC ?? 46, 38, 84, 2);
-    this.chassisTempC = drift(this.chassisTempC ?? 39, 34, 52, 0.6);
-    this.ramUsedGb = drift(this.ramUsedGb, 6, this.ramTotalGb - 2, 0.4);
-    // Fans idle below ~55 C on these machines, then ramp with temperature.
-    this.fanRpm =
-      this.cpuTempC < 55 ? 0 : Math.round((1200 + (this.cpuTempC - 55) * 90) / 100) * 100;
-    this.netDownMbps = drift(this.netDownMbps, 0, 90, 12);
-    this.netUpMbps = drift(this.netUpMbps, 0, 20, 3);
-
-    // Everything below used to be left untouched, so a machine with no
-    // daemon showed drifting gauges next to an empty storage panel, an
-    // empty process table and no GPU section at all - which reads as a
-    // half-finished page rather than as "there is no daemon". A demo has to
-    // fill every panel it is standing in for.
-    this.perCoreUsage = DEMO_CORES.map((_, i) =>
-      drift(this.perCoreUsage[i] ?? this.cpuUsage, 0, 100, 14),
-    );
-    this.coreClocksMhz = DEMO_CORES.map((_, i) =>
-      drift(this.coreClocksMhz[i] ?? 2400, 800, 4800, 300),
-    );
-    this.temperatures = [
-      { chip: "coretemp", label: "Package id 0", celsius: this.cpuTempC },
-      ...DEMO_CORES.map((_, i) => ({
-        chip: "coretemp",
-        label: `Core ${i}`,
-        celsius: drift(this.cpuTempC, this.cpuTempC - 6, this.cpuTempC + 4, 3),
-      })),
-      { chip: "acpitz", label: "temp1", celsius: this.chassisTempC ?? 39 },
-    ];
-    // A hybrid pair, because that is what these laptops are: the demo
-    // should stand in for the layout a real machine produces, not a
-    // simpler one.
-    this.gpus = [
-      {
-        name: "Demo discrete GPU",
-        driver: "demo",
-        integrated: false,
-        usagePercent: this.gpuUsage,
-        tempC: this.gpuTempC,
-        memUsedMb: drift(this.gpus[0]?.memUsedMb ?? 1200, 400, 7800, 180),
-        memTotalMb: 8192,
-        powerW: drift(this.gpus[0]?.powerW ?? 40, 8, 120, 9),
-        clockMhz: drift(this.gpus[0]?.clockMhz ?? 1600, 300, 2600, 180),
-      },
-      {
-        name: "Demo integrated GPU",
-        driver: "demo",
-        integrated: true,
-        usagePercent: drift(this.gpus[1]?.usagePercent ?? 8, 0, 70, 6),
-        tempC: this.cpuTempC,
-        memUsedMb: null,
-        memTotalMb: null,
-        powerW: null,
-        clockMhz: drift(this.gpus[1]?.clockMhz ?? 900, 150, 2200, 140),
-      },
-    ];
-    this.disks = DEMO_DISKS;
-    this.processes = DEMO_PROCESSES.map((name, i) => ({
-      pid: 1000 + i,
-      name,
-      cpuPercent: drift(this.processes[i]?.cpuPercent ?? 4, 0, 60, 6),
-      memMb: drift(this.processes[i]?.memMb ?? 260, 40, 2600, 60),
-      // Only some processes hold a GPU; the rest report null, which is what
-      // the table draws as "--".
-      gpuPercent: i % 3 === 0 ? drift(this.processes[i]?.gpuPercent ?? 3, 0, 40, 5) : null,
-    })).sort((a, b) => b.cpuPercent - a.cpuPercent);
   }
 
   private record() {

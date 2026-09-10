@@ -352,7 +352,7 @@
     "goToDrivers": "Install",
     "dontShowAgain": "Don't show this again",
     "daemonDownTitle": "Cannot reach pyren-daemon",
-    "daemonDownBody": "Showing simulated data. Start the daemon to control your hardware.",
+    "daemonDownBody": "The last readings are frozen. Start the daemon to control your hardware.",
     "unsupportedTitle": "Unsupported machine",
     "unsupportedBody": "This does not look like an HP OMEN or Victus laptop. The app runs, but hardware control will not work."
   },
@@ -420,7 +420,7 @@
     "pollInterval": "Refresh interval",
     "seconds": "{n} s",
     "advanced": "Advanced",
-    "demoMode": "Demo data when the daemon is unreachable",
+    "driverNotice": "\"Driver not installed\" notice",
     "resetSettings": "Reset all settings",
     "fans": "Fans",
     "keepFanMode": "Keep the fan control mode across restarts",

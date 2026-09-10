@@ -352,7 +352,7 @@
     "goToDrivers": "Instalar",
     "dontShowAgain": "No mostrar de nuevo",
     "daemonDownTitle": "No se puede contactar con pyren-daemon",
-    "daemonDownBody": "Mostrando datos simulados. Inicia el daemon para controlar tu hardware.",
+    "daemonDownBody": "Las últimas lecturas están congeladas. Inicia el daemon para controlar tu hardware.",
     "unsupportedTitle": "Equipo no compatible",
     "unsupportedBody": "Esto no parece un portátil HP OMEN o Victus. La app funciona, pero el control de hardware no."
   },
@@ -420,7 +420,7 @@
     "pollInterval": "Intervalo de actualización",
     "seconds": "{n} s",
     "advanced": "Avanzado",
-    "demoMode": "Datos de demostración cuando el daemon no responde",
+    "driverNotice": "Aviso «Controlador no instalado»",
     "resetSettings": "Restablecer todos los ajustes",
     "fans": "Ventiladores",
     "keepFanMode": "Mantener el modo de control de los ventiladores entre reinicios",
