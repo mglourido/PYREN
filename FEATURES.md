@@ -9,8 +9,8 @@
   - **Auto** — managed by the active performance profile (firmware has its own curve per profile)
   - **Manual** — user sets a fixed fan speed (%) that stays constant
   - **Curve** — user defines a custom fan curve
-- **Sub-1800 rpm fan floor** — the patched driver lets the fans run below the firmware fan table's slowest entry; a calibration measures how slow they can hold, a setting chooses that floor or the driver's, and below it the firmware takes over and stops the fans when the machine is cool
-- **Automatic floor correction** — the daemon watches for the fans stalling near that floor and nudges it up on its own, with an entry in the app's notification history
+- **Lower minimum fan speed** — the patched driver lets the fans run below the slowest entry of the firmware's fan table (which the stock driver enforces as a floor); a calibration measures how slow the fans on this machine can actually hold, a setting chooses that measured minimum or the driver's, and below it the firmware takes over and stops the fans when the machine is cool
+- **Automatic minimum-speed correction** — the daemon watches for the fans stalling near that minimum and nudges it up on its own, with an entry in the app's notification history
 - **Fan cleaning mode** (fans spin in reverse to help clear out dust)
 - **Keyboard RGB control**
 - **Graphics switching** (toggle between "Integrated only" [iGPU only], "Hybrid" [switches between iGPU and dGPU], and "Discrete" [dGPU only])
