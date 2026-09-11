@@ -11,7 +11,15 @@
  * in Settings on its own (see `THEME_CODES`).
  */
 
-export type ThemeCode = "dark" | "light" | "dracula";
+export type ThemeCode =
+  | "dark"
+  | "light"
+  | "dracula"
+  | "tokyo-night"
+  | "zero-two"
+  | "doki"
+  | "cobalt2"
+  | "ayu";
 
 export const DEFAULT_THEME: ThemeCode = "dark";
 
@@ -180,13 +188,245 @@ const dracula: Theme = {
   },
 };
 
-export const THEMES: Record<ThemeCode, Theme> = { dark, light, dracula };
+/** Tokyo Night: the well-known deep-blue palette
+ *  (https://github.com/enkia/tokyo-night-vscode-theme). Same near-black-grey
+ *  build as `dark`, with Tokyo Night's own navy surfaces and its
+ *  blue -> purple -> cyan in place of the OMEN magenta -> orange accent. */
+const tokyoNight: Theme = {
+  code: "tokyo-night",
+  scheme: "dark",
+  tokens: {
+    "--omen-black": "#13141c",
+    "--bg-window": "#1a1b26",
+    "--bg-chrome": "#1f2335",
+    "--bg-panel": "#24283b",
+    "--bg-card": "#292e42",
+    "--bg-card-hover": "#333a56",
+    "--bg-inset": "#16161e",
+    "--line": "#3b4261",
+    "--line-soft": "#292e42",
+    "--border": "#3b4261",
+    "--text": "#c0caf5",
+    "--text-dim": "#a9b1d6",
+    "--text-mute": "#565f89",
+    "--text-disabled": "#414868",
+    "--accent-1": "#7aa2f7",
+    "--accent-2": "#bb9af7",
+    "--accent-3": "#7dcfff",
+    "--ok": "#9ece6a",
+    "--warn": "#e0af68",
+    "--danger": "#f7768e",
+    "--info": "#7dcfff",
+    "--check": "#9ece6a",
+    "--shadow": "0 8px 24px rgba(0, 0, 0, 0.55)",
+    "--scroll-thumb": "#3b4261",
+    "--scroll-thumb-hover": "#414868",
+    "--track": "#3b4261",
+    "--knob": "#c0caf5",
+    "--invert-bg": "#c0caf5",
+    "--invert-text": "#1a1b26",
+  },
+};
+
+/** Zero Two: the "Zero Two - Rose" character theme from the Doki Theme
+ *  collection (https://github.com/doki-theme, Darling in the Franxx group) -
+ *  a deep crimson base with her signature rose/orange accents in place of
+ *  the OMEN magenta -> orange gradient. */
+const zeroTwo: Theme = {
+  code: "zero-two",
+  scheme: "dark",
+  tokens: {
+    "--omen-black": "#200a0a",
+    "--bg-window": "#2a0e0e",
+    "--bg-chrome": "#300d0e",
+    "--bg-panel": "#330f10",
+    "--bg-card": "#3c1616",
+    "--bg-card-hover": "#481818",
+    "--bg-inset": "#310f0f",
+    "--line": "#481818",
+    "--line-soft": "#3c1515",
+    "--border": "#481818",
+    "--text": "#efefef",
+    "--text-dim": "#cbb9b0",
+    "--text-mute": "#a87975",
+    "--text-disabled": "#6f4f4a",
+    "--accent-1": "#e356a7",
+    "--accent-2": "#af2636",
+    "--accent-3": "#ffb86c",
+    "--ok": "#39e6a6",
+    "--warn": "#e5c374",
+    "--danger": "#ec081e",
+    "--info": "#34a7d1",
+    // Zero Two's palette leans on mint for keywords/"go"; kept distinct
+    // from --info the same way Dracula and Tokyo Night split green/cyan.
+    "--check": "#39e6a6",
+    "--shadow": "0 8px 24px rgba(0, 0, 0, 0.55)",
+    "--scroll-thumb": "#481818",
+    "--scroll-thumb-hover": "#5a1f1f",
+    "--track": "#481818",
+    "--knob": "#efefef",
+    "--invert-bg": "#efefef",
+    "--invert-text": "#330f10",
+  },
+};
+
+/** Doki Theme: AzurLane: Essex - a naval navy-blue base with the ship
+ *  girl's red accent and cyan/lavender syntax colours, in place of the OMEN
+ *  magenta -> orange gradient. Sourced from the official Doki Theme
+ *  collection (https://github.com/doki-theme/doki-master-theme,
+ *  definitions/azurLane/essex). */
+const doki: Theme = {
+  code: "doki",
+  scheme: "dark",
+  tokens: {
+    "--omen-black": "#001527",
+    "--bg-window": "#001d39",
+    "--bg-chrome": "#00203e",
+    "--bg-panel": "#002446",
+    "--bg-card": "#002f5d",
+    "--bg-card-hover": "#163756",
+    "--bg-inset": "#00203e",
+    "--line": "#002c55",
+    "--line-soft": "#00274e",
+    "--border": "#002c55",
+    "--text": "#d7d7d7",
+    "--text-dim": "#d0d0d0",
+    "--text-mute": "#6387af",
+    "--text-disabled": "#5b646f",
+    "--accent-1": "#d53232",
+    "--accent-2": "#2d96ea",
+    "--accent-3": "#f3b085",
+    // Essex's palette has no dedicated green; this teal keeps "success"
+    // legible against the navy without clashing with the cyan --info.
+    "--ok": "#4cd9a0",
+    "--warn": "#eec45e",
+    "--danger": "#e51515",
+    "--info": "#78dbef",
+    "--check": "#4cd9a0",
+    "--shadow": "0 8px 24px rgba(0, 0, 0, 0.55)",
+    "--scroll-thumb": "#002c55",
+    "--scroll-thumb-hover": "#163756",
+    "--track": "#002c55",
+    "--knob": "#d7d7d7",
+    "--invert-bg": "#d7d7d7",
+    "--invert-text": "#002446",
+  },
+};
+
+/** Cobalt2: Wes Bos's well-known blue-and-yellow theme
+ *  (https://github.com/wesbos/cobalt2-vscode). Deep blue surfaces with its
+ *  signature yellow highlight and blue -> cyan accent, in place of the OMEN
+ *  magenta -> orange gradient. */
+const cobalt2: Theme = {
+  code: "cobalt2",
+  scheme: "dark",
+  tokens: {
+    "--omen-black": "#0d1f2c",
+    "--bg-window": "#193549",
+    "--bg-chrome": "#122738",
+    "--bg-panel": "#122738",
+    "--bg-card": "#1f4662",
+    "--bg-card-hover": "#234e6d",
+    "--bg-inset": "#101f2b",
+    "--line": "#0d3a58",
+    "--line-soft": "#15232d",
+    "--border": "#0d3a58",
+    "--text": "#ffffff",
+    "--text-dim": "#d6dee6",
+    "--text-mute": "#aaaaaa",
+    "--text-disabled": "#6b7c8c",
+    "--accent-1": "#0088ff",
+    "--accent-2": "#00ffff",
+    "--accent-3": "#ffc600",
+    "--ok": "#3ad900",
+    "--warn": "#ff9d00",
+    "--danger": "#ff5630",
+    "--info": "#0088ff",
+    "--check": "#3ad900",
+    "--shadow": "0 8px 24px rgba(0, 0, 0, 0.55)",
+    "--scroll-thumb": "#0d3a58",
+    "--scroll-thumb-hover": "#1f4662",
+    "--track": "#0d3a58",
+    "--knob": "#ffffff",
+    "--invert-bg": "#ffffff",
+    "--invert-text": "#193549",
+  },
+};
+
+/** Ayu Dark: the well-known dark theme with a strong orange accent
+ *  (https://github.com/ayu-theme/vscode-ayu). Near-black slate surfaces with
+ *  its signature orange -> amber -> gold in place of the OMEN magenta ->
+ *  orange gradient. */
+const ayu: Theme = {
+  code: "ayu",
+  scheme: "dark",
+  tokens: {
+    "--omen-black": "#0a0d13",
+    "--bg-window": "#0d1017",
+    "--bg-chrome": "#0d1017",
+    "--bg-panel": "#10141c",
+    "--bg-card": "#141821",
+    "--bg-card-hover": "#1f2430",
+    "--bg-inset": "#0a0d13",
+    "--line": "#1b1f29",
+    "--line-soft": "#141821",
+    "--border": "#1b1f29",
+    "--text": "#bfbdb6",
+    "--text-dim": "#b3b1ab",
+    "--text-mute": "#5a6378",
+    "--text-disabled": "#3d4552",
+    "--accent-1": "#ff8f40",
+    "--accent-2": "#ffb454",
+    "--accent-3": "#e6b450",
+    "--ok": "#aad94c",
+    "--warn": "#ffb454",
+    "--danger": "#d95757",
+    "--info": "#39bae6",
+    "--check": "#aad94c",
+    "--shadow": "0 8px 24px rgba(0, 0, 0, 0.55)",
+    "--scroll-thumb": "#1b1f29",
+    "--scroll-thumb-hover": "#475266",
+    "--track": "#1b1f29",
+    "--knob": "#bfbdb6",
+    "--invert-bg": "#bfbdb6",
+    "--invert-text": "#0d1017",
+  },
+};
+
+export const THEMES: Record<ThemeCode, Theme> = {
+  dark,
+  light,
+  dracula,
+  "tokyo-night": tokyoNight,
+  "zero-two": zeroTwo,
+  doki,
+  cobalt2,
+  ayu,
+};
 
 /** Order shown in the switcher. */
-export const THEME_CODES: ThemeCode[] = ["dark", "light", "dracula"];
+export const THEME_CODES: ThemeCode[] = [
+  "dark",
+  "light",
+  "dracula",
+  "tokyo-night",
+  "zero-two",
+  "doki",
+  "cobalt2",
+  "ayu",
+];
 
 export function isThemeCode(value: unknown): value is ThemeCode {
-  return value === "dark" || value === "light" || value === "dracula";
+  return (
+    value === "dark" ||
+    value === "light" ||
+    value === "dracula" ||
+    value === "tokyo-night" ||
+    value === "zero-two" ||
+    value === "doki" ||
+    value === "cobalt2" ||
+    value === "ayu"
+  );
 }
 
 /** Writes the palette onto `<html>` as inline custom properties. Cheap

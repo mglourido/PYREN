@@ -388,7 +388,12 @@
     "themeNames": {
       "dark": "Oscuro",
       "light": "Claro",
-      "dracula": "Dracula"
+      "dracula": "Dracula",
+      "tokyo-night": "Tokyo Night",
+      "zero-two": "Zero Two",
+      "doki": "Doki: Essex",
+      "cobalt2": "Cobalt2",
+      "ayu": "Ayu"
     },
     "language": "Idioma",
     "mainLanguage": "Idioma principal",
