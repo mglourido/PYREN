@@ -793,8 +793,6 @@
           {t("lighting.saveButton", { used: saved.length, max: MAX_SAVED })}
         </button>
       {/snippet}
-      <p class="lead small">{t("lighting.savedLead")}</p>
-
       <div class="saved-row">
         {#if saved.length === 0}
           <p class="hint">{t("lighting.savedEmpty")}</p>
