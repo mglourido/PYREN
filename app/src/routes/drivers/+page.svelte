@@ -430,7 +430,7 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    max-width: 900px;
+    max-width: 990px;
   }
 
   .page-title {

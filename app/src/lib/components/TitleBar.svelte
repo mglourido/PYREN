@@ -11,7 +11,6 @@
   import { notifications } from "$lib/stores/notifications.svelte";
   import { settings } from "$lib/stores/settings.svelte";
   import { THEME_CODES, type ThemeCode } from "$lib/styles/themes";
-  import { goto } from "$app/navigation";
 
   const modes: PowerMode[] = ["eco", "balanced", "performance", "unlimited"];
 
@@ -99,12 +98,6 @@
       {/if}
     </button>
 
-    <button class="icon-btn" onclick={() => goto("/settings")} title={t("settings.title")}>
-      <Icon name="settings" size={18} />
-    </button>
-    <button class="icon-btn" onclick={() => goto("/help")} title={t("help.title")}>
-      <Icon name="help" size={18} />
-    </button>
   </div>
 </header>
 

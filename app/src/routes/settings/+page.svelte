@@ -896,7 +896,8 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
-    max-width: 860px;
+    width: 100%;
+    max-width: 990px;
   }
 
   .page-title {
@@ -953,10 +954,16 @@
   }
 
   .hint {
-    margin: 12px 0 0;
+    margin: 0;
+    padding: 10px 0;
     color: var(--text-mute);
     font-size: 12px;
     line-height: 1.5;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .hint:last-child {
+    border-bottom: none;
   }
 
   .hint-inline {
@@ -964,7 +971,7 @@
     margin-top: 3px;
     color: var(--text-mute);
     font-size: 12px;
-    max-width: 460px;
+    max-width: 529px;
   }
 
   .notice {

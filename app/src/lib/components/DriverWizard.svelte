@@ -277,20 +277,14 @@
 
   /**
    * Whether to measure the fans' range - ceiling, then floor - once the
-   * install is done.
-   *
-   * Defaults to on for a machine that has never been calibrated, which is
-   * every machine at its first install - that is the case where nobody
-   * comes back to do it, and the driver is left scaling pwm against a
-   * guess. A machine that already has a measurement gets it off: twenty
-   * seconds of full-speed fans to re-learn a number it already knows is
-   * a poor default. It is a checkbox either way, because the fans are
-   * loud and a surprise is worse than a wait.
+   * install is done. Defaults to on for every install; it is a checkbox
+   * either way, because the fans are loud and a surprise is worse than
+   * a wait.
    */
-  let calibrateAfter = $state(false);
+  let calibrateAfter = $state(true);
   let calibrateTouched = $state(false);
   $effect(() => {
-    if (!calibrateTouched) calibrateAfter = measuredMaxRpm === null || floorMissing;
+    if (!calibrateTouched) calibrateAfter = true;
   });
 
   async function inspect() {
@@ -626,57 +620,6 @@
 
         {#if auto}
           {#if autoError}<p class="notice err">{autoError}</p>{/if}
-
-          {#if detected}
-            <dl class="facts">
-              <div>
-                <dt>{t("installer.detectedBoard")}</dt>
-                <dd>{detected.dmi.boardName ?? t("common.unavailable")}</dd>
-              </div>
-              <div>
-                <dt>{t("installer.detectedModel")}</dt>
-                <dd>{detected.dmi.productName ?? t("common.unavailable")}</dd>
-              </div>
-              <div>
-                <dt>{t("installer.detectedTable")}</dt>
-                <dd>
-                  {#if detected.boardKnown}
-                    {t("installer.detectedNoPatch")}
-                  {:else if detected.boardTable}
-                    {t(`installer.tables.${detected.boardTable.table}`)}
-                    {detected.boardTable.table === "features"
-                      ? ` — ${t(`installer.params.${detected.boardTable.params}`)}`
-                      : ""}
-                  {:else}
-                    {t("installer.detectedUndecided")}
-                  {/if}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("installer.detectedCeilings")}</dt>
-                <dd>
-                  {detected.cpuMaxRpm || detected.gpuMaxRpm
-                    ? t("installer.detectedCeilingsValue", {
-                        cpu: String(detected.cpuMaxRpm ?? "—"),
-                        gpu: String(detected.gpuMaxRpm ?? "—"),
-                      })
-                    : t("installer.driverDefault")}
-                </dd>
-              </div>
-            </dl>
-
-            <!-- Why each answer is what it is. The point of showing this at
-                 all: a filled-in form presented as fact would be worse than
-                 the questions it replaced. -->
-            <ul class="list">
-              {#each detected.notes as note, i (i)}
-                <li>
-                  <Icon name="info" size={15} />
-                  <div class="body"><span class="check-title">{tm(note)}</span></div>
-                </li>
-              {/each}
-            </ul>
-          {/if}
         {:else}
           <div class="options">
             <div class="rpm">
@@ -853,6 +796,57 @@
         <p class="hint">{t("installer.dryRunFirst")}</p>
       {/if}
 
+      {#if auto && detected}
+        <dl class="facts">
+          <div>
+            <dt>{t("installer.detectedBoard")}</dt>
+            <dd>{detected.dmi.boardName ?? t("common.unavailable")}</dd>
+          </div>
+          <div>
+            <dt>{t("installer.detectedModel")}</dt>
+            <dd>{detected.dmi.productName ?? t("common.unavailable")}</dd>
+          </div>
+          <div>
+            <dt>{t("installer.detectedTable")}</dt>
+            <dd>
+              {#if detected.boardKnown}
+                {t("installer.detectedNoPatch")}
+              {:else if detected.boardTable}
+                {t(`installer.tables.${detected.boardTable.table}`)}
+                {detected.boardTable.table === "features"
+                  ? ` — ${t(`installer.params.${detected.boardTable.params}`)}`
+                  : ""}
+              {:else}
+                {t("installer.detectedUndecided")}
+              {/if}
+            </dd>
+          </div>
+          <div>
+            <dt>{t("installer.detectedCeilings")}</dt>
+            <dd>
+              {detected.cpuMaxRpm || detected.gpuMaxRpm
+                ? t("installer.detectedCeilingsValue", {
+                    cpu: String(detected.cpuMaxRpm ?? "—"),
+                    gpu: String(detected.gpuMaxRpm ?? "—"),
+                  })
+                : t("installer.driverDefault")}
+            </dd>
+          </div>
+        </dl>
+
+        <!-- Why each answer is what it is. The point of showing this at
+             all: a filled-in form presented as fact would be worse than
+             the questions it replaced. -->
+        <ul class="list">
+          {#each detected.notes as note, i (i)}
+            <li>
+              <Icon name="info" size={15} />
+              <div class="body"><span class="check-title">{tm(note)}</span></div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
       {#if planError}<p class="notice err">{planError}</p>{/if}
       {#if runError}<p class="notice err">{runError}</p>{/if}
 
@@ -903,33 +897,36 @@
               <p class="hint step-hint">{t("installer.stepsHint")}</p>
             {/if}
             <ol class="steps">
-              {#each plan.steps as step (step.id)}
+              {#each plan.steps as step, i (step.id)}
                 {@const declined = skipSteps.includes(step.id)}
                 <li class:declined>
-                  <span class="check-title">
-                    <!-- Only optional steps get a switch. A required one has
-                         no checkbox at all rather than a disabled one: the
-                         daemon refuses to skip it, so offering the control
-                         would be offering something that cannot happen. -->
-                    {#if step.optional}
-                      <Toggle
-                        checked={!declined}
-                        onchange={(v) => toggleStep(step.id, v)}
-                        ariaLabel={tm(step.description)}
-                      />
-                    {/if}
-                    {tm(step.description)}
-                    {#if step.optional}
-                      <span class="tag">
-                        {declined ? t("installer.willSkip") : t("installer.optional")}
-                      </span>
-                    {/if}
-                  </span>
-                  <code>
-                    {step.command.length > 0
-                      ? step.command.join(" ")
-                      : t("installer.internalStep")}
-                  </code>
+                  <span class="step-no">{String(i + 1).padStart(2, "0")}</span>
+                  <div class="step-body">
+                    <span class="check-title">
+                      <!-- Only optional steps get a switch. A required one has
+                           no checkbox at all rather than a disabled one: the
+                           daemon refuses to skip it, so offering the control
+                           would be offering something that cannot happen. -->
+                      {#if step.optional}
+                        <Toggle
+                          checked={!declined}
+                          onchange={(v) => toggleStep(step.id, v)}
+                          ariaLabel={tm(step.description)}
+                        />
+                      {/if}
+                      {tm(step.description)}
+                      {#if step.optional}
+                        <span class="tag">
+                          {declined ? t("installer.willSkip") : t("installer.optional")}
+                        </span>
+                      {/if}
+                    </span>
+                    <code>
+                      {step.command.length > 0
+                        ? step.command.join(" ")
+                        : t("installer.internalStep")}
+                    </code>
+                  </div>
                 </li>
               {/each}
             </ol>
@@ -945,11 +942,17 @@
               {report.succeeded ? t("installer.succeeded") : t("installer.failed")}
             </span>
           </h3>
-          <ul class="list">
+          <ul class="steps report">
             {#each report.results as result (result.id)}
               <li class={result.status}>
-                <Icon name={stepIcons[result.status]} size={15} />
-                <div class="body">
+                <!-- A dry run never has an "ok" or "failed" to report - every
+                     row is "planned" (or "declined"), so an icon here would
+                     just be the same glyph repeated down the box, saying
+                     nothing an icon should say. -->
+                {#if result.status !== "planned" && result.status !== "declined"}
+                  <Icon name={stepIcons[result.status]} size={15} />
+                {/if}
+                <div class="step-body">
                   <span class="check-title">{tm(result.description)}</span>
                   {#if result.detail}<span class="detail">{tm(result.detail)}</span>{/if}
                 </div>
@@ -1287,8 +1290,7 @@
     border-color: var(--danger);
   }
 
-  .list,
-  .steps {
+  .list {
     list-style: none;
     margin: 0;
     padding: 0;
@@ -1304,33 +1306,89 @@
     border-bottom: 1px solid var(--line-soft);
   }
 
-  .steps li {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    padding: 9px 0;
-    border-bottom: 1px solid var(--line-soft);
+  /* Without this, a flex row shrinks a replaced element (the SVG) below
+     its own size to make room for long text - the longer notes (e.g. the
+     "this choice doesn't affect this board" one) squash the icon into an
+     oval instead of leaving it alone. */
+  .list li :global(svg) {
+    flex-shrink: 0;
   }
 
-  .list li:last-child,
+  .list li:last-child {
+    border-bottom: none;
+  }
+
+  /* The plan's steps read as a log rather than another checklist: a
+     bordered, monospaced "console" so it's unmistakably a different kind
+     of information than the facts and notes above it. */
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 4px 12px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    background: var(--bg-inset);
+  }
+
+  .steps li {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 9px 0;
+    border-bottom: 1px dashed var(--line-soft);
+  }
+
+  .steps li :global(svg) {
+    flex-shrink: 0;
+  }
+
   .steps li:last-child {
     border-bottom: none;
   }
 
-  .list li.ok {
-    color: var(--ok);
+  .steps .step-no {
+    flex: none;
+    padding-top: 1px;
+    font-family: var(--font-digital), var(--mono, ui-monospace, monospace);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    color: var(--accent-2, var(--text-mute));
   }
-  .list li.failed,
-  .list li.fail {
+
+  .steps .step-body {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .steps .check-title {
+    color: var(--text-dim);
+  }
+
+  .steps code {
+    background: transparent;
+    padding: 0;
+  }
+
+  .list li.fail,
+  .report li.failed,
+  .report li.fail {
     color: var(--danger);
   }
-  .list li.warned,
-  .list li.warn {
+  .list li.warn,
+  .report li.warned,
+  .report li.warn {
     color: var(--warn);
   }
-  .list li.skipped,
-  .list li.declined,
-  .list li.planned {
+  .report li.ok {
+    color: var(--ok);
+  }
+  .report li.skipped,
+  .report li.declined,
+  .report li.planned {
     color: var(--text-mute);
   }
 
