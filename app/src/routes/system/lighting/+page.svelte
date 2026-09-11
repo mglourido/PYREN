@@ -1314,19 +1314,23 @@
   .dialects .info {
     flex: 1;
     min-width: 0;
+    width: 100%;
   }
 
   .dialects strong {
+    color: var(--text);
     font-family: var(--font-mono, monospace);
   }
 
   .dialects .transport {
     margin-left: 8px;
-    color: var(--text-mute);
+    color: var(--text-dim);
     font-size: 12px;
+    font-weight: 600;
   }
 
   .dialects p {
+    width: 100%;
     margin: 2px 0 0;
     color: var(--text-mute);
     font-size: 12px;
