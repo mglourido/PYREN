@@ -25,6 +25,12 @@ export type Settings = {
   /** TODO item: the "driver missing" notice has a don't-show-again box. */
   hideDriverNotice: boolean;
   vitalsAdvancedView: boolean;
+  /** Show the fan-control modes as a second row in the pyren-osd widget.
+   *  Read straight from this file by the widget, like `mainLanguage`. */
+  widgetFanModes: boolean;
+  /** Show the power-mode row in the widget. On by default; only turned off
+   *  while `widgetFanModes` is on, so the widget is never empty. */
+  widgetPowerModes: boolean;
 };
 
 function defaults(): Settings {
@@ -41,6 +47,10 @@ function defaults(): Settings {
     autostart: false,
     hideDriverNotice: false,
     vitalsAdvancedView: false,
+    // Off by default: the widget's job is the power key, and the fan row
+    // is an extra someone opts into.
+    widgetFanModes: false,
+    widgetPowerModes: true,
   };
 }
 

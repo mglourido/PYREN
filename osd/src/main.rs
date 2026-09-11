@@ -9,9 +9,13 @@
 //!
 //! - **pyren-daemon**, as root, hears the key. That half works with
 //!   nothing else installed and nobody logged in.
-//! - **this**, in the user's session, draws the four modes so the user can
-//!   pick one - and the press itself changes nothing. Pressing the
-//!   shortcut again puts the widget away.
+//! - **this**, in the user's session, draws the four power modes so the
+//!   user can pick one - and the press itself changes nothing. Pressing the
+//!   shortcut again puts the widget away. With the app's `widgetFanModes`
+//!   setting on, a second row of the four fan-control modes is drawn below,
+//!   working the same way (plus a slider for the `manual` speed); with
+//!   `widgetPowerModes` off (only allowed alongside the fan row) the power
+//!   row is dropped and the widget is just the fan switch.
 //!
 //! Between them is the daemon's event stream (`core.nextEvent`), one long
 //! poll on a socket. Nothing is polled on a timer and nothing is guessed:
@@ -47,9 +51,11 @@ USAGE
   pyren-osd [--show]
 
 It waits for pyren-daemon to publish a key press and draws the four power
-modes in the middle of the screen, over everything else. Nothing appears
-until the key is pressed - or until a second copy is launched, which shows
-the widget rather than starting a second process.
+modes in the middle of the screen, over everything else - and, when the
+app's \"fan control modes in the widget\" setting is on, the four fan modes
+below them. Nothing appears until the key is pressed - or until a second
+copy is launched, which shows the widget rather than starting a second
+process.
 
   --show        show the widget straight away, then wait as usual
   -h, --help
@@ -122,6 +128,12 @@ fn main() -> glib::ExitCode {
                         ui.pressed(mode, changed, refusal)
                     }
                     Message::Mode(mode) => ui.mode_is(mode),
+                    Message::FanState { mode, manual_percent, switch_mode, set_speed } => {
+                        ui.fan_state(mode, manual_percent, switch_mode, set_speed)
+                    }
+                    Message::FanModeChanged { mode, manual_percent } => {
+                        ui.fan_mode_is(mode, manual_percent)
+                    }
                     Message::Refused(why) => ui.refused(why),
                     Message::Unreachable(why) => ui.unreachable(why),
                     Message::Reachable => {}

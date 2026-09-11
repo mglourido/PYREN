@@ -248,7 +248,19 @@ class HardwareStore {
   watchDaemon(): () => void {
     return onDaemonEvent((event) => {
       if (event.topic === "power.mode") void this.syncFromDaemon();
+      // The widget and `pyren-ctl` move the fan mode too. Re-read rather
+      // than wait for the next telemetry poll, so the fan page does not
+      // sit a beat behind a change made in another window.
+      if (event.topic === "fan.mode") void this.refreshFan();
     });
+  }
+
+  async refreshFan() {
+    try {
+      this.observeFan(await daemon.fanStatus());
+    } catch {
+      // Daemon down: the telemetry poll and the layout banner already say so.
+    }
   }
 
   async setPowerMode(mode: PowerMode) {

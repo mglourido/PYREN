@@ -62,9 +62,10 @@ Three stores, deliberately separate:
   - **The mode can move without the app.** `watchDaemon()`, started once
     in the root layout, subscribes to the daemon's event stream through the
     Tauri shell (`core.nextEvent`, forwarded to the webview as
-    `daemon-event`). A `power.mode` event re-reads the state, so the page
-    follows the laptop's performance key, the on-screen display,
-    `pyren-ctl` and the daemon's own supervisor. Polling for this would
+    `daemon-event`). A `power.mode` event re-reads the state and a
+    `fan.mode` event re-reads the fan module, so the page follows the
+    laptop's performance key, the on-screen display, `pyren-ctl` and the
+    daemon's own supervisor. Polling for this would
     cost the same round trips whether or not anything happened, and would
     still be up to one interval late.
 
