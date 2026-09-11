@@ -544,10 +544,27 @@ export type PowerState = {
   thermal: ThermalState;
   /** Why the supervisor last moved the mode. Translatable - render with `tm()`. */
   lastAutoSwitch: Msg | null;
+  /** Knobs another program changed since the daemon last applied a mode.
+   *  The daemon reports them and does not write them again. */
+  overrides: PowerOverride[];
+  /** The last time the machine was found in a mode the daemon did not put
+   *  it in (Fn+P, the desktop's menu, a power manager) and followed.
+   *  Translatable - render with `tm()`. */
+  lastExternal: Msg | null;
   /** Where the daemon keeps this module's settings. */
   configPath: string;
   /** Set when the daemon could not write its config file. */
   configSaveError: string | null;
+};
+
+/** One knob the daemon set that another program has since changed. */
+export type PowerOverride = {
+  /** `platform_profile`, `energy_performance_preference`, `turbo`, `PL1`... */
+  knob: string;
+  expected: string;
+  found: string;
+  /** Changed within seconds of being set: another program undoing it. */
+  reverted: boolean;
 };
 
 /** Reply from the calls that change stored power settings. */

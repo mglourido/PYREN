@@ -1475,3 +1475,119 @@ fn an_auto_cpufreq_that_is_not_running_is_left_alone() {
     assert_eq!(machine.os_profile(), "power-saver", "the profiles service is still asked");
 }
 
+// ---------------------------------------------------------------------
+// Something else moves what the daemon set
+// ---------------------------------------------------------------------
+
+/// Fn+P (the kernel's `platform_profile_cycle`), the desktop's menu or a
+/// power manager on a charger event: the firmware profile is now another
+/// mode's, and the daemon follows - its mode and that mode's envelope -
+/// without pushing the change back to the OS profile, which is the
+/// likeliest writer.
+#[test]
+fn a_firmware_profile_moved_from_outside_is_followed() {
+    let machine = Machine::new("external-follow");
+    let daemon = machine.boot();
+    daemon
+        .call("setTuning", json!({ "mode": "performance", "pl1W": 55.0 }))
+        .expect("tuning Performance");
+    set(&daemon, PowerMode::Eco);
+    let requests = machine.os_profile_requests().len();
+
+    machine.write("acpi/platform_profile", "performance");
+    // The module's own watcher thread may have got there first, so what
+    // is asserted is the outcome, not which of the two looks found it.
+    daemon.check_external();
+
+    assert_eq!(daemon.mode(), PowerMode::Performance);
+    assert_eq!(machine.limits().pl1_uw, Some(54_670_000), "Performance's envelope came with it");
+    assert_eq!(machine.hardware_profile(), "performance", "the outside choice is left standing");
+    assert_eq!(machine.os_profile_requests().len(), requests, "the OS profile is not pushed back");
+
+    let state = daemon.call("getState", json!(null)).expect("getState");
+    assert_eq!(state["mode"], json!("performance"));
+    assert!(state["lastExternal"]["text"].as_str().unwrap_or_default().contains("performance"));
+    // Seconds after the daemon's own write, so it also reads as a revert.
+    assert_eq!(state["overrides"][0]["knob"], json!("platform_profile"));
+    assert_eq!(state["overrides"][0]["reverted"], json!(true));
+
+    assert_eq!(daemon.check_external(), None, "followed once, not on every look");
+    assert_eq!(machine.saved_config().mode, Some(PowerMode::Performance), "and remembered");
+
+    // The daemon's own next choice starts from a clean slate.
+    set(&daemon, PowerMode::Balanced);
+    let state = daemon.call("getState", json!(null)).expect("getState");
+    assert_eq!(state["overrides"], json!([]));
+    assert_eq!(state["lastExternal"], json!(null));
+}
+
+/// The daemon's own writes - every mode, twenty rounds, with a ppd whose
+/// driver writes the firmware profile too - are never mistaken for
+/// someone else's.
+#[test]
+fn the_daemons_own_writes_are_never_taken_for_someone_elses() {
+    let machine = Machine::new("external-own");
+    machine.install_racing_profiles_service("balanced");
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    for _ in 0..20 {
+        for mode in PowerMode::ALL {
+            set(&daemon, *mode);
+            assert_eq!(daemon.check_external(), None, "{mode:?}");
+        }
+    }
+    let state = daemon.call("getState", json!(null)).expect("getState");
+    assert_eq!(state["overrides"], json!([]));
+}
+
+/// With no power manager the daemon writes the CPU hint itself; an
+/// unrecognised program changing it afterwards is reported, and the
+/// daemon does not fight it.
+#[test]
+fn a_hint_changed_by_an_unknown_program_is_reported_and_not_rewritten() {
+    let machine = Machine::new("external-epp");
+    machine.remove_tool("busctl");
+    machine.apply_env();
+    let daemon = machine.boot();
+    set(&daemon, PowerMode::Eco);
+    assert_eq!(machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(), Some("power"));
+
+    machine.write("cpu/cpu0/cpufreq/energy_performance_preference", "balance_performance");
+    assert_eq!(daemon.check_external(), None, "the hint says nothing about the mode");
+    daemon.check_external();
+
+    assert_eq!(daemon.mode(), PowerMode::Eco);
+    assert_eq!(
+        machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(),
+        Some("balance_performance"),
+        "not fought over"
+    );
+    let state = daemon.call("getState", json!(null)).expect("getState");
+    assert_eq!(
+        state["overrides"],
+        json!([{
+            "knob": "energy_performance_preference",
+            "expected": "power",
+            "found": "balance_performance",
+            "reverted": true,
+        }]),
+        "one entry however many looks"
+    );
+}
+
+/// The thread, not the method: nothing calls `check_external` here, as
+/// nothing does on a machine whose app is closed.
+#[test]
+fn the_watcher_follows_the_machine_with_nobody_asking() {
+    let machine = Machine::new("external-thread");
+    let daemon = machine.boot();
+    set(&daemon, PowerMode::Eco);
+
+    machine.write("acpi/platform_profile", "balanced");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while daemon.mode() != PowerMode::Balanced && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(daemon.mode(), PowerMode::Balanced, "followed within a few seconds");
+}

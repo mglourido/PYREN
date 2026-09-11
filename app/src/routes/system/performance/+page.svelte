@@ -373,6 +373,24 @@
       </p>
     {/if}
 
+    <!-- The daemon follows a firmware profile moved from outside, and
+         reports - without rewriting - anything else another program
+         changed after it. -->
+    {#if hardware.power?.lastExternal}
+      <p class="feedback">
+        {t("performance.lastExternal", { detail: tm(hardware.power.lastExternal) })}
+      </p>
+    {/if}
+    {#each hardware.power?.overrides ?? [] as o (o.knob)}
+      <p class="feedback warn">
+        {t(o.reverted ? "performance.overrideReverted" : "performance.overridden", {
+          knob: o.knob,
+          expected: o.expected,
+          found: o.found,
+        })}
+      </p>
+    {/each}
+
     <label class="apply-os">
       <input
         type="checkbox"

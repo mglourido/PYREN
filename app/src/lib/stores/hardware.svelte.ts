@@ -247,7 +247,11 @@ class HardwareStore {
    */
   watchDaemon(): () => void {
     return onDaemonEvent((event) => {
-      if (event.topic === "power.mode") void this.syncFromDaemon();
+      // `power.overridden`: another program changed something the daemon
+      // set, without changing the mode - still news the page shows.
+      if (event.topic === "power.mode" || event.topic === "power.overridden") {
+        void this.syncFromDaemon();
+      }
       // The widget and `pyren-ctl` move the fan mode too. Re-read rather
       // than wait for the next telemetry poll, so the fan page does not
       // sit a beat behind a change made in another window.

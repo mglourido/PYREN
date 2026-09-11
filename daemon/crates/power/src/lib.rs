@@ -37,6 +37,10 @@
 //! shipped is overclocking, and is a separate feature with separate
 //! consent.
 //!
+//! Whatever else writes those knobs is watched for rather than fought -
+//! see [`watch`]: a firmware profile moved by Fn+P, the desktop or a power
+//! manager is followed, and anything else overwritten is reported.
+//!
 //! Settings live in `power.json` (see `pyren-config`), so the
 //! supervisor keeps running with the user's rules after a reboot - which
 //! is the whole point of it being a daemon rather than part of the app.
@@ -45,8 +49,9 @@ mod auto;
 mod backend;
 mod limits;
 mod supply;
+mod watch;
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
@@ -59,6 +64,7 @@ pub use auto::{AutoConfig, AutoInputs, AutoSwitcher, HeatLatch, Sensors};
 pub use backend::{ApplyReport, BackendState};
 pub use limits::{Limits, ModeTuning, Tuning};
 pub use supply::PowerSupplyState;
+pub use watch::Override;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -189,6 +195,14 @@ impl Announcer {
             bus.publish("power.mode", json!({ "mode": mode, "source": source }));
         }
     }
+
+    /// Something another program changed that did not move the mode, so
+    /// `power.mode` will not carry it to an open app.
+    fn overridden(&self, finding: &Override) {
+        if let Some(bus) = self.0.get() {
+            bus.publish("power.overridden", json!(finding));
+        }
+    }
 }
 
 /// What one press of the performance key did.
@@ -222,6 +236,29 @@ struct State {
     /// Set when the last write to disk failed, so the UI can say the
     /// setting will not survive a restart instead of quietly losing it.
     last_save_error: Option<String>,
+    /// What the knobs this daemon writes itself were left at, and when -
+    /// the reference the watcher holds the machine to.
+    expected: watch::Knobs,
+    expected_at: Instant,
+    /// Knobs another program changed since this daemon last applied a
+    /// mode, one entry per knob, latest finding wins.
+    overrides: Vec<Override>,
+    /// The last mode the machine was found in without this daemon putting
+    /// it there.
+    last_external: Option<Msg>,
+}
+
+impl State {
+    /// Takes a finished apply as the new reference. Everything found
+    /// overridden until now was overridden relative to the *previous*
+    /// mode, so it is forgotten with it.
+    fn record_apply(&mut self, report: &ApplyReport) {
+        self.expected = report.expected.clone();
+        self.expected_at = Instant::now();
+        self.overrides.clear();
+        // News from before the mode this daemon just applied.
+        self.last_external = None;
+    }
 }
 
 /// Cloning shares one module - the same state, the same supervisor thread
@@ -238,6 +275,11 @@ pub struct PowerModule {
     /// thread, which is the only reason a status read has a temperature to
     /// show at all.
     sensors: Sensors,
+    /// Held by every clone and by nothing else: the watcher stops once the
+    /// last one is gone. It writes on its own - the envelope of a mode it
+    /// follows - so a module a test has dropped must not keep doing that to
+    /// whichever fixture the next test put in place.
+    _alive: Arc<()>,
 }
 
 impl PowerModule {
@@ -281,10 +323,17 @@ impl PowerModule {
         // assuming Balanced, so the first supervisor tick compares against
         // reality.
         let mut mode = current_mode().unwrap_or(PowerMode::Balanced);
+        // Nothing written yet, so only the firmware profile is anyone's to
+        // follow: the machine is in it, whoever chose it.
+        let mut expected = watch::Knobs {
+            platform_profile: backend::read_platform_profile(),
+            ..watch::Knobs::default()
+        };
 
         if config.restore_mode_on_start {
             if let Some(saved) = config.mode {
                 let report = apply_profile(saved, &config, &limit_paths);
+                expected = report.expected.clone();
                 if report.is_empty() {
                     log_warn!(
                         "could not restore power mode {saved:?}: {}",
@@ -304,6 +353,10 @@ impl PowerModule {
             manual_override_at: None,
             last_auto_switch: None,
             last_save_error: None,
+            expected,
+            expected_at: Instant::now(),
+            overrides: Vec::new(),
+            last_external: None,
         }));
 
         let announce = Announcer::default();
@@ -315,7 +368,26 @@ impl PowerModule {
             announce.clone(),
             sensors.clone(),
         );
-        Self { state, store, limits: limit_paths, announce, sensors }
+        let alive = Arc::new(());
+        spawn_watcher(
+            Arc::clone(&state),
+            store.clone(),
+            limit_paths.clone(),
+            announce.clone(),
+            Arc::downgrade(&alive),
+        );
+        Self { state, store, limits: limit_paths, announce, sensors, _alive: alive }
+    }
+
+    /// One look at the machine, as the watcher thread takes every
+    /// [`watch::INTERVAL`]: follows a firmware profile something else
+    /// moved, and records whatever else was overwritten. Returns the mode
+    /// it followed the machine into, if it did.
+    ///
+    /// Public so a test can take the look itself instead of sleeping until
+    /// the thread does.
+    pub fn check_external(&self) -> Option<PowerMode> {
+        watch_once(&self.state, &self.store, &self.limits, &self.announce)
     }
 
     /// Hands the module the bus to announce mode changes on. Called once,
@@ -373,11 +445,13 @@ impl PowerModule {
     /// its back, which is the difference between a redundant re-read and a
     /// necessary one.
     fn set_mode(&self, mode: PowerMode, manual: bool, source: &str) -> ApplyReport {
-        let report = {
-            let state = lock(&self.state);
-            apply_profile(mode, &state.config, &self.limits)
-        };
+        // Applied and recorded under one lock, so the watcher can never see
+        // the machine already in the new mode while the daemon still
+        // expects the old one - which it would take for someone else's
+        // change, and follow.
         let mut state = lock(&self.state);
+        let report = apply_profile(mode, &state.config, &self.limits);
+        state.record_apply(&report);
         // Only record the mode if something actually took effect; otherwise
         // the UI would show a mode the machine isn't in.
         let took_effect = !report.is_empty();
@@ -447,6 +521,10 @@ impl PowerModule {
                 "hot": state.switcher.is_hot(),
             },
             "lastAutoSwitch": state.last_auto_switch,
+            // What another program changed since this daemon last applied
+            // a mode - see `watch`. Not rewritten, only reported.
+            "overrides": state.overrides,
+            "lastExternal": state.last_external,
             "configPath": self.store.path_for("power"),
             "configSaveError": state.last_save_error,
         })
@@ -698,11 +776,9 @@ fn spawn_supervisor(
             // The whole profile, not just its OS half: a mode has to mean
             // the same thing whether the user picked it or the supervisor
             // did, or "Eco" would quietly be two different settings.
-            let report = {
-                let guard = lock(&state);
-                apply_profile(mode, &guard.config, &paths)
-            };
             let mut guard = lock(&state);
+            let report = apply_profile(mode, &guard.config, &paths);
+            guard.record_apply(&report);
             if !report.is_empty() {
                 guard.mode = mode;
                 log_info!("power auto-switch -> {mode:?} ({})", decision.reason);
@@ -737,6 +813,95 @@ fn spawn_supervisor(
     });
 }
 
+/// The watcher loop: [`watch_once`] every [`watch::INTERVAL`], for as long
+/// as any handle on the module exists.
+///
+/// A thread of the daemon rather than of the app for the same reason the
+/// supervisor is: the other writers do not wait for a window to be open,
+/// and the fan curve has to follow Fn+P with nobody looking.
+fn spawn_watcher(
+    state: Arc<Mutex<State>>,
+    store: ConfigStore,
+    paths: limits::LimitPaths,
+    announce: Announcer,
+    alive: Weak<()>,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(watch::INTERVAL);
+        // Held for the look, so a module dropped mid-way finishes it first.
+        let Some(_alive) = alive.upgrade() else { return };
+        watch_once(&state, &store, &paths, &announce);
+    });
+}
+
+fn watch_once(
+    state: &Arc<Mutex<State>>,
+    store: &ConfigStore,
+    paths: &limits::LimitPaths,
+    announce: &Announcer,
+) -> Option<PowerMode> {
+    let mut guard = lock(state);
+    let now = watch::Knobs::read(paths);
+    let found = watch::examine(guard.mode, &guard.expected, &now, guard.expected_at.elapsed());
+
+    if let Some(profile) = found.same_mode_profile {
+        guard.expected.platform_profile = Some(profile);
+    }
+
+    // Announced once the lock is released: a listener's first move is to
+    // ask for the state, and it must not have to wait on this.
+    let mut news = Vec::new();
+    for finding in found.overrides {
+        let known = guard.overrides.iter().position(|o| o.knob == finding.knob);
+        if known.is_some_and(|at| guard.overrides[at] == finding) {
+            continue;
+        }
+        log_warn!(
+            "power: {} was changed by another program ({} -> {}{})",
+            finding.knob,
+            finding.expected,
+            finding.found,
+            if finding.reverted { ", straight after pyren set it" } else { "" }
+        );
+        news.push(finding.clone());
+        match known {
+            Some(at) => guard.overrides[at] = finding,
+            None => guard.overrides.push(finding),
+        }
+    }
+
+    let Some((mode, profile)) = found.adopt else {
+        drop(guard);
+        news.iter().for_each(|finding| announce.overridden(finding));
+        return None;
+    };
+    let from = guard.mode;
+    // The envelope belongs to the mode, whoever picked it; the OS profile
+    // is left alone - see `watch` for why pushing it back is a loop.
+    let envelope = apply_envelope(mode, &guard.config, paths);
+    guard.mode = mode;
+    guard.config.mode = Some(mode);
+    guard.expected = watch::Knobs { platform_profile: Some(profile.clone()), ..envelope.expected };
+    guard.expected_at = Instant::now();
+    // Someone other than the supervisor picked this, which is what a
+    // manual choice is: the supervisor stands back, then works around it.
+    guard.manual_override_at = Some(Instant::now());
+    guard.switcher.reset();
+    guard.switcher.adopt(mode);
+    guard.last_external = Some(msg!(
+        "power.external.followed",
+        { "profile" => profile.clone(), "mode" => mode.as_str() },
+        "another program set the firmware profile to {profile}; pyren followed it into {mode}"
+    ));
+    persist(store, &mut guard);
+    drop(guard);
+
+    log_info!("power: firmware profile changed to {profile} elsewhere, following {from:?} -> {mode:?}");
+    news.iter().for_each(|finding| announce.overridden(finding));
+    announce.publish(mode, "external");
+    Some(mode)
+}
+
 fn manual_override_active(state: &State) -> bool {
     let Some(at) = state.manual_override_at else {
         return false;
@@ -760,6 +925,24 @@ fn manual_override_active(state: &State) -> bool {
 /// mode would put two owners on one piece of hardware.
 fn apply_profile(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPaths) -> ApplyReport {
     let mut report = backend::apply(mode, config.apply_to_os_profile);
+    let envelope = apply_envelope(mode, config, paths);
+    report.applied.extend(envelope.applied);
+    report.failed.extend(envelope.failed);
+    report.expected.turbo = envelope.expected.turbo;
+    report.expected.limits = envelope.expected.limits;
+    report
+}
+
+/// The half of a profile that is this daemon's alone - the package limits
+/// and turbo - and the one a mode followed from outside still gets.
+///
+/// What it leaves in `expected` is what the machine reads afterwards, for
+/// each knob it was meant to set and did not fail to: a value the kernel
+/// clamped is the value to watch, and one this daemon could not write is
+/// not its to watch at all.
+fn apply_envelope(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPaths) -> ApplyReport {
+    let mut report =
+        ApplyReport { applied: Vec::new(), failed: Vec::new(), expected: watch::Knobs::default() };
 
     let stock = config.stock_limits.unwrap_or_default();
     let tuning = config.tuning.get(mode);
@@ -767,14 +950,29 @@ fn apply_profile(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPat
 
     if !target.is_empty() {
         let (applied, failed) = limits::apply(paths, target);
+        let now = limits::read(paths);
+        let refused = |label: &str| failed.iter().any(|f: &String| f.starts_with(label));
+        let keep = |wanted: Option<u64>, now: Option<u64>, label| {
+            wanted.and(now).filter(|_| !refused(label))
+        };
+        report.expected.limits = Limits {
+            pl1_uw: keep(target.pl1_uw, now.pl1_uw, "PL1"),
+            pl2_uw: keep(target.pl2_uw, now.pl2_uw, "PL2"),
+            pl4_uw: keep(target.pl4_uw, now.pl4_uw, "PL4"),
+        };
         report.applied.extend(applied);
         report.failed.extend(failed);
     }
 
     match limits::apply_turbo(paths, tuning.turbo) {
-        Some(Ok(message)) => report.applied.push(message),
+        Some(Ok(message)) => {
+            report.expected.turbo = limits::read_turbo(paths);
+            report.applied.push(message);
+        }
         Some(Err(e)) => report.failed.push(e),
-        None => {}
+        // Already where it was asked to be - which is still this daemon's
+        // setting to watch.
+        None => report.expected.turbo = limits::read_turbo(paths),
     }
 
     report
@@ -825,7 +1023,12 @@ fn saved_response(state: &State) -> Value {
 fn current_mode() -> Option<PowerMode> {
     let state = backend::read_state();
     let name = state.platform_profile.or(state.power_profiles_daemon).or(state.tlp)?;
-    match name.as_str() {
+    mode_for_profile(&name)
+}
+
+/// The mode a firmware or OS profile name belongs to.
+pub(crate) fn mode_for_profile(name: &str) -> Option<PowerMode> {
+    match name {
         "low-power" | "quiet" | "cool" | "power-saver" => Some(PowerMode::Eco),
         "balanced" => Some(PowerMode::Balanced),
         "balanced-performance" | "performance" => Some(PowerMode::Performance),

@@ -201,6 +201,7 @@ Topics so far:
 |---|---|---|
 | `hotkey.pressed` | the bound key was pressed (or `hotkey.press` was called) | `{ action: "show", device, mode }` — the mode in force, so the widget can draw it |
 | `power.mode` | the power mode actually moved, **whoever moved it** | `{ mode, source }` |
+| `power.overridden` | another program changed something the daemon set (the CPU hint, turbo, a package limit, a firmware profile no mode maps onto) - reported, not rewritten | `{ knob, expected, found, reverted }` — `reverted` when it happened within 15 s of the daemon's own write |
 | `fan.mode` | a `fan.setMode` took effect, **whoever asked** — the app, `pyren-ctl`, the widget's click | `{ mode, manualPwm, source }` — `manualPwm` is the commanded manual speed (0-255), for a client that shows a slider but not a curve |
 | `fan.floorRaised` | the stall watch nudged Pyren's fan floor up because the fans kept giving out at it | `{ fromRpm, toRpm, stalls, reachedDriverFloor }` — `reachedDriverFloor` means it is now the driver's own and a recalibration is the next step |
 
@@ -214,6 +215,7 @@ ones this daemon was asked for by a key. `source` says who asked:
 | `auto` | the daemon's supervisor, on battery or under load |
 | `tuning` | a `power.setTuning` that re-applied the mode in force |
 | `osProfile` | a `power.setApplyToOsProfile` that re-applied it |
+| `external` | nobody asked the daemon: the firmware profile was moved from outside (Fn+P, the desktop's menu, a power manager) and the daemon followed it |
 
 A change that was *refused* publishes nothing here: the mode did not move,
 and a UI that redrew for it would be showing a mode the machine is not in.
@@ -627,6 +629,20 @@ the UI can explain why the supervisor is or isn't acting. `lastAutoSwitch`
 is a **`Msg` object** (the reason the mode last moved — "battery at 15%",
 "plugged in"), and a `setMode` / `setTuning` refusal carries `key`/`params`
 beside its `message`.
+
+It also reports what the daemon's watcher found (`crates/power/src/watch.rs`,
+a thread of the daemon, so it runs with the app closed). Once a second it
+reads the knobs the daemon set and compares them with what the daemon left
+them at:
+
+- `lastExternal` — a `Msg`, set when the firmware profile was moved to
+  another mode's from outside and the daemon **followed** it (mode, that
+  mode's envelope, the fan curve; the OS profile is not pushed back). `null`
+  again after the daemon next applies a mode itself.
+- `overrides` — `[{ knob, expected, found, reverted }]`, one per knob another
+  program changed since the daemon last applied a mode. The daemon does not
+  write them again; a `reverted` entry means another power manager is
+  undoing it and the user has to settle which of the two owns the machine.
 
 ### Persistence
 

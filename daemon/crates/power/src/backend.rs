@@ -52,6 +52,7 @@ use std::process::Command;
 
 use serde::Serialize;
 
+use crate::watch::Knobs;
 use crate::PowerMode;
 
 const PLATFORM_PROFILE: &str = "/sys/firmware/acpi/platform_profile";
@@ -148,6 +149,10 @@ pub struct BackendState {
 pub struct ApplyReport {
     pub applied: Vec<String>,
     pub failed: Vec<String>,
+    /// What the knobs this daemon writes itself read right afterwards -
+    /// the reference [`crate::watch`] compares the machine against.
+    #[serde(skip)]
+    pub(crate) expected: Knobs,
 }
 
 impl ApplyReport {
@@ -296,7 +301,7 @@ pub(crate) fn plan(
 /// not a fixed order of preference.
 pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
     let (steps, problems) = plan(&read_state(), mode, os_profile);
-    let mut report = ApplyReport { applied: Vec::new(), failed: problems };
+    let mut report = ApplyReport { applied: Vec::new(), failed: problems, expected: Knobs::default() };
 
     for step in steps {
         match step {
@@ -318,15 +323,21 @@ pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
             },
             Step::EnergyPreference(preference) => {
                 match write_all_cpus("energy_performance_preference", preference) {
-                    Ok(count) => report
-                        .applied
-                        .push(format!("energy_performance_preference={preference} ({count} cpus)")),
+                    Ok(count) => {
+                        report.expected.energy_preference = read_energy_preference();
+                        report
+                            .applied
+                            .push(format!("energy_performance_preference={preference} ({count} cpus)"))
+                    }
                     Err(e) => report.failed.push(format!("energy_performance_preference: {e}")),
                 }
             }
         }
     }
 
+    // Read back whether or not this call wrote it: whatever it says now is
+    // where the machine was left, and a change from here is someone else's.
+    report.expected.platform_profile = read_platform_profile();
     report
 }
 

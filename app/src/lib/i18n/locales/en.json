@@ -161,6 +161,9 @@
     "noPowerControl": "This machine exposes no power-mode control, so the modes below are display only.",
     "autoPaused": "Automatic switching paused for {seconds} s after your manual change.",
     "lastAutoSwitch": "Last automatic switch: {detail}",
+    "lastExternal": "Changed outside Pyren: {detail}",
+    "overridden": "{knob} was changed by another program ({expected} → {found}). Pyren leaves it as it is.",
+    "overrideReverted": "{knob} was undone by another program right after Pyren set it ({expected} → {found}). Another power manager is controlling it: configure or disable it there if you want Pyren's modes to stick.",
     "onBattery": "On battery",
     "onMains": "On AC power",
     "applyToOsProfileHint": "Mirrors the selected mode onto the OS power manager (power-profiles-daemon, TLP or auto-cpufreq), so it does not undo the mode and applications that read it stay in sync.",
@@ -784,6 +787,9 @@
     },
     "autoSwitch": {
       "failed": "{mode} failed: {failed}"
+    },
+    "external": {
+      "followed": "another program set the firmware profile to {profile}; Pyren followed it"
     },
     "err": {
       "badMode": "params.mode must be one of eco, balanced, performance, unlimited",

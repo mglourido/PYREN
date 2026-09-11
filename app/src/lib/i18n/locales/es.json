@@ -161,6 +161,9 @@
     "noPowerControl": "Este equipo no expone ningún control de modo de energía, así que los modos de abajo son solo informativos.",
     "autoPaused": "Cambio automático en pausa {seconds} s tras tu cambio manual.",
     "lastAutoSwitch": "Último cambio automático: {detail}",
+    "lastExternal": "Cambiado fuera de Pyren: {detail}",
+    "overridden": "Otro programa ha cambiado {knob} ({expected} → {found}). Pyren lo deja como está.",
+    "overrideReverted": "Otro programa ha deshecho {knob} justo después de que Pyren lo aplicara ({expected} → {found}). Hay otro gestor de energía controlándolo: configúralo o desactívalo ahí si quieres que los modos de Pyren se mantengan.",
     "onBattery": "Con batería",
     "onMains": "Con adaptador de CA",
     "applyToOsProfileHint": "Refleja el modo seleccionado en el gestor de energía del sistema (power-profiles-daemon, TLP o auto-cpufreq), para que no deshaga el modo y las aplicaciones que lo leen se mantengan sincronizadas.",
@@ -784,6 +787,9 @@
     },
     "autoSwitch": {
       "failed": "{mode} falló: {failed}"
+    },
+    "external": {
+      "followed": "otro programa ha puesto el perfil del firmware en {profile}; Pyren lo ha seguido"
     },
     "err": {
       "badMode": "params.mode debe ser uno de eco, balanced, performance, unlimited",
