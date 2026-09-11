@@ -201,6 +201,7 @@ Topics so far:
 |---|---|---|
 | `hotkey.pressed` | the bound key was pressed (or `hotkey.press` was called) | `{ action: "show", device, mode }` — the mode in force, so the widget can draw it |
 | `power.mode` | the power mode actually moved, **whoever moved it** | `{ mode, source }` |
+| `fan.mode` | a `fan.setMode` took effect, **whoever asked** — the app, `pyren-ctl`, the widget's click | `{ mode, manualPwm, source }` — `manualPwm` is the commanded manual speed (0-255), for a client that shows a slider but not a curve |
 | `fan.floorRaised` | the stall watch nudged Pyren's fan floor up because the fans kept giving out at it | `{ fromRpm, toRpm, stalls, reachedDriverFloor }` — `reachedDriverFloor` means it is now the driver's own and a recalibration is the next step |
 
 `power.mode` is published for *every* change that took effect, not only the
