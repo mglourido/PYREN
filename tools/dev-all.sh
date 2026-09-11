@@ -42,6 +42,58 @@ done
 
 say() { printf '\033[1m==> %s\033[0m\n' "$1"; }
 
+# Everything below is a fresh build replacing a previous one, and the
+# previous one does not always leave cleanly: a closed terminal, a
+# suspended laptop or a plain `kill` on this script does not reach the
+# `cargo run`/`vite`/`pyren` tree underneath it, because none of it is a
+# child of *this* script - `bun run tauri dev` runs at the very end via
+# `exec`, so once that has happened there is nothing left here to signal
+# them with. Left running, the old `pyren` is what actually bites:
+# `tauri-plugin-single-instance` finds it alive and just refocuses its
+# window, so the "fresh" run silently keeps serving yesterday's build.
+#
+# cwd is a precise enough signature for all of it - nothing legitimate
+# runs with its cwd inside these three trees except a build or a dev run
+# of this project. `$$`/`$PPID` are excluded so this never kills the
+# `bun run dev:all` that is invoking it.
+stop_leftovers() {
+    dir=$1
+    shift
+    for proc in /proc/[0-9]*; do
+        pid=${proc#/proc/}
+        [ "$pid" = "$$" ] && continue
+        [ "$pid" = "$PPID" ] && continue
+        cwd=$(readlink "$proc/cwd" 2>/dev/null) || continue
+        case "$cwd" in
+            "$dir" | "$dir"/*) ;;
+            *) continue ;;
+        esac
+        comm=$(cat "$proc/comm" 2>/dev/null) || continue
+        for name in "$@"; do
+            if [ "$comm" = "$name" ]; then
+                kill -TERM "$pid" 2>/dev/null &&
+                    say "  stopped $comm (pid $pid, left over from before)"
+                break
+            fi
+        done
+    done
+}
+
+say "cleaning up leftovers from a previous run"
+stop_leftovers "$ROOT/daemon" cargo rustc
+stop_leftovers "$ROOT/osd" cargo rustc
+stop_leftovers "$ROOT/app/src-tauri" cargo rustc pyren
+stop_leftovers "$ROOT/app" bun node vite
+
+# Belt and braces for the vite dev server specifically: it is the one
+# leftover that does not just waste a cycle but actively breaks the next
+# run, because `tauri dev` cannot bind `devUrl` out from under it and
+# fails outright rather than serving stale content. Covers the case a
+# detached shell or `nohup` kept it alive with a cwd the check above
+# never saw. Port must match `devUrl` in app/src-tauri/tauri.conf.json.
+fuser -k -TERM 1420/tcp 2>/dev/null &&
+    say "  freed port 1420 (a vite dev server was still holding it)"
+
 say "daemon"
 (cd "$ROOT/daemon" && cargo build)
 
@@ -50,13 +102,21 @@ say "widget"
 
 # The daemon runs from a fixed path, so a fresh binary changes nothing
 # until the service is restarted. Only when the unit is actually
-# installed: a development daemon started by hand in another terminal is
-# not ours to kill, and saying so is more useful than failing.
+# installed does this restart it that way; run by hand instead (see
+# --help below), it is root's and a plain user can read its cmdline -
+# world-readable under /proc - without being able to read its cwd, so
+# this one is matched by binary path rather than `stop_leftovers`, and
+# gets the one sudo prompt it actually needs, not the daemon's own.
 if systemctl list-unit-files "$UNIT" >/dev/null 2>&1 &&
     systemctl cat "$UNIT" >/dev/null 2>&1; then
     say "restarting $UNIT (needs root)"
     sudo systemctl restart "$UNIT"
 else
+    dev_daemon_pid=$(pgrep -f "^$ROOT/daemon/target/(debug|release)/pyren-daemon\$" 2>/dev/null | head -1 || true)
+    if [ -n "$dev_daemon_pid" ]; then
+        say "stopping the old hand-run pyren-daemon (needs root)"
+        sudo kill -TERM "$dev_daemon_pid" 2>/dev/null || true
+    fi
     say "no $UNIT installed - restart your daemon yourself"
     echo "    cd daemon && sudo -E cargo run -p pyren-daemon"
 fi
