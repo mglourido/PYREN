@@ -55,7 +55,7 @@
   import { onMount } from "svelte";
 
   const ZONES = 4;
-  const MAX_SAVED = 5;
+  const MAX_SAVED = 15;
 
   /** A drag on the brightness slider is one ACPI write per pixel unless it
    *  is held back; the strip only has to catch up when the hand stops. */
@@ -344,7 +344,7 @@
     void apply(preset.every((c) => c === preset[0]) ? "static" : "zones");
   }
 
-  /** The user's own five slots, as opposed to the seven fixed `presets`
+  /** The user's own fifteen slots, as opposed to the seven fixed `presets`
    *  above: colours, brightness and (for an effect) its settings, exactly
    *  as they are on screen when "Save" is pressed. */
   const saved = $derived(lightingPresets.current.presets);

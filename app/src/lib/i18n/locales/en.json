@@ -273,7 +273,7 @@
     "allZones": "All zones",
     "presets": "Presets",
     "saved": "Saved configurations",
-    "savedLead": "Up to five slots for the colours and settings currently on screen - not the seven presets above, which never change.",
+    "savedLead": "Up to fifteen slots for the colours and settings currently on screen - not the seven presets above, which never change.",
     "saveButton": "Save ({used}/{max})",
     "savedEmpty": "Nothing saved yet. “Save” keeps what is on screen right now.",
     "removeSaved": "Remove this configuration",
