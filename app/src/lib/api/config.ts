@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./daemon";
 
 /** Namespaces must match `APP_CONFIG_NAMESPACES` in src-tauri/src/lib.rs. */
-export type ConfigNamespace = "app" | "ui";
+export type ConfigNamespace = "app" | "ui" | "lighting";
 
 export type ConfigOutcome =
   | { status: "loaded" }

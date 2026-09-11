@@ -21,7 +21,7 @@ use tauri::{Emitter, Manager};
 /// An allowlist rather than a free-form name: the namespace becomes a
 /// filename, and nothing in the webview should be able to choose arbitrary
 /// paths. (`ConfigStore` sanitises names too - this is the first line.)
-const APP_CONFIG_NAMESPACES: &[&str] = &["app", "ui"];
+const APP_CONFIG_NAMESPACES: &[&str] = &["app", "ui", "lighting"];
 
 /// Where the daemon might be, most-likely first.
 ///

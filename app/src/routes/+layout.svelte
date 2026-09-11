@@ -12,6 +12,7 @@
   import NotificationsPanel from "$lib/components/NotificationsPanel.svelte";
   import { settings } from "$lib/stores/settings.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
+  import { lightingPresets } from "$lib/stores/lighting-presets.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { notifications } from "$lib/stores/notifications.svelte";
   import { t, tm } from "$lib/i18n/index.svelte";
@@ -26,6 +27,7 @@
   // then the files on disk, which are authoritative.
   settings.loadCache();
   hardware.loadCache();
+  lightingPresets.loadCache();
 
   // Deliberately `onMount` and not `$effect`: this block reads settings
   // (`start()` needs the poll interval) *and* writes them (`hydrate()`
@@ -35,6 +37,7 @@
   onMount(() => {
     void settings.hydrate();
     void hardware.hydrate().then(() => hardware.syncFromDaemon());
+    void lightingPresets.hydrate();
     telemetry.start();
     void telemetry.loadSystemInfo();
     // Started here rather than per-page: the mode can change while any
@@ -54,6 +57,7 @@
   function flushSettings() {
     void settings.flush();
     void hardware.flush();
+    void lightingPresets.flush();
   }
 
   // TODO item: on launch, warn when the kernel driver is missing and offer

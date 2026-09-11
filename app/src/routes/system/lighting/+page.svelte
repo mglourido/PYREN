@@ -51,7 +51,7 @@
   import { frame } from "$lib/lighting-effects";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
-  import { settings, type LightingPreset } from "$lib/stores/settings.svelte";
+  import { lightingPresets, type LightingPreset } from "$lib/stores/lighting-presets.svelte";
   import { onMount } from "svelte";
 
   const ZONES = 4;
@@ -347,7 +347,7 @@
   /** The user's own five slots, as opposed to the seven fixed `presets`
    *  above: colours, brightness and (for an effect) its settings, exactly
    *  as they are on screen when "Save" is pressed. */
-  const saved = $derived(settings.current.lightingPresets);
+  const saved = $derived(lightingPresets.current.presets);
 
   /** "{mode}-{effect if mode is effect}-{slot}", e.g. "Efecto-Espectro-1".
    *  Only the default - renaming replaces it outright. */
@@ -369,14 +369,11 @@
       effect: mode === "effect" ? $state.snapshot(effect) : null,
       fps: mode === "effect" ? fps : null,
     };
-    settings.set("lightingPresets", [...saved, next]);
+    lightingPresets.set([...saved, next]);
   }
 
   function removeSavedPreset(id: string) {
-    settings.set(
-      "lightingPresets",
-      saved.filter((p) => p.id !== id),
-    );
+    lightingPresets.set(saved.filter((p) => p.id !== id));
   }
 
   function applySavedPreset(p: LightingPreset) {
@@ -410,10 +407,7 @@
     if (!renameTarget) return;
     const name = renameDraft.trim();
     if (name) {
-      settings.set(
-        "lightingPresets",
-        saved.map((p) => (p.id === renameTarget!.id ? { ...p, name } : p)),
-      );
+      lightingPresets.set(saved.map((p) => (p.id === renameTarget!.id ? { ...p, name } : p)));
     }
     closeRename();
   }
