@@ -85,11 +85,22 @@
   }
 
   .option {
+    display: flex;
+    flex-direction: column;
     width: 260px;
   }
 
+  /* Let the card fill the column so its edges line up with the blurb below
+     it - otherwise the button shrinks to its content and the text overhangs. */
+  .option :global(.mode) {
+    width: 100%;
+    min-width: 0;
+  }
+
   .desc {
-    margin: 18px 4px 0;
+    /* 1px to match the card's transparent border, so the text lines up with
+       the card's content box rather than its outer edge. */
+    margin: 18px 0 0 1px;
     color: var(--text-dim);
     font-size: 14px;
     line-height: 1.45;

@@ -1050,6 +1050,7 @@
     background: var(--bg-elev, rgba(255, 255, 255, 0.04));
     color: var(--text-dim);
     font-size: 12.5px;
+    -webkit-user-select: text;
     user-select: text;
   }
 

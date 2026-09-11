@@ -155,6 +155,12 @@ the IPC protocol and on-disk config.
 - The self-test gained a `pwm-effect` check, fed by the probe above, so
   `fullControl` now means the fans were watched to move rather than that a
   file exists.
+- **Docs: the `fan.diagnose` section of the IPC protocol reference was
+  stale.** It still described the old readback-only write check and listed
+  neither `pwm-write` nor `pwm-effect`. It now names every check by `id`,
+  notes that `allowWrites` briefly spins the fans (a `fan.probeSpeedControl`
+  run `diagnose` fires itself), and spells out how the verdict follows the
+  check results.
 
 ### Changed
 

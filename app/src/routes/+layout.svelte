@@ -77,6 +77,10 @@
   );
 </script>
 
+<!-- Belt to the CSS's braces: kill any drag gesture the `-webkit-user-drag`
+     rules miss (dragging a text selection, mostly). -->
+<svelte:document ondragstart={(e) => e.preventDefault()} />
+
 <svelte:window onbeforeunload={flushSettings} onpagehide={flushSettings} />
 
 <div class="shell">

@@ -60,7 +60,7 @@
             <li class="item {n.kind}" class:unread={!n.read}>
               <span class="dot" aria-hidden="true"></span>
               <Icon name={n.icon} size={18} class="glyph" />
-              <div class="text">
+              <div class="text selectable">
                 <div class="row">
                   <span class="title">{n.title}</span>
                   <span class="age">{timeAgo(n.at)}</span>
