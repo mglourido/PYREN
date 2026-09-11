@@ -163,7 +163,7 @@
     "lastAutoSwitch": "Último cambio automático: {detail}",
     "onBattery": "Con batería",
     "onMains": "Con adaptador de CA",
-    "applyToOsProfileHint": "Refleja el modo seleccionado en el perfil de energía del sistema (power-profiles-daemon / platform_profile), para que las aplicaciones que lo leen se mantengan sincronizadas.",
+    "applyToOsProfileHint": "Refleja el modo seleccionado en el gestor de energía del sistema (power-profiles-daemon, TLP o auto-cpufreq), para que no deshaga el modo y las aplicaciones que lo leen se mantengan sincronizadas.",
     "fanReverse": "inverso",
     "fanRole": {
       "cpu": "Ventilador CPU",
@@ -661,7 +661,7 @@
       "platform-profile": {
         "title": "Perfil de plataforma ACPI",
         "ok": "{current} (disponibles: {choices})",
-        "absent": "no expuesto; los modos de energía recurren a power-profiles-daemon o a la pista EPP de la CPU"
+        "absent": "no expuesto; los modos de energía recurren al gestor de energía del sistema o a la pista EPP de la CPU"
       },
       "acpi-call": {
         "title": "Módulo acpi_call",

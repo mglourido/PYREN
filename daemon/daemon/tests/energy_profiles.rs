@@ -85,7 +85,7 @@ impl Machine {
         machine.write("powercap/intel-rapl:0/name", "package-0");
         machine.write_limits(stock());
         machine.write_os_profile("balanced");
-        machine.install_powerprofilesctl();
+        machine.install_profiles_service();
 
         // --- the fan half ---
         for file in fan_files {
@@ -123,25 +123,26 @@ impl Machine {
         self.write("os_profile", profile);
     }
 
-    fn install_powerprofilesctl(&self) {
+    /// A power-profiles service, reached the way the module reaches the
+    /// real one: `busctl` on the system bus, `Get` and `Set` of
+    /// `ActiveProfile`.
+    fn install_profiles_service(&self) {
         self.write(
-            "bin/powerprofilesctl",
+            "bin/busctl",
             "#!/bin/sh\n\
              root=$(dirname \"$0\")/..\n\
-             case \"$1\" in\n\
-             get) cat \"$root/os_profile\" ;;\n\
-             set) printf '%s' \"$2\" > \"$root/os_profile\" ;;\n\
+             for profile; do :; done\n\
+             case \" $* \" in\n\
+             *\" Get \"*) printf 'v s \"%s\"\\n' \"$(cat \"$root/os_profile\")\" ;;\n\
+             *\" Set \"*) printf '%s' \"$profile\" > \"$root/os_profile\" ;;\n\
              *) exit 2 ;;\n\
              esac\n",
         );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                self.root.join("bin/powerprofilesctl"),
-                std::fs::Permissions::from_mode(0o755),
-            )
-            .expect("runnable");
+            std::fs::set_permissions(self.root.join("bin/busctl"), std::fs::Permissions::from_mode(0o755))
+                .expect("runnable");
         }
     }
 
@@ -149,7 +150,7 @@ impl Machine {
         std::env::set_var("PYREN_PLATFORM_PROFILE", self.root.join("acpi/platform_profile"));
         std::env::set_var("PYREN_CPU_ROOT", self.root.join("cpu"));
         std::env::set_var("PYREN_POWERCAP", self.root.join("powercap"));
-        std::env::set_var("PYREN_POWERPROFILESCTL", self.root.join("bin/powerprofilesctl"));
+        std::env::set_var("PYREN_TOOLS_DIR", self.root.join("bin"));
         std::env::set_var("PYREN_HWMON_DIR", self.root.join("hwmon"));
     }
 
@@ -201,7 +202,7 @@ impl Drop for Machine {
             "PYREN_PLATFORM_PROFILE",
             "PYREN_CPU_ROOT",
             "PYREN_POWERCAP",
-            "PYREN_POWERPROFILESCTL",
+            "PYREN_TOOLS_DIR",
             "PYREN_HWMON_DIR",
         ] {
             std::env::remove_var(name);

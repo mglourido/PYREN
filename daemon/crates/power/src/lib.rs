@@ -2,9 +2,10 @@
 //! plus the background supervisor that can drive it automatically.
 //!
 //! On an HP laptop the firmware's ACPI platform profile is the real thing
-//! this drives (the same switch as Fn+P). Elsewhere it falls back to
-//! power-profiles-daemon and the CPU's energy-performance hint, which makes
-//! the module useful - and testable - on ordinary Linux machines too.
+//! this drives (the same switch as Fn+P). Elsewhere it falls back to the
+//! OS's power manager (power-profiles-daemon, TLP, auto-cpufreq) and the
+//! CPU's energy-performance hint, which makes the module useful - and
+//! testable - on ordinary Linux machines too.
 //!
 //! | method | params | result |
 //! |---|---|---|
@@ -21,7 +22,7 @@
 //! | part | mechanism | optional? |
 //! |---|---|---|
 //! | the laptop's own profile | ACPI `platform_profile` | no |
-//! | the OS profile | power-profiles-daemon | yes - `applyToOsProfile` |
+//! | the OS profile | power-profiles-daemon / TLP / auto-cpufreq | yes - `applyToOsProfile` |
 //! | the power envelope | powercap PL1/PL2 + turbo | only if someone set it |
 //!
 //! The first is the one that matters most and the one this project cannot
@@ -123,7 +124,8 @@ pub struct PowerConfig {
     /// the user opted into.
     pub restore_mode_on_start: bool,
     /// Whether changing the performance mode should also change the OS
-    /// power profile (power-profiles-daemon), or only the laptop's own
+    /// power profile (power-profiles-daemon, TLP, auto-cpufreq - see
+    /// `backend`), or only the laptop's own
     /// firmware profile.
     ///
     /// The two are separate on purpose: the firmware profile is what moves
@@ -822,7 +824,7 @@ fn saved_response(state: &State) -> Value {
 /// mechanism is present.
 fn current_mode() -> Option<PowerMode> {
     let state = backend::read_state();
-    let name = state.platform_profile.or(state.power_profiles_daemon)?;
+    let name = state.platform_profile.or(state.power_profiles_daemon).or(state.tlp)?;
     match name.as_str() {
         "low-power" | "quiet" | "cool" | "power-saver" => Some(PowerMode::Eco),
         "balanced" => Some(PowerMode::Balanced),
@@ -935,7 +937,7 @@ mod tests {
         let nowhere = std::env::temp_dir().join(format!("pyren-power-nowhere-{}", std::process::id()));
         std::env::set_var("PYREN_PLATFORM_PROFILE", nowhere.join("platform_profile"));
         std::env::set_var("PYREN_CPU_ROOT", nowhere.join("cpu"));
-        std::env::set_var("PYREN_POWERPROFILESCTL", nowhere.join("powerprofilesctl"));
+        std::env::set_var("PYREN_TOOLS_DIR", nowhere.join("bin"));
 
         let config = PowerConfig::default();
         let report = apply_profile(PowerMode::Eco, &config, &limits::LimitPaths::default());
@@ -943,7 +945,7 @@ mod tests {
         assert!(!report.applied.iter().any(|a| a.starts_with("PL")));
         assert!(!report.applied.iter().any(|a| a.starts_with("turbo")));
 
-        for name in ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_POWERPROFILESCTL"] {
+        for name in ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_TOOLS_DIR"] {
             std::env::remove_var(name);
         }
     }

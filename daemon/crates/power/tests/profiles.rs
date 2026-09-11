@@ -5,15 +5,15 @@
 //! firmware profile a mode maps onto, what the supervisor would pick, how
 //! a percentage becomes watts. What they cannot cover is the half that
 //! writes: `backend::apply` and `limits::apply` reach into
-//! `/sys/firmware/acpi`, `/sys/class/powercap` and `powerprofilesctl`, and
+//! `/sys/firmware/acpi`, `/sys/class/powercap` and the OS's power manager, and
 //! a test that exercised those for real would change the machine it is
 //! running on. So they were never exercised at all, and the questions a
 //! user actually asks - *does switching profile move both the laptop's
 //! profile and the OS's? does it survive closing the app? does it survive
 //! the daemon restarting?* - had no answer here.
 //!
-//! [`Machine`] is that answer: a fixture sysfs tree plus a stand-in
-//! `powerprofilesctl` that records every request, pointed at through the
+//! [`Machine`] is that answer: a fixture sysfs tree plus stand-in power
+//! managers that record every request, pointed at through the
 //! `PYREN_*` variables the rest of the project already uses for this. What
 //! the module writes to the fake machine is then simply readable back, so
 //! "Eco set the firmware profile to low-power and asked the OS for
@@ -100,7 +100,7 @@ impl Machine {
         machine.write("powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw", "28000000");
 
         machine.write_os_profile("balanced");
-        machine.install_powerprofilesctl();
+        machine.install_profiles_service();
         machine.apply_env();
         machine
     }
@@ -136,99 +136,144 @@ impl Machine {
         }
     }
 
-    /// What the fake `powerprofilesctl get` will answer.
+    /// What the fake power-profiles service will answer.
     fn write_os_profile(&self, profile: &str) {
         self.write("os_profile", profile);
     }
 
-    /// A `powerprofilesctl` that keeps a diary.
+    /// A power-profiles service that keeps a diary, reached the way the
+    /// module reaches the real one: `busctl` on the system bus.
     ///
-    /// `get` answers from a file and `set` writes it, so the OS profile
+    /// `Get` answers from a file and `Set` writes it, so the OS profile
     /// behaves like the stateful service it stands in for; the log is what
     /// makes "asked for it once" distinguishable from "asked for it on
     /// every tick for five minutes".
-    fn install_powerprofilesctl(&self) {
-        self.install_powerprofilesctl_script(
-            "#!/bin/sh\n\
-             root=$(dirname \"$0\")/..\n\
-             case \"$1\" in\n\
-             get) cat \"$root/os_profile\" ;;\n\
-             set) printf '%s' \"$2\" > \"$root/os_profile\"\n\
-             \x20    echo \"$2\" >> \"$root/os_profile.log\" ;;\n\
-             *) exit 2 ;;\n\
-             esac\n",
+    fn install_profiles_service(&self) {
+        self.install_profiles_service_script(
+            "printf '%s' \"$profile\" > \"$root/os_profile\"\n\
+             \x20    echo \"$profile\" >> \"$root/os_profile.log\"",
         );
     }
 
     /// The same stand-in, but with the misbehaviour found on the reference
     /// laptop: power-profiles-daemon 0.30 ships its own `platform_profile`
-    /// driver, so `set` here also writes the firmware file itself - to
+    /// driver, so `Set` here also writes the firmware file itself - to
     /// `wrong_hardware_profile`, standing in for whatever *ppd's* mapping
     /// landed on, which measurably disagreed with this module's own
     /// (`balanced` where this module chose `cool`). What made that a real
     /// incident rather than a one-off reading was the order `apply` used
     /// to run the two steps in: see `backend::plan`.
-    fn install_racing_powerprofilesctl(&self, wrong_hardware_profile: &str) {
-        self.install_powerprofilesctl_script(&format!(
-            "#!/bin/sh\n\
-             root=$(dirname \"$0\")/..\n\
-             case \"$1\" in\n\
-             get) cat \"$root/os_profile\" ;;\n\
-             set) printf '%s' \"$2\" > \"$root/os_profile\"\n\
-             \x20    echo \"$2\" >> \"$root/os_profile.log\"\n\
-             \x20    printf '%s' \"{wrong_hardware_profile}\" > \"$root/acpi/platform_profile\" ;;\n\
-             *) exit 2 ;;\n\
-             esac\n"
+    fn install_racing_profiles_service(&self, wrong_hardware_profile: &str) {
+        self.install_profiles_service_script(&format!(
+            "printf '%s' \"$profile\" > \"$root/os_profile\"\n\
+             \x20    echo \"$profile\" >> \"$root/os_profile.log\"\n\
+             \x20    printf '%s' \"{wrong_hardware_profile}\" > \"$root/acpi/platform_profile\""
         ));
     }
 
-    /// A `powerprofilesctl` that misapplies exactly its first `set` call
-    /// ever, to a profile nobody asked for, and gets every one after that
-    /// right - the shape of the mismatch found on the reference laptop,
-    /// where a second attempt was observed to always succeed. Exercises
-    /// `backend::set_power_profiles_daemon`'s retry rather than the
-    /// platform-profile race, so `platform_profile` here is left alone.
-    fn install_flaky_powerprofilesctl(&self) {
-        self.install_powerprofilesctl_script(
-            "#!/bin/sh\n\
-             root=$(dirname \"$0\")/..\n\
-             count=\"$root/ppd_set_count\"\n\
-             case \"$1\" in\n\
-             get) cat \"$root/os_profile\" ;;\n\
-             set)\n\
+    /// A service that misapplies exactly its first `Set` call ever, to a
+    /// profile nobody asked for, and gets every one after that right - the
+    /// shape of the mismatch found on the reference laptop, where a second
+    /// attempt was observed to always succeed. Exercises the retry in
+    /// `backend::set_and_confirm` rather than the platform-profile race,
+    /// so `platform_profile` here is left alone.
+    fn install_flaky_profiles_service(&self) {
+        self.install_profiles_service_script(
+            "count=\"$root/ppd_set_count\"\n\
              \x20    n=$(cat \"$count\" 2>/dev/null || echo 0); n=$((n + 1)); echo \"$n\" > \"$count\"\n\
              \x20    if [ \"$n\" -eq 1 ]; then printf '%s' nobody-asked-for-this > \"$root/os_profile\"\n\
-             \x20    else printf '%s' \"$2\" > \"$root/os_profile\"; fi\n\
-             \x20    echo \"$2\" >> \"$root/os_profile.log\" ;;\n\
-             *) exit 2 ;;\n\
-             esac\n",
+             \x20    else printf '%s' \"$profile\" > \"$root/os_profile\"; fi\n\
+             \x20    echo \"$profile\" >> \"$root/os_profile.log\"",
         );
     }
 
-    /// A `powerprofilesctl` that never lands on what it is asked for -
-    /// the case the retry has to give up on rather than loop forever.
-    fn install_permanently_wrong_powerprofilesctl(&self, wrong: &str) {
-        self.install_powerprofilesctl_script(&format!(
-            "#!/bin/sh\n\
-             root=$(dirname \"$0\")/..\n\
-             case \"$1\" in\n\
-             get) cat \"$root/os_profile\" ;;\n\
-             set) printf '%s' \"{wrong}\" > \"$root/os_profile\"\n\
-             \x20    echo \"$2\" >> \"$root/os_profile.log\" ;;\n\
-             *) exit 2 ;;\n\
-             esac\n"
+    /// A service that never lands on what it is asked for - the case the
+    /// retry has to give up on rather than loop forever.
+    fn install_permanently_wrong_profiles_service(&self, wrong: &str) {
+        self.install_profiles_service_script(&format!(
+            "printf '%s' \"{wrong}\" > \"$root/os_profile\"\n\
+             \x20    echo \"$profile\" >> \"$root/os_profile.log\""
         ));
     }
 
-    fn install_powerprofilesctl_script(&self, contents: &str) {
-        let script = self.root.join("bin/powerprofilesctl");
-        self.write("bin/powerprofilesctl", contents);
+    /// A fake `busctl` serving `ActiveProfile`, running `on_set` (with
+    /// `$profile` and `$root` in scope) for a `Set`. Every invocation's
+    /// arguments are logged, so a test can check how it was called - above
+    /// all, that it was never allowed to auto-start anything.
+    fn install_profiles_service_script(&self, on_set: &str) {
+        self.install_tool(
+            "busctl",
+            &format!(
+                "#!/bin/sh\n\
+                 root=$(dirname \"$0\")/..\n\
+                 echo \"$*\" >> \"$root/busctl.log\"\n\
+                 for profile; do :; done\n\
+                 case \" $* \" in\n\
+                 *\" Get \"*) printf 'v s \"%s\"\\n' \"$(cat \"$root/os_profile\")\" ;;\n\
+                 *\" Set \"*) {on_set} ;;\n\
+                 *) exit 2 ;;\n\
+                 esac\n"
+            ),
+        );
+    }
+
+    /// An executable in the fixture's tool directory - the only place the
+    /// module looks for one while `PYREN_TOOLS_DIR` points here.
+    fn install_tool(&self, name: &str, contents: &str) {
+        let script = self.root.join("bin").join(name);
+        self.write(&format!("bin/{name}"), contents);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
                 .expect("the stand-in has to be runnable");
         }
+    }
+
+    fn remove_tool(&self, name: &str) {
+        let _ = std::fs::remove_file(self.root.join("bin").join(name));
+    }
+
+    /// TLP 1.8+ with no tlp-pd: `tlp-stat -m` answers from a file and
+    /// `tlp <profile>` writes it, logging each request.
+    fn install_tlp(&self, profile: &str) {
+        self.remove_tool("busctl");
+        self.write("tlp_profile", profile);
+        self.install_tool(
+            "tlp-stat",
+            "#!/bin/sh\n\
+             root=$(dirname \"$0\")/..\n\
+             [ \"$1\" = -m ] || exit 2\n\
+             printf '%s/BAT (manual)\\n' \"$(cat \"$root/tlp_profile\")\"\n",
+        );
+        self.install_tool(
+            "tlp",
+            "#!/bin/sh\n\
+             root=$(dirname \"$0\")/..\n\
+             case \"$1\" in\n\
+             performance|balanced|power-saver) printf '%s' \"$1\" > \"$root/tlp_profile\"\n\
+             \x20    echo \"$1\" >> \"$root/tlp.log\" ;;\n\
+             *) exit 3 ;;\n\
+             esac\n",
+        );
+    }
+
+    /// A running auto-cpufreq: `pgrep` finds its daemon, `--force` writes
+    /// the override (a reset removes it) and `--get-state` reads it back.
+    fn install_auto_cpufreq(&self) {
+        self.install_tool("pgrep", "#!/bin/sh\necho 1236\n");
+        self.install_tool(
+            "auto-cpufreq",
+            "#!/bin/sh\n\
+             root=$(dirname \"$0\")/..\n\
+             case \"$1\" in\n\
+             --get-state) cat \"$root/acf_override\" 2>/dev/null || echo default ;;\n\
+             --force=reset) rm -f \"$root/acf_override\"; echo reset >> \"$root/acf.log\" ;;\n\
+             --force=*) printf '%s\\n' \"${1#--force=}\" > \"$root/acf_override\"\n\
+             \x20    echo \"${1#--force=}\" >> \"$root/acf.log\" ;;\n\
+             *) exit 2 ;;\n\
+             esac\n",
+        );
     }
 
     /// Points the module at this machine. Called again after any change
@@ -238,7 +283,7 @@ impl Machine {
         std::env::set_var("PYREN_PLATFORM_PROFILE", self.root.join("acpi/platform_profile"));
         std::env::set_var("PYREN_CPU_ROOT", self.root.join("cpu"));
         std::env::set_var("PYREN_POWERCAP", self.root.join("powercap"));
-        std::env::set_var("PYREN_POWERPROFILESCTL", self.root.join("bin/powerprofilesctl"));
+        std::env::set_var("PYREN_TOOLS_DIR", self.root.join("bin"));
     }
 
     /// A config store inside the fixture, so the daemon's memory dies with
@@ -295,7 +340,7 @@ impl Drop for Machine {
         // Left behind for whoever is reading a failure; the next run with
         // the same tag clears it.
         for name in
-            ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_POWERCAP", "PYREN_POWERPROFILESCTL"]
+            ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_POWERCAP", "PYREN_TOOLS_DIR"]
         {
             std::env::remove_var(name);
         }
@@ -1164,15 +1209,15 @@ fn a_firmware_with_unknown_names_is_reported_not_ignored() {
 ///
 /// `backend::plan` now puts the OS step first and the firmware step last
 /// for exactly this reason: this module's own explicit write is the one
-/// thing that gets to be final. This machine has a `powerprofilesctl`
+/// thing that gets to be final. This machine has a power-profiles service
 /// that misbehaves exactly as the real one did, so a reordering that
 /// reintroduces the race fails here rather than on someone's laptop.
 #[test]
-fn pyrens_own_firmware_write_wins_even_when_powerprofilesctl_writes_it_too() {
+fn pyrens_own_firmware_write_wins_even_when_ppd_writes_it_too() {
     let machine = Machine::new("ppd-race");
     // Standing in for ppd's own mapping disagreeing with ours: whatever
     // mode is asked for, its driver decides `balanced` is close enough.
-    machine.install_racing_powerprofilesctl("balanced");
+    machine.install_racing_profiles_service("balanced");
     machine.apply_env();
     let daemon = machine.boot();
 
@@ -1193,7 +1238,7 @@ fn pyrens_own_firmware_write_wins_even_when_powerprofilesctl_writes_it_too() {
 #[test]
 fn a_ppd_that_misses_once_is_retried_and_the_call_still_succeeds() {
     let machine = Machine::new("ppd-flaky");
-    machine.install_flaky_powerprofilesctl();
+    machine.install_flaky_profiles_service();
     machine.apply_env();
     let daemon = machine.boot();
 
@@ -1219,7 +1264,7 @@ fn a_ppd_that_misses_once_is_retried_and_the_call_still_succeeds() {
 #[test]
 fn a_permanently_wrong_ppd_is_given_up_on_and_reported_failed() {
     let machine = Machine::new("ppd-stuck");
-    machine.install_permanently_wrong_powerprofilesctl("balanced");
+    machine.install_permanently_wrong_profiles_service("balanced");
     machine.apply_env();
     let daemon = machine.boot();
 
@@ -1249,3 +1294,184 @@ fn a_permanently_wrong_ppd_is_given_up_on_and_reported_failed() {
         "exactly OS_PROFILE_ATTEMPTS tries, not an unbounded retry loop"
     );
 }
+
+// ---------------------------------------------------------------------
+// Whichever power manager the OS runs
+// ---------------------------------------------------------------------
+
+/// The failure this module must never cause: a power-profiles-daemon that
+/// is installed but disabled - because the user runs TLP or auto-cpufreq -
+/// is still bus-activatable, and its unit `Conflicts=` with both. A client
+/// that merely *asks* it for the profile starts it, and systemd stops the
+/// power manager the user chose.
+///
+/// This machine has nothing serving the API, a `busctl` that logs how it
+/// was called, and a `powerprofilesctl` that would have been the
+/// activation. Nothing may reach the latter, and every bus call has to
+/// have gone out with auto-start off.
+#[test]
+fn asking_about_the_os_profile_never_starts_a_power_manager() {
+    let machine = Machine::new("no-activation");
+    machine.install_tool(
+        "busctl",
+        "#!/bin/sh\n\
+         root=$(dirname \"$0\")/..\n\
+         echo \"$*\" >> \"$root/busctl.log\"\n\
+         echo 'Call failed: Destination does not exist' >&2\n\
+         exit 1\n",
+    );
+    machine.install_tool(
+        "powerprofilesctl",
+        "#!/bin/sh\n\
+         root=$(dirname \"$0\")/..\n\
+         echo activated >> \"$root/activated.log\"\n",
+    );
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    daemon.call("getState", json!(null)).expect("getState");
+    let report = set(&daemon, PowerMode::Eco);
+
+    assert_eq!(machine.read("activated.log"), None, "powerprofilesctl would have started the service");
+    let calls = machine.read("busctl.log").expect("the bus was asked");
+    assert!(
+        calls.lines().all(|call| call.contains("--auto-start=no")),
+        "every bus call must refuse to auto-start its destination: {calls}"
+    );
+    // With no manager at all, the hint is the OS half again.
+    assert!(
+        report["applied"].as_array().unwrap().iter().any(|a| a
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("energy_performance_preference=power")),
+        "{report}"
+    );
+}
+
+/// No systemd, so no `busctl`: `powerprofilesctl` is how the API is
+/// reached, and there it cannot start anything (see `ProfilesEndpoint`).
+#[test]
+fn without_busctl_the_profiles_api_is_reached_through_powerprofilesctl() {
+    let machine = Machine::new("ppd-cli");
+    machine.remove_tool("busctl");
+    machine.install_tool(
+        "powerprofilesctl",
+        "#!/bin/sh\n\
+         root=$(dirname \"$0\")/..\n\
+         case \"$1\" in\n\
+         get) cat \"$root/os_profile\" ;;\n\
+         set) printf '%s' \"$2\" > \"$root/os_profile\" ;;\n\
+         *) exit 2 ;;\n\
+         esac\n",
+    );
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    for mode in PowerMode::ALL {
+        set(&daemon, *mode);
+        assert_eq!(machine.os_profile(), expected(*mode).1, "{mode:?}");
+    }
+}
+
+/// TLP 1.8+ without tlp-pd: every mode is a TLP profile, the firmware
+/// profile is still pyren's own, and the CPU hint is left to TLP - which
+/// would rewrite it on the next charger event anyway.
+#[test]
+fn on_a_tlp_machine_every_mode_is_a_tlp_profile() {
+    let machine = Machine::new("tlp");
+    machine.install_tlp("balanced");
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    let state = daemon.call("getState", json!(null)).expect("getState");
+    assert_eq!(state["backend"]["tlp"], json!("balanced"));
+    assert!(state["backend"]["available"].as_array().unwrap().contains(&json!("tlp")));
+
+    for mode in PowerMode::ALL {
+        let report = set(&daemon, *mode);
+        let (hardware, os) = expected(*mode);
+        assert_eq!(machine.read("tlp_profile").as_deref(), Some(os), "{mode:?}: TLP's profile");
+        assert_eq!(machine.hardware_profile(), hardware, "{mode:?}: the laptop's own");
+        assert!(
+            report["applied"].as_array().unwrap().contains(&json!(format!("tlp={os}"))),
+            "{mode:?}: {report}"
+        );
+        assert_eq!(report["failed"], json!([]), "{mode:?}");
+    }
+    assert_eq!(
+        machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(),
+        Some("balance_performance"),
+        "the hint is TLP's to set"
+    );
+}
+
+/// A TLP too old for profiles is not a manager this can ask anything, so
+/// the machine is treated as having none.
+#[test]
+fn a_tlp_without_profiles_is_not_mistaken_for_one() {
+    let machine = Machine::new("tlp-old");
+    machine.install_tlp("balanced");
+    machine.install_tool("tlp-stat", "#!/bin/sh\necho AC\n");
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    let report = set(&daemon, PowerMode::Eco);
+    assert_eq!(machine.read("tlp.log"), None, "an old TLP is never sent a profile");
+    assert!(report["applied"].as_array().unwrap().iter().any(|a| a
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("energy_performance_preference")));
+}
+
+/// auto-cpufreq rewrites the governor and EPP every few seconds, so it is
+/// forced for Eco and Performance and handed back its own judgement for
+/// Balanced - alongside TLP, on a machine that runs both.
+#[test]
+fn a_running_auto_cpufreq_is_forced_and_reset_with_the_modes() {
+    let machine = Machine::new("auto-cpufreq");
+    machine.install_tlp("balanced");
+    machine.install_auto_cpufreq();
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    let state = daemon.call("getState", json!(null)).expect("getState");
+    assert_eq!(state["backend"]["autoCpufreq"], json!(true));
+
+    for (mode, force, state) in [
+        (PowerMode::Eco, "powersave", "powersave"),
+        (PowerMode::Balanced, "reset", "default"),
+        (PowerMode::Performance, "performance", "performance"),
+        (PowerMode::Unlimited, "performance", "performance"),
+    ] {
+        let report = set(&daemon, mode);
+        let applied = report["applied"].as_array().unwrap();
+        assert!(applied.contains(&json!(format!("auto-cpufreq={force}"))), "{mode:?}: {report}");
+        assert!(applied.contains(&json!(format!("tlp={}", expected(mode).1))), "{mode:?}: {report}");
+        assert_eq!(
+            machine.read("acf_override").unwrap_or_else(|| "default".into()),
+            state,
+            "{mode:?}"
+        );
+    }
+    assert_eq!(
+        machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(),
+        Some("balance_performance"),
+        "never written underneath auto-cpufreq"
+    );
+}
+
+/// An auto-cpufreq that is installed but not running is not asked: its
+/// `--force` refuses without the daemon, and would be undone by nothing.
+#[test]
+fn an_auto_cpufreq_that_is_not_running_is_left_alone() {
+    let machine = Machine::new("auto-cpufreq-stopped");
+    machine.install_auto_cpufreq();
+    machine.install_tool("pgrep", "#!/bin/sh\nexit 1\n");
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    set(&daemon, PowerMode::Eco);
+    assert_eq!(machine.read("acf.log"), None);
+    assert_eq!(machine.os_profile(), "power-saver", "the profiles service is still asked");
+}
+

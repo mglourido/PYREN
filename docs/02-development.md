@@ -440,10 +440,13 @@ changed. There are two suites, and they answer different questions.
 cd daemon && cargo test -p pyren-power --test profiles
 ```
 
-`crates/power/tests/profiles.rs` builds a fixture sysfs tree plus a
-stand-in `powerprofilesctl` that records every request, and points the
-module at it through `PYREN_PLATFORM_PROFILE`, `PYREN_CPU_ROOT`,
-`PYREN_POWERCAP` and `PYREN_POWERPROFILESCTL`. Because the fake machine
+`crates/power/tests/profiles.rs` builds a fixture sysfs tree plus
+stand-in power managers (a `busctl` serving the power-profiles API, TLP,
+auto-cpufreq) that record every request, and points the module at it
+through `PYREN_PLATFORM_PROFILE`, `PYREN_CPU_ROOT`, `PYREN_POWERCAP` and
+`PYREN_TOOLS_DIR` - the last confines *every* external program the
+module runs to the fixture's `bin/`, so a real `tlp` or `auto-cpufreq`
+on the developer's machine can never answer a test. Because the fake machine
 is readable back, assertions are exact: *Eco set the firmware profile to
 `low-power` and asked the OS for `power-saver`*. It covers switching
 between the four (including twenty rounds of cycling, and ten threads

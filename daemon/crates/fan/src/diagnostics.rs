@@ -899,7 +899,7 @@ fn check_platform_profile() -> Check {
             CheckStatus::Warn,
             msg!(
                 "diagnostics.checks.platform-profile.absent",
-                "not exposed; power modes fall back to power-profiles-daemon or the CPU EPP hint"
+                "not exposed; power modes fall back to the OS power manager or the CPU EPP hint"
             ),
         ),
     }

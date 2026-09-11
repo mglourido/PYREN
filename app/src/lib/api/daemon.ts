@@ -514,7 +514,12 @@ export type PowerState = {
   backend: {
     platformProfile: string | null;
     platformProfileChoices: string[];
+    /** Whatever serves the power-profiles D-Bus API (ppd, tuned-ppd, tlp-pd). */
     powerProfilesDaemon: string | null;
+    /** TLP's active profile, when TLP 1.8+ is in charge without tlp-pd. */
+    tlp: string | null;
+    /** Whether auto-cpufreq's daemon is running. */
+    autoCpufreq: boolean;
     energyPreference: string | null;
     governor: string | null;
     /** Mechanisms this machine offers, best first. Empty means no control. */

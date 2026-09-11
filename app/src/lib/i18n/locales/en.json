@@ -163,7 +163,7 @@
     "lastAutoSwitch": "Last automatic switch: {detail}",
     "onBattery": "On battery",
     "onMains": "On AC power",
-    "applyToOsProfileHint": "Mirrors the selected mode onto the OS power profile (power-profiles-daemon / platform_profile), so applications that read it stay in sync.",
+    "applyToOsProfileHint": "Mirrors the selected mode onto the OS power manager (power-profiles-daemon, TLP or auto-cpufreq), so it does not undo the mode and applications that read it stay in sync.",
     "fanReverse": "reverse",
     "fanRole": {
       "cpu": "CPU fan",
@@ -661,7 +661,7 @@
       "platform-profile": {
         "title": "ACPI platform profile",
         "ok": "{current} (available: {choices})",
-        "absent": "not exposed; power modes fall back to power-profiles-daemon or the CPU EPP hint"
+        "absent": "not exposed; power modes fall back to the OS power manager or the CPU EPP hint"
       },
       "acpi-call": {
         "title": "acpi_call module",

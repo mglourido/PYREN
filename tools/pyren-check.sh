@@ -517,11 +517,32 @@ fi
 if [ -r /sys/firmware/acpi/platform_profile_choices ]; then
 	PLATFORM_PROFILE_CHOICES="$(read_value /sys/firmware/acpi/platform_profile_choices)"
 fi
-# Asking powerprofilesctl rather than looking for a unit file: what matters
-# is whether it answers, which is also what the daemon asks.
-if command -v powerprofilesctl >/dev/null 2>&1 &&
-	ppd="$(powerprofilesctl get 2>/dev/null)" && [ -n "$ppd" ]; then
+# Asking whatever serves the power-profiles API rather than looking for a
+# unit file: what matters is whether it answers, which is also what the
+# daemon asks. Never through `powerprofilesctl` where busctl exists: that
+# bus-activates power-profiles-daemon if it is installed but disabled, and
+# its unit Conflicts= with TLP and auto-cpufreq - a *check* would stop the
+# user's power manager. `call` with --auto-start=no cannot.
+ppd=""
+if command -v busctl >/dev/null 2>&1; then
+	for api in org.freedesktop.UPower.PowerProfiles:/org/freedesktop/UPower/PowerProfiles \
+		net.hadess.PowerProfiles:/net/hadess/PowerProfiles; do
+		ppd="$(busctl --system --auto-start=no call "${api%%:*}" "${api#*:}" \
+			org.freedesktop.DBus.Properties Get ss "${api%%:*}" ActiveProfile 2>/dev/null)" &&
+			[ -n "$ppd" ] && break
+		ppd=""
+	done
+elif command -v powerprofilesctl >/dev/null 2>&1; then
+	ppd="$(powerprofilesctl get 2>/dev/null)" || ppd=""
+fi
+if [ -n "$ppd" ]; then
 	add_mechanism power-profiles-daemon
+elif command -v tlp-stat >/dev/null 2>&1 &&
+	tlp-stat -m 2>/dev/null | grep -Eq '^(performance|balanced|power-saver)/'; then
+	add_mechanism tlp
+fi
+if command -v pgrep >/dev/null 2>&1 && pgrep -f 'auto-cpufreq.* --daemon' >/dev/null 2>&1; then
+	add_mechanism auto-cpufreq
 fi
 if [ -r "$CPU_ROOT/cpu0/cpufreq/energy_performance_preference" ]; then
 	add_mechanism energy_performance_preference
@@ -529,8 +550,8 @@ fi
 
 if [ -z "$MECHANISMS" ]; then
 	record warn power-mechanisms "Power-mode mechanisms" \
-		"none - no ACPI platform profile, no power-profiles-daemon, no EPP hint" \
-		"This is normal on a desktop. On a laptop, power-profiles-daemon is the usual provider: install and enable it (systemctl enable --now power-profiles-daemon)."
+		"none - no ACPI platform profile, no power manager, no EPP hint" \
+		"This is normal on a desktop. On a laptop, a power manager is the usual provider: power-profiles-daemon (systemctl enable --now power-profiles-daemon) or TLP 1.8+."
 elif [ -n "$PLATFORM_PROFILE" ] && [ -n "$PLATFORM_PROFILE_CHOICES" ]; then
 	record pass power-mechanisms "Power-mode mechanisms" \
 		"$MECHANISMS (platform profile $PLATFORM_PROFILE, choices: $(printf '%s' "$PLATFORM_PROFILE_CHOICES" | tr ' ' ',' | sed 's/,/, /g'))"

@@ -63,12 +63,12 @@ fn mechanisms_check(surface: &PowerSurface) -> Check {
             ID,
             TITLE,
             CheckStatus::Warn,
-            "none - no ACPI platform profile, no power-profiles-daemon, no EPP hint",
+            "none - no ACPI platform profile, no power manager, no EPP hint",
         )
         .with_remedy(
-            "This is normal on a desktop. On a laptop, power-profiles-daemon is the \
-             usual provider: install and enable it (systemctl enable --now \
-             power-profiles-daemon).",
+            "This is normal on a desktop. On a laptop, a power manager is the usual \
+             provider: power-profiles-daemon (systemctl enable --now \
+             power-profiles-daemon) or TLP 1.8+.",
         );
     }
 
