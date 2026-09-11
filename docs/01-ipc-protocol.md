@@ -523,9 +523,9 @@ plus a thermal rule that applies to both:
 
 | | when it acts | what it does |
 |---|---|---|
-| `ecoOnBattery` | the machine is unplugged | drops to Balanced *at once*, then to Eco if it stays idle or the battery gets low |
-| `performanceOnLoad` | the machine is plugged in | steps up to Performance *at once*, then back to Balanced if it sits idle |
-| `backOffWhenHot` | the machine is over `tempHighC` | holds it at the quiet end of whichever range applies until it is back under `tempLowC` |
+| `ecoOnBattery` | the machine is unplugged | goes to `preferredOnBattery` *at once*, then moves between Eco and Balanced |
+| `performanceOnLoad` | the machine is plugged in | goes to `preferredOnMains` *at once*, then moves between Balanced and Performance |
+| `backOffWhenHot` | the machine is over `tempHighC` | holds it one step below its baseline until it is back under `tempLowC` |
 
 So a change of power source is a discrete event with an immediate answer,
 and everything after it is a slow refinement inside the range that source
@@ -536,7 +536,39 @@ allows:
   on mains:            Balanced  <--->  Performance
 ```
 
-Three consequences worth knowing:
+**Each source has a preferred mode** — `preferredOnBattery` (`eco` or
+`balanced`, default `eco`) and `preferredOnMains` (`balanced` or
+`performance`, default `performance`). It is where a change of power source
+lands and where refinement returns once whatever moved it has passed. Every
+tick, first match wins:
+
+1. **hot** (latched, `backOffWhenHot`) → one step below the baseline;
+2. **battery at or under `batteryLowPercent`** (on battery) → Eco;
+3. **a mode outside the source's range that nobody picked by hand** →
+   the nearest end of the range;
+4. **load ≥ `loadHigh`** → one step above the baseline, within the range;
+5. **load ≤ `loadLow`** → one step below the baseline, within the range;
+6. **in between** → back to the baseline once load has crossed the
+   *middle* of the band towards it; otherwise hold.
+
+Rule 6 is what makes the preference sticky: leaving it takes the far
+threshold, coming back only the middle. Preferring Eco on battery means
+Balanced is earned at 0.70 and given back at 0.50; preferring Balanced means
+Eco is taken at 0.30 and given back at 0.50. A moderate load leaves either
+one where it is.
+
+**A mode set by hand becomes the baseline** (`setMode` and the performance
+key; a tuning edit or the OS-profile switch re-applying the current mode
+does not count) until the power source next changes. `manualOverrideSecs`
+only pauses the supervisor; after it, refinement works around the
+hand-picked mode instead of the preference — stepping *down* from it for
+heat, idleness or a low battery and back up to it when that passes, never
+*up* from it. This is the one way Performance stays in force on battery.
+Picking the mode that already is the preference changes nothing.
+`getState` reports it as `autoManualBaseline` (`null` while following the
+preference).
+
+Consequences worth knowing:
 
 - **Unlimited is never chosen automatically.** It is the one mode that
   removes the daemon's own limits, so it is the one mode the user has to
@@ -544,7 +576,8 @@ Three consequences worth knowing:
   changes — unplugging is a deliberate act, and a laptop running unlimited
   off a battery is not what anyone meant — but it never refines its way in.
 - **No amount of load reaches Performance on battery**, and no amount of
-  idling reaches Eco on mains. The ranges do not overlap.
+  idling reaches Eco on mains — unless the user picked that mode by hand,
+  in which case it is kept rather than chosen.
 - **A manual `setMode` suspends refinement, not transitions.** Plugging the
   machine in is the user speaking too, and more recently than the last
   click.
@@ -555,13 +588,15 @@ Three consequences worth knowing:
 
 | field | meaning |
 |---|---|
-| `enabled` | master switch |
+| `enabled` | master switch. Off, the supervisor does nothing at all — no refinement and no answer to the cable moving; only `setMode` (app, widget, key, `pyren-ctl`) changes the mode. Switching it back on starts the supervisor from scratch, as at startup |
+| `preferredOnBattery` / `preferredOnMains` | the home mode for each source (see above). Values outside the source's range are clamped into it |
 | `loadHigh` / `loadLow` | 1-minute load average **per core** above/below which load counts as high/low. The gap between them is a dead band where the supervisor has no opinion — this is what stops the mode flapping around a threshold. |
 | `batteryLowPercent` | at or below this charge, Eco is preferred on battery whatever the load is doing |
 | `samplesToSwitch` | consecutive agreeing samples required before a *refinement*. Transitions ignore it. |
 | `intervalSecs` | how often it samples |
-| `manualOverrideSecs` | how long a manual `setMode` suspends refinement — whoever is at the keyboard wins |
+| `manualOverrideSecs` | how long a manual `setMode` suspends refinement entirely — after that the hand-picked mode is the baseline refinement works around |
 | `backOffWhenHot` | whether a hot machine is a reason to step down. On by default; the case it exists for is a laptop on a duvet |
+| _validation_ | `setAutoConfig` refuses `loadLow` ≥ `loadHigh` (or negative), `tempLowC` ≥ `tempHighC`, and `batteryLowPercent` outside 0–100, with `power.err.loadBand` / `tempBand` / `batteryPercent`; the stored config is left as it was |
 | `tempHighC` / `tempLowC` | the temperature at or above which the machine counts as hot, and the one it has to come back below before it stops counting. **Latched between the two**, and the band is wider than the load one on purpose: a chassis that has just been throttled is still full of heat, and a single threshold would step straight back into the same wall |
 
 The load average is used rather than instantaneous CPU usage precisely

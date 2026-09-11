@@ -308,10 +308,14 @@
       {/if}
 
       <label class="auto-select">
+        <!-- The supervisor's master switch. It used to write the OS-profile
+             setting, which already has its own checkbox further down; a
+             control labelled automatic/manual has to mean who changes the
+             mode. -->
         <select
-          value={hardware.state.applyToOsPowerProfile ? "auto" : "manual"}
-          onchange={(e) =>
-            hardware.setApplyToOsProfile(e.currentTarget.value === "auto")}
+          value={hardware.power?.auto.enabled ? "auto" : "manual"}
+          disabled={!hardware.power}
+          onchange={(e) => hardware.setAutoEnabled(e.currentTarget.value === "auto")}
         >
           <option value="auto">{t("performance.autoModeSettings")}</option>
           <option value="manual">{t("common.manual")}</option>
@@ -361,7 +365,9 @@
       </p>
     {/if}
 
-    {#if hardware.power?.lastAutoSwitch}
+    <!-- Only while the supervisor is on: with it off this would be news
+         from before, reading as though it were still acting. -->
+    {#if hardware.power?.auto.enabled && hardware.power.lastAutoSwitch}
       <p class="feedback">
         {t("performance.lastAutoSwitch", { detail: tm(hardware.power.lastAutoSwitch) })}
       </p>

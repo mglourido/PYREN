@@ -7,7 +7,7 @@
   import { availableLocales, localeName, t, tm } from "$lib/i18n/index.svelte";
   import { settings } from "$lib/stores/settings.svelte";
   import { THEME_CODES, type ThemeCode } from "$lib/styles/themes";
-  import { hardware } from "$lib/stores/hardware.svelte";
+  import { hardware, type PowerMode } from "$lib/stores/hardware.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { session, type SessionStatus } from "$lib/api/session";
   import { admin, type AdminStatus } from "$lib/api/admin";
@@ -176,6 +176,76 @@
     telemetry.restart();
   }
 
+  /**
+   * The supervisor's tuning, shown in the units a person thinks in:
+   * minutes rather than seconds, percent per core rather than a load
+   * ratio, and the temperature unit picked above. Each field is sent on
+   * commit (blur or Enter), never per keystroke - every send is a write
+   * to the daemon's config file.
+   */
+  type AutoField = "pause" | "battery" | "loadLow" | "loadHigh" | "tempHigh" | "tempLow";
+  const fahrenheit = $derived(settings.current.tempUnit === "f");
+  const toUnit = (c: number) => Math.round(fahrenheit ? c * 1.8 + 32 : c);
+  const fromUnit = (v: number) => (fahrenheit ? (v - 32) / 1.8 : v);
+
+  /** Min/max per field, in display units. */
+  const autoLimits = $derived<Record<AutoField, [number, number]>>({
+    pause: [0, 60],
+    battery: [5, 50],
+    loadLow: [5, 95],
+    loadHigh: [10, 200],
+    tempHigh: [toUnit(60), toUnit(100)],
+    tempLow: [toUnit(50), toUnit(95)],
+  });
+
+  function autoValue(field: AutoField): number {
+    const a = hardware.power!.auto;
+    switch (field) {
+      case "pause": return Math.round(a.manualOverrideSecs / 60);
+      case "battery": return Math.round(a.batteryLowPercent);
+      case "loadLow": return Math.round(a.loadLow * 100);
+      case "loadHigh": return Math.round(a.loadHigh * 100);
+      case "tempHigh": return toUnit(a.tempHighC);
+      case "tempLow": return toUnit(a.tempLowC);
+    }
+  }
+
+  /** The last refusal, shown under the fields until the next change. */
+  let autoError = $state<string | null>(null);
+
+  async function setAutoValue(field: AutoField, input: HTMLInputElement) {
+    const [min, max] = autoLimits[field];
+    const raw = Number(input.value);
+    if (!Number.isFinite(raw) || input.value.trim() === "") {
+      input.value = String(autoValue(field));
+      return;
+    }
+    const v = Math.min(max, Math.max(min, raw));
+    const change = {
+      pause: { manualOverrideSecs: Math.round(v * 60) },
+      battery: { batteryLowPercent: v },
+      loadLow: { loadLow: v / 100 },
+      loadHigh: { loadHigh: v / 100 },
+      tempHigh: { tempHighC: fromUnit(v) },
+      tempLow: { tempLowC: fromUnit(v) },
+    }[field];
+    autoError = await hardware.updateAuto(change);
+    // Show what the daemon holds now: the clamped value if it took, the
+    // old one if it was refused.
+    input.value = String(autoValue(field));
+  }
+
+  async function resetAutoTuning() {
+    autoError = await hardware.updateAuto({
+      manualOverrideSecs: 600,
+      batteryLowPercent: 25,
+      loadLow: 0.3,
+      loadHigh: 0.7,
+      tempHighC: 85,
+      tempLowC: 75,
+    });
+  }
+
   const outcome = $derived(settings.outcome);
 
   // The app's own file path isn't reported until a load has happened, so
@@ -281,6 +351,159 @@
       />
     </div>
   </Panel>
+
+  <!-- The power-mode supervisor, all in one place. The home screen keeps
+       its own switches for the day-to-day ones; this is where the whole
+       setup is, including what the home screen has no room for. The
+       per-source rows are the same state as the home screen's, so the two
+       can never disagree. -->
+  {#if hardware.power}
+    {@const auto = hardware.power.auto}
+    <Panel title={t("settings.autoControl")}>
+      <div class="row">
+        <span>
+          {t("settings.autoControlMaster")}
+          <small class="hint-inline"><RichText text={t("settings.autoControlMasterHint")} /></small>
+        </span>
+        <Toggle
+          checked={auto.enabled}
+          onchange={(v) => void hardware.setAutoEnabled(v)}
+          ariaLabel={t("settings.autoControlMaster")}
+        />
+      </div>
+
+      <div class="row">
+        <span>
+          {t("home.autoEco")}
+          <small class="hint-inline"><RichText text={t("home.autoEcoHint")} /></small>
+        </span>
+        <Toggle
+          checked={hardware.state.autoEco}
+          onchange={(v) => void hardware.setAutoSwitch(v, hardware.state.autoPerformance)}
+          ariaLabel={t("home.autoEco")}
+        />
+      </div>
+
+      <div class="row">
+        <label for="prefer-battery">
+          {t("home.preferOnBattery")}
+          <small class="hint-inline"><RichText text={t("settings.preferOnBatteryHint")} /></small>
+        </label>
+        <select
+          id="prefer-battery"
+          value={auto.preferredOnBattery}
+          onchange={(e) =>
+            void hardware.setAutoPreference("battery", e.currentTarget.value as PowerMode)}
+        >
+          {#each ["eco", "balanced"] as id (id)}
+            <option value={id}>{t(`performance.modes.${id}`)}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="row">
+        <span>
+          {t("home.autoPerformance")}
+          <small class="hint-inline"><RichText text={t("home.autoPerformanceHint")} /></small>
+        </span>
+        <Toggle
+          checked={hardware.state.autoPerformance}
+          onchange={(v) => void hardware.setAutoSwitch(hardware.state.autoEco, v)}
+          ariaLabel={t("home.autoPerformance")}
+        />
+      </div>
+
+      <div class="row">
+        <label for="prefer-mains">
+          {t("home.preferOnMains")}
+          <small class="hint-inline"><RichText text={t("settings.preferOnMainsHint")} /></small>
+        </label>
+        <select
+          id="prefer-mains"
+          value={auto.preferredOnMains}
+          onchange={(e) =>
+            void hardware.setAutoPreference("mains", e.currentTarget.value as PowerMode)}
+        >
+          {#each ["balanced", "performance"] as id (id)}
+            <option value={id}>{t(`performance.modes.${id}`)}</option>
+          {/each}
+        </select>
+      </div>
+
+      <!-- As on the home screen: no sensor, no switch. -->
+      {#if hardware.power.thermal.available}
+        <div class="row">
+          <span>
+            {t("home.thermalBackOff")}
+            <small class="hint-inline"><RichText text={t("home.thermalBackOffHint")} /></small>
+          </span>
+          <Toggle
+            checked={auto.backOffWhenHot}
+            onchange={(v) => void hardware.setThermalBackOff(v)}
+            ariaLabel={t("home.thermalBackOff")}
+          />
+        </div>
+      {/if}
+
+      <!-- What the home screen has no room for. Folded away because the
+           defaults are right for nearly everyone, and a wall of numbers
+           next to the switches would suggest they need touching. -->
+      <details class="advanced">
+        <summary>{t("settings.autoAdvanced")}</summary>
+
+        {#snippet field(id: AutoField, label: string, hint: string, unit: string)}
+          <div class="row">
+            <label for="auto-{id}">
+              {label}
+              <small class="hint-inline"><RichText text={hint} /></small>
+            </label>
+            <span class="number">
+              <input
+                id="auto-{id}"
+                type="number"
+                min={autoLimits[id][0]}
+                max={autoLimits[id][1]}
+                step="1"
+                value={autoValue(id)}
+                onchange={(e) => void setAutoValue(id, e.currentTarget)}
+              />
+              <span class="unit">{unit}</span>
+            </span>
+          </div>
+        {/snippet}
+
+        {@render field("pause", t("settings.autoPause"), t("settings.autoPauseHint"), t("settings.unitMinutes"))}
+        {@render field("battery", t("settings.autoBatteryLow"), t("settings.autoBatteryLowHint"), "%")}
+        {@render field("loadLow", t("settings.autoLoadLow"), t("settings.autoLoadLowHint"), t("settings.unitPerCore"))}
+        {@render field("loadHigh", t("settings.autoLoadHigh"), t("settings.autoLoadHighHint"), t("settings.unitPerCore"))}
+        {#if hardware.power.thermal.available}
+          {@render field("tempHigh", t("settings.autoTempHigh"), t("settings.autoTempHighHint"), fahrenheit ? "°F" : "°C")}
+          {@render field("tempLow", t("settings.autoTempLow"), t("settings.autoTempLowHint"), fahrenheit ? "°F" : "°C")}
+        {/if}
+
+        {#if autoError}
+          <p class="notice err">{autoError}</p>
+        {/if}
+
+        <div class="row">
+          <span>{t("settings.autoAdvancedReset")}</span>
+          <button class="action" onclick={() => void resetAutoTuning()}>
+            {t("common.reset")}
+          </button>
+        </div>
+      </details>
+
+      {#if !auto.enabled}
+        <p class="hint">{t("settings.autoControlOff")}</p>
+      {:else if hardware.power.autoManualBaseline && hardware.power.autoManualBaseline !== "unlimited"}
+        <p class="hint">
+          {t("home.followingManual", {
+            mode: t(`performance.modes.${hardware.power.autoManualBaseline}`),
+          })}
+        </p>
+      {/if}
+    </Panel>
+  {/if}
 
   <!-- Fan control settings. The keep-mode row needs only mode switching;
        the floor rows below need a commandable speed, so on a machine
@@ -598,6 +821,46 @@
 </div>
 
 <style>
+  .advanced {
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .advanced summary {
+    padding: 10px 0;
+    font-size: 14px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .advanced .row {
+    padding-left: 14px;
+  }
+
+  .number {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .number input {
+    width: 76px;
+    padding: 6px 8px;
+    background: var(--bg-card);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 13px;
+    text-align: right;
+  }
+
+  .unit {
+    min-width: 64px;
+    color: var(--text-mute);
+    font-size: 12px;
+  }
+
   .shortcut {
     display: flex;
     align-items: center;

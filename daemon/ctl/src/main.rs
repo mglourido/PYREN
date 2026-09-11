@@ -45,10 +45,15 @@ POWER
                                OS power profile (power-profiles-daemon),
                                or only the laptop's own firmware profile
   power auto <on|off> [--eco on|off] [--performance on|off]
+              [--on-battery eco|balanced] [--on-mains balanced|performance]
               [--thermal on|off] [--temp-high C] [--temp-low C]
-                               the two automatic systems: unplugging drops
-                               to Balanced then refines towards Eco;
-                               plugging in steps up to Performance.
+                               the two automatic systems: unplugging goes
+                               to the --on-battery mode and moves between
+                               Eco and Balanced; plugging in goes to the
+                               --on-mains mode and moves between Balanced
+                               and Performance. A mode set by hand becomes
+                               the one it works around until the cable
+                               next moves.
                                --thermal is the third rule and outranks
                                both: a machine over --temp-high steps down
                                until it is back under --temp-low
@@ -646,6 +651,12 @@ fn power_auto(command: &args::Command, value: &str) -> Run {
     if let Some(performance) = command.switch("performance")? {
         config["performanceOnLoad"] = json!(performance);
     }
+    if let Some(mode) = preferred_mode(command, "on-battery", &["eco", "balanced"])? {
+        config["preferredOnBattery"] = json!(mode);
+    }
+    if let Some(mode) = preferred_mode(command, "on-mains", &["balanced", "performance"])? {
+        config["preferredOnMains"] = json!(mode);
+    }
     if let Some(hot) = command.switch("thermal")? {
         config["backOffWhenHot"] = json!(hot);
     }
@@ -667,6 +678,24 @@ fn power_auto(command: &args::Command, value: &str) -> Run {
 
     client::call("power", "setAutoConfig", config)?;
     show(command, power_state()?, print_power)
+}
+
+/// A `--flag` naming one of the modes a power source's supervisor may
+/// pick. Checked here rather than left to the daemon, which would quietly
+/// clamp `--on-battery performance` to Balanced - a surprise, not an answer.
+fn preferred_mode<'a>(
+    command: &'a args::Command,
+    name: &str,
+    allowed: &[&str],
+) -> Result<Option<&'a str>, Failure> {
+    match command.option(name) {
+        None => Ok(None),
+        Some(mode) if allowed.contains(&mode) => Ok(Some(mode)),
+        Some(other) => Err(Failure::Usage(format!(
+            "--{name} takes {}, not '{other}'",
+            allowed.join(" or ")
+        ))),
+    }
 }
 
 fn add_brightness(command: &args::Command, params: &mut Value) -> Result<(), Failure> {
@@ -960,12 +989,17 @@ fn print_power(state: &Value) {
                 "off".to_string()
             } else {
                 format!(
-                    "on - eco system {}, performance system {}",
+                    "on - eco system {} (prefers {}), performance system {} (prefers {})",
                     yes_no(auto.get("ecoOnBattery")),
-                    yes_no(auto.get("performanceOnLoad"))
+                    auto.get("preferredOnBattery").and_then(Value::as_str).unwrap_or("?"),
+                    yes_no(auto.get("performanceOnLoad")),
+                    auto.get("preferredOnMains").and_then(Value::as_str).unwrap_or("?"),
                 )
             },
         );
+        if let Some(mode) = state.get("autoManualBaseline").and_then(Value::as_str) {
+            row("follows", format!("{mode} - set by hand, until the power source changes"));
+        }
     }
     if let Some(thermal) = state.get("thermal") {
         row(

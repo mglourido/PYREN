@@ -454,13 +454,17 @@ export type PowerMode = "eco" | "balanced" | "performance" | "unlimited";
 /** Config for the daemon's background Eco/Performance supervisor. */
 export type AutoConfig = {
   enabled: boolean;
-  /** The "switch to Eco automatically" system: unplugging drops to
-   *  Balanced, and a machine that stays idle - or whose battery gets low -
-   *  goes on to Eco. */
+  /** The "switch to Eco automatically" system: unplugging goes to
+   *  `preferredOnBattery`, then it moves between Eco and Balanced. */
   ecoOnBattery: boolean;
-  /** The "switch to Performance automatically" system: plugging in steps up
-   *  to Performance, and an idle machine on mains comes back to Balanced. */
+  /** The "switch to Performance automatically" system: plugging in goes to
+   *  `preferredOnMains`, then it moves between Balanced and Performance. */
   performanceOnLoad: boolean;
+  /** Home on battery - `eco` or `balanced`. Where unplugging lands and where
+   *  the supervisor returns once whatever moved it has passed. */
+  preferredOnBattery: PowerMode;
+  /** Home on mains - `balanced` or `performance`. */
+  preferredOnMains: PowerMode;
   loadHigh: number;
   loadLow: number;
   /** Battery percentage at or below which Eco is preferred whatever the
@@ -529,6 +533,9 @@ export type PowerState = {
    *  (power-profiles-daemon), or only the laptop's own firmware profile. */
   applyToOsProfile: boolean;
   autoOverrideSecondsLeft: number | null;
+  /** A mode the user picked by hand that the supervisor works around
+   *  instead of the preference, until the power source next changes. */
+  autoManualBaseline: PowerMode | null;
   thermal: ThermalState;
   /** Why the supervisor last moved the mode. Translatable - render with `tm()`. */
   lastAutoSwitch: Msg | null;

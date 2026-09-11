@@ -7,6 +7,7 @@
    */
   import InfoTip from "$lib/components/InfoTip.svelte";
   import Icon from "$lib/components/Icon.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { hardware, type PowerMode } from "$lib/stores/hardware.svelte";
@@ -19,6 +20,10 @@
     { id: "performance", icon: "bars" },
     { id: "unlimited", icon: "boltbars" },
   ];
+
+  /** The two modes each power source's supervisor may call home. */
+  const preferable = (ids: PowerMode[]) =>
+    ids.map((id) => ({ value: id, label: t(`performance.modes.${id}`) }));
 </script>
 
 <div class="home">
@@ -40,6 +45,17 @@
           />
           <span>{t("home.autoEco")}<InfoTip>{t("home.autoEcoHint")}</InfoTip></span>
         </div>
+        {#if hardware.state.autoEco && hardware.power}
+          <div class="prefer-row">
+            <span>{t("home.preferOnBattery")}</span>
+            <Segmented
+              variant="pill"
+              options={preferable(["eco", "balanced"])}
+              value={hardware.power.auto.preferredOnBattery}
+              onchange={(v) => hardware.setAutoPreference("battery", v as PowerMode)}
+            />
+          </div>
+        {/if}
         <div class="switch-row">
           <Toggle
             checked={hardware.state.autoPerformance}
@@ -48,6 +64,28 @@
           />
           <span>{t("home.autoPerformance")}<InfoTip>{t("home.autoPerformanceHint")}</InfoTip></span>
         </div>
+        {#if hardware.state.autoPerformance && hardware.power}
+          <div class="prefer-row">
+            <span>{t("home.preferOnMains")}</span>
+            <Segmented
+              variant="pill"
+              options={preferable(["balanced", "performance"])}
+              value={hardware.power.auto.preferredOnMains}
+              onchange={(v) => hardware.setAutoPreference("mains", v as PowerMode)}
+            />
+          </div>
+        {/if}
+        <!-- A mode picked by hand outranks the preference until the cable
+             next moves; without saying so, the supervisor would look like
+             it had stopped listening to the switches above. Not shown for
+             Unlimited, which the supervisor leaves alone entirely. -->
+        {#if hardware.power?.auto.enabled && hardware.power.autoManualBaseline && hardware.power.autoManualBaseline !== "unlimited"}
+          <p class="following">
+            {t("home.followingManual", {
+              mode: t(`performance.modes.${hardware.power.autoManualBaseline}`),
+            })}
+          </p>
+        {/if}
         <!-- The third rule, and the only one about the machine rather than
              about the wall socket. Hidden where there is no sensor to
              read: a switch that can never fire is worse than none. -->
@@ -330,6 +368,27 @@
 
   /* Only appears while the machine is actually over the threshold, which
      is why it is allowed to be this loud. */
+  .prefer-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    margin: 6px 0 2px 50px;
+    font-size: 12px;
+    color: var(--text-mute);
+  }
+
+  .prefer-row :global(button) {
+    padding: 5px 12px;
+    font-size: 11px;
+  }
+
+  .following {
+    margin: 8px 0 0;
+    color: var(--text-mute);
+    font-size: 12px;
+  }
+
   .hot-now {
     margin: 8px 0 0;
     color: var(--warn, #e0a33e);
