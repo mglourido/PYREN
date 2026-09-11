@@ -349,6 +349,17 @@
    *  as they are on screen when "Save" is pressed. */
   const saved = $derived(lightingPresets.current.presets);
 
+  /** Truncates from the middle rather than the end, so a long name still
+   *  shows how it starts *and* how it ends - the two lines under a slot
+   *  are 28 characters, together, worth keeping legible. */
+  function middleEllipsis(name: string, max = 28): string {
+    if (name.length <= max) return name;
+    const keep = max - 1;
+    const head = Math.ceil(keep / 2);
+    const tail = Math.floor(keep / 2);
+    return `${name.slice(0, head)}…${name.slice(name.length - tail)}`;
+  }
+
   /** "{mode}-{effect if mode is effect}-{slot}", e.g. "Efecto-Espectro-1".
    *  Only the default - renaming replaces it outright. */
   function defaultPresetName(): string {
@@ -802,11 +813,10 @@
               <button
                 class="saved-name"
                 aria-label={t("lighting.renameSaved")}
-                title={t("lighting.renameSaved")}
+                title={p.name}
                 onclick={() => openRename(p)}
               >
-                <Icon name="edit" size={11} />
-                <span>{p.name}</span>
+                <span>{middleEllipsis(p.name)}</span>
               </button>
             </div>
           {/each}
@@ -1376,30 +1386,34 @@
     flex-direction: column;
     align-items: center;
     gap: 6px;
-    width: 76px;
+    width: 108px;
   }
 
   .saved-swatch {
-    width: 76px;
+    width: 108px;
   }
 
   .saved-name {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    max-width: 100%;
+    display: block;
+    width: 100%;
     padding: 0;
     border: none;
     background: transparent;
     color: var(--text-dim);
     font-size: 11px;
+    text-align: center;
     cursor: pointer;
   }
 
   .saved-name span {
+    display: -webkit-box;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-clamp: 2;
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.3;
   }
 
   .saved-name:hover {
