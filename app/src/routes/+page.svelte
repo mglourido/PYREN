@@ -119,7 +119,6 @@
 
         <a class="feature" href="/system/performance">
           <Icon name="boltbars" size={17} />{t("home.unlimited")}
-          <span class="badge">{t("home.new")}</span>
         </a>
         <p class="desc">{t("home.unlimitedDesc")}</p>
       </article>
@@ -148,7 +147,7 @@
 
     <!-- Right: the rest of the toolkit. -->
     <section class="column">
-      <header class="col-head">&nbsp;</header>
+      <header class="col-head">{t("home.moreTools")}</header>
 
       <article class="card">
         <div class="art art-optimizer" aria-hidden="true"></div>
@@ -239,10 +238,20 @@
   .hero-art {
     height: 90px;
     margin: -16px -18px 14px;
+  }
+
+  .hero-art {
     background:
       radial-gradient(120% 140% at 15% 0%, rgba(229, 23, 140, 0.55), transparent 60%),
       radial-gradient(120% 140% at 85% 100%, rgba(47, 143, 255, 0.45), transparent 60%),
       linear-gradient(120deg, #241026, #101820);
+  }
+
+  .art-power {
+    background:
+      radial-gradient(120% 140% at 15% 0%, rgba(255, 138, 0, 0.5), transparent 60%),
+      radial-gradient(120% 140% at 85% 100%, rgba(242, 55, 75, 0.45), transparent 60%),
+      linear-gradient(120deg, #2a1508, #101820);
   }
 
   .art-optimizer {
@@ -291,16 +300,6 @@
     margin: 6px 0 0;
     color: var(--text-dim);
     font-size: 13px;
-  }
-
-  .badge {
-    padding: 1px 7px;
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    color: var(--text-dim);
-    text-decoration: none;
   }
 
   .mode-strip {

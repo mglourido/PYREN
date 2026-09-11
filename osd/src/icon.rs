@@ -22,6 +22,19 @@ pub const DIAMOND: &str = "M12 3 21 12l-9 9-9-9z M12 8l4 4-4 4-4-4z";
 pub const BARS: &str = "M5 20V12 M12 20V5 M19 20v-9";
 pub const BOLTBARS: &str = "M4 20v-7 M10 20V9 M16 20v-5 M20 3l-4 7h4l-4 6";
 
+// The four fan-mode glyphs. Widget-only - the app draws its fan modes as a
+// text control, not icons - so unlike the power glyphs above there is
+// nothing in the app to keep them in step with. Drawn with the same
+// M/L/H/V/C/Z subset the parser understands.
+/// A gauge dome with a needle: the firmware deciding.
+pub const FAN_AUTO: &str = "M4 16C4 9 8 6 12 6C16 6 20 9 20 16 M12 16l5-6";
+/// An up-arrow to a ceiling bar: everything, all the way up.
+pub const FAN_MAX: &str = "M5 5h14 M12 20V9 M7 13l5-5 5 5";
+/// Two slider tracks with handles: a speed set by hand.
+pub const FAN_MANUAL: &str = "M4 9h6 M14 9h6 M4 15h12 M18 15h2 M12 7v4 M16 13v4";
+/// An axis with a rising curve.
+pub const FAN_CURVE: &str = "M5 4v15h15 M5 16C10 16 11 7 19 6";
+
 /// Strokes a glyph onto `cr`, scaled from the 24-unit box to `size` pixels.
 pub fn draw(cr: &Context, path: &str, size: f64) {
     let scale = size / VIEWBOX;
@@ -181,9 +194,16 @@ mod tests {
 
     #[test]
     fn every_glyph_is_walked_to_its_full_extent() {
-        for (name, path) in
-            [("leaf", LEAF), ("diamond", DIAMOND), ("bars", BARS), ("boltbars", BOLTBARS)]
-        {
+        for (name, path) in [
+            ("leaf", LEAF),
+            ("diamond", DIAMOND),
+            ("bars", BARS),
+            ("boltbars", BOLTBARS),
+            ("fan_auto", FAN_AUTO),
+            ("fan_max", FAN_MAX),
+            ("fan_manual", FAN_MANUAL),
+            ("fan_curve", FAN_CURVE),
+        ] {
             let (x0, y0, x1, y1) = extents(path);
             assert!(
                 x1 - x0 > 8.0 && y1 - y0 > 8.0,

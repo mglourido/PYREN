@@ -692,10 +692,11 @@ impl FanModule {
         }
     }
 
-    /// Hands the module the daemon's event bus, so the stall watch can
-    /// announce a floor it raised. Call once, from the binary. A no-op
-    /// second call is tolerated rather than panicking - the binary is the
-    /// only caller and calls it once.
+    /// Hands the module the daemon's event bus, so it can announce what it
+    /// does: `fan.mode` when the mode changes (see `set_mode`), and
+    /// `fan.floorRaised` when the stall watch nudges the fans' minimum up.
+    /// Call once, from the binary. A no-op second call is tolerated rather
+    /// than panicking - the binary is the only caller and calls it once.
     pub fn publish_to(&self, events: Arc<pyren_core::EventBus>) {
         let _ = self.announcer.0.set(events);
     }
@@ -927,7 +928,18 @@ impl FanModule {
         self.tick_once()?;
         let mut state = lock(&self.state);
         persist(&self.store, &mut state);
+        let manual_pwm = state.config.manual_pwm;
         drop(state);
+
+        // Announced the way `power.mode` is: anything watching the daemon -
+        // the app's fan page, the widget, `pyren-ctl` - hears that the fan
+        // mode moved, however it moved. `manualPwm` rides along so a widget
+        // that cannot read a curve can still place its manual slider.
+        self.announcer.publish(
+            "fan.mode",
+            json!({ "mode": mode.as_str(), "manualPwm": manual_pwm, "source": "request" }),
+        );
+
         Ok(self.status())
     }
 
@@ -2627,6 +2639,48 @@ mod tests {
         // The two that go through a different firmware call still work.
         assert!(module.caps().supports(FanMode::Max));
         assert!(module.set_mode(FanMode::Auto, None).is_ok());
+    }
+
+    /// The widget and the app's fan page stay in step with a mode changed
+    /// behind their back only because `set_mode` says so on the bus. Its
+    /// shape - `mode`, and the `manualPwm` a speedless widget needs to
+    /// place its slider - is part of the contract.
+    #[test]
+    fn setting_the_fan_mode_is_announced_on_the_bus() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let module = module("announce-mode");
+
+        let dir = std::env::temp_dir().join(format!("pyren-fan-announce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["pwm1", "pwm1_enable", "fan1_input"] {
+            std::fs::write(dir.join(f), "2\n").unwrap();
+        }
+        let paths = FanPaths {
+            hwmon_dir: Some(dir.clone()),
+            pwm1: Some(dir.join("pwm1")),
+            pwm2: None,
+            pwm1_enable: Some(dir.join("pwm1_enable")),
+            fan1_input: Some(dir.join("fan1_input")),
+            fan2_input: None,
+            cpu_temp: None,
+            gpu_temp: None,
+            driver_params: None,
+        };
+        *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
+
+        let bus = Arc::new(pyren_core::EventBus::new());
+        module.publish_to(Arc::clone(&bus));
+
+        module.set_mode(FanMode::Manual, Some(120)).expect("manual is commandable here");
+
+        let batch = bus.read_since(0, Duration::from_millis(0));
+        let mode_events: Vec<_> =
+            batch.events.iter().filter(|e| e.topic == "fan.mode").collect();
+        assert_eq!(mode_events.len(), 1, "exactly one fan.mode per change");
+        assert_eq!(mode_events[0].payload["mode"], "manual");
+        assert_eq!(mode_events[0].payload["manualPwm"], 120);
     }
 
     /// The inconclusive verdicts exist so that a probe which learned nothing

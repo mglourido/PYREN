@@ -3,6 +3,7 @@
   import Panel from "$lib/components/Panel.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
+  import RichText from "$lib/components/RichText.svelte";
   import { availableLocales, localeName, t, tm } from "$lib/i18n/index.svelte";
   import { settings } from "$lib/stores/settings.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
@@ -212,7 +213,6 @@
         {/each}
       </select>
     </div>
-    <p class="hint">{@html t("help.translationsBody")}</p>
   </Panel>
 
   <!-- Where settings live, and anything that went wrong reading them.
@@ -220,11 +220,9 @@
        left guessing about, so it is stated here. -->
   <Panel title={t("settings.storage")}>
     {#if outcome?.status === "recovered"}
-      <p class="notice err">
-        {t("settings.configRecovered", { backup: outcome.backup ?? "?" })}
-      </p>
+      <p class="notice err"><RichText text={t("settings.configRecovered", { backup: outcome.backup ?? "?" })} /></p>
     {:else if outcome?.status === "tooNew"}
-      <p class="notice warn">{t("settings.configTooNew", { found: outcome.found })}</p>
+      <p class="notice warn"><RichText text={t("settings.configTooNew", { found: outcome.found })} /></p>
     {/if}
 
     <div class="row">
@@ -239,15 +237,13 @@
       </div>
 
       {#if hardware.power.configSaveError}
-        <p class="notice err">
-          {t("settings.configSaveFailed", { error: hardware.power.configSaveError })}
-        </p>
+        <p class="notice err"><RichText text={t("settings.configSaveFailed", { error: hardware.power.configSaveError })} /></p>
       {/if}
 
       <div class="row">
         <span>
           {t("settings.restoreOnStart")}
-          <small class="hint-inline">{t("settings.restoreOnStartHint")}</small>
+          <small class="hint-inline"><RichText text={t("settings.restoreOnStartHint")} /></small>
         </span>
         <Toggle
           checked={hardware.power.restoreModeOnStart}
@@ -280,7 +276,7 @@
       <div class="row">
         <span>
           {t("settings.keepFanMode")}
-          <small class="hint-inline">{t("settings.keepFanModeHint")}</small>
+          <small class="hint-inline"><RichText text={t("settings.keepFanModeHint")} /></small>
         </span>
         <Toggle
           checked={fan.restoreModeOnStart}
@@ -292,12 +288,10 @@
       <div class="row">
         <span>
           {t("settings.keepDriverFloor")}
-          <small class="hint-inline">
-            {t("settings.keepDriverFloorHint", {
+          <small class="hint-inline"><RichText text={t("settings.keepDriverFloorHint", {
               driver: fan.driverMinRpm !== null ? String(fan.driverMinRpm) : "?",
               pyren: fan.pyrenMinRpm !== null ? String(fan.pyrenMinRpm) : "?",
-            })}
-          </small>
+            })} /></small>
         </span>
         <!-- Turning it off needs both a driver that can be told another
              floor and a floor to tell it; turning it back on never does. -->
@@ -309,9 +303,9 @@
         />
       </div>
       {#if !fan.floorOverrideSupported}
-        <p class="notice warn">{t("settings.floorNeedsDriver")}</p>
+        <p class="notice warn"><RichText text={t("settings.floorNeedsDriver")} /></p>
       {:else if fan.pyrenMinRpm === null}
-        <p class="notice warn">{t("settings.floorNotMeasured")}</p>
+        <p class="notice warn"><RichText text={t("settings.floorNotMeasured")} /></p>
       {/if}
       {/if}
     </Panel>
@@ -326,7 +320,7 @@
       <div class="row">
         <span>
           {t("settings.daemonAtBoot")}
-          <small class="hint-inline">{t("settings.daemonAtBootHint")}</small>
+          <small class="hint-inline"><RichText text={t("settings.daemonAtBootHint")} /></small>
         </span>
         <Toggle
           checked={privileges.serviceEnabled}
@@ -337,11 +331,11 @@
       </div>
 
       {#if !privileges.canElevate}
-        <p class="notice warn">{t("settings.needsPolkit")}</p>
+        <p class="notice warn"><RichText text={t("settings.needsPolkit")} /></p>
       {:else if !privileges.daemonBinary}
-        <p class="notice warn">{t("settings.noDaemonBinary")}</p>
+        <p class="notice warn"><RichText text={t("settings.noDaemonBinary")} /></p>
       {:else if privileges.needsRelogin}
-        <p class="notice warn">{t("admin.groupNeedsRelogin")}</p>
+        <p class="notice warn"><RichText text={t("admin.groupNeedsRelogin")} /></p>
       {/if}
     {/if}
 
@@ -349,7 +343,7 @@
       <div class="row">
         <span>
           {t("settings.widgetAtLogin")}
-          <small class="hint-inline">{t("settings.widgetAtLoginHint")}</small>
+          <small class="hint-inline"><RichText text={t("settings.widgetAtLoginHint")} /></small>
         </span>
         <Toggle
           checked={services?.osd.startsAtLogin ?? false}
@@ -365,7 +359,7 @@
            at login with nothing to talk to, which is a worse failure than
            not starting, because it looks like it worked. -->
       {#if services?.osd.startsAtLogin && privileges && !privileges.serviceEnabled}
-        <p class="notice warn">{t("settings.widgetNeedsDaemon")}</p>
+        <p class="notice warn"><RichText text={t("settings.widgetNeedsDaemon")} /></p>
       {/if}
     {/if}
 
@@ -383,14 +377,14 @@
          re-triggers when what it started stops, and quitting Pyren has to
          mean quit. -->
     {#if services && !services.loginWorks && autostartOn}
-      <p class="notice warn">{t("settings.autostartUnmanaged")}</p>
+      <p class="notice warn"><RichText text={t("settings.autostartUnmanaged")} /></p>
       <code class="block">exec-once = {services.app.loginCommand}</code>
     {/if}
 
     <div class="row">
       <span>
         {t("settings.startMinimized")}
-        <small class="hint-inline">{t("settings.startMinimizedHint")}</small>
+        <small class="hint-inline"><RichText text={t("settings.startMinimizedHint")} /></small>
       </span>
       <Toggle
         checked={settings.current.startMinimized}
@@ -402,7 +396,7 @@
     <div class="row">
       <span>
         {t("settings.closeToTray")}
-        <small class="hint-inline">{t("settings.closeToTrayHint")}</small>
+        <small class="hint-inline"><RichText text={t("settings.closeToTrayHint")} /></small>
       </span>
       <Toggle
         checked={settings.current.closeToTray}
@@ -414,20 +408,13 @@
 
   {#if session.available()}
     <Panel title={t("settings.services")}>
-      <p class="hint">{t("settings.servicesHint")}</p>
-
-      <div class="row">
-        <span>{t("settings.daemonService")}</span>
-        <span class="state">
-          {telemetry.demo ? t("settings.daemonStopped") : t("settings.daemonRunning")}
-        </span>
-      </div>
+      <p class="hint"><RichText text={t("settings.servicesHint")} /></p>
 
       <!-- One switch for the key and the widget together: see setWidget. -->
       <div class="row">
         <span>
           {t("settings.widget")}
-          <small class="hint-inline">{t("settings.widgetHint")}</small>
+          <small class="hint-inline"><RichText text={t("settings.widgetHint")} /></small>
         </span>
         <Toggle
           checked={widgetOn}
@@ -438,7 +425,7 @@
       </div>
 
       {#if !services?.osd.binary}
-        <p class="notice warn">{t("settings.widgetMissing")}</p>
+        <p class="notice warn"><RichText text={t("settings.widgetMissing")} /></p>
       {:else if !widgetOn}
         <p class="hint">{widgetState}</p>
       {/if}
@@ -449,7 +436,7 @@
       <div class="row">
         <span>
           {t("settings.shortcut")}
-          <small class="hint-inline">{t("settings.shortcutHint")}</small>
+          <small class="hint-inline"><RichText text={t("settings.shortcutHint")} /></small>
         </span>
         <div class="shortcut">
           {#if learning !== null}
@@ -469,7 +456,7 @@
       </div>
 
       {#if learnTimedOut}
-        <p class="notice warn">{t("settings.shortcutTimedOut")}</p>
+        <p class="notice warn"><RichText text={t("settings.shortcutTimedOut")} /></p>
       {/if}
 
       <!-- Why nothing happens, when nothing does: not root, no keyboard,
@@ -482,7 +469,7 @@
       <div class="row">
         <span>
           {t("settings.widgetPreview")}
-          <small class="hint-inline">{t("settings.widgetPreviewHint")}</small>
+          <small class="hint-inline"><RichText text={t("settings.widgetPreviewHint")} /></small>
         </span>
         <button
           class="action"
@@ -493,13 +480,53 @@
         </button>
       </div>
 
+      <!-- The fan-mode row in the widget. Only where the machine can switch
+           fan modes at all - and the widget reads this straight out of
+           app.json, so it takes hold the next time the widget opens. -->
+      {#if hardware.fan?.capabilities.switchMode}
+        <div class="row">
+          <span>
+            {t("settings.widgetFanModes")}
+            <small class="hint-inline"><RichText text={t("settings.widgetFanModesHint")} /></small>
+          </span>
+          <Toggle
+            checked={settings.current.widgetFanModes}
+            onchange={(v) => {
+              settings.set("widgetFanModes", v);
+              // Turning the fan row off can't leave the widget empty:
+              // the power row comes back.
+              if (!v) settings.set("widgetPowerModes", true);
+            }}
+            ariaLabel={t("settings.widgetFanModes")}
+          />
+        </div>
+
+        <!-- Only offered while the fan row is on, so there is always at
+             least one row to show. -->
+        {#if settings.current.widgetFanModes}
+          <div class="row">
+            <span>
+              {t("settings.widgetPowerModes")}
+              <small class="hint-inline">
+                <RichText text={t("settings.widgetPowerModesHint")} />
+              </small>
+            </span>
+            <Toggle
+              checked={settings.current.widgetPowerModes}
+              onchange={(v) => settings.set("widgetPowerModes", v)}
+              ariaLabel={t("settings.widgetPowerModes")}
+            />
+          </div>
+        {/if}
+      {/if}
+
       <!-- "Widget at login" used to live here. It moved to Startup, next
            to the other three things that start on their own: two toggles
            writing the same unit would have been two answers to one
            question. This panel keeps what is running *now*. -->
 
       {#if serviceError}
-        <p class="notice err">{t("settings.serviceFailed", { error: serviceError })}</p>
+        <p class="notice err"><RichText text={t("settings.serviceFailed", { error: serviceError })} /></p>
       {/if}
     </Panel>
   {/if}
@@ -655,6 +682,14 @@
     margin: 0 0 12px;
     font-size: 13px;
     line-height: 1.5;
+  }
+
+  /* Technical terms picked out by RichText's **bold** spans: lift them
+     back to full-strength text so they stand out of the muted hint. */
+  .hint :global(strong),
+  .hint-inline :global(strong) {
+    color: var(--text-dim);
+    font-weight: 600;
   }
 
   .notice.err {

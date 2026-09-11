@@ -53,6 +53,15 @@
 
 * {
   box-sizing: border-box;
+  /* Nothing in a desktop app should be draggable: no ghost image when you
+     pull an <img>, link or selection. WebKitGTK only knows the prefixed
+     property, and it does not inherit, hence the universal selector. */
+  -webkit-user-drag: none;
+}
+
+img,
+a {
+  -webkit-user-drag: none;
 }
 
 html,
@@ -69,7 +78,31 @@ body {
   line-height: 1.45;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  /* This is a desktop app, not a document: text is not selectable by
+     default. WebKitGTK honours only the prefixed property, so both are
+     set. It is inherited, so the whole tree is covered from here; the
+     handful of places that hold text worth copying opt back in below. */
+  -webkit-user-select: none;
   user-select: none;
+}
+
+/* Selection opt-in. `-webkit-user-select` does not inherit past an element
+   that sets it, so descendants of these (a <span> inside a log line, say)
+   are named too via `*`. Editable fields are always selectable. */
+input,
+textarea,
+code,
+pre,
+kbd,
+[role="log"],
+[role="log"] *,
+.notice.err,
+.banner.error,
+.feedback.err,
+.selectable,
+.selectable * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 button {

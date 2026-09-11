@@ -11,6 +11,27 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **Fan control modes in the quick-access widget.** With the new
+  **Settings → widget → "Fan control modes in the widget"** switched on (off
+  by default), `pyren-osd` draws a second row of cards below the power
+  modes — automatic, maximum, manual and curve — and switches them exactly
+  the way it switches power modes: a click picks one outright, and the
+  highlight follows a change made from the app or `pyren-ctl`. Picking
+  **manual** reveals a 0–100 % slider for the fixed speed; the curve itself
+  is still drawn in the app. On a machine that can switch fan modes but not
+  command a speed only automatic and maximum appear. New `fan.mode` event
+  (`{ mode, manualPwm, source }`), published on every `fan.setMode` the way
+  `power.mode` is. The widget reads the setting from `~/.config/pyren/app.json`
+  on each open, so the toggle needs no restart.
+  - **The power-mode row can be turned off** ("Performance profiles in the
+    widget"), but only while the fan row is on — for someone whose key is
+    just a fan switch. The widget is never left with no rows.
+  - **The widget now follows the pointer for when to close.** While the
+    pointer is on it, it stays; it goes a second after the pointer leaves;
+    and a click closes it two seconds later unless the pointer moves first
+    (still choosing). Opened by the key with the pointer elsewhere, it
+    keeps the old ~2.5 s glance.
+
 - **Permissions can be revoked from the Permissions panel.** Each row on
   `/drivers` that the panel can grant now also offers **Revoke** once it
   is granted: stop and disable the service, leave the `pyren` group, unload
@@ -134,6 +155,12 @@ the IPC protocol and on-disk config.
 - The self-test gained a `pwm-effect` check, fed by the probe above, so
   `fullControl` now means the fans were watched to move rather than that a
   file exists.
+- **Docs: the `fan.diagnose` section of the IPC protocol reference was
+  stale.** It still described the old readback-only write check and listed
+  neither `pwm-write` nor `pwm-effect`. It now names every check by `id`,
+  notes that `allowWrites` briefly spins the fans (a `fan.probeSpeedControl`
+  run `diagnose` fires itself), and spells out how the verdict follows the
+  check results.
 
 ### Changed
 

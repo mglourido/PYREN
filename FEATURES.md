@@ -16,7 +16,7 @@
 - **Graphics switching** (toggle between "Integrated only" [iGPU only], "Hybrid" [switches between iGPU and dGPU], and "Discrete" [dGPU only])
 - **Key remapper** (create macros, reassign keys)
 - **Network booster** (currently only "Disable" and "Automatic"; per-process control isn't properly supported yet)
-- **Quick-access widget**, triggered via keyboard shortcut without the app running, for fast switching between performance profiles and fan control
+- **Quick-access widget**, triggered via keyboard shortcut without the app running, for fast switching between performance profiles — and, once enabled in Settings, the fan control modes too (auto/max/manual/curve, with a slider for the manual speed; the curve is still edited in the app)
 
 ## Other features
 

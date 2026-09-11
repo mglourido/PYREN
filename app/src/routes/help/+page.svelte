@@ -139,6 +139,7 @@
     color: var(--text-dim);
     font-size: 14px;
     line-height: 1.55;
+    -webkit-user-select: text;
     user-select: text;
   }
 
@@ -196,6 +197,7 @@
 
   .specs dd {
     margin: 0;
+    -webkit-user-select: text;
     user-select: text;
   }
 

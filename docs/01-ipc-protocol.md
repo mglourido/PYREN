@@ -201,6 +201,7 @@ Topics so far:
 |---|---|---|
 | `hotkey.pressed` | the bound key was pressed (or `hotkey.press` was called) | `{ action: "show", device, mode }` — the mode in force, so the widget can draw it |
 | `power.mode` | the power mode actually moved, **whoever moved it** | `{ mode, source }` |
+| `fan.mode` | a `fan.setMode` took effect, **whoever asked** — the app, `pyren-ctl`, the widget's click | `{ mode, manualPwm, source }` — `manualPwm` is the commanded manual speed (0-255), for a client that shows a slider but not a curve |
 | `fan.floorRaised` | the stall watch nudged Pyren's fan floor up because the fans kept giving out at it | `{ fromRpm, toRpm, stalls, reachedDriverFloor }` — `reachedDriverFloor` means it is now the driver's own and a recalibration is the next step |
 
 `power.mode` is published for *every* change that took effect, not only the
@@ -1304,20 +1305,38 @@ it.
 `summary`, `driverNotice` and every check's `title` / `detail` / `remedy`
 are **`Msg` objects** (see *Translatable messages* above) — a client that
 localises renders the `key`; one that does not shows `text`. `verdict`,
-`id` and `status` stay bare enum strings. A `kernel-log` check's `detail`
-is the kernel's own words, quoted verbatim, so it carries no `key`.
+`id` and `status` (`pass` | `warn` | `fail` | `skip`) stay bare enum
+strings. A `kernel-log` check's `detail` is the kernel's own words, quoted
+verbatim, so it carries no `key`.
 
-Checks cover the hp-wmi platform device, the hwmon node, both fan inputs
-(decoding the reverse-spin encoding rather than reporting a 15200 "rpm"),
-`pwm1`, `pwm1_enable` and what its value means, the ACPI platform profile,
-the CPU temperature sensor, `acpi_call` and the fan cleaner. Each carries
-a `remedy` when there is something to do about it.
+Checks, by `id`: `hp-wmi` (the platform device), `hwmon` (the node),
+`fan1` / `fan2` (both inputs, decoding the reverse-spin encoding rather
+than reporting a 15200 "rpm"), `pwm1`, `pwm1_enable` and what its value
+means, `pwm-write` (does the channel store a setpoint), `pwm-effect` (do
+the fans actually follow one), `hwmon-attrs`, `kernel-log` (hp-wmi's own
+messages), `platform-profile`, `cpu-temp`, `acpi-call` and `fan-cleaner`.
+Each carries a `remedy` when there is something to do about it.
 
-**Every check is read-only unless `allowWrites` is set.** That one check
-writes the value that is *already* set - so no fan changes speed - and
-restores the previous mode afterwards, including when the readback fails.
-It needs root, and reports `skip` rather than failing when run
-unprivileged.
+**Every check is read-only unless `allowWrites` is set**, which needs root
+and opts into the two that touch hardware:
+
+- `pwm-write` writes `pwm1` a value the channel is demonstrably *not*
+  already at — the round-trip of the current value it used to do is a
+  tautology on a board like `8D2F`, where `pwm1` reads back the measured
+  speed rather than the setpoint. It is in force for milliseconds and puts
+  the previous mode back afterwards, including when the readback fails.
+- `pwm-effect` reports a [`fan.probeSpeedControl`](#fanprobespeedcontrol)
+  run that `diagnose` fires itself when writes are allowed: it commands a
+  speed the fans are not at and **watches the tachometer for several
+  seconds**, so with `allowWrites` the fans do briefly change speed.
+
+Both report `skip` — not `fail` — when run unprivileged or not requested;
+`wroteToHardware` mirrors `allowWrites`. The verdict follows the check
+*results*: `fullControl` needs `pwm1` and `pwm1_enable` passing and
+neither write check *failing* (a skipped one leaves control untested, not
+disproven — the summary says which, via `diagnostics.summary.fullControlTested`
+vs `…fullControlUntested`); `monitoringOnly` is a readable fan speed with
+no usable `pwm1`; `unsupported` is neither.
 
 `driverNotice` is the "there is a driver that might help" message, and only
 appears when it would be useful: an HP machine whose kernel exposes no

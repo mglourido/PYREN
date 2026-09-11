@@ -13,7 +13,7 @@ use std::time::Duration;
 use pyren_core::client;
 use serde_json::{json, Value};
 
-use crate::mode::Mode;
+use crate::mode::{FanMode, Mode};
 
 /// Something the widget needs to react to. Everything the GTK thread learns
 /// about the daemon arrives as one of these.
@@ -29,6 +29,15 @@ pub enum Message {
     Pressed { mode: Mode, changed: bool, refusal: Option<String> },
     /// The mode is this now - from the daemon at startup, or after a click.
     Mode(Mode),
+    /// The fan mode and what this machine can do with it - from
+    /// `fan.getStatus` on reconnect, and from the reply to a click. The
+    /// widget needs `switch_mode`/`set_speed` to know which of the four
+    /// cards to draw, so this carries more than `FanModeChanged`.
+    FanState { mode: FanMode, manual_percent: u8, switch_mode: bool, set_speed: bool },
+    /// The fan mode moved - a `fan.mode` event, from the app, the CLI, or
+    /// this widget. `manual_percent` rides along so the slider tracks a
+    /// change made elsewhere.
+    FanModeChanged { mode: FanMode, manual_percent: u8 },
     /// A call the widget asked for was refused.
     Refused(String),
     /// The daemon could not be reached. Carried rather than logged because
@@ -41,6 +50,9 @@ pub enum Message {
 /// Something the widget wants done.
 pub enum Command {
     SetMode(Mode),
+    /// Pick a fan mode. The `u8` is the 0-255 manual speed, sent only for
+    /// `manual` - the other three name a speed the firmware already knows.
+    SetFanMode(FanMode, Option<u8>),
 }
 
 /// Long enough that the daemon is not answering constantly, short enough
@@ -66,6 +78,7 @@ pub fn start(events: async_channel::Sender<Message>) -> mpsc::Sender<Command> {
             while let Ok(command) = rx.recv() {
                 let message = match command {
                     Command::SetMode(mode) => set_mode(mode),
+                    Command::SetFanMode(mode, pwm) => set_fan_mode(mode, pwm),
                 };
                 if events.send_blocking(message).is_err() {
                     return;
@@ -82,6 +95,51 @@ fn set_mode(mode: Mode) -> Message {
         Ok(_) => Message::Mode(mode),
         Err(e) => Message::Refused(e.to_string()),
     }
+}
+
+fn set_fan_mode(mode: FanMode, pwm: Option<u8>) -> Message {
+    let mut params = json!({ "mode": mode.id() });
+    if let Some(pwm) = pwm {
+        params["pwm"] = json!(pwm);
+    }
+    match client::call("fan", "setMode", params) {
+        // The reply is a full `fan.getStatus`, so the widget also learns
+        // the manual speed the daemon clamped to and re-confirms the caps.
+        Ok(status) => fan_state(&status).unwrap_or(Message::FanModeChanged {
+            mode,
+            manual_percent: pwm.map(percent_from_pwm).unwrap_or(0),
+        }),
+        Err(e) => Message::Refused(e.to_string()),
+    }
+}
+
+/// The 0-255 the driver takes, from a 0-100 the slider shows. Never 0 for a
+/// positive percentage - `pwm1 = 0` is the driver's "automatic" sentinel,
+/// not "off" - matching `percentToPwm` in the app and `MIN_COMMANDED_PWM`
+/// in the daemon.
+pub fn pwm_from_percent(percent: u8) -> u8 {
+    (((u16::from(percent.min(100)) * 255 + 50) / 100).max(1)) as u8
+}
+
+/// ...and back, for the slider's starting position.
+pub fn percent_from_pwm(pwm: u8) -> u8 {
+    ((u16::from(pwm) * 100 + 127) / 255) as u8
+}
+
+/// Turns a `fan.getStatus` reply into the state the widget draws from.
+fn fan_state(status: &Value) -> Option<Message> {
+    let mode = FanMode::parse(status.get("mode")?.as_str()?)?;
+    let manual_pwm = status.get("manualPwm").and_then(Value::as_u64).unwrap_or(0);
+    let caps = status.get("capabilities");
+    let cap = |name: &str| {
+        caps.and_then(|c| c.get(name)).and_then(Value::as_bool).unwrap_or(false)
+    };
+    Some(Message::FanState {
+        mode,
+        manual_percent: percent_from_pwm(manual_pwm.min(255) as u8),
+        switch_mode: cap("switchMode"),
+        set_speed: cap("setSpeed"),
+    })
 }
 
 /// The one way this thread can stop, and the reason it says so out loud.
@@ -102,6 +160,14 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
     let mut since: Option<u64> = None;
     let mut connected = false;
 
+    // Push the current state before the first `nextEvent`, which on an idle
+    // daemon does not answer for `POLL_MS`. The widget is most often shown
+    // in the first seconds after login, and a blank one until something
+    // else happens to move a mode would be the wrong first impression.
+    if push_state(events).is_none() {
+        return;
+    }
+
     loop {
         let mut params = json!({ "timeoutMs": POLL_MS });
         if let Some(since) = since {
@@ -115,10 +181,8 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
                     if events.send_blocking(Message::Reachable).is_err() {
                         return;
                     }
-                    if let Some(mode) = current_mode() {
-                        if events.send_blocking(Message::Mode(mode)).is_err() {
-                            return;
-                        }
+                    if push_state(events).is_none() {
+                        return;
                     }
                 }
 
@@ -159,6 +223,22 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
     }
 }
 
+/// Best-effort push of the current power and fan state, so the widget is
+/// right the moment it is first shown rather than only after the first
+/// `nextEvent` returns (which is up to `POLL_MS` on an idle daemon). A
+/// no-op when the daemon does not answer - the poll loop's own error path
+/// is what reports that. `None` means the widget has gone and the thread
+/// should stop.
+fn push_state(events: &async_channel::Sender<Message>) -> Option<()> {
+    if let Some(mode) = current_mode() {
+        events.send_blocking(Message::Mode(mode)).ok()?;
+    }
+    if let Some(state) = current_fan_state() {
+        events.send_blocking(state).ok()?;
+    }
+    Some(())
+}
+
 /// Turns one published event into something the widget can act on, or
 /// `None` for a topic this build does not know - which is a newer daemon,
 /// not an error.
@@ -184,6 +264,15 @@ fn interpret(event: &Value) -> Option<Message> {
             Some(Message::Pressed { mode, changed, refusal })
         }
         "power.mode" => Some(Message::Mode(Mode::parse(payload.get("mode")?.as_str()?)?)),
+        "fan.mode" => {
+            let mode = FanMode::parse(payload.get("mode")?.as_str()?)?;
+            let manual_percent = payload
+                .get("manualPwm")
+                .and_then(Value::as_u64)
+                .map(|pwm| percent_from_pwm(pwm.min(255) as u8))
+                .unwrap_or(0);
+            Some(Message::FanModeChanged { mode, manual_percent })
+        }
         _ => None,
     }
 }
@@ -196,6 +285,16 @@ fn interpret(event: &Value) -> Option<Message> {
 fn current_mode() -> Option<Mode> {
     let state = client::call("power", "getState", Value::Null).ok()?;
     Mode::parse(state.get("mode")?.as_str()?)
+}
+
+/// The fan mode the machine is in and what it can do with it, asked on
+/// every reconnect for the same reason as `current_mode`: the app and
+/// `pyren-ctl` can have moved it while this process was idle. `None` on a
+/// machine with no fan control at all - the widget then never draws the
+/// second row.
+fn current_fan_state() -> Option<Message> {
+    let status = client::call("fan", "getStatus", Value::Null).ok()?;
+    fan_state(&status)
 }
 
 #[cfg(test)]
@@ -274,6 +373,43 @@ mod tests {
         match interpret(&event("power.mode", json!({ "mode": "unlimited", "source": "hotkey" }))) {
             Some(Message::Mode(mode)) => assert_eq!(mode, Mode::Unlimited),
             other => panic!("expected a mode, got {other:?}"),
+        }
+    }
+
+    /// A fan-mode change from the app or the CLI moves the second row's
+    /// highlight, and the manual speed rides along for the slider.
+    #[test]
+    fn a_fan_mode_change_moves_the_second_row_and_carries_the_manual_speed() {
+        match interpret(&event("fan.mode", json!({ "mode": "manual", "manualPwm": 128 }))) {
+            Some(Message::FanModeChanged { mode, manual_percent }) => {
+                assert_eq!(mode, FanMode::Manual);
+                assert_eq!(manual_percent, 50, "128/255 rounds to 50 %");
+            }
+            other => panic!("expected a fan mode change, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fan_mode_event_with_a_junk_mode_is_ignored_rather_than_fatal() {
+        assert!(interpret(&event("fan.mode", json!({ "mode": "turbo" }))).is_none());
+        assert!(interpret(&event("fan.mode", json!({ "manualPwm": 10 }))).is_none());
+    }
+
+    /// The slider shows 0-100; the daemon takes 0-255, and never 0 for a
+    /// positive percentage.
+    #[test]
+    fn the_manual_speed_survives_the_round_trip_through_pwm() {
+        assert_eq!(pwm_from_percent(0), 1, "0 % is still a commanded speed, not the auto sentinel");
+        assert_eq!(pwm_from_percent(100), 255);
+        assert_eq!(percent_from_pwm(255), 100);
+        assert_eq!(percent_from_pwm(0), 0);
+        for percent in 0..=100u8 {
+            let round_tripped = percent_from_pwm(pwm_from_percent(percent));
+            assert!(
+                round_tripped.abs_diff(percent) <= 1,
+                "{percent}% -> {} -> {round_tripped}%",
+                pwm_from_percent(percent)
+            );
         }
     }
 }

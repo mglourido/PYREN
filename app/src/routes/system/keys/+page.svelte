@@ -341,6 +341,7 @@
     font: inherit;
     padding: 12px;
     text-align: center;
+    -webkit-user-select: text;
     user-select: text;
   }
 </style>
