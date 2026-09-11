@@ -1453,6 +1453,65 @@ hp-wmi hwmon reports `[]`.
 | `rgb.readZones` | none | `{ "zones": [c, c, c, c] }` | ✅ implemented, needs root, ditto |
 | `rgb.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
 | `rgb.setDialect` | `{ "dialect": "auto" \| id }` | the status object | ✅ implemented |
+| `rgb.listEffects` | none | `{ effects: [{ id, usesColors, defaults }], maxColors, speed, fps }` | ✅ implemented, read-only |
+| `rgb.setEffect` | `{ "effect": e, "brightness"?: 0-100, "fps"?: 5-60 }` | the status object | ✅ implemented, needs root |
+| `rgb.stopEffect` | none | the status object, the static zones written again | ✅ implemented, needs root |
+| `rgb.setBrightness` | `{ "brightness": 0-100 }` | the status object | ✅ implemented, needs root |
+| `rgb.powerOn` | `{ "ifEnabled"?: bool }` | the status object, once the sweep in is over | ✅ implemented, needs root |
+| `rgb.powerOff` | `{ "ifEnabled"?: bool }` | the status object, once the sweep out is over | ✅ implemented, needs root |
+| `rgb.setPowerAnimation` | `{ "enabled": bool }` | the status object | ✅ implemented |
+| `rgb.setBatteryFps` | `{ "fps": 0-60 }` | the status object | ✅ implemented |
+
+### Effects
+
+The firmware has no animations, so an effect is the daemon rewriting the
+four zones `fps` times a second from a thread of its own — one `COLOR_SET`
+per frame on `fourZone`, with the firmware buffer read once and kept
+(`dev/FINDINGS.md` §"Lighting effects"). An effect `e` is:
+
+```json
+{ "kind": "wave", "colors": ["#008cff", "#000000"], "speed": 5, "direction": "leftToRight" }
+```
+
+| `kind` | what the colours are |
+|---|---|
+| `breathing` | one per zone (cycled), dimming to black and back |
+| `spectrum` | ignored — every zone walks the colour wheel together |
+| `rainbowWave` | ignored — the wheel spread across the zones, moving |
+| `wave` | the pulse, then the background it crosses |
+| `fade` | a list faded through in order; one colour fades to black |
+
+Only `kind` is required. `speed` is 1-10 (5 is the base cycle, 10 twice as
+fast), `direction` is `leftToRight` or `rightToLeft`, at most eight
+colours are kept, and missing colours are the effect's defaults (listed by
+`listEffects`). `fps` defaults to 30.
+
+`getStatus` gains `effect` (what was asked for, or `null`), `effectRunning`
+and `fps`. An effect whose writes fail three times in a row stops itself
+and leaves the reason in `error`, so `effect` set with `effectRunning`
+false means *asked for and not moving*. `setZones`, `setStatic` and `off`
+stop a running effect; `setBrightness` dims it without restarting it. With
+`restoreOnStart` on, the effect comes back with the daemon.
+
+**Power animation.** `powerOn` sweeps the lights in from black, zone by
+zone from the left, to the static zones or to the effect's first frame
+(the effect then starts from there). `powerOff` sweeps them out from the
+right, a running effect still moving under it, and leaves `dark: true`;
+the effect stays in the config. Both block for the sweep (1.2 s). With
+`ifEnabled` they do nothing unless `powerAnimation` is on — and `powerOn`
+nothing unless the lights are `dark` — which is what the suspend hook
+(`/usr/lib/systemd/system-sleep/pyren`, installed with the service) passes.
+With `powerAnimation` on, the daemon also sweeps in when it restores the
+lights at start, and sweeps out on SIGTERM **when systemd says the machine
+is `stopping`**. A SIGTERM that is only the service stopping puts the
+static zones back if an effect was running, so the keys are not left on a
+half-drawn frame.
+
+**Throttling.** On battery an effect runs at `batteryFps` (default 15; 0
+pauses it) and with the lid shut it pauses; paused, nothing is written and
+the keyboard keeps its last frame. `getStatus.throttled` is `"lid"`,
+`"battery"` or `null`. The daemon reads the charger and the lid every two
+seconds.
 
 A colour `c` goes **out** as `"#rrggbb"` and is accepted **in** as either
 that or `[r, g, b]`, so a script does not have to build a hex string to

@@ -115,6 +115,20 @@ LIGHTS
   rgb dialect <auto|id>        pin one by hand, e.g. rgb dialect fourZone
   rgb restore-on-start <on|off>
                                'set' and 'zones' also take --brightness 0-100
+  rgb effects                  the effects there are, and their defaults
+  rgb effect <kind>            run one: breathing, spectrum, rainbowWave,
+                               wave or fade. Takes --colors c,c,...
+                               --speed 1-10, --direction ltr|rtl,
+                               --fps 5-60 and --brightness 0-100
+  rgb effect stop              back to the static colours
+  rgb power-on                 sweep the lights in (the effect, if one is set)
+  rgb power-off                sweep them out to black. Both take
+                               --if-enabled, which is what the suspend hook
+                               passes: nothing unless power-animation is on
+  rgb power-animation <on|off> sweep in when the daemon restores the lights,
+                               out on shutdown and around a suspend
+  rgb battery-fps <0-60>       an effect's frame rate on battery; 0 pauses
+                               it there. Effects always pause with the lid shut
 
 HOTKEY
   hotkey get                   which key is bound, and whether this daemon
@@ -441,21 +455,52 @@ fn run(command: &args::Command) -> Run {
         // the brightness at 0 - and every later `rgb set` then writes a
         // colour that is scaled to black.
         //
-        // Two calls rather than a `setBrightness` method: brightness is
-        // not a thing the daemon holds apart from the colours, and adding
-        // a method that only re-sends them would be a third way to say
-        // what `setZones` already says.
+        // Its own method rather than re-sending the zones: with an effect
+        // running, re-sending the zones would stop it, and the slider is
+        // supposed to dim the effect, not end it.
         ["rgb", "brightness", value] => {
             let percent: i64 = value.trim_end_matches('%').parse().map_err(|_| {
                 Failure::Usage(format!("rgb brightness takes 0-100, not '{value}'"))
             })?;
-            let status = client::call("rgb", "getStatus", Value::Null)?;
-            let zones = status.get("zones").cloned().unwrap_or(Value::Null);
             show(
                 command,
-                client::call("rgb", "setZones", json!({ "zones": zones, "brightness": percent }))?,
+                client::call("rgb", "setBrightness", json!({ "brightness": percent }))?,
                 print_rgb,
             )
+        }
+        ["rgb", "effects"] => {
+            show(command, client::call("rgb", "listEffects", Value::Null)?, print_effects)
+        }
+        ["rgb", "effect", "stop"] => {
+            show(command, client::call("rgb", "stopEffect", Value::Null)?, print_rgb)
+        }
+        ["rgb", "effect", kind] => {
+            let mut effect = json!({ "kind": kind });
+            if let Some(colors) = command.option("colors") {
+                let colors: Vec<&str> =
+                    colors.split(',').map(str::trim).filter(|c| !c.is_empty()).collect();
+                effect["colors"] = json!(colors);
+            }
+            if let Some(speed) = command.number("speed")? {
+                effect["speed"] = json!(speed.round() as i64);
+            }
+            if let Some(direction) = command.option("direction") {
+                effect["direction"] = json!(match direction {
+                    "ltr" | "leftToRight" => "leftToRight",
+                    "rtl" | "rightToLeft" => "rightToLeft",
+                    other => {
+                        return Err(Failure::Usage(format!(
+                            "--direction takes ltr or rtl, not '{other}'"
+                        )))
+                    }
+                });
+            }
+            let mut params = json!({ "effect": effect });
+            if let Some(fps) = command.number("fps")? {
+                params["fps"] = json!(fps.round() as i64);
+            }
+            add_brightness(command, &mut params)?;
+            show(command, client::call("rgb", "setEffect", params)?, print_rgb)
         }
         ["rgb", "dialect"] => {
             show(command, client::call("rgb", "getCapabilities", Value::Null)?, print_rgb_probe)
@@ -465,6 +510,29 @@ fn run(command: &args::Command) -> Run {
             client::call("rgb", "setDialect", json!({ "dialect": id }))?,
             print_rgb,
         ),
+        ["rgb", which @ ("power-on" | "power-off")] => {
+            let method = if *which == "power-on" { "powerOn" } else { "powerOff" };
+            let if_enabled = command.switch("if-enabled")?.unwrap_or(false);
+            show(
+                command,
+                client::call("rgb", method, json!({ "ifEnabled": if_enabled }))?,
+                print_rgb,
+            )
+        }
+        ["rgb", "battery-fps", value] => {
+            let fps: i64 = value.parse().map_err(|_| {
+                Failure::Usage(format!("rgb battery-fps takes 0-60, not '{value}'"))
+            })?;
+            show(command, client::call("rgb", "setBatteryFps", json!({ "fps": fps }))?, print_rgb)
+        }
+        ["rgb", "power-animation", value] => {
+            let enabled = word_switch("power-animation", value)?;
+            show(
+                command,
+                client::call("rgb", "setPowerAnimation", json!({ "enabled": enabled }))?,
+                print_rgb,
+            )
+        }
         ["rgb", "restore-on-start", value] => {
             let enabled = word_switch("restore-on-start", value)?;
             show(
@@ -1550,6 +1618,37 @@ fn print_rgb(status: &Value) {
     }
     print_zones(status);
     row("brightness", format!("{}%", status.get("brightness").and_then(Value::as_i64).unwrap_or(0)));
+    if let Some(effect) = status.get("effect").filter(|e| !e.is_null()) {
+        let running = status.get("effectRunning").and_then(Value::as_bool) == Some(true);
+        let dark = status.get("dark").and_then(Value::as_bool) == Some(true);
+        row(
+            "effect",
+            format!(
+                "{} at speed {}, {} fps{}",
+                text(effect, "kind"),
+                effect.get("speed").and_then(Value::as_i64).unwrap_or(0),
+                status.get("fps").and_then(Value::as_i64).unwrap_or(0),
+                match (running, dark) {
+                    (true, _) => "",
+                    // Put out on purpose; `power-on` starts it again.
+                    (false, true) => " - off until power-on",
+                    (false, false) => " - stopped, see the error below",
+                },
+            ),
+        );
+        match status.get("throttled").and_then(Value::as_str) {
+            Some("lid") => row("held back", "paused: the lid is shut"),
+            Some("battery") => row(
+                "held back",
+                match status.get("batteryFps").and_then(Value::as_i64) {
+                    Some(0) => "paused: on battery (rgb battery-fps sets it)".to_string(),
+                    Some(fps) => format!("{fps} fps: on battery (rgb battery-fps sets it)"),
+                    None => "on battery".to_string(),
+                },
+            ),
+            _ => {}
+        }
+    }
     row(
         "dialect",
         match (status.get("dialect").and_then(Value::as_str), status.get("activeDialect").and_then(Value::as_str)) {
@@ -1558,6 +1657,13 @@ fn print_rgb(status: &Value) {
             (Some(pinned), _) => format!("{pinned} (pinned by hand)"),
             _ => "unknown".to_string(),
         },
+    );
+    if status.get("dark").and_then(Value::as_bool) == Some(true) {
+        row("lights", "put out by power-off; power-on brings them back");
+    }
+    row(
+        "power anim",
+        if status.get("powerAnimation").and_then(Value::as_bool) == Some(true) { "on" } else { "off" },
     );
     row(
         "set by",
@@ -1569,6 +1675,36 @@ fn print_rgb(status: &Value) {
     if let Some(error) = msg_line(status, "error") {
         println!("  ! {error}");
     }
+}
+
+fn print_effects(list: &Value) {
+    for effect in list.get("effects").and_then(Value::as_array).into_iter().flatten() {
+        let id = text(effect, "id");
+        let defaults = effect.get("defaults").cloned().unwrap_or(Value::Null);
+        let colors: Vec<String> = defaults
+            .get("colors")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.as_str().map(str::to_string))
+            .collect();
+        if effect.get("usesColors").and_then(Value::as_bool) == Some(true) {
+            row(&id, format!("colours, default {}", colors.join(",")));
+        } else {
+            row(&id, "makes its own colours");
+        }
+    }
+    let range = |key: &str| {
+        let r = list.get(key).cloned().unwrap_or(Value::Null);
+        format!(
+            "{}-{} (default {})",
+            r.get("min").and_then(Value::as_i64).unwrap_or(0),
+            r.get("max").and_then(Value::as_i64).unwrap_or(0),
+            r.get("default").and_then(Value::as_i64).unwrap_or(0)
+        )
+    };
+    row("speed", range("speed"));
+    row("fps", range("fps"));
 }
 
 fn print_gpu(status: &Value) {

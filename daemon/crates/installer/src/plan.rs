@@ -667,6 +667,16 @@ fn plan_install_service(env: &Environment) -> Plan {
                     "Write /etc/systemd/system/pyren-daemon.service"
                 ),
             ),
+            // Optional: the daemon works without it, and a machine whose
+            // /usr is read-only should still get a service.
+            Step::internal(
+                "write-sleep-hook",
+                msg!(
+                    "installer.step.write-sleep-hook",
+                    "Install the suspend hook for the keyboard lights' power animation"
+                ),
+            )
+            .optional(),
             Step::command(
                 "daemon-reload",
                 msg!("installer.step.daemon-reload", "Reload systemd units"),
@@ -699,6 +709,11 @@ fn plan_remove_service(_env: &Environment) -> Plan {
                 "remove-unit",
                 msg!("installer.step.remove-unit", "Delete the systemd unit file"),
             ),
+            Step::internal(
+                "remove-sleep-hook",
+                msg!("installer.step.remove-sleep-hook", "Delete the suspend hook"),
+            )
+            .optional(),
             Step::command(
                 "daemon-reload",
                 msg!("installer.step.daemon-reload", "Reload systemd units"),

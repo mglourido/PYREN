@@ -197,6 +197,21 @@ impl Dialect {
         }
     }
 
+    /// A writer for a stream of frames - what an animation holds for as
+    /// long as it runs.
+    ///
+    /// Only [`Dialect::FourZone`] is different from [`Dialect::write_colors`]:
+    /// it keeps the firmware buffer rather than reading it before every
+    /// frame, which is what makes 30 fps cheap. The other two have nothing
+    /// to cache - `kernelZones` does its read-modify-write in the kernel,
+    /// and the lightbar sends a whole buffer every time anyway.
+    pub fn frames(self) -> Result<FrameSink, DialectError> {
+        Ok(match self {
+            Self::FourZone => FrameSink::FourZone(fourzone::FrameWriter::new()?),
+            other => FrameSink::Direct(other),
+        })
+    }
+
     /// Whether this dialect could be tried at all without asking. Cheap:
     /// a `stat`, never a call. A dialect that fails this is not probed,
     /// so a machine with no `acpi_call` does not report two firmware
@@ -257,6 +272,21 @@ impl Dialect {
                 asked: e.reached_the_firmware(),
                 detail: e.to_msg(),
             },
+        }
+    }
+}
+
+/// See [`Dialect::frames`].
+pub enum FrameSink {
+    FourZone(fourzone::FrameWriter),
+    Direct(Dialect),
+}
+
+impl crate::effects::Sink for FrameSink {
+    fn show(&mut self, colors: &[Rgb], brightness: u8) -> Result<(), DialectError> {
+        match self {
+            Self::FourZone(writer) => writer.write(&crate::scale(colors, brightness)),
+            Self::Direct(dialect) => dialect.write_colors(colors, brightness),
         }
     }
 }

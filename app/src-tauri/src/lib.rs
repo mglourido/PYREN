@@ -366,6 +366,54 @@ fn rgb_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))
 }
 
+/// The effects the daemon can run and their defaults, so the page does not
+/// hard-code a list the daemon might not have.
+#[tauri::command(async)]
+fn rgb_list_effects() -> Result<Value, String> {
+    call_daemon("rgb", "listEffects", Value::Null)
+}
+
+/// `effect` is `{ kind, colors?, speed?, direction? }`, passed through as
+/// the daemon's own shape rather than re-declared here.
+#[tauri::command(async)]
+fn rgb_set_effect(effect: Value, brightness: Option<u8>, fps: Option<u8>) -> Result<Value, String> {
+    call_daemon("rgb", "setEffect", json!({ "effect": effect, "brightness": brightness, "fps": fps }))
+}
+
+#[tauri::command(async)]
+fn rgb_stop_effect() -> Result<Value, String> {
+    call_daemon("rgb", "stopEffect", Value::Null)
+}
+
+/// Its own call rather than re-sending the zones: re-sending them would
+/// stop a running effect, and the slider is meant to dim it.
+#[tauri::command(async)]
+fn rgb_set_brightness(brightness: u8) -> Result<Value, String> {
+    call_daemon("rgb", "setBrightness", json!({ "brightness": brightness }))
+}
+
+/// Plays the sweep in, and answers once it is over (1.2 s).
+#[tauri::command(async)]
+fn rgb_power_on() -> Result<Value, String> {
+    call_daemon("rgb", "powerOn", Value::Null)
+}
+
+/// Plays the sweep out; the lights stay dark until `rgb_power_on`.
+#[tauri::command(async)]
+fn rgb_power_off() -> Result<Value, String> {
+    call_daemon("rgb", "powerOff", Value::Null)
+}
+
+#[tauri::command(async)]
+fn rgb_set_power_animation(enabled: bool) -> Result<Value, String> {
+    call_daemon("rgb", "setPowerAnimation", json!({ "enabled": enabled }))
+}
+
+#[tauri::command(async)]
+fn rgb_set_battery_fps(fps: u8) -> Result<Value, String> {
+    call_daemon("rgb", "setBatteryFps", json!({ "fps": fps }))
+}
+
 /// GPU overclocking. The one module whose calls can leave the machine
 /// running outside what the firmware shipped, so three of its five
 /// commands exist purely to make that hard to do by accident: the consent,
@@ -1005,6 +1053,14 @@ pub fn run() {
             rgb_read_zones,
             rgb_set_dialect,
             rgb_set_restore_on_start,
+            rgb_list_effects,
+            rgb_set_effect,
+            rgb_stop_effect,
+            rgb_set_brightness,
+            rgb_power_on,
+            rgb_power_off,
+            rgb_set_power_animation,
+            rgb_set_battery_fps,
             installer_inspect,
             installer_autodetect,
             installer_plan,

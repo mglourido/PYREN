@@ -18,8 +18,8 @@ use pyren_installer::{
 };
 use pyren_network::NetworkModule;
 use pyren_overclock::OverclockModule;
-use pyren_power::PowerModule;
-use pyren_rgb::RgbModule;
+use pyren_power::{PowerModule, PowerSupplyState};
+use pyren_rgb::{Conditions, RgbModule};
 use pyren_system::{Compatibility, Controls, SystemModule};
 
 /// Production (systemd, running as root) should set `PYREN_SOCKET` to
@@ -145,6 +145,38 @@ fn hotkey_summary(hotkey: &HotkeyModule, watching: bool) -> String {
     }
 }
 
+/// Whether the lid is shut, from the ACPI button. A machine without one
+/// reads as open, which is what it is for the lights.
+fn lid_closed() -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc/acpi/button/lid") else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|lid| {
+        std::fs::read_to_string(lid.path().join("state")).is_ok_and(|s| s.contains("closed"))
+    })
+}
+
+/// Tells the lighting module about the charger and the lid, every two
+/// seconds. Here rather than in either crate: the charger is the power
+/// module's to read and the lights are the rgb module's to throttle, and
+/// a module never calls another one directly.
+///
+/// A poll, not an event: both are one small sysfs read, the rgb side does
+/// nothing unless one of them changed, and a lid shut for two seconds
+/// before an effect pauses costs nobody anything.
+fn watch_conditions(rgb: RgbModule) {
+    let spawned = std::thread::Builder::new().name("pyren-rgb-conditions".into()).spawn(move || loop {
+        rgb.set_conditions(Conditions {
+            on_battery: PowerSupplyState::read().on_battery.unwrap_or(false),
+            lid_closed: lid_closed(),
+        });
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    });
+    if let Err(e) = spawned {
+        pyren_core::log_warn!("could not start the lighting conditions watcher: {e}");
+    }
+}
+
 fn main() {
     // Arguments are handled before anything is probed: a machine that
     // cannot be detected properly should still be able to install a unit.
@@ -158,6 +190,11 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    // Before any module starts a thread: a thread inherits the signal mask
+    // it was started with, and the handler below only works if SIGTERM is
+    // blocked in every one of them (see `pyren_core::signals`).
+    pyren_core::signals::block_termination();
 
     // The hardware modules come first, because what this machine can be
     // told to do is something only they can answer - `system` used to
@@ -297,7 +334,8 @@ fn main() {
     registry.register(Box::new(system));
     registry.register(Box::new(power.clone()));
     registry.register(Box::new(fan.clone()));
-    registry.register(Box::new(rgb));
+    registry.register(Box::new(rgb.clone()));
+    watch_conditions(rgb.clone());
     registry.register(Box::new(overclock));
     registry.register(Box::new(gpu));
     registry.register(Box::new(network));
@@ -315,6 +353,21 @@ fn main() {
             })),
     ));
     let registry = Arc::new(registry);
+
+    // The one thing that has to happen on the way out: a lighting effect
+    // is a thread rewriting the keyboard, and killing it mid-frame leaves
+    // that frame on the keys - and a shutdown is when the power-off sweep
+    // plays. Whether this is a shutdown or only the service stopping is
+    // asked of systemd, because SIGTERM is the same signal either way.
+    pyren_core::signals::on_termination(move |signal| {
+        let stopping = pyren_core::signals::system_is_stopping();
+        log_info!(
+            "{}: leaving{}",
+            pyren_core::signals::name(signal),
+            if stopping { " (the machine is shutting down)" } else { "" }
+        );
+        rgb.on_exit(stopping);
+    });
 
     // The shortcut, once somebody has taught the daemon which key it is.
     // One event comes out of a press - `hotkey.pressed`, which the

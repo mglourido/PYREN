@@ -213,6 +213,8 @@ fn run_step(step: &Step, env: &Environment, context: &ExecuteContext) -> Result<
         "restore-backups" => restore_backups(&env.kernel.release),
         "write-unit" => write_service_unit(context),
         "remove-unit" => remove_service_unit(),
+        "write-sleep-hook" => write_sleep_hook(context),
+        "remove-sleep-hook" => remove_sleep_hook(),
         other => Err(format!("no implementation for internal step '{other}'")),
     }
 }
@@ -686,10 +688,87 @@ fn remove_service_unit() -> Result<String, String> {
     Ok(format!("removed {SERVICE_PATH}"))
 }
 
+/// systemd runs every executable here before a suspend (`pre`) and after
+/// the resume (`post`), and waits for it. There is no `/etc` counterpart.
+const SLEEP_HOOK_PATH: &str = "/usr/lib/systemd/system-sleep/pyren";
+
+/// The hook's text, apart so a test can read it.
+///
+/// It asks the daemon rather than doing anything itself, and passes
+/// `--if-enabled`, so on a machine with the power animation off (the
+/// default) it is two socket round trips that change nothing. `timeout`
+/// is there because a suspend waits for this script: a daemon that has
+/// hung must cost a suspend five seconds, not the suspend.
+pub fn sleep_hook_text(ctl: &Path) -> String {
+    format!(
+        "#!/bin/sh\n\
+         # Written by pyren-daemon --install-service; removed by --remove-service.\n\
+         # Sweeps the keyboard lights out before a suspend and back in after it,\n\
+         # when 'pyren-ctl rgb power-animation on' is set. Otherwise does nothing.\n\
+         export PYREN_SOCKET=/run/pyren/daemon.sock\n\
+         case \"$1\" in\n\
+         \x20   pre) timeout 5 {ctl} rgb power-off --if-enabled >/dev/null 2>&1 ;;\n\
+         \x20   post) timeout 5 {ctl} rgb power-on --if-enabled >/dev/null 2>&1 ;;\n\
+         esac\n\
+         exit 0\n",
+        ctl = ctl.display()
+    )
+}
+
+/// `pyren-ctl` sits beside the daemon: `install.sh` puts both in the same
+/// directory, and so does a build tree.
+fn write_sleep_hook(context: &ExecuteContext) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let daemon = context
+        .daemon_binary
+        .clone()
+        .or_else(|| std::env::current_exe().ok())
+        .ok_or_else(|| "could not determine the daemon's own path".to_string())?;
+    let ctl = daemon.with_file_name("pyren-ctl");
+    if !ctl.exists() {
+        return Err(format!("{} is not there, so the hook would have nothing to call", ctl.display()));
+    }
+    let path = Path::new(SLEEP_HOOK_PATH);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    }
+    fs::write(path, sleep_hook_text(&ctl)).map_err(|e| format!("writing {SLEEP_HOOK_PATH}: {e}"))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("making {SLEEP_HOOK_PATH} executable: {e}"))?;
+    Ok(format!("wrote {SLEEP_HOOK_PATH}"))
+}
+
+fn remove_sleep_hook() -> Result<String, String> {
+    if !Path::new(SLEEP_HOOK_PATH).exists() {
+        return Ok("no sleep hook installed".to_string());
+    }
+    fs::remove_file(SLEEP_HOOK_PATH).map_err(|e| format!("removing {SLEEP_HOOK_PATH}: {e}"))?;
+    Ok(format!("removed {SLEEP_HOOK_PATH}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plan::{plan, Action, PlanOptions};
+
+    /// The hook runs on every suspend of every machine with the service.
+    /// It must hand both halves to the daemon with `--if-enabled` - never
+    /// act unconditionally - and must parse as shell.
+    #[test]
+    fn the_sleep_hook_asks_the_daemon_and_only_if_enabled() {
+        let text = sleep_hook_text(Path::new("/usr/local/bin/pyren-ctl"));
+        assert!(text.starts_with("#!/bin/sh\n"));
+        assert!(text.contains("pre) timeout 5 /usr/local/bin/pyren-ctl rgb power-off --if-enabled"));
+        assert!(text.contains("post) timeout 5 /usr/local/bin/pyren-ctl rgb power-on --if-enabled"));
+        assert!(text.contains("PYREN_SOCKET=/run/pyren/daemon.sock"));
+        let dir = std::env::temp_dir().join(format!("pyren-sleep-hook-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("pyren");
+        fs::write(&script, &text).unwrap();
+        let checked = Command::new("sh").arg("-n").arg(&script).status().unwrap();
+        assert!(checked.success(), "sh -n rejected:\n{text}");
+        let _ = fs::remove_dir_all(&dir);
+    }
     use crate::detect::{HeadersInfo, KernelInfo};
     use std::path::PathBuf;
 

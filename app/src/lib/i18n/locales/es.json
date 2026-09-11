@@ -119,7 +119,7 @@
   },
   "performance": {
     "warning": "Los ajustes de rendimiento son anulados por la configuración predeterminada del sistema cuando funciona con batería o con adaptador de CA de baja potencia. El rendimiento de tu sistema volverá a la normalidad una vez que se conecte un adaptador de CA compatible.",
-    "powerMode": "Modo de alimentación",
+    "powerMode": "Perfiles de rendimiento",
     "hotkey": "Tecla de acceso rápido: {shortcut}",
     "hotkeyUnset": "Tecla de acceso rápido: sin asignar",
     "autoModeSettings": "Ajustes de modo de energía automáticos",
@@ -258,7 +258,7 @@
   },
   "lighting": {
     "title": "Iluminación",
-    "lead": "La barra de luz de cuatro zonas del borde frontal, gobernada por el firmware a través de ACPI. El protocolo solo transporta colores y un brillo, así que aquí no hay efectos de respiración ni de onda: un interruptor que no hiciera nada sería peor que no tenerlo.",
+    "lead": "Las cuatro zonas de iluminación, gobernadas por el firmware a través de ACPI. El firmware solo guarda colores; los efectos los dibuja el demonio, reescribiendo las zonas muchas veces por segundo.",
     "mode": "Modo",
     "static": "Un color",
     "zones": "Por zonas",
@@ -296,7 +296,46 @@
     "autoNothing": "Automático — no respondió ninguno",
     "noAnswer": "sin respuesta",
     "wrongDialect": "Tu firmware tiene un comando de iluminación, y ninguno de los tres protocolos que conoce esta versión es el que quiere. Es una máquina con luces con las que la aplicación aún no sabe hablar, no una máquina sin ellas: fijar un protocolo a mano aquí abajo es lo siguiente que probar.",
-    "zoneFourUnreadable": "La zona 4 siempre se lee negra con este protocolo. El color que se le envía es real —las luces lo muestran— pero acpi_call corta la respuesta del firmware un byte antes de donde empieza la zona 4, así que no se puede leer de vuelta. Instalar un driver del kernel que publique las zonas como ficheros quita el límite."
+    "zoneFourUnreadable": "La zona 4 siempre se lee negra con este protocolo. El color que se le envía es real —las luces lo muestran— pero acpi_call corta la respuesta del firmware un byte antes de donde empieza la zona 4, así que no se puede leer de vuelta. Instalar un driver del kernel que publique las zonas como ficheros quita el límite.",
+    "effect": "Efecto",
+    "effectKind": "Qué efecto",
+    "effectNames": {
+      "breathing": "Respiración",
+      "spectrum": "Espectro",
+      "rainbowWave": "Onda arcoíris",
+      "wave": "Onda",
+      "fade": "Fundido"
+    },
+    "effectHints": {
+      "breathing": "Cada zona baja a negro y vuelve a subir, con su propio color.",
+      "spectrum": "Todo el teclado recorre la rueda de color a la vez.",
+      "rainbowWave": "La rueda de color repartida entre las cuatro zonas, en movimiento.",
+      "wave": "Un pulso del primer color que cruza las zonas sobre el segundo.",
+      "fade": "Pasa de un color de la lista al siguiente. Blanco y luego negro es 255,255,255 a 0,0,0 y vuelta."
+    },
+    "effectZonesNote": "Cuatro zonas, no teclas: el firmware de este teclado ilumina cuatro grupos de teclas, así que una onda cruza cuatro sectores.",
+    "colours": "Colores",
+    "addColour": "Añadir un color",
+    "removeColour": "Quitar este color",
+    "noColours": "Este efecto genera sus propios colores.",
+    "speed": "Velocidad",
+    "direction": "Dirección",
+    "leftToRight": "De izquierda a derecha",
+    "rightToLeft": "De derecha a izquierda",
+    "effectStopped": "El efecto se detuvo porque las luces dejaron de responder. El motivo está arriba.",
+    "dark": "Las luces están apagadas tras un barrido de apagado.",
+    "powerOn": "Encender",
+    "powerOff": "Apagar",
+    "powerAnimation": "Animación de encendido",
+    "powerAnimationHint": "Enciende las luces con un barrido cuando el demonio las restaura al arrancar, y las apaga con otro cuando el equipo se apaga o se suspende. Desactivado por defecto. Los botones la reproducen ahora.",
+    "fps": "Fotogramas del efecto",
+    "fpsHint": "Cada fotograma es una llamada al firmware. 30 fps se ve fluido en cuatro zonas y cuesta cerca de un 3 % de un núcleo; 60 cuesta más o menos el doble.",
+    "batteryFps": "Con batería",
+    "batteryFpsHint": "Los fotogramas por segundo de un efecto con batería. Pausar deja encendido el último fotograma. Con la tapa cerrada los efectos siempre se pausan.",
+    "pause": "Pausar",
+    "throttledLid": "El efecto está en pausa: la tapa está cerrada.",
+    "throttledBattery": "Con batería: el efecto va a {fps} fps.",
+    "throttledBatteryPaused": "Con batería: el efecto está en pausa."
   },
   "graphics": {
     "title": "Seleccionar un modo de GPU",
@@ -567,7 +606,8 @@
       "zonesCount": "params.zones acepta de 1 a {max} colores, no {got}",
       "colorRequired": "params.color es obligatorio: '#rrggbb' o [r, g, b]",
       "dialectRequired": "params.dialect es obligatorio: 'auto', o uno de los ids de getCapabilities",
-      "dialectUnknown": "no existe ningún protocolo de iluminación llamado {got}"
+      "dialectUnknown": "no existe ningún protocolo de iluminación llamado {got}",
+      "effectRequired": "params.effect es obligatorio: { kind, colors?, speed?, direction? }"
     }
   },
   "diagnostics": {
@@ -931,7 +971,9 @@
       "remove-unit": "Borrar el archivo de unidad de systemd",
       "write-modprobe-conf": "Escribir los techos medidos en {path}, para que también los use cualquier carga posterior",
       "modprobe-measured": "Volver a cargar hp-wmi, esta vez con los techos medidos",
-      "remove-modprobe-conf": "Borrar {path}; el controlador de serie no tiene el parámetro de techo medido y se niega a cargar si se le pasa"
+      "remove-modprobe-conf": "Borrar {path}; el controlador de serie no tiene el parámetro de techo medido y se niega a cargar si se le pasa",
+      "write-sleep-hook": "Instalar el hook de suspensión para la animación de encendido de las luces del teclado",
+      "remove-sleep-hook": "Borrar el hook de suspensión"
     },
     "warn": {
       "alreadyInstalled": "El control de ventiladores funciona aquí porque el controlador parcheado ya está instalado. Reinstalarlo lo recompila y lo vuelve a poner, que es lo que hace falta tras una actualización de kernel si ningún hook lo recompiló solo. Para volver al controlador de la distribución, usa «restaurar».",

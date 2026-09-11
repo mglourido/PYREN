@@ -341,6 +341,38 @@ export type RgbStatus = {
   error: Msg | null;
   saved: boolean;
   saveError: string | null;
+  /** The effect asked for, or null for the static `zones`. */
+  effect: RgbEffect | null;
+  /** Whether it is actually moving. `effect` set and this false is an
+   *  effect that stopped on write failures (see `error`) or one put out
+   *  by `powerOff` (see `dark`). */
+  effectRunning: boolean;
+  fps: number;
+  powerAnimation: boolean;
+  /** Put out by `powerOff` and not yet brought back. */
+  dark: boolean;
+  /** An effect's frame rate on battery; 0 pauses it there. */
+  batteryFps: number;
+  /** Why an effect is running slower than `fps`, or not at all. */
+  throttled: "lid" | "battery" | null;
+};
+
+export type RgbEffectKind = "breathing" | "spectrum" | "rainbowWave" | "wave" | "fade";
+
+/** `rgb.setEffect`'s effect - see `docs/01-ipc-protocol.md` §"Effects". */
+export type RgbEffect = {
+  kind: RgbEffectKind;
+  colors: string[];
+  /** 1-10; 5 is the base cycle. */
+  speed: number;
+  direction: "leftToRight" | "rightToLeft";
+};
+
+export type RgbEffectList = {
+  effects: { id: RgbEffectKind; usesColors: boolean; defaults: RgbEffect }[];
+  maxColors: number;
+  speed: { min: number; max: number; default: number };
+  fps: { min: number; max: number; default: number };
 };
 
 export type ModuleCapability = { id: string; supported: boolean };
@@ -1156,6 +1188,14 @@ const DAEMON_ROUTES: Record<
   rgb_read_zones: { module: "rgb", method: "readZones" },
   rgb_set_dialect: { module: "rgb", method: "setDialect" },
   rgb_set_restore_on_start: { module: "rgb", method: "setRestoreOnStart" },
+  rgb_list_effects: { module: "rgb", method: "listEffects" },
+  rgb_set_effect: { module: "rgb", method: "setEffect" },
+  rgb_stop_effect: { module: "rgb", method: "stopEffect" },
+  rgb_set_brightness: { module: "rgb", method: "setBrightness" },
+  rgb_power_on: { module: "rgb", method: "powerOn" },
+  rgb_power_off: { module: "rgb", method: "powerOff" },
+  rgb_set_power_animation: { module: "rgb", method: "setPowerAnimation" },
+  rgb_set_battery_fps: { module: "rgb", method: "setBatteryFps" },
   installer_inspect: { module: "installer", method: "inspect" },
   installer_autodetect: {
     module: "installer",
@@ -1464,6 +1504,23 @@ export const daemon = {
     call<RgbStatus>("rgb_set_dialect", { dialect }),
   setRgbRestoreOnStart: (enabled: boolean) =>
     call<RgbStatus>("rgb_set_restore_on_start", { enabled }),
+  /** What effects this daemon can run, with their default colours. */
+  rgbEffects: () => call<RgbEffectList>("rgb_list_effects"),
+  /** Starts an effect; the daemon keeps writing frames until something
+   *  else is set. `setRgbZones`/`setRgbStatic`/`rgbOff` stop it. */
+  setRgbEffect: (effect: RgbEffect, brightness?: number, fps?: number) =>
+    call<RgbStatus>("rgb_set_effect", { effect, brightness, fps }),
+  /** Back to the static zones, which are written again. */
+  stopRgbEffect: () => call<RgbStatus>("rgb_stop_effect"),
+  /** Dims a running effect without restarting it; with none running it
+   *  re-sends the zones at the new level. */
+  setRgbBrightness: (brightness: number) => call<RgbStatus>("rgb_set_brightness", { brightness }),
+  /** The sweep in / out. Each answers once the 1.2 s sweep is over. */
+  rgbPowerOn: () => call<RgbStatus>("rgb_power_on"),
+  rgbPowerOff: () => call<RgbStatus>("rgb_power_off"),
+  setRgbPowerAnimation: (enabled: boolean) =>
+    call<RgbStatus>("rgb_set_power_animation", { enabled }),
+  setRgbBatteryFps: (fps: number) => call<RgbStatus>("rgb_set_battery_fps", { fps }),
   /** What this machine has, and whether the patched driver is needed. */
   installerInspect: () => call<InstallerInspection>("installer_inspect"),
   /** Reads DMI, the driver's tables and the fan config; changes nothing. */

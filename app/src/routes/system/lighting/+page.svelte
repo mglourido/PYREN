@@ -25,10 +25,11 @@
    *    ever pick a dialect this build can *read* — and the person at the
    *    keyboard can see whether the lights actually changed.
    *
-   * The daemon has no effects engine - it writes colours and a brightness,
-   * and that is all the firmware protocol carries - so there is no
-   * breathing or wave here. Offering them would be a switch that does
-   * nothing.
+   * 4. **Effects are the daemon's, not the firmware's.** The protocol only
+   *    carries colours, so an effect is the daemon rewriting the zones many
+   *    times a second (`rgb.setEffect`). The preview here runs the same
+   *    frames (`$lib/lighting-effects`) so what is on screen is what is on
+   *    the keys - and it is four zones, not keys, which the page says.
    */
   import Banner from "$lib/components/Banner.svelte";
   import Icon from "$lib/components/Icon.svelte";
@@ -41,9 +42,13 @@
     daemon,
     errorText,
     type RgbDialectId,
+    type RgbEffect,
+    type RgbEffectKind,
+    type RgbEffectList,
     type RgbProbe,
     type RgbStatus,
   } from "$lib/api/daemon";
+  import { frame } from "$lib/lighting-effects";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { onMount } from "svelte";
@@ -53,11 +58,15 @@
   /** A drag on the brightness slider is one ACPI write per pixel unless it
    *  is held back; the strip only has to catch up when the hand stops. */
   const BRIGHTNESS_DEBOUNCE_MS = 180;
+  /** A speed drag or a colour being picked restarts the effect in the
+   *  daemon; it only has to happen once the hand stops. */
+  const EFFECT_DEBOUNCE_MS = 250;
 
   /** Local mode, not a daemon concept: the protocol carries colours and a
    *  brightness, so "off" is black at brightness 0 and "static" is the
-   *  same colour four times. Naming them is for the user's benefit. */
-  type Mode = "static" | "zones" | "off";
+   *  same colour four times. Naming them is for the user's benefit.
+   *  "effect" is the one the daemon does hold (`status.effect`). */
+  type Mode = "static" | "zones" | "effect" | "off";
 
   let status = $state<RgbStatus | null>(null);
   /** A **fresh** probe. `getStatus.capabilities` is the one the daemon took
@@ -81,6 +90,23 @@
   let activeZone = $state(0);
 
   let brightnessTimer: ReturnType<typeof setTimeout> | undefined;
+  let effectTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** What the daemon can run. Null until asked, and on a daemon too old to
+   *  have effects - in which case the mode is not offered. */
+  let effectList = $state<RgbEffectList | null>(null);
+  let effect = $state<RgbEffect>({
+    kind: "spectrum",
+    colors: [],
+    speed: 5,
+    direction: "leftToRight",
+  });
+  let fps = $state(30);
+  /** The bar's colours while an effect is shown, one animation frame at a
+   *  time. */
+  let preview = $state<string[]>(["#000000", "#000000", "#000000", "#000000"]);
+  const effectInfo = $derived(effectList?.effects.find((e) => e.id === effect.kind) ?? null);
+  const shown = $derived(mode === "effect" ? preview : zones);
 
   const presets = [
     ["#e5178c", "#f2374b", "#ff8a00", "#ffd400"],
@@ -114,7 +140,12 @@
     if (busy) return;
     const stored = next.zones.slice(0, ZONES);
     brightness = next.brightness;
-    if (next.brightness === 0 || isBlack(stored)) {
+    if (next.fps) fps = next.fps;
+    if (next.effect) {
+      effect = { ...next.effect, colors: [...next.effect.colors] };
+      zones = stored;
+      mode = "effect";
+    } else if (next.brightness === 0 || isBlack(stored)) {
       // Keep the colours on screen so switching back on has something to
       // switch back to; only the mode says the lights are out.
       mode = "off";
@@ -141,7 +172,23 @@
 
   onMount(() => {
     void refresh(true);
-    return () => clearTimeout(brightnessTimer);
+    daemon
+      .rgbEffects()
+      .then((list) => (effectList = list))
+      .catch(() => (effectList = null));
+
+    // The preview's clock. Only draws while an effect is on screen, and
+    // stops with the page.
+    const began = performance.now();
+    let raf = requestAnimationFrame(function tick(now) {
+      if (mode === "effect") preview = frame(effect, (now - began) / 1000);
+      raf = requestAnimationFrame(tick);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(brightnessTimer);
+      clearTimeout(effectTimer);
+    };
   });
 
   /** Writes the current controls to the strip. `static` sends one colour
@@ -176,7 +223,105 @@
     // what the user was looking at while the lights were out. Brightness
     // is zero after an `off`, and switching "on" to nothing is not on.
     if (next !== "off" && brightness === 0) brightness = 100;
+    if (next === "effect") {
+      void applyEffect();
+      return;
+    }
     void apply(next);
+  }
+
+  /** Starts `effect` in the daemon. It replaces whatever was running, so
+   *  every change to the effect's settings comes through here. */
+  async function applyEffect() {
+    if (!available) return;
+    clearTimeout(effectTimer);
+    busy = true;
+    error = null;
+    try {
+      status = await daemon.setRgbEffect($state.snapshot(effect), brightness, fps);
+      mode = "effect";
+      readBack = null;
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function scheduleEffect() {
+    clearTimeout(effectTimer);
+    effectTimer = setTimeout(() => void applyEffect(), EFFECT_DEBOUNCE_MS);
+  }
+
+  /** A new kind starts from its own default colours, not the last kind's:
+   *  a wave's pulse-and-background pair means nothing to a breathing. */
+  function setEffectKind(kind: RgbEffectKind) {
+    const defaults = effectList?.effects.find((e) => e.id === kind)?.defaults;
+    effect = { ...effect, kind, colors: [...(defaults?.colors ?? [])] };
+    void applyEffect();
+  }
+
+  function setEffectColor(index: number, color: string) {
+    const colors = [...effect.colors];
+    colors[index] = color;
+    effect = { ...effect, colors };
+  }
+
+  function addEffectColor() {
+    const last = effect.colors[effect.colors.length - 1] ?? "#ffffff";
+    effect = { ...effect, colors: [...effect.colors, last] };
+    scheduleEffect();
+  }
+
+  function removeEffectColor(index: number) {
+    effect = { ...effect, colors: effect.colors.filter((_, i) => i !== index) };
+    scheduleEffect();
+  }
+
+  function setSpeed(value: number) {
+    effect = { ...effect, speed: Math.round(value) };
+    scheduleEffect();
+  }
+
+  function setDirection(direction: RgbEffect["direction"]) {
+    effect = { ...effect, direction };
+    void applyEffect();
+  }
+
+  function setFps(value: number) {
+    fps = value;
+    void applyEffect();
+  }
+
+  /** The sweep in or out. Each call answers once the sweep is over. */
+  async function power(on: boolean) {
+    busy = true;
+    error = null;
+    try {
+      status = on ? await daemon.rgbPowerOn() : await daemon.rgbPowerOff();
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function setPowerAnimation(enabled: boolean) {
+    try {
+      status = await daemon.setRgbPowerAnimation(enabled);
+      error = null;
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  async function setBatteryFps(value: number) {
+    try {
+      status = await daemon.setRgbBatteryFps(value);
+      error = null;
+    } catch (e) {
+      error = errorText(e);
+    }
   }
 
   function setZoneColor(color: string) {
@@ -194,10 +339,20 @@
     void apply(preset.every((c) => c === preset[0]) ? "static" : "zones");
   }
 
+  /** Its own call rather than re-sending the colours: with an effect
+   *  running, re-sending would stop it, and the slider is meant to dim it. */
   function setBrightness(value: number) {
     brightness = value;
     clearTimeout(brightnessTimer);
-    brightnessTimer = setTimeout(() => void apply(), BRIGHTNESS_DEBOUNCE_MS);
+    brightnessTimer = setTimeout(async () => {
+      if (!available) return;
+      try {
+        status = await daemon.setRgbBrightness(brightness);
+        error = null;
+      } catch (e) {
+        error = errorText(e);
+      }
+    }, BRIGHTNESS_DEBOUNCE_MS);
   }
 
   async function readFromFirmware() {
@@ -288,6 +443,26 @@
       <p class="notice err">{tm(status.error)}</p>
     {/if}
 
+    {#if status?.dark}
+      <div class="notice-row">
+        <p class="notice">{t("lighting.dark")}</p>
+        <button class="ghost" disabled={!available || busy} onclick={() => void power(true)}>
+          <Icon name="bulb" size={15} />
+          {t("lighting.powerOn")}
+        </button>
+      </div>
+    {:else if status?.effect && !status.effectRunning && status.error}
+      <p class="notice warn">{t("lighting.effectStopped")}</p>
+    {:else if mode === "effect" && status?.throttled === "lid"}
+      <p class="notice">{t("lighting.throttledLid")}</p>
+    {:else if mode === "effect" && status?.throttled === "battery"}
+      <p class="notice">
+        {status.batteryFps === 0
+          ? t("lighting.throttledBatteryPaused")
+          : t("lighting.throttledBattery", { fps: status.batteryFps })}
+      </p>
+    {/if}
+
     {#if loaded && unavailable}
       <!-- The distinction this page exists to keep visible: a missing
            kernel module is not a verdict on the laptop. -->
@@ -312,14 +487,18 @@
           class:active={activeZone === zone && mode !== "static"}
           aria-label={t("lighting.zone", { n: zone + 1 })}
           onclick={() => (activeZone = zone)}
-          style="--glow:{zones[zone] ?? '#000000'};
+          style="--glow:{shown[zone] ?? '#000000'};
                  --alpha:{off ? 0 : brightness / 100}"
         ></button>
       {/each}
     </div>
 
     <p class="hint">
-      {mode === "static" ? t("lighting.staticHint") : t("lighting.selectZone")}
+      {mode === "static"
+        ? t("lighting.staticHint")
+        : mode === "effect"
+          ? t("lighting.effectZonesNote")
+          : t("lighting.selectZone")}
     </p>
 
     <Panel>
@@ -331,7 +510,9 @@
             <span class="control-label">{t("lighting.mode")}</span>
             <Segmented
               value={mode}
-              options={(["static", "zones", "off"] as Mode[]).map((m) => ({
+              options={(
+                (effectList ? ["static", "zones", "effect", "off"] : ["static", "zones", "off"]) as Mode[]
+              ).map((m) => ({
                 value: m,
                 label: t(`lighting.${m}`),
                 disabled: !available || busy,
@@ -340,6 +521,110 @@
             />
           </div>
 
+          {#if mode === "effect" && effectList}
+            <div class="control">
+              <span class="control-label">{t("lighting.effectKind")}</span>
+              <Segmented
+                value={effect.kind}
+                options={effectList.effects.map((e) => ({
+                  value: e.id,
+                  label: t(`lighting.effectNames.${e.id}`),
+                  disabled: !available || busy,
+                }))}
+                onchange={(v) => setEffectKind(v as RgbEffectKind)}
+              />
+            </div>
+            <p class="hint effect-hint">{t(`lighting.effectHints.${effect.kind}`)}</p>
+
+            <div class="control">
+              <span class="control-label">{t("lighting.colours")}</span>
+              {#if effectInfo?.usesColors}
+                <div class="effect-colours">
+                  {#each effect.colors as color, i (i)}
+                    <span class="effect-colour">
+                      <input
+                        type="color"
+                        value={color}
+                        disabled={!available}
+                        aria-label={t("lighting.colour")}
+                        oninput={(e) => setEffectColor(i, e.currentTarget.value)}
+                        onchange={() => void applyEffect()}
+                      />
+                      {#if effect.colors.length > 1}
+                        <button
+                          class="remove"
+                          disabled={!available || busy}
+                          aria-label={t("lighting.removeColour")}
+                          title={t("lighting.removeColour")}
+                          onclick={() => removeEffectColor(i)}
+                        >
+                          <Icon name="close" size={11} />
+                        </button>
+                      {/if}
+                    </span>
+                  {/each}
+                  {#if effect.colors.length < effectList.maxColors}
+                    <button
+                      class="ghost add"
+                      disabled={!available || busy}
+                      aria-label={t("lighting.addColour")}
+                      title={t("lighting.addColour")}
+                      onclick={addEffectColor}>+</button
+                    >
+                  {/if}
+                </div>
+              {:else}
+                <span class="hint">{t("lighting.noColours")}</span>
+              {/if}
+            </div>
+
+            <div class="control">
+              <span class="control-label">{t("lighting.speed")}</span>
+              <Slider
+                value={effect.speed}
+                min={effectList.speed.min}
+                max={effectList.speed.max}
+                step={1}
+                disabled={!available}
+                minLabel={String(effectList.speed.min)}
+                maxLabel={String(effectList.speed.max)}
+                ariaLabel={t("lighting.speed")}
+                onchange={setSpeed}
+              />
+              <span class="digital value">{effect.speed}</span>
+            </div>
+
+            {#if effect.kind === "rainbowWave" || effect.kind === "wave"}
+              <div class="control">
+                <span class="control-label">{t("lighting.direction")}</span>
+                <Segmented
+                  value={effect.direction}
+                  options={(["leftToRight", "rightToLeft"] as const).map((d) => ({
+                    value: d,
+                    label: t(`lighting.${d}`),
+                    disabled: !available || busy,
+                  }))}
+                  onchange={(v) => setDirection(v as RgbEffect["direction"])}
+                />
+              </div>
+            {/if}
+
+            <div class="control">
+              <span class="control-label">
+                {t("lighting.fps")}
+                <InfoTip>{t("lighting.fpsHint")}</InfoTip>
+              </span>
+              <Segmented
+                value={String(fps)}
+                options={[15, 30, 60].map((f) => ({
+                  value: String(f),
+                  label: `${f} fps`,
+                  disabled: !available || busy,
+                }))}
+                onchange={(v) => setFps(Number(v))}
+              />
+            </div>
+          {:else}
           <div class="control">
             <span class="control-label">
               {mode === "static" ? t("lighting.allZones") : t("lighting.zone", { n: activeZone + 1 })}
@@ -354,6 +639,7 @@
             />
             <span class="hint inline">{t("lighting.colourHint")}</span>
           </div>
+          {/if}
 
           <div class="control">
             <span class="control-label">{t("lighting.brightness")}</span>
@@ -370,6 +656,7 @@
             <span class="digital value">{brightness}%</span>
           </div>
 
+          {#if mode !== "effect"}
           <div class="control">
             <span class="control-label">{t("lighting.presets")}</span>
             <div class="presets">
@@ -389,6 +676,7 @@
               {/each}
             </div>
           </div>
+          {/if}
         </div>
       {/if}
     </Panel>
@@ -458,6 +746,45 @@
           ariaLabel={t("lighting.restoreOnStart")}
         />
       </div>
+
+      <div class="setting">
+        <span class="label">
+          {t("lighting.powerAnimation")}
+          <InfoTip>{t("lighting.powerAnimationHint")}</InfoTip>
+        </span>
+        <div class="control-row">
+          <button class="ghost" disabled={!available || busy} onclick={() => void power(false)}>
+            {t("lighting.powerOff")}
+          </button>
+          <button class="ghost" disabled={!available || busy} onclick={() => void power(true)}>
+            {t("lighting.powerOn")}
+          </button>
+          <Toggle
+            checked={status?.powerAnimation ?? false}
+            disabled={!available}
+            onchange={(v) => void setPowerAnimation(v)}
+            ariaLabel={t("lighting.powerAnimation")}
+          />
+        </div>
+      </div>
+
+      {#if effectList}
+        <div class="setting">
+          <span class="label">
+            {t("lighting.batteryFps")}
+            <InfoTip>{t("lighting.batteryFpsHint")}</InfoTip>
+          </span>
+          <Segmented
+            value={String(status?.batteryFps ?? 15)}
+            options={[0, 15, 30].map((f) => ({
+              value: String(f),
+              label: f === 0 ? t("lighting.pause") : `${f} fps`,
+              disabled: !available,
+            }))}
+            onchange={(v) => void setBatteryFps(Number(v))}
+          />
+        </div>
+      {/if}
 
       <div class="setting">
         <span class="label">
@@ -817,6 +1144,58 @@
   .swatches {
     display: flex;
     gap: 6px;
+  }
+
+  .notice-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .effect-hint {
+    margin-top: -8px;
+    padding-left: 122px;
+  }
+
+  .effect-colours {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .effect-colour {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .effect-colour .remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    background: var(--bg-card);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .effect-colour .remove:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--text);
+  }
+
+  .ghost.add {
+    width: 30px;
+    height: 30px;
+    justify-content: center;
+    padding: 0;
+    font-size: 16px;
   }
 
   .swatch {

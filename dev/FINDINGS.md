@@ -4,6 +4,63 @@ Things that took real work to establish. Written down so nobody has to
 re-derive them, and so that a surprising piece of code has a reason
 attached.
 
+## Lighting effects: four zones, one write per frame, 30 fps for 4 % of a core — measured 2026-09-11
+
+The question was whether the keyboard can animate (fades, waves, a
+rainbow, a power-on sweep) and whether it can be lit **per key**. Settled
+on 8D2F, as root, through `/proc/acpi/call`.
+
+### It is not a per-key keyboard, and the firmware says so
+
+| read | reply payload | meaning |
+|---|---|---|
+| `0x20008` / `0x2B` (keyboard type) | `01 00 00 00` | standard layout with a numpad — **not** per-key RGB |
+| `0x20009` / `1` (platform info) | `07 27 00 …` | the lighting command space answers |
+| `0x20009` / `4` (brightness get) | `b2 00 00 00` | a firmware-side level (178), separate from our software scaling |
+
+Together with the earlier facts (no `0d62:54bf` on USB, the only HID
+device is the touchpad, the keyboard itself is i8042 PS/2), the four zones
+are the resolution of the hardware: each zone is one set of LEDs wired
+together, and no command addresses less than that.
+
+### There are no firmware animations, so effects are frames
+
+No command type anyone has published starts an effect in the EC.
+`omen-rgb-keyboard` does its eleven modes the only way available: a 50 ms
+kernel timer rewriting the four zones. Anything here does the same.
+
+### What one frame costs
+
+Timed from Python straight on `/proc/acpi/call` (overhead negligible next
+to the call):
+
+| call | median | p95 | max |
+|---|---|---|---|
+| `COLOR_GET` | 2.32 ms | 2.62 ms | 3.26 ms |
+| `COLOR_SET`, buffer cached | **0.67 ms** | 0.77 ms | 13.4 ms |
+| `COLOR_GET` + `COLOR_SET` (what `write_colors` does) | 2.78 ms | 2.89 ms | 3.09 ms |
+
+The read is 80 % of a read-modify-write. **An animation must cache the
+128-byte buffer and send only `COLOR_SET`** — one call per frame. 4138
+back-to-back sets in 3 s, none refused.
+
+Then a paced demo (power-on sweep, rainbow wave, white 255 ↔ 0 breathing,
+a pulse travelling across zones, power-off sweep), watched on the keyboard:
+
+| target | frames | late | worst write | CPU |
+|---|---|---|---|---|
+| 30 fps | 606 / 22.2 s | 0 | 8.9 ms | **3.9 %** of one core |
+| 60 fps | 1212 / 22.2 s | 0 | 11.6 ms | **8.1 %** |
+
+All five looked smooth at both rates. The cost is almost all `sys` time —
+the AML and the EC transaction — so it scales with the frame rate and a
+Rust engine will not make it meaningfully cheaper. That is why the default
+is 30 fps and the rate drops on battery.
+
+**`kernelZones` is the wrong path for animation.** Each of its four zone
+files does its own `COLOR_GET` + `COLOR_SET` in the kernel: eight calls a
+frame instead of one.
+
 ## `pwm1` exists on 8D2F and is ignored — measured on 2026-09-06
 
 The patched driver gives board `8D2F` a `pwm1`. **The embedded controller

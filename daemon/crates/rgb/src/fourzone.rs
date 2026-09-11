@@ -118,7 +118,11 @@ pub fn write_colors(colors: &[Rgb]) -> Result<(), DialectError> {
     // and only what `acpi_call` truncated away is padded with zeros.
     let mut state = read_state()?;
     state.resize(STATE_LEN, 0);
+    send(&mut state, colors)
+}
 
+/// Patches the colours into `state` and sends it.
+fn send(state: &mut [u8], colors: &[Rgb]) -> Result<(), DialectError> {
     for (zone, color) in colors.iter().take(crate::ZONES).enumerate() {
         let at = ZONE_OFFSET + zone * 3;
         state[at] = color.r;
@@ -126,8 +130,47 @@ pub fn write_colors(colors: &[Rgb]) -> Result<(), DialectError> {
         state[at + 2] = color.b;
     }
 
-    let reply = acpi::wmi_call(COMMAND, COLOR_SET, &state, STATE_LEN, STATE_LEN)?;
+    let reply = acpi::wmi_call(COMMAND, COLOR_SET, state, STATE_LEN, STATE_LEN)?;
     payload(&reply).map(|_| ())
+}
+
+/// How long an animation trusts the buffer it read before reading it again.
+///
+/// Nothing is known to change the bytes around the colours while the
+/// machine runs, but nothing is known about most of them at all. A read
+/// every few seconds costs 2.3 ms against the 20 s of frames between them,
+/// so it is cheap insurance against sending back a setting that moved.
+const REFRESH: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The writer an animation uses: one `COLOR_GET`, then one `COLOR_SET` a
+/// frame.
+///
+/// [`write_colors`] reads before every write, and the read is 80 % of the
+/// cost - 2.3 ms against 0.7 ms for the set (`dev/FINDINGS.md`, "Lighting
+/// effects"). At 30 frames a second that is the difference between 8 % and
+/// 2 % of the time spent in the firmware, so an animation keeps the buffer
+/// and only patches the colours into it.
+pub struct FrameWriter {
+    state: Vec<u8>,
+    read_at: std::time::Instant,
+}
+
+impl FrameWriter {
+    pub fn new() -> Result<Self, DialectError> {
+        let mut state = read_state()?;
+        state.resize(STATE_LEN, 0);
+        Ok(Self { state, read_at: std::time::Instant::now() })
+    }
+
+    pub fn write(&mut self, colors: &[Rgb]) -> Result<(), DialectError> {
+        if self.read_at.elapsed() >= REFRESH {
+            let mut state = read_state()?;
+            state.resize(STATE_LEN, 0);
+            self.state = state;
+            self.read_at = std::time::Instant::now();
+        }
+        send(&mut self.state, colors)
+    }
 }
 
 /// Whether the `0x20009` command space answers a read on this machine.

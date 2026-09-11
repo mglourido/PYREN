@@ -258,7 +258,7 @@
   },
   "lighting": {
     "title": "Lighting",
-    "lead": "The four-zone light strip along the front edge, driven through the firmware over ACPI. Colours and a brightness are all the protocol carries, so there are no breathing or wave effects here - a switch that did nothing would be worse than no switch.",
+    "lead": "The four lighting zones, driven by the firmware through ACPI. The firmware only holds colours; the effects are drawn by the daemon, rewriting the zones many times a second.",
     "mode": "Mode",
     "static": "One colour",
     "zones": "Per zone",
@@ -296,7 +296,46 @@
     "autoNothing": "Automatic — nothing answered",
     "noAnswer": "no answer",
     "wrongDialect": "Your firmware has a lighting command, and none of the three protocols this build knows is the one it wants. That is a machine with lights this app cannot speak to yet, not a machine without them — pinning a protocol by hand below is the next thing to try.",
-    "zoneFourUnreadable": "Zone 4 always reads back black on this protocol. The colour sent to it is real — the lights show it — but acpi_call cuts the firmware's reply short one byte before zone 4 begins, so it cannot be read back. Installing a kernel driver that publishes the zones as files removes the limit."
+    "zoneFourUnreadable": "Zone 4 always reads back black on this protocol. The colour sent to it is real — the lights show it — but acpi_call cuts the firmware's reply short one byte before zone 4 begins, so it cannot be read back. Installing a kernel driver that publishes the zones as files removes the limit.",
+    "effect": "Effect",
+    "effectKind": "Which effect",
+    "effectNames": {
+      "breathing": "Breathing",
+      "spectrum": "Spectrum",
+      "rainbowWave": "Rainbow wave",
+      "wave": "Wave",
+      "fade": "Fade"
+    },
+    "effectHints": {
+      "breathing": "Each zone dims to black and back, in its own colour.",
+      "spectrum": "The whole keyboard walks round the colour wheel together.",
+      "rainbowWave": "The colour wheel spread across the four zones, moving.",
+      "wave": "A pulse of the first colour crossing the zones over the second.",
+      "fade": "Fades from one colour of the list to the next. White then black is 255,255,255 to 0,0,0 and back."
+    },
+    "effectZonesNote": "Four zones, not keys: the firmware on this keyboard lights four groups of keys, so a wave crosses four sectors.",
+    "colours": "Colours",
+    "addColour": "Add a colour",
+    "removeColour": "Remove this colour",
+    "noColours": "This effect makes its own colours.",
+    "speed": "Speed",
+    "direction": "Direction",
+    "leftToRight": "Left to right",
+    "rightToLeft": "Right to left",
+    "effectStopped": "The effect stopped because the lights stopped answering. The reason is above.",
+    "dark": "The lights are out after a power-off sweep.",
+    "powerOn": "Power on",
+    "powerOff": "Power off",
+    "powerAnimation": "Power animation",
+    "powerAnimationHint": "Sweeps the lights in when the daemon restores them at start, and out when the machine shuts down or suspends. Off by default. The buttons play it now.",
+    "fps": "Effect frame rate",
+    "fpsHint": "Every frame is a call to the firmware. 30 fps is smooth on four zones and costs about 3 % of one core; 60 costs about twice that.",
+    "batteryFps": "On battery",
+    "batteryFpsHint": "An effect's frame rate while on battery. Pausing leaves the last frame lit. Effects always pause with the lid shut.",
+    "pause": "Pause",
+    "throttledLid": "The effect is paused: the lid is shut.",
+    "throttledBattery": "On battery: the effect runs at {fps} fps.",
+    "throttledBatteryPaused": "On battery: the effect is paused."
   },
   "graphics": {
     "title": "Select a GPU mode",
@@ -567,7 +606,8 @@
       "zonesCount": "params.zones takes 1 to {max} colours, not {got}",
       "colorRequired": "params.color is required: '#rrggbb' or [r, g, b]",
       "dialectRequired": "params.dialect is required: 'auto', or one of the ids in getCapabilities",
-      "dialectUnknown": "there is no lighting dialect called {got}"
+      "dialectUnknown": "there is no lighting dialect called {got}",
+      "effectRequired": "params.effect is required: { kind, colors?, speed?, direction? }"
     }
   },
   "diagnostics": {
@@ -931,7 +971,9 @@
       "remove-unit": "Delete the systemd unit file",
       "write-modprobe-conf": "Write the measured ceilings to {path}, so every later load uses them too",
       "modprobe-measured": "Load hp-wmi again, this time with the measured ceilings",
-      "remove-modprobe-conf": "Delete {path}; the stock driver has no measured-ceiling parameter and refuses to load when given one"
+      "remove-modprobe-conf": "Delete {path}; the stock driver has no measured-ceiling parameter and refuses to load when given one",
+      "write-sleep-hook": "Install the suspend hook for the keyboard lights' power animation",
+      "remove-sleep-hook": "Delete the suspend hook"
     },
     "warn": {
       "alreadyInstalled": "Fan control works here because the patched driver is already installed. Reinstalling rebuilds and reinstates it, which is what a kernel upgrade needs if no hook rebuilt it automatically. To go back to the distribution's own driver, use \"restore\" instead.",

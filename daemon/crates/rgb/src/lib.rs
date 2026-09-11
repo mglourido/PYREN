@@ -12,6 +12,17 @@
 //! | `rgb.readZones` | none | the four colours the firmware reports |
 //! | `rgb.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `rgb.setDialect` | `{ "dialect": "auto" \| id }` | the new status |
+//! | `rgb.listEffects` | none | the effects, and the speed and fps ranges |
+//! | `rgb.setEffect` | `{ "effect": e, "brightness"?: 0-100, "fps"?: 5-60 }` | the new status |
+//! | `rgb.stopEffect` | none | the new status, the zones back on |
+//! | `rgb.setBrightness` | `{ "brightness": 0-100 }` | the new status |
+//! | `rgb.powerOn` | `{ "ifEnabled"?: bool }` | the new status, after the sweep in |
+//! | `rgb.powerOff` | `{ "ifEnabled"?: bool }` | the new status, after the sweep out |
+//! | `rgb.setPowerAnimation` | `{ "enabled": bool }` | the new status |
+//! | `rgb.setBatteryFps` | `{ "fps": 0-60 }` | the new status; 0 pauses effects on battery |
+//!
+//! An effect `e` is `{ "kind", "colors"?, "speed"?: 1-10, "direction"? }`;
+//! see [`effects`]. `setZones`, `setStatic` and `off` stop a running effect.
 //!
 //! A colour `c` is `"#rrggbb"` or `[r, g, b]`; see [`color`].
 //!
@@ -59,6 +70,7 @@ use serde_json::{json, Value};
 
 pub mod color;
 pub mod dialect;
+pub mod effects;
 pub mod fourzone;
 pub mod kernel_zones;
 pub mod lightbar;
@@ -66,6 +78,7 @@ pub mod probe;
 
 pub use color::Rgb;
 pub use dialect::{Dialect, DialectError, Selection};
+pub use effects::{Animator, Effect, EffectKind, Transition};
 pub use probe::Probe;
 
 /// Four zones. Not a configurable number: every dialect's buffer has the
@@ -108,6 +121,19 @@ pub struct RgbConfig {
     /// machine's lights on at boot because they were on last week is a
     /// decision for the user, not for the daemon (`dev/TODO.md` §3).
     pub restore_on_start: bool,
+    /// The running effect, or none for the static `zones`. Restored with
+    /// the zones when `restore_on_start` is on.
+    pub effect: Option<Effect>,
+    /// Frames a second for an effect.
+    pub fps: u8,
+    /// Sweep the lights in when the daemon restores them and out when the
+    /// machine shuts down or suspends. Off by default for the same reason
+    /// `restore_on_start` is.
+    pub power_animation: bool,
+    /// The most frames a second an effect gets on battery; 0 pauses it
+    /// there. Each frame is an EC transaction, and the cost scales with
+    /// the rate (`dev/FINDINGS.md` §"Lighting effects").
+    pub battery_fps: u8,
 }
 
 impl Default for RgbConfig {
@@ -117,20 +143,43 @@ impl Default for RgbConfig {
             brightness: 100,
             dialect: Selection::Auto,
             restore_on_start: false,
+            effect: None,
+            fps: effects::FPS_DEFAULT,
+            power_animation: false,
+            battery_fps: DEFAULT_BATTERY_FPS,
         }
     }
 }
 
+/// Half the default rate: still smooth on four zones, half the cost.
+pub const DEFAULT_BATTERY_FPS: u8 = 15;
+
+/// What the machine is doing that bears on an animation. Told by the
+/// daemon, which watches the charger and the lid - the power module owns
+/// the first and neither is this module's business to poll.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Conditions {
+    pub on_battery: bool,
+    pub lid_closed: bool,
+}
+
 struct State {
     config: RgbConfig,
+    conditions: Conditions,
     /// Whether *this daemon* put the lights where they are. False until
     /// something is written, so `getStatus` never claims a colour the
     /// firmware chose as one we set.
     owned: bool,
+    /// Put out by `powerOff`. What `powerOn` with `ifEnabled` checks, so a
+    /// resume only lights a keyboard that a suspend darkened.
+    dark: bool,
     last_error: Option<Msg>,
     last_save_error: Option<String>,
 }
 
+/// Cheap to clone: every field is shared. The daemon keeps a clone for
+/// its SIGTERM handler, which is the one caller outside the registry.
+#[derive(Clone)]
 pub struct RgbModule {
     /// The last probe taken, not a fresh one: `is_supported` is called for
     /// every `core.capabilities` and asking the firmware is an ACPI round
@@ -141,9 +190,12 @@ pub struct RgbModule {
     /// installed ten minutes ago. [`RgbModule::current_probe`] re-takes it
     /// when - and only when - the three interface facts have changed, all
     /// three of which are a `stat` rather than a call.
-    probe: Mutex<Probe>,
+    probe: Arc<Mutex<Probe>>,
     store: ConfigStore,
     state: Arc<Mutex<State>>,
+    /// Never locked while holding `state`: a failing animation takes the
+    /// state lock from its own thread, and `stop` waits for that thread.
+    animator: Arc<Mutex<Animator>>,
 }
 
 impl RgbModule {
@@ -181,32 +233,54 @@ impl RgbModule {
         // must not reach the payload builder the wrong length.
         config.zones.resize(ZONES, Rgb::BLACK);
         config.brightness = config.brightness.min(100);
+        config.fps = config.fps.clamp(effects::FPS_MIN, effects::FPS_MAX);
+        config.battery_fps = config.battery_fps.min(effects::FPS_MAX);
+        config.effect = config.effect.map(Effect::normalised);
 
         let restoring = config.restore_on_start && probe.lighting.present;
         let module = Self {
-            probe: Mutex::new(probe),
+            probe: Arc::new(Mutex::new(probe)),
             store,
             state: Arc::new(Mutex::new(State {
                 config,
+                conditions: Conditions::default(),
                 owned: restoring,
+                dark: false,
                 last_error: None,
                 last_save_error: None,
             })),
+            animator: Arc::new(Mutex::new(Animator::new())),
         };
 
         if restoring {
             let state = lock(&module.state);
             let (zones, brightness) = (state.config.zones.clone(), state.config.brightness);
+            let effect = state.config.effect.clone();
+            let animate = state.config.power_animation;
             drop(state);
             let chosen = module.chosen_dialect(&module.current_probe());
-            match chosen {
-                Some(dialect) => {
+            match (chosen, effect) {
+                // Blocks startup for the length of the sweep, a second
+                // and a bit. Worth it: the alternative is the socket
+                // answering while the lights are still coming up, and a
+                // `setZones` in that second landing under the sweep.
+                (Some(_), _) if animate => {
+                    if let Err(e) = module.power_on() {
+                        log_warn!("could not bring the lights up: {e}");
+                    }
+                }
+                (Some(_), Some(effect)) => {
+                    if let Err(e) = module.start_effect(effect) {
+                        log_warn!("could not restore the lighting effect: {e}");
+                    }
+                }
+                (Some(dialect), None) => {
                     if let Err(e) = dialect.write_colors(&zones, brightness) {
                         log_warn!("could not restore the lights: {e}");
                         lock(&module.state).last_error = Some(e.to_msg());
                     }
                 }
-                None => log_warn!(
+                (None, _) => log_warn!(
                     "not restoring the lights: no lighting dialect answered"
                 ),
             }
@@ -254,6 +328,7 @@ impl RgbModule {
         // reentrant: resolving the dialect before the guard rather than
         // under it is the difference between a status read and a hang.
         let active = self.chosen_dialect(&probe);
+        let animating = lock_animator(&self.animator).is_running();
         let state = lock(&self.state);
         json!({
             "capabilities": probe,
@@ -266,6 +341,19 @@ impl RgbModule {
             "zones": state.config.zones,
             "brightness": state.config.brightness,
             "restoreOnStart": state.config.restore_on_start,
+            // What was asked for, and whether it is actually moving: an
+            // effect whose writes kept failing stops itself and leaves
+            // the reason in `error`.
+            "effect": state.config.effect,
+            "effectRunning": animating,
+            "fps": state.config.fps,
+            "powerAnimation": state.config.power_animation,
+            // Put out by `powerOff` and not yet back.
+            "dark": state.dark,
+            "batteryFps": state.config.battery_fps,
+            // Why an effect is running slower than `fps`, or not at all:
+            // "lid" (paused), "battery" (capped or paused), or null.
+            "throttled": throttle_reason(&state),
             // What is reported is what we wrote, and only if we wrote it.
             // Reading the hardware back is `rgb.readZones`, which is a
             // separate call because it is four ACPI round trips.
@@ -284,12 +372,16 @@ impl RgbModule {
         let Some(dialect) = self.chosen_dialect(&probe) else {
             return Err(ModuleError::Unsupported);
         };
+        // Before the write, or the effect's next frame lands on top of it.
+        lock_animator(&self.animator).stop();
 
         match dialect.write_colors(&zones, brightness) {
             Ok(()) => {
                 let mut state = lock(&self.state);
                 state.config.zones = zones;
                 state.config.brightness = brightness;
+                state.config.effect = None;
+                state.dark = false;
                 state.owned = true;
                 state.last_error = None;
                 persist(&self.store, &mut state);
@@ -300,6 +392,263 @@ impl RgbModule {
             }
         }
         Ok(self.status())
+    }
+
+    /// Starts `effect` on the chosen dialect. Does not persist it; the
+    /// callers that should, do.
+    fn start_effect(&self, effect: Effect) -> Result<(), ModuleError> {
+        let probe = self.current_probe();
+        let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
+        let (brightness, fps) = {
+            let state = lock(&self.state);
+            (state.config.brightness, state.config.fps)
+        };
+
+        let mut animator = lock_animator(&self.animator);
+        // Stopped before the sink is made: making the four-zone one is a
+        // read, and a frame of the old effect must not be what it reads.
+        animator.stop();
+        let sink = dialect.frames().map_err(|e| {
+            lock(&self.state).last_error = Some(e.to_msg());
+            dialect_error(e)
+        })?;
+
+        let state = Arc::clone(&self.state);
+        animator.start(effect, brightness, fps, sink, move |e| {
+            log_warn!("the lighting effect stopped: {e}");
+            lock(&state).last_error = Some(e.to_msg());
+        });
+        drop(animator);
+
+        let mut state = lock(&self.state);
+        state.owned = true;
+        state.dark = false;
+        state.last_error = None;
+        Ok(())
+    }
+
+    /// Sweeps the lights in, from black to what the config says - the
+    /// static zones, or the first frame of the effect, which then starts
+    /// from exactly there.
+    fn power_on(&self) -> Result<(), ModuleError> {
+        let probe = self.current_probe();
+        let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
+        let (zones, brightness, fps, effect) = {
+            let state = lock(&self.state);
+            let c = &state.config;
+            (c.zones.clone(), c.brightness, c.fps, c.effect.clone())
+        };
+        lock_animator(&self.animator).stop();
+
+        let target = match &effect {
+            Some(e) => effects::frame(e, 0.0),
+            None => zones_array(&zones),
+        };
+        let mut sink = dialect.frames().map_err(|e| self.failed(e))?;
+        effects::play(&mut sink, brightness, fps, Transition::DURATION, |k, _| {
+            Transition::PowerOn.apply(&target, k)
+        })
+        .map_err(|e| self.failed(e))?;
+        drop(sink);
+
+        match effect {
+            Some(e) => self.start_effect(e)?,
+            None => {
+                let mut state = lock(&self.state);
+                state.owned = true;
+                state.dark = false;
+                state.last_error = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sweeps the lights out to black. A running effect carries on moving
+    /// under the sweep rather than freezing on the frame it was showing.
+    ///
+    /// The effect stays in the config: this is the lights going off, not
+    /// somebody choosing a different colour, and `powerOn` brings it back.
+    fn power_off(&self) -> Result<(), ModuleError> {
+        let probe = self.current_probe();
+        let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
+        let (zones, brightness, fps) = {
+            let state = lock(&self.state);
+            (zones_array(&state.config.zones), state.config.brightness, state.config.fps)
+        };
+        let running = {
+            let mut animator = lock_animator(&self.animator);
+            let running = animator.current();
+            animator.stop();
+            running
+        };
+
+        let mut sink = dialect.frames().map_err(|e| self.failed(e))?;
+        effects::play(&mut sink, brightness, fps, Transition::DURATION, |k, t| {
+            let base = match &running {
+                Some((effect, into)) => effects::frame(effect, into + t),
+                None => zones,
+            };
+            Transition::PowerOff.apply(&base, k)
+        })
+        .map_err(|e| self.failed(e))?;
+
+        let mut state = lock(&self.state);
+        state.owned = true;
+        state.dark = true;
+        state.last_error = None;
+        Ok(())
+    }
+
+    /// Records a hardware failure for `getStatus` and turns it into the
+    /// socket's error.
+    fn failed(&self, e: DialectError) -> ModuleError {
+        lock(&self.state).last_error = Some(e.to_msg());
+        dialect_error(e)
+    }
+
+    /// What the daemon does on its way out, called from its SIGTERM
+    /// handler. Never fails: there is nobody left to tell.
+    ///
+    /// - The machine shutting down, with the power animation on: the
+    ///   sweep out, which is the one the user asked for.
+    /// - Anything else with an effect running - the service being stopped
+    ///   or restarted: the static zones, so the keyboard is not left on
+    ///   whichever frame the thread was killed in.
+    /// - Otherwise nothing, like before there was a handler at all.
+    pub fn on_exit(&self, machine_stopping: bool) {
+        let animate = lock(&self.state).config.power_animation;
+        if machine_stopping && animate {
+            if let Err(e) = self.power_off() {
+                log_warn!("could not play the power-off sweep: {e}");
+            }
+            return;
+        }
+        let mut animator = lock_animator(&self.animator);
+        if !animator.is_running() {
+            return;
+        }
+        animator.stop();
+        drop(animator);
+        let (zones, brightness) = {
+            let state = lock(&self.state);
+            (state.config.zones.clone(), state.config.brightness)
+        };
+        if let Some(dialect) = self.chosen_dialect(&self.current_probe()) {
+            if let Err(e) = dialect.write_colors(&zones, brightness) {
+                log_warn!("could not put the static colours back: {e}");
+            }
+        }
+    }
+
+    /// `powerOn` / `powerOff`. With `ifEnabled` they are what the suspend
+    /// hook calls: nothing unless the power animation is on, and a power
+    /// on only after a power off.
+    fn power(&self, on: bool, if_enabled: bool) -> ModuleResult {
+        if if_enabled {
+            let state = lock(&self.state);
+            let wanted = state.config.power_animation && (!on || state.dark);
+            drop(state);
+            if !wanted {
+                return Ok(self.status());
+            }
+        }
+        if on {
+            self.power_on()?;
+        } else {
+            self.power_off()?;
+        }
+        Ok(self.status())
+    }
+
+    /// The daemon's watcher reports the charger and the lid here. Cheap
+    /// enough to call every few seconds; only a change does anything.
+    pub fn set_conditions(&self, conditions: Conditions) {
+        let mut state = lock(&self.state);
+        if state.conditions == conditions {
+            return;
+        }
+        state.conditions = conditions;
+        drop(state);
+        self.apply_throttle();
+    }
+
+    /// Hands the animator the limits that follow from the conditions and
+    /// the battery setting.
+    fn apply_throttle(&self) {
+        let (conditions, battery_fps) = {
+            let state = lock(&self.state);
+            (state.conditions, state.config.battery_fps)
+        };
+        let paused = conditions.lid_closed || (conditions.on_battery && battery_fps == 0);
+        let limit = (conditions.on_battery && battery_fps > 0).then_some(battery_fps);
+        let animator = lock_animator(&self.animator);
+        animator.set_paused(paused);
+        animator.set_limit(limit);
+    }
+
+    fn set_battery_fps(&self, fps: u8) -> ModuleResult {
+        let mut state = lock(&self.state);
+        state.config.battery_fps = fps.min(effects::FPS_MAX);
+        persist(&self.store, &mut state);
+        drop(state);
+        self.apply_throttle();
+        Ok(self.status())
+    }
+
+    fn set_power_animation(&self, enabled: bool) -> ModuleResult {
+        let mut state = lock(&self.state);
+        state.config.power_animation = enabled;
+        persist(&self.store, &mut state);
+        drop(state);
+        Ok(self.status())
+    }
+
+    fn set_effect(&self, effect: Effect, brightness: Option<u8>, fps: Option<u8>) -> ModuleResult {
+        let effect = effect.normalised();
+        {
+            let mut state = lock(&self.state);
+            if let Some(b) = brightness {
+                state.config.brightness = b;
+            }
+            if let Some(f) = fps {
+                state.config.fps = f;
+            }
+        }
+        self.start_effect(effect.clone())?;
+        let mut state = lock(&self.state);
+        state.config.effect = Some(effect);
+        persist(&self.store, &mut state);
+        drop(state);
+        Ok(self.status())
+    }
+
+    /// Back to the static zones, which are written again: the last frame
+    /// of an effect is not a colour anybody chose.
+    fn stop_effect(&self) -> ModuleResult {
+        let (zones, brightness) = {
+            let state = lock(&self.state);
+            (state.config.zones.clone(), state.config.brightness)
+        };
+        self.apply(zones, brightness)
+    }
+
+    fn set_brightness(&self, brightness: u8) -> ModuleResult {
+        let (running, zones) = {
+            let state = lock(&self.state);
+            (state.config.effect.is_some(), state.config.zones.clone())
+        };
+        let animator = lock_animator(&self.animator);
+        if running && animator.is_running() {
+            animator.set_brightness(brightness);
+            drop(animator);
+            let mut state = lock(&self.state);
+            state.config.brightness = brightness;
+            persist(&self.store, &mut state);
+            drop(state);
+            return Ok(self.status());
+        }
+        drop(animator);
+        self.apply(zones, brightness)
     }
 
     /// The dialect a call would go through: the user's if they pinned one,
@@ -448,6 +797,62 @@ impl Module for RgbModule {
                 self.set_restore_on_start(enabled)
             }
 
+            "listEffects" => Ok(json!({
+                "effects": EffectKind::ALL.iter().map(|k| json!({
+                    "id": k.id(),
+                    "usesColors": k.uses_colors(),
+                    "defaults": Effect::new(*k).normalised(),
+                })).collect::<Vec<_>>(),
+                "maxColors": effects::MAX_COLORS,
+                "speed": { "min": effects::SPEED_MIN, "max": effects::SPEED_MAX, "default": effects::SPEED_DEFAULT },
+                "fps": { "min": effects::FPS_MIN, "max": effects::FPS_MAX, "default": effects::FPS_DEFAULT },
+            })),
+
+            "setEffect" => {
+                let effect = params.get("effect").cloned().ok_or_else(|| {
+                    ModuleError::localised(
+                        ErrorKind::InvalidParams,
+                        msg!(
+                            "rgb.err.effectRequired",
+                            "params.effect is required: { kind, colors?, speed?, direction? }"
+                        ),
+                    )
+                })?;
+                let effect: Effect = serde_json::from_value(effect)
+                    .map_err(|e| ModuleError::InvalidParams(format!("invalid effect: {e}")))?;
+                let brightness = params.get("brightness").and_then(Value::as_i64).map(clamp_brightness);
+                let fps = params.get("fps").and_then(Value::as_i64).map(effects::clamp_fps);
+                self.set_effect(effect, brightness, fps)
+            }
+
+            "stopEffect" => self.stop_effect(),
+
+            "powerOn" | "powerOff" => {
+                let if_enabled = params.get("ifEnabled").and_then(Value::as_bool).unwrap_or(false);
+                self.power(method == "powerOn", if_enabled)
+            }
+
+            "setBatteryFps" => {
+                let fps = params.get("fps").and_then(Value::as_i64).ok_or_else(|| {
+                    ModuleError::InvalidParams("params.fps must be a number, 0-60".into())
+                })?;
+                self.set_battery_fps(fps.clamp(0, i64::from(effects::FPS_MAX)) as u8)
+            }
+
+            "setPowerAnimation" => {
+                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
+                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                })?;
+                self.set_power_animation(enabled)
+            }
+
+            "setBrightness" => {
+                let brightness = params.get("brightness").and_then(Value::as_i64).ok_or_else(|| {
+                    ModuleError::InvalidParams("params.brightness must be a number, 0-100".into())
+                })?;
+                self.set_brightness(clamp_brightness(brightness))
+            }
+
             other => Err(ModuleError::UnknownMethod(other.to_string())),
         }
     }
@@ -488,6 +893,28 @@ fn persist(store: &ConfigStore, state: &mut State) {
 
 fn lock(state: &Arc<Mutex<State>>) -> std::sync::MutexGuard<'_, State> {
     state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn throttle_reason(state: &State) -> Option<&'static str> {
+    if state.conditions.lid_closed {
+        Some("lid")
+    } else if state.conditions.on_battery && state.config.battery_fps < state.config.fps {
+        Some("battery")
+    } else {
+        None
+    }
+}
+
+fn zones_array(zones: &[Rgb]) -> [Rgb; ZONES] {
+    let mut out = [Rgb::BLACK; ZONES];
+    for (slot, c) in out.iter_mut().zip(zones) {
+        *slot = *c;
+    }
+    out
+}
+
+fn lock_animator(animator: &Mutex<Animator>) -> std::sync::MutexGuard<'_, Animator> {
+    animator.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn lock_probe(probe: &Mutex<Probe>) -> std::sync::MutexGuard<'_, Probe> {
@@ -593,6 +1020,12 @@ mod tests {
             ("setStatic", json!({})),
             ("setStatic", json!({ "color": "#zzz" })),
             ("setRestoreOnStart", json!({ "enabled": "yes" })),
+            ("setEffect", json!({})),
+            ("setEffect", json!({ "effect": { "kind": "disco" } })),
+            ("setEffect", json!({ "effect": { "kind": "wave", "colors": ["nope"] } })),
+            ("setBrightness", json!({})),
+            ("setPowerAnimation", json!({ "enabled": "yes" })),
+            ("setBatteryFps", json!({ "fps": "fast" })),
         ] {
             let error = module.call(method, params.clone()).expect_err("should be refused");
             assert_eq!(
@@ -646,6 +1079,42 @@ mod tests {
         let fresh = module.call("getCapabilities", Value::Null).expect("probing cannot fail");
         let status = module.call("getStatus", Value::Null).expect("status cannot fail");
         assert_eq!(status["capabilities"], fresh);
+    }
+
+    /// The suspend hook runs on every suspend of every machine with the
+    /// service installed. With the animation off it must not touch the
+    /// lights at all - not even to read them.
+    #[test]
+    fn the_suspend_hook_does_nothing_while_the_power_animation_is_off() {
+        let dir = std::env::temp_dir().join(format!("pyren-rgb-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("acpi_call");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let _acpi = crate::testenv::redirect(&file);
+
+        let module = RgbModule::with_store(ConfigStore::at(dir.join("config")));
+        std::fs::write(&file, "").unwrap();
+        for method in ["powerOff", "powerOn"] {
+            let status = module.call(method, json!({ "ifEnabled": true })).expect("a no-op cannot fail");
+            assert_eq!(status["dark"], false, "{method}");
+            assert_eq!(status["owned"], false, "{method}");
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "", "nothing reached acpi_call");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_status_says_why_an_effect_is_held_back() {
+        let _acpi = crate::testenv::real();
+        let module = module();
+        assert_eq!(module.status()["throttled"], Value::Null);
+        module.set_conditions(Conditions { on_battery: true, lid_closed: false });
+        assert_eq!(module.status()["throttled"], "battery", "15 on battery is below the 30 asked for");
+        module.set_conditions(Conditions { on_battery: true, lid_closed: true });
+        assert_eq!(module.status()["throttled"], "lid", "the lid wins: nothing is written");
+        module.set_conditions(Conditions::default());
+        assert_eq!(module.status()["throttled"], Value::Null);
     }
 
     /// Nothing is written to the lights until someone asks - the same rule

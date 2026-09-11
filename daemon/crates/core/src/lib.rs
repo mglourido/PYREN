@@ -18,6 +18,7 @@ pub mod events;
 pub mod log;
 pub mod msg;
 pub mod sensors;
+pub mod signals;
 mod socket;
 pub use events::{Batch, Event, EventBus};
 pub use msg::Msg;
