@@ -784,6 +784,15 @@
     <!-- Five slots for whatever is on screen above - separate from the
          fixed presets inside the controls panel, which never change. -->
     <Panel title={t("lighting.saved")}>
+      {#snippet header()}
+        <button
+          class="ghost"
+          disabled={!available || busy || mode === "off" || saved.length >= MAX_SAVED}
+          onclick={saveCurrentAsPreset}
+        >
+          {t("lighting.saveButton", { used: saved.length, max: MAX_SAVED })}
+        </button>
+      {/snippet}
       <p class="lead small">{t("lighting.savedLead")}</p>
 
       <div class="saved-row">
@@ -822,14 +831,6 @@
           {/each}
         {/if}
       </div>
-
-      <button
-        class="ghost"
-        disabled={!available || busy || mode === "off" || saved.length >= MAX_SAVED}
-        onclick={saveCurrentAsPreset}
-      >
-        {t("lighting.saveButton", { used: saved.length, max: MAX_SAVED })}
-      </button>
     </Panel>
 
     <!-- The dialects. Not a debug panel: on a machine where auto picks
