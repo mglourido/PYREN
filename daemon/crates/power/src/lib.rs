@@ -345,8 +345,25 @@ impl PowerModule {
     pub fn cycle(&self) -> Cycled {
         let from = self.mode();
         let to = from.next();
-        let report = self.set_mode(to, true, "hotkey");
+        let report = self.choose(to, "hotkey");
         Cycled { from, to: self.mode(), asked_for: to, report }
+    }
+
+    /// A mode the user picked - in the app, from `pyren-ctl` or with the
+    /// performance key. Beyond pausing the supervisor, it becomes what the
+    /// supervisor works around once the pause is over (see
+    /// [`AutoSwitcher::adopt`]).
+    ///
+    /// Separate from `set_mode(.., true, ..)` because the other manual
+    /// callers only *re-apply* the mode in force - a tuning edit, the OS
+    /// profile switch - and must not turn a mode the supervisor chose into
+    /// one the user did.
+    fn choose(&self, mode: PowerMode, source: &str) -> ApplyReport {
+        let report = self.set_mode(mode, true, source);
+        if !report.is_empty() {
+            lock(&self.state).switcher.adopt(mode);
+        }
+        report
     }
 
     /// `source` says who asked, and travels with the announcement: a UI
@@ -410,6 +427,14 @@ impl PowerModule {
             "restoreModeOnStart": state.config.restore_mode_on_start,
             "applyToOsProfile": state.config.apply_to_os_profile,
             "autoOverrideSecondsLeft": override_remaining,
+            // The mode the user picked by hand that the supervisor is
+            // working around instead of the configured preference, until
+            // the power source next changes. `null` when it is following
+            // the preference.
+            "autoManualBaseline": state.switcher.manual_baseline(
+                &state.config.auto,
+                state.switcher.on_battery().or(supply.on_battery).unwrap_or(false),
+            ),
             // What the supervisor's thermal rule can see and what it
             // currently thinks. `hot` is latched, so it is not a
             // comparison a client could redo from `tempC` - which is the
@@ -503,7 +528,7 @@ impl Module for PowerModule {
                         )
                     })?;
 
-                let report = self.set_mode(mode, true, "request");
+                let report = self.choose(mode, "request");
                 if report.is_empty() {
                     // Every mechanism needs root; an unprivileged daemon
                     // failing here is the expected case in development, so
@@ -523,8 +548,23 @@ impl Module for PowerModule {
             "setAutoConfig" => {
                 let auto: AutoConfig = serde_json::from_value(params)
                     .map_err(|e| ModuleError::InvalidParams(format!("invalid auto config: {e}")))?;
+                if let Some(problem) = auto.problem() {
+                    return Err(ModuleError::localised(ErrorKind::InvalidParams, problem));
+                }
                 let mut state = lock(&self.state);
-                state.switcher.reset();
+                if auto.enabled && !state.config.auto.enabled {
+                    // Switched back on: start from nothing, as at startup.
+                    // The supervisor was not sampling while it was off, so
+                    // its idea of the power source is however old the
+                    // switch-off is - a cable moved in the meantime would
+                    // read as one moved just now and switch the mode on the
+                    // first tick. Same for a hand-picked baseline, which
+                    // belonged to a power source it can no longer vouch
+                    // for, and a heat latch nobody has fed since.
+                    state.switcher = AutoSwitcher::default();
+                } else {
+                    state.switcher.reset();
+                }
                 state.config.auto = auto;
                 persist(&self.store, &mut state);
                 Ok(saved_response(&state))
@@ -984,6 +1024,37 @@ mod tests {
         let state = lock(&restarted.state);
         assert!(state.config.auto.enabled);
         assert_eq!(state.config.auto.load_high, 0.42);
+    }
+
+    /// Turning the supervisor back on must not act on anything that
+    /// happened while it was off - above all a hand-picked baseline or a
+    /// power source it last saw hours ago.
+    #[test]
+    fn switching_auto_back_on_starts_the_supervisor_from_scratch() {
+        let module = PowerModule::with_store(test_store("re-enable"));
+        let off = AutoConfig { enabled: false, ..AutoConfig::default() };
+        module.call("setAutoConfig", serde_json::to_value(&off).unwrap()).unwrap();
+        lock(&module.state).switcher.adopt(PowerMode::Unlimited);
+
+        let on = AutoConfig { enabled: true, ..off };
+        module.call("setAutoConfig", serde_json::to_value(&on).unwrap()).unwrap();
+
+        let state = lock(&module.state);
+        // Only the baseline is asserted: the supervisor thread is live, and
+        // may already have taken a real sample of the power source - which
+        // is a first sample, and so cannot bring a baseline back.
+        assert_eq!(state.switcher.manual_baseline(&state.config.auto, false), None);
+        assert_eq!(state.switcher.manual_baseline(&state.config.auto, true), None);
+    }
+
+    /// A config the supervisor cannot run on is refused, and the stored
+    /// one is left as it was.
+    #[test]
+    fn an_auto_config_with_crossed_thresholds_is_refused() {
+        let module = PowerModule::with_store(test_store("crossed"));
+        let crossed = AutoConfig { load_low: 0.9, load_high: 0.5, ..AutoConfig::default() };
+        assert!(module.call("setAutoConfig", serde_json::to_value(&crossed).unwrap()).is_err());
+        assert_eq!(lock(&module.state).config.auto.load_low, AutoConfig::default().load_low);
     }
 
     #[test]

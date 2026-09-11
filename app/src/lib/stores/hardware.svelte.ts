@@ -288,20 +288,7 @@ class HardwareStore {
     this.set("autoEco", eco);
     this.set("autoPerformance", performance);
 
-    const base: AutoConfig = this.power?.auto ?? {
-      enabled: false,
-      ecoOnBattery: true,
-      performanceOnLoad: true,
-      loadHigh: 0.7,
-      loadLow: 0.3,
-      batteryLowPercent: 25,
-      samplesToSwitch: 3,
-      intervalSecs: 10,
-      manualOverrideSecs: 600,
-      backOffWhenHot: true,
-      tempHighC: 85,
-      tempLowC: 75,
-    };
+    const base = this.autoConfig();
 
     try {
       const reply = await daemon.setAutoConfig({
@@ -314,6 +301,54 @@ class HardwareStore {
     } catch (e) {
       this.lastError = errorText(e);
     }
+  }
+
+  /**
+   * The master switch. Off, nothing but the user changes the power mode -
+   * the supervisor does not act at all, not even when the cable moves.
+   *
+   * Unlike the two per-source switches it keeps which of them were on, so
+   * turning it back on restores the setup rather than a blank one. The
+   * exception is a setup with both off, which would make "on" do nothing:
+   * that one comes back with both on.
+   */
+  async setAutoEnabled(enabled: boolean) {
+    const base = this.autoConfig();
+    const noneOn = !base.ecoOnBattery && !base.performanceOnLoad;
+    const next: AutoConfig =
+      enabled && noneOn
+        ? { ...base, enabled, ecoOnBattery: true, performanceOnLoad: true }
+        : { ...base, enabled };
+    try {
+      this.applyConfigReply(await daemon.setAutoConfig(next));
+      this.set("autoEco", next.enabled && next.ecoOnBattery);
+      this.set("autoPerformance", next.enabled && next.performanceOnLoad);
+    } catch (e) {
+      this.lastError = errorText(e);
+    }
+  }
+
+  /** The daemon's auto config, or its defaults while there is none to read.
+   *  Every setter writes the whole object back, so it starts from this. */
+  private autoConfig(): AutoConfig {
+    return (
+      this.power?.auto ?? {
+        enabled: false,
+        ecoOnBattery: true,
+        performanceOnLoad: true,
+        preferredOnBattery: "eco",
+        preferredOnMains: "performance",
+        loadHigh: 0.7,
+        loadLow: 0.3,
+        batteryLowPercent: 25,
+        samplesToSwitch: 3,
+        intervalSecs: 10,
+        manualOverrideSecs: 600,
+        backOffWhenHot: true,
+        tempHighC: 85,
+        tempLowC: 75,
+      }
+    );
   }
 
   /** Asks the daemon to re-apply the current mode after a reboot. */
@@ -407,20 +442,37 @@ class HardwareStore {
   }
 
   /**
-   * The supervisor's thermal rule. Like the two auto-switch toggles it
-   * writes the whole `AutoConfig` back, so it reads the current one first
-   * rather than clobbering thresholds someone tuned.
+   * Changes some of the supervisor's settings. The daemon takes the whole
+   * `AutoConfig`, so this starts from the one it last reported rather than
+   * clobbering thresholds someone tuned elsewhere.
+   *
+   * Returns the refusal as text, or null when it took: the settings page
+   * shows it next to the field that caused it, and a refused threshold
+   * must not look saved.
    */
-  async setThermalBackOff(enabled: boolean) {
+  async updateAuto(change: Partial<AutoConfig>): Promise<string | null> {
     const base = this.power?.auto;
-    if (!base) return;
+    if (!base) return null;
     try {
-      this.applyConfigReply(
-        await daemon.setAutoConfig({ ...base, backOffWhenHot: enabled }),
-      );
+      this.applyConfigReply(await daemon.setAutoConfig({ ...base, ...change }));
+      return null;
     } catch (e) {
-      this.lastError = errorText(e);
+      const text = errorText(e);
+      this.lastError = text;
+      return text;
     }
+  }
+
+  /** Which mode the supervisor treats as home on one power source. */
+  async setAutoPreference(source: "battery" | "mains", mode: PowerMode) {
+    await this.updateAuto(
+      source === "battery" ? { preferredOnBattery: mode } : { preferredOnMains: mode },
+    );
+  }
+
+  /** The supervisor's thermal rule. */
+  async setThermalBackOff(enabled: boolean) {
+    await this.updateAuto({ backOffWhenHot: enabled });
   }
 
   /**

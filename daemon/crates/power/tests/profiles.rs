@@ -829,13 +829,22 @@ fn run_minutes(
     minutes: u64,
     weather: &Conditions,
 ) -> Vec<(f64, PowerMode)> {
-    let config = supervising();
+    run_minutes_with(&supervising(), daemon, machine, minutes, weather)
+}
+
+fn run_minutes_with(
+    config: &AutoConfig,
+    daemon: &PowerModule,
+    machine: &Machine,
+    minutes: u64,
+    weather: &Conditions,
+) -> Vec<(f64, PowerMode)> {
     let mut switcher = AutoSwitcher::default();
     let mut switches = Vec::new();
 
     for tick in 0..minutes * TICKS_PER_MINUTE {
         let minute = tick as f64 / TICKS_PER_MINUTE as f64;
-        let decision = switcher.observe(weather(minute), &config, daemon.mode());
+        let decision = switcher.observe(weather(minute), config, daemon.mode());
 
         if let Some(decision) = decision {
             let mode = decision.mode;
@@ -877,22 +886,46 @@ fn half_an_hour_under_sustained_load_produces_exactly_one_switch() {
 }
 
 /// A load that hovers in the dead band between the thresholds must not
-/// make the machine flap for twenty minutes.
+/// make a machine that is already in its preferred mode flap for twenty
+/// minutes.
 #[test]
 fn twenty_minutes_of_borderline_load_never_moves_the_machine() {
     let machine = Machine::new("minutes-deadband");
     let daemon = machine.boot();
     set(&daemon, PowerMode::Balanced);
+    let prefers_balanced =
+        AutoConfig { preferred_on_mains: PowerMode::Balanced, ..supervising() };
 
-    // Straddling load_low (0.30) and load_high (0.70) once a minute.
-    let flapping: Box<Conditions> =
-        Box::new(|minute| conditions(Some(false), if (minute as u64).is_multiple_of(2) { 0.45 } else { 0.55 }, None, 60.0));
-
-    let switches = run_minutes(&daemon, &machine, 20, &flapping);
+    let switches = run_minutes_with(&prefers_balanced, &daemon, &machine, 20, &borderline());
 
     assert!(switches.is_empty(), "the dead band exists for exactly this, made {switches:?}");
     assert_eq!(machine.hardware_profile(), "balanced");
     assert_eq!(machine.os_profile_requests().last().map(String::as_str), Some("balanced"));
+}
+
+/// Straddling the middle of the dead band (0.50) once a minute.
+fn borderline() -> Box<Conditions> {
+    Box::new(|minute| {
+        conditions(Some(false), if (minute as u64).is_multiple_of(2) { 0.45 } else { 0.55 }, None, 60.0)
+    })
+}
+
+/// The same load on a machine that is *off* its preferred mode: it goes
+/// home once, the first time the load crosses the middle towards it, and
+/// then the dead band holds it there however the load wobbles.
+#[test]
+fn borderline_load_off_the_preferred_mode_goes_home_once_and_stays() {
+    let machine = Machine::new("minutes-deadband-home");
+    let daemon = machine.boot();
+    set(&daemon, PowerMode::Balanced);
+
+    let switches = run_minutes(&daemon, &machine, 20, &borderline());
+
+    assert_eq!(
+        switches.iter().map(|(_, mode)| *mode).collect::<Vec<_>>(),
+        vec![PowerMode::Performance],
+        "one move to the mains preference and no flapping after it: {switches:?}"
+    );
 }
 
 /// An afternoon: idle on mains, then a long build, then the chassis heats
@@ -956,16 +989,41 @@ fn unplugging_mid_run_is_answered_immediately_and_the_machine_follows() {
 
     let unplug = switches
         .iter()
-        .find(|(_, mode)| *mode == PowerMode::Balanced)
-        .expect("unplugging a machine in Performance should drop it");
+        .find(|(_, mode)| *mode == PowerMode::Eco)
+        .expect("unplugging a machine in Performance should drop it to the battery preference");
     assert!(
         (unplug.0 - 5.0).abs() < 0.2,
         "within a tick of the cable coming out, not three samples later: minute {}",
         unplug.0
     );
-    assert_eq!(machine.hardware_profile(), "balanced");
-    // Still busy, but on battery: load can never reach Performance again.
+    // Still busy, so it earns Balanced back - but on battery load can
+    // never reach Performance again.
     assert_eq!(daemon.mode(), PowerMode::Balanced, "the battery range tops out at Balanced");
+    assert_eq!(machine.hardware_profile(), "balanced");
+    assert!(!switches.iter().any(|(minute, mode)| *minute > 5.0 && *mode == PowerMode::Performance));
+}
+
+/// A mode picked in the app or with the performance key is what the
+/// supervisor works around once its pause is over, and `getState` says so.
+///
+/// Balanced and Unlimited are used because neither is the default
+/// preference on either power source, so the answer does not depend on
+/// whether the machine running the test is plugged in.
+#[test]
+fn a_mode_picked_by_hand_is_reported_as_the_supervisors_baseline() {
+    let machine = Machine::new("manual-baseline");
+    let daemon = machine.boot();
+
+    set(&daemon, PowerMode::Balanced);
+    let state = daemon.call("getState", Value::Null).expect("getState");
+    assert_eq!(state["autoManualBaseline"], "balanced");
+
+    // Balanced -> Performance -> Unlimited, one key press at a time.
+    daemon.cycle();
+    let pressed = daemon.cycle();
+    assert_eq!(pressed.to, PowerMode::Unlimited);
+    let state = daemon.call("getState", Value::Null).expect("getState");
+    assert_eq!(state["autoManualBaseline"], "unlimited", "a key press is the user choosing");
 }
 
 /// The real thread, the real clock, nobody connected. Ignored by default

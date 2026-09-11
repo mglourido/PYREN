@@ -11,6 +11,51 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **A preferred mode for each power source in the automatic switcher.**
+  Under each auto switch on the home screen, choose what the supervisor
+  treats as home: **Eco or Balanced on battery**, **Balanced or Performance
+  when plugged in** (`preferredOnBattery` / `preferredOnMains` in
+  `power.setAutoConfig`; `pyren-ctl power auto on --on-battery balanced
+  --on-mains performance`). Unplugging or plugging in lands on it, and the
+  supervisor only leaves it for a reason — sustained load to go up, an idle
+  machine, heat or a low battery to go down — returning once load crosses
+  the middle of the dead band back towards it, so a moderate load keeps
+  whichever mode was asked for. Defaults: Eco on battery, Performance on
+  mains. Performance is still never picked on battery, Eco never on mains,
+  Unlimited never at all.
+- **Automatic power-profile control in Settings.** A new panel gathers the
+  whole supervisor setup: a master **Automatic control** switch (off: only
+  the user changes the mode, not even plugging in or unplugging moves it),
+  the two per-source switches and the thermal rule from the home screen,
+  and the preferred mode on battery and on mains. The master switch keeps
+  which per-source systems were on, and switching it back on starts the
+  supervisor from scratch rather than acting on a cable moved while it was
+  off. The Automatic/Manual selector on the Performance page now drives
+  this switch; it used to write the OS-profile setting, which keeps its own
+  checkbox below it.
+  - **An Advanced fold** exposes the supervisor's tuning for the first time:
+    the pause after a manual change (minutes), the low-battery threshold,
+    the idle and busy load thresholds (percent per core) and the hot and
+    cooled temperatures (in the chosen temperature unit), with a button
+    that restores the defaults. `power.setAutoConfig` now refuses crossed
+    load or temperature thresholds and a battery threshold outside 0–100
+    (`power.err.loadBand`, `power.err.tempBand`, `power.err.batteryPercent`)
+    instead of storing a config the supervisor would flap or latch on.
+  - The two per-source switches are renamed to say what they do:
+    **Automatic on battery (Eco ↔ Balanced)** and **Automatic when plugged
+    in (Balanced ↔ Performance)**.
+  - "Last automatic change" on the Performance page is hidden while
+    automatic control is off.
+- **A mode picked by hand is what the supervisor works around afterwards.**
+  Once the manual pause (`manualOverrideSecs`) runs out, the supervisor no
+  longer drifts back to its own choice: until the power source changes, it
+  only steps *down* from the hand-picked mode (idle, hot, low battery) and
+  back up to it when that passes. Performance chosen by hand on battery
+  now survives a busy machine instead of being dropped to Balanced exactly
+  when it was needed. The home screen says when this is in force, and
+  `power.getState` reports it as `autoManualBaseline`. New reasons
+  `power.autoReason.backToPreferred` and `power.autoReason.outOfRange`.
+
 - **Fan control modes in the quick-access widget.** With the new
   **Settings → widget → "Fan control modes in the widget"** switched on (off
   by default), `pyren-osd` draws a second row of cards below the power
@@ -163,6 +208,9 @@ the IPC protocol and on-disk config.
   check results.
 
 ### Changed
+
+- **Unplugging now lands on Eco by default rather than Balanced**, the new
+  battery preference; set it to Balanced to keep the old behaviour.
 
 - **Fan control is no longer Unlimited-only.** The `manual` and `curve`
   fan modes and the editable fan curve are now offered in every power
