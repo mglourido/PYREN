@@ -1140,7 +1140,8 @@
   .control {
     display: flex;
     align-items: center;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
   }
 
   .control-label {
@@ -1210,7 +1211,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 20px;
+    flex-wrap: wrap;
+    gap: 10px 20px;
     padding: 10px 0;
     border-bottom: 1px solid var(--line-soft);
   }
@@ -1259,6 +1261,7 @@
   select {
     appearance: none;
     min-width: 220px;
+    max-width: 100%;
     padding: 7px 30px 7px 12px;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);

@@ -223,6 +223,7 @@
 
   select {
     min-width: 300px;
+    max-width: 100%;
     padding: 7px 12px;
     background: var(--bg-card);
     color: var(--text);
@@ -247,6 +248,13 @@
     flex: 1;
     display: grid;
     grid-template-columns: 1fr minmax(240px, 320px);
+  }
+
+  @media (max-width: 700px) {
+    .detail {
+      grid-template-columns: 1fr;
+      overflow-y: auto;
+    }
   }
 
   .detail-head {

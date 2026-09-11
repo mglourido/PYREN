@@ -40,7 +40,7 @@
   <ul class="group">
     {#each main as item (item.href)}
       <li>
-        <a href={item.href} class="item" class:active={isActive(item.href)}>
+        <a href={item.href} class="item" class:active={isActive(item.href)} title={t(item.label)}>
           <Icon name={item.icon} size={18} />
           <span>{t(item.label)}</span>
         </a>
@@ -51,10 +51,10 @@
   <div class="divider"></div>
 
   <div class="device">
-    <button class="item device-head" onclick={() => (deviceOpen = !deviceOpen)}>
+    <button class="item device-head" onclick={() => (deviceOpen = !deviceOpen)} title={deviceName}>
       <Icon name="laptop" size={18} />
       <span class="device-name">{deviceName}</span>
-      <Icon name={deviceOpen ? "chevronUp" : "chevronDown"} size={16} />
+      <Icon class="chevron" name={deviceOpen ? "chevronUp" : "chevronDown"} size={16} />
     </button>
 
     {#if deviceOpen}
@@ -75,7 +75,7 @@
   <ul class="group">
     {#each bottom as item (item.href)}
       <li>
-        <a href={item.href} class="item" class:active={isActive(item.href)}>
+        <a href={item.href} class="item" class:active={isActive(item.href)} title={t(item.label)}>
           <Icon name={item.icon} size={18} />
           <span>{t(item.label)}</span>
         </a>
@@ -197,5 +197,45 @@
 
   .status.offline .dot {
     background: var(--warn);
+  }
+
+  /* Below this width the sidebar's fixed 260px plus a page's own content
+     floor no longer both fit (Hyprland and other tiling WMs happily size
+     the window under the Tauri `minWidth` hint, so this has to hold on its
+     own). Collapse to an icon rail rather than letting content overflow:
+     labels hidden, `title` picks up the tooltip, and the device sub-nav
+     - a shortcut duplicated by the tab strip every device page already has
+     - folds away entirely instead of showing unlabelled text links. */
+  @media (max-width: 980px) {
+    .sidebar {
+      width: 64px;
+      flex: 0 0 64px;
+    }
+
+    .item {
+      justify-content: center;
+      gap: 0;
+      padding: 10px 0;
+    }
+
+    .item span,
+    .divider,
+    .group.sub,
+    :global(.chevron) {
+      display: none;
+    }
+
+    .device-head {
+      pointer-events: none;
+    }
+
+    .status {
+      justify-content: center;
+      padding: 12px 0;
+    }
+
+    .status span {
+      display: none;
+    }
   }
 </style>

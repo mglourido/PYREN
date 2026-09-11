@@ -505,6 +505,13 @@
     align-items: start;
   }
 
+  @media (max-width: 1000px) {
+    .body {
+      grid-template-columns: 1fr;
+      gap: 24px;
+    }
+  }
+
   .charts {
     display: flex;
     flex-direction: column;

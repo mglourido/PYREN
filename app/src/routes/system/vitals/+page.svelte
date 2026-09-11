@@ -490,6 +490,16 @@
     align-items: stretch;
   }
 
+  @media (max-width: 620px) {
+    .grid {
+      padding: 16px 16px 28px;
+    }
+
+    .card.wide {
+      grid-column: span 1;
+    }
+  }
+
   .chip-name {
     align-self: flex-start;
     margin: 0;
@@ -645,6 +655,19 @@
     grid-template-columns: repeat(4, minmax(150px, 1fr));
     gap: 26px;
     padding-left: 26px;
+  }
+
+  @media (max-width: 900px) {
+    .cols {
+      grid-template-columns: repeat(2, minmax(150px, 1fr));
+    }
+  }
+
+  @media (max-width: 560px) {
+    .cols {
+      grid-template-columns: 1fr;
+      padding-left: 0;
+    }
   }
 
   dl {

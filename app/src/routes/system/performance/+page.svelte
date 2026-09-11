@@ -719,6 +719,7 @@
   .mode-head {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     margin-bottom: 22px;
   }
@@ -735,6 +736,7 @@
   select {
     appearance: none;
     min-width: 300px;
+    max-width: 100%;
     padding: 7px 30px 7px 12px;
     background: var(--bg-card);
     color: var(--text);

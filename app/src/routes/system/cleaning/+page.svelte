@@ -501,6 +501,13 @@
     padding: 10px 0;
   }
 
+  @media (max-width: 480px) {
+    .setting {
+      grid-template-columns: 1fr;
+      gap: 6px;
+    }
+  }
+
   .setting + .setting {
     border-top: 1px solid var(--line-soft);
   }

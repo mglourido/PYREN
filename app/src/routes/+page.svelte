@@ -244,6 +244,25 @@
     align-items: start;
   }
 
+  /* The three-column floor is ~1000px wide before the sidebar; a
+     half-screen window is well under that, so it has to fold down
+     instead of forcing a horizontal scrollbar on the whole dashboard. */
+  @media (max-width: 1150px) {
+    .columns {
+      grid-template-columns: repeat(2, minmax(280px, 1fr));
+    }
+  }
+
+  @media (max-width: 760px) {
+    .home {
+      padding: 18px 16px 32px;
+    }
+
+    .columns {
+      grid-template-columns: 1fr;
+    }
+  }
+
   .col-head {
     text-align: center;
     padding: 7px;

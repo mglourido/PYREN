@@ -168,6 +168,12 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+    /* Safety net: a route's own grid can still hit a `minmax()` floor
+       narrower than the actual window (tiling WMs routinely ignore the
+       Tauri `minWidth` hint). A scrollbar here beats the alternative -
+       content silently clipped past the window edge with its hitboxes
+       left behind at their unshrunk position. */
+    overflow-x: auto;
   }
 
   .link {

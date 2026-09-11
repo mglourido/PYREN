@@ -908,7 +908,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 22px;
+    flex-wrap: wrap;
+    gap: 10px 22px;
     padding: 10px 0;
     border-bottom: 1px solid var(--line-soft);
     font-size: 14px;
@@ -928,6 +929,7 @@
   select {
     appearance: none;
     min-width: 220px;
+    max-width: 100%;
     padding: 7px 30px 7px 12px;
     background-color: var(--bg-card);
     color: var(--text);
