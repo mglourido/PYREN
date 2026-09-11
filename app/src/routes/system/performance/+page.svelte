@@ -22,7 +22,7 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
-  import { daemon, errorText, type HotkeyStatus } from "$lib/api/daemon";
+  import { daemon, type HotkeyStatus } from "$lib/api/daemon";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { formatTemp, settings } from "$lib/stores/settings.svelte";
   import { telemetry, tempColor } from "$lib/stores/telemetry.svelte";
@@ -98,29 +98,6 @@
    * is the wrong end of a long afternoon.
    */
   const speedControl = $derived(hardware.fan?.speedControl ?? "untested");
-
-  /** The probe is loud and blocking, so it says so and reports what it found. */
-  let probing = $state(false);
-  let probeResult = $state<{ ok: boolean; text: string } | null>(null);
-
-  async function probeSpeed() {
-    probing = true;
-    probeResult = null;
-    try {
-      const probe = await daemon.probeFanSpeedControl();
-      hardware.observeFan(probe.status);
-      probeResult =
-        probe.verdict === "honoured"
-          ? { ok: true, text: t("performance.probeHonoured", { rpm: probe.reachedRpm }) }
-          : probe.verdict === "ignored"
-            ? { ok: false, text: t("performance.probeIgnored") }
-            : { ok: false, text: t("performance.probeInconclusive") };
-    } catch (e) {
-      probeResult = { ok: false, text: errorText(e) };
-    } finally {
-      probing = false;
-    }
-  }
 
   const fanModeOptions = $derived(
     canSetSpeed
@@ -558,19 +535,8 @@
         {/if}
 
         <!-- The curve is only worth drawing if the fans follow it, and only
-             a probe can say. Offered while that is unknown, and again after
-             a refusal so a driver change can be re-tested. -->
-        {#if hardware.fan && (speedControl !== "honoured")}
-          <div class="probe">
-            <button class="probe-btn" onclick={probeSpeed} disabled={probing}>
-              {probing ? t("performance.probing") : t("performance.probeSpeed")}
-            </button>
-            <span class="fan-note">{t("performance.probeSpeedHint")}</span>
-          </div>
-          {#if probeResult}
-            <p class="feedback {probeResult.ok ? 'ok' : 'err'}">{probeResult.text}</p>
-          {/if}
-        {/if}
+             a probe can say - the Hardware check page carries that test, and
+             `fanSpeedIgnored` / `fanSpeedUnavailable` above point there. -->
       </div>
     {:else}
       <div class="power-area">
@@ -956,41 +922,6 @@
     color: var(--text-mute);
     font-size: 13px;
     line-height: 1.5;
-  }
-
-  .probe {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    max-width: 62ch;
-  }
-
-  .probe .fan-note {
-    margin: 0;
-    flex: 1 1 34ch;
-  }
-
-  .probe-btn {
-    padding: 7px 14px;
-    background: var(--bg-card);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .probe-btn:hover:not(:disabled) {
-    border-color: var(--text-dim);
-  }
-
-  .probe-btn:disabled {
-    opacity: 0.6;
-    cursor: default;
   }
 
   .power-area {

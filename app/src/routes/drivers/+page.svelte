@@ -17,6 +17,7 @@
   import { admin, type AdminAction, type AdminStatus } from "$lib/api/admin";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
+  import { hardware } from "$lib/stores/hardware.svelte";
   import { onMount } from "svelte";
 
   let diagnosis = $state<FanDiagnosis | null>(null);
@@ -34,6 +35,35 @@
       diagnosis = null;
     } finally {
       running = false;
+    }
+  }
+
+  /**
+   * The fan speed-control probe. Moved here from Performance: it is a
+   * verification, and this is the page for those. Whether the driver
+   * *honours* a commanded speed (as opposed to taking the write and
+   * ignoring it) is the one thing only a live probe can answer.
+   */
+  const speedControl = $derived(hardware.fan?.speedControl ?? "untested");
+  let probing = $state(false);
+  let probeResult = $state<{ ok: boolean; text: string } | null>(null);
+
+  async function probeSpeed() {
+    probing = true;
+    probeResult = null;
+    try {
+      const probe = await daemon.probeFanSpeedControl();
+      hardware.observeFan(probe.status);
+      probeResult =
+        probe.verdict === "honoured"
+          ? { ok: true, text: t("diagnostics.probeHonoured", { rpm: probe.reachedRpm }) }
+          : probe.verdict === "ignored"
+            ? { ok: false, text: t("diagnostics.probeIgnored") }
+            : { ok: false, text: t("diagnostics.probeInconclusive") };
+    } catch (e) {
+      probeResult = { ok: false, text: errorText(e) };
+    } finally {
+      probing = false;
     }
   }
 
@@ -325,6 +355,24 @@
     {/if}
   </Panel>
 
+  <!-- The one check that needs the fans to actually move. Offered while the
+       verdict is unknown, and again after a refusal so a driver change can
+       be re-tested. -->
+  {#if hardware.fan && speedControl !== "honoured"}
+    <Panel title={t("diagnostics.probeSpeed")}>
+      <div class="probe">
+        <button class="run" onclick={probeSpeed} disabled={probing}>
+          <Icon name="refresh" size={15} />
+          {probing ? t("diagnostics.probing") : t("diagnostics.probeSpeed")}
+        </button>
+        <span class="hint">{t("diagnostics.probeSpeedHint")}</span>
+      </div>
+      {#if probeResult}
+        <p class="notice {probeResult.ok ? '' : 'warn'}">{probeResult.text}</p>
+      {/if}
+    </Panel>
+  {/if}
+
   {#if diagnosis}
     <Panel>
       <div class="verdict {diagnosis.verdict}">
@@ -455,6 +503,18 @@
     gap: 12px;
     font-size: 13px;
     color: var(--text-dim);
+  }
+
+  .probe {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex-wrap: wrap;
+  }
+
+  .probe .hint {
+    margin: 0;
+    flex: 1 1 32ch;
   }
 
   .hint {
