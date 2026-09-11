@@ -578,34 +578,36 @@
       </Banner>
     {/if}
 
-    <!-- Preview: the bottom light strip, four zones, click one to aim the
-         colour picker at it. -->
-    <div class="bar" class:off>
-      {#each Array.from({ length: ZONES }, (_, i) => i) as zone (zone)}
-        <button
-          class="zone"
-          class:active={activeZone === zone && mode !== "static"}
-          aria-label={t("lighting.zone", { n: zone + 1 })}
-          onclick={() => (activeZone = zone)}
-          style="--glow:{shown[zone] ?? '#000000'};
-                 --alpha:{off ? 0 : brightness / 100}"
-        ></button>
-      {/each}
-    </div>
-
-    <p class="hint">
-      {mode === "static"
-        ? t("lighting.staticHint")
-        : mode === "effect"
-          ? t("lighting.effectZonesNote")
-          : t("lighting.selectZone")}
-    </p>
-
+    <!-- The strip preview, the zone hint and the colour/effect controls,
+         as one grouped block: they are all "editing" one thing, and three
+         separate pieces of chrome on the bare stage read as unrelated. -->
     <Panel>
-      {#if !loaded}
-        <p class="notice">{t("common.loading")}</p>
-      {:else}
-        <div class="controls" class:disabled={!available}>
+      <div class="edit-group">
+        <div class="bar" class:off>
+          {#each Array.from({ length: ZONES }, (_, i) => i) as zone (zone)}
+            <button
+              class="zone"
+              class:active={activeZone === zone && mode !== "static"}
+              aria-label={t("lighting.zone", { n: zone + 1 })}
+              onclick={() => (activeZone = zone)}
+              style="--glow:{shown[zone] ?? '#000000'};
+                     --alpha:{off ? 0 : brightness / 100}"
+            ></button>
+          {/each}
+        </div>
+
+        <p class="hint">
+          {mode === "static"
+            ? t("lighting.staticHint")
+            : mode === "effect"
+              ? t("lighting.effectZonesNote")
+              : t("lighting.selectZone")}
+        </p>
+
+        {#if !loaded}
+          <p class="notice">{t("common.loading")}</p>
+        {:else}
+          <div class="controls" class:disabled={!available}>
           <div class="control">
             <span class="control-label">{t("lighting.mode")}</span>
             <Segmented
@@ -778,7 +780,8 @@
           </div>
           {/if}
         </div>
-      {/if}
+        {/if}
+      </div>
     </Panel>
 
     <!-- Five slots for whatever is on screen above - separate from the
@@ -1053,6 +1056,15 @@
     color: var(--text-dim);
     font-size: 14px;
     line-height: 1.5;
+  }
+
+  /* The strip, its hint and the controls, stacked with the same gap the
+     stage used to give them as loose siblings - grouping them into one
+     panel shouldn't also change their spacing. */
+  .edit-group {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
   }
 
   /* The bottom light strip, drawn as one: four segments of a single bar,
