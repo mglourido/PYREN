@@ -751,7 +751,6 @@
               max={100}
               disabled={!available || off}
               minLabel="0%"
-              maxLabel="100%"
               ariaLabel={t("lighting.brightness")}
               onchange={setBrightness}
             />
