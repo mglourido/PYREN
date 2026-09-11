@@ -7,6 +7,7 @@
  */
 
 import { DEFAULT_LOCALE, detectLocale, i18n } from "$lib/i18n/index.svelte";
+import { applyTheme, DEFAULT_THEME, isThemeCode, type ThemeCode } from "$lib/styles/themes";
 import { DiskBacked } from "./persistence";
 import type { ConfigOutcome } from "$lib/api/config";
 
@@ -15,6 +16,8 @@ export type TempUnit = "c" | "f";
 export type Settings = {
   mainLanguage: string;
   fallbackLanguage: string;
+  /** Colour theme; see `$lib/styles/themes`. */
+  theme: ThemeCode;
   tempUnit: TempUnit;
   pollIntervalMs: number;
   startMinimized: boolean;
@@ -25,6 +28,9 @@ export type Settings = {
   /** TODO item: the "driver missing" notice has a don't-show-again box. */
   hideDriverNotice: boolean;
   vitalsAdvancedView: boolean;
+  /** In Performance control, list each fan's own RPM under the headline
+   *  figure (the speed sent to the controller), labelled by cooler. */
+  perFanRpm: boolean;
   /** Show the fan-control modes as a second row in the pyren-osd widget.
    *  Read straight from this file by the widget, like `mainLanguage`. */
   widgetFanModes: boolean;
@@ -37,6 +43,7 @@ function defaults(): Settings {
   return {
     mainLanguage: detectLocale(),
     fallbackLanguage: DEFAULT_LOCALE,
+    theme: DEFAULT_THEME,
     tempUnit: "c",
     pollIntervalMs: 2000,
     startMinimized: false,
@@ -47,6 +54,9 @@ function defaults(): Settings {
     autostart: false,
     hideDriverNotice: false,
     vitalsAdvancedView: false,
+    // On by default: it is a read-only detail, costs nothing when the
+    // machine has a single fan, and is what people come to this page for.
+    perFanRpm: true,
     // Off by default: the widget's job is the power key, and the fan row
     // is an extra someone opts into.
     widgetFanModes: false,
@@ -70,6 +80,7 @@ class SettingsStore {
     if (this.loaded) return;
     this.current = this.disk.readCache();
     this.applyLocales();
+    this.applyTheme();
     this.loaded = true;
   }
 
@@ -81,17 +92,20 @@ class SettingsStore {
     this.outcome = outcome;
     this.configPath = path;
     this.applyLocales();
+    this.applyTheme();
   }
 
   set<K extends keyof Settings>(key: K, value: Settings[K]) {
     this.current = { ...this.current, [key]: value };
     if (key === "mainLanguage" || key === "fallbackLanguage") this.applyLocales();
+    if (key === "theme") this.applyTheme();
     this.disk.save(this.current);
   }
 
   reset() {
     this.current = defaults();
     this.applyLocales();
+    this.applyTheme();
     this.disk.save(this.current);
   }
 
@@ -102,6 +116,10 @@ class SettingsStore {
 
   private applyLocales() {
     i18n.setLocales(this.current.mainLanguage, this.current.fallbackLanguage);
+  }
+
+  private applyTheme() {
+    applyTheme(isThemeCode(this.current.theme) ? this.current.theme : DEFAULT_THEME);
   }
 }
 

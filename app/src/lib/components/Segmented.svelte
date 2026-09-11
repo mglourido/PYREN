@@ -46,25 +46,25 @@
   }
 
   .box {
-    background: #2a2a2e;
+    background: var(--bg-inset);
     gap: 0;
   }
 
   .box button.active {
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
     font-weight: 600;
   }
 
   .pill button {
     border-radius: var(--radius-pill);
-    background: #3a3a40;
+    background: var(--bg-card-hover);
     color: var(--text-dim);
   }
 
   .pill button.active {
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
     font-weight: 600;
   }
 </style>

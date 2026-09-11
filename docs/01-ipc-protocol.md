@@ -884,6 +884,7 @@ never has to follow a write with a read:
   "cpuTempC": 38,
   "gpuTempC": null,
   "fanRpm": 2097,
+  "fans": [{ "key": "cpu", "rpm": 2097, "isReverse": false }, { "key": "gpu", "rpm": 3100, "isReverse": false }],
   "isReverse": false,
   "mode": "auto",
   "pwm": null,
@@ -1383,7 +1384,11 @@ reads too. `fanRpm` is `max(fan1, fan2)`, decoded through
 the hp-wmi reverse-bit encoding — see
 `docs/02-kernel-driver.md` in the `omen-fan-control` project (see
 `dev/README.md` for where that checkout is) for why raw values
-`>= 12800` get remapped.
+`>= 12800` get remapped. `fans` is the same reading broken out per cooler:
+one entry per `fan?_input` file that exists, `key` being `"cpu"` for `fan1`
+and `"gpu"` for `fan2` (the OMEN wiring), each `rpm`/`isReverse` decoded
+the same way. Single-fan machines report one entry; a machine with no
+hp-wmi hwmon reports `[]`.
 
 ## `rgb` module
 

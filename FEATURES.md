@@ -10,6 +10,7 @@
   - **Manual** — user sets a fixed fan speed (%) that stays constant
   - **Curve** — user defines a custom fan curve
 - **Lower minimum fan speed** — the patched driver lets the fans run below the slowest entry of the firmware's fan table (which the stock driver enforces as a floor); a calibration measures how slow the fans on this machine can actually hold, a setting chooses that measured minimum or the driver's, and below it the firmware takes over and stops the fans when the machine is cool
+- **Per-fan RPM readout** — under the single fan speed sent to the controller, Performance control can list each fan's own tachometer (CPU fan, GPU fan) so the user sees where every reading comes from; on by default, toggled in Settings, and hidden on single-fan machines
 - **Automatic minimum-speed correction** — the daemon watches for the fans stalling near that minimum and nudges it up on its own, with an entry in the app's notification history
 - **Fan cleaning mode** (fans spin in reverse to help clear out dust)
 - **Keyboard RGB control**

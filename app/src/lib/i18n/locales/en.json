@@ -62,6 +62,9 @@
     "graphicsSwitcherDesc": "Choose which GPU your system uses to save battery or maximise performance.",
     "networkBooster": "Network booster",
     "networkBoosterDesc": "Turn on smart queuing to keep your connection responsive under load.",
+    "lightingDesc": "Control the keyboard's RGB colours and effects.",
+    "keysDesc": "Remap keys and build macros and shortcuts for your keyboard.",
+    "driversDesc": "Install the kernel modules and service Pyren needs to control the hardware.",
     "autoEco": "Switch to Eco mode automatically",
     "autoEcoHint": "Unplugging drops to Balanced; a machine that stays idle, or whose battery gets low, goes on to Eco.",
     "autoPerformance": "Switch to Performance mode automatically",
@@ -165,6 +168,10 @@
     "onMains": "On AC power",
     "applyToOsProfileHint": "Mirrors the selected mode onto the OS power profile (power-profiles-daemon / platform_profile), so applications that read it stay in sync.",
     "fanReverse": "reverse",
+    "fanRole": {
+      "cpu": "CPU fan",
+      "gpu": "GPU fan"
+    },
     "fanStopBand": "fans stop",
     "fanStopBelow": "Below {percent}% the fans cannot turn slowly enough, so the firmware takes them and stops them while the machine is cool. From {percent}% up they run at the speed you set.",
     "fanStoppedByFirmware": "The speed asked for is below what these fans can hold, so the firmware has them: stopped while the machine is cool, and spinning up on its own if it gets hot.",
@@ -383,6 +390,12 @@
   "settings": {
     "title": "Settings",
     "appearance": "Appearance",
+    "theme": "Theme",
+    "themeNames": {
+      "dark": "Dark",
+      "light": "Light",
+      "dracula": "Dracula"
+    },
     "language": "Language",
     "mainLanguage": "Main language",
     "fallbackLanguage": "Fallback language",
@@ -435,6 +448,8 @@
     "fans": "Fans",
     "keepFanMode": "Keep the fan control mode across restarts",
     "keepFanModeHint": "Off by default. On, the daemon remembers whichever fan mode was in force when it stopped - auto, manual, max or curve - and puts it back when it starts, whatever the power profile. Off, it leaves the fans on the firmware's own control at boot until you ask for something.",
+    "perFanRpm": "Show each fan's speed in Performance control",
+    "perFanRpmHint": "On by default. Under the headline fan speed (the figure sent to the controller), list every fan the machine reports on its own - the CPU fan, the GPU fan - so you can see where each reading comes from. Machines with a single fan show nothing extra.",
     "keepDriverFloor": "Keep the official driver's minimum fan speed",
     "keepDriverFloorHint": "On: the fans never turn slower than {driver} rpm, the official driver's minimum. Off: they go down to {pyren} rpm - the slowest Pyren measured them holding, plus a step of margin so they do not stall. Below the minimum in use the firmware takes them and stops them while the machine is cool.",
     "floorNeedsDriver": "The installed driver predates this option and only allows its own minimum. Reinstall it from Drivers.",

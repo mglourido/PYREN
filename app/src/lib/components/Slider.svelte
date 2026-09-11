@@ -72,7 +72,7 @@
     appearance: none;
     height: 6px;
     border-radius: var(--radius-pill);
-    background: #4a4a52;
+    background: var(--track);
     margin: 0;
   }
 
@@ -85,11 +85,11 @@
       )
       no-repeat;
     background-size: var(--pct) 100%;
-    background-color: #4a4a52;
+    background-color: var(--track);
   }
 
   input:not(.gradient) {
-    background: linear-gradient(90deg, var(--text) 0 var(--pct), #4a4a52 var(--pct) 100%);
+    background: linear-gradient(90deg, var(--text) 0 var(--pct), var(--track) var(--pct) 100%);
   }
 
   input::-webkit-slider-thumb {
@@ -97,7 +97,7 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: #fff;
+    background: var(--knob);
     border: none;
     cursor: pointer;
   }

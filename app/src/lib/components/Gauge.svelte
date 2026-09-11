@@ -28,11 +28,11 @@
       </linearGradient>
     </defs>
     <circle
+      class="track"
       cx={size / 2}
       cy={size / 2}
       r={radius}
       fill="none"
-      stroke="#3a2a3f"
       stroke-width="2.5"
     />
     <circle
@@ -54,6 +54,10 @@
 </div>
 
 <style>
+  .track {
+    stroke: var(--line);
+  }
+
   .gauge {
     position: relative;
     display: grid;

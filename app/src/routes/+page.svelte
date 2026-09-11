@@ -159,12 +159,12 @@
         <a class="feature" href="/system/lighting">
           <Icon name="bulb" size={17} />{t("tabs.lighting")}
         </a>
-        <p class="desc">{t("lighting.selectZone")}</p>
+        <p class="desc">{t("home.lightingDesc")}</p>
 
         <a class="feature" href="/system/keys">
           <Icon name="keyboard" size={17} />{t("tabs.keys")}
         </a>
-        <p class="desc">{t("keys.selectKey")}</p>
+        <p class="desc">{t("home.keysDesc")}</p>
       </article>
 
       <article class="card">
@@ -178,7 +178,7 @@
         <a class="feature" href="/drivers">
           <Icon name="download" size={17} />{t("drivers.title")}
         </a>
-        <p class="desc">{t("drivers.hpWmiDesc")}</p>
+        <p class="desc">{t("home.driversDesc")}</p>
       </article>
     </section>
   </div>
@@ -210,7 +210,7 @@
     text-align: center;
     padding: 7px;
     margin-bottom: 12px;
-    background: #202024;
+    background: var(--bg-card);
     border-radius: var(--radius-sm);
     font-size: 12px;
     letter-spacing: 0.08em;
@@ -225,7 +225,7 @@
   }
 
   .card {
-    background: #16161a;
+    background: var(--bg-panel);
     border: 1px solid var(--line-soft);
     border-radius: var(--radius);
     padding: 16px 18px 18px;
@@ -315,7 +315,7 @@
     height: 62px;
     border: 1px solid transparent;
     border-radius: 2px;
-    background: #202024;
+    background: var(--bg-card);
     color: var(--text-mute);
   }
 

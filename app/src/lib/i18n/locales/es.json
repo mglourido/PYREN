@@ -62,6 +62,9 @@
     "graphicsSwitcherDesc": "Elige qué GPU usa tu sistema para ahorrar batería o maximizar el rendimiento.",
     "networkBooster": "Intensificador de red",
     "networkBoosterDesc": "Activa una cola inteligente para mantener tu conexión estable bajo carga.",
+    "lightingDesc": "Controla los colores y efectos RGB del teclado.",
+    "keysDesc": "Reasigna teclas y crea macros y atajos para tu teclado.",
+    "driversDesc": "Instala los módulos de kernel y el servicio que Pyren necesita para controlar el hardware.",
     "autoEco": "Cambiar automáticamente al modo Eco",
     "autoEcoHint": "Al desconectar la corriente pasa a Equilibrado; si la máquina sigue inactiva, o la batería baja, sigue hasta Eco.",
     "autoPerformance": "Cambiar automáticamente al modo de Rendimiento",
@@ -165,6 +168,10 @@
     "onMains": "Con adaptador de CA",
     "applyToOsProfileHint": "Refleja el modo seleccionado en el perfil de energía del sistema (power-profiles-daemon / platform_profile), para que las aplicaciones que lo leen se mantengan sincronizadas.",
     "fanReverse": "inverso",
+    "fanRole": {
+      "cpu": "Ventilador CPU",
+      "gpu": "Ventilador GPU"
+    },
     "fanStopBand": "ventiladores parados",
     "fanStopBelow": "Por debajo del {percent}% los ventiladores no pueden girar tan despacio, así que el firmware se encarga de ellos y los para mientras el equipo está frío. Desde el {percent}% giran a la velocidad que fijes.",
     "fanStoppedByFirmware": "La velocidad pedida está por debajo de lo que aguantan estos ventiladores, así que los controla el firmware: parados mientras el equipo está frío, y acelerando por su cuenta si se calienta.",
@@ -383,6 +390,12 @@
   "settings": {
     "title": "Ajustes",
     "appearance": "Apariencia",
+    "theme": "Tema",
+    "themeNames": {
+      "dark": "Oscuro",
+      "light": "Claro",
+      "dracula": "Dracula"
+    },
     "language": "Idioma",
     "mainLanguage": "Idioma principal",
     "fallbackLanguage": "Idioma de reserva",
@@ -435,6 +448,8 @@
     "fans": "Ventiladores",
     "keepFanMode": "Mantener el modo de control de los ventiladores entre reinicios",
     "keepFanModeHint": "Desactivado por defecto. Activado, el daemon recuerda el modo de ventilador que estaba en uso cuando se detuvo (automático, manual, máximo o curva) y lo vuelve a aplicar al arrancar, sea cual sea el perfil de rendimiento. Desactivado, al arrancar deja los ventiladores bajo el control del firmware hasta que pidas algo.",
+    "perFanRpm": "Mostrar la velocidad de cada ventilador en Control de rendimiento",
+    "perFanRpmHint": "Activado por defecto. Debajo de la velocidad principal (la cifra que se envía al controlador) se enumera cada ventilador que el equipo informa por separado - el de la CPU, el de la GPU - para que sepas de dónde viene cada lectura. Los equipos con un solo ventilador no muestran nada adicional.",
     "keepDriverFloor": "Mantener el límite mínimo de velocidad del driver oficial",
     "keepDriverFloorHint": "Activado: los ventiladores nunca giran por debajo de {driver} rpm, el mínimo del driver oficial. Desactivado: bajan hasta {pyren} rpm: lo más lento que Pyren midió que aguantan, más un escalón de margen para que no se calen. Por debajo del mínimo en uso, el firmware se encarga de ellos y los para mientras el equipo está frío.",
     "floorNeedsDriver": "El driver instalado es anterior a esta opción y solo admite su propio mínimo. Reinstálalo desde Drivers.",

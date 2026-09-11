@@ -72,6 +72,11 @@ export type FanFloorNotice = {
   reachedDriverFloor: boolean;
 };
 
+/** One fan's tachometer reading, labelled by the cooler it drives. `key`
+ *  is a stable identifier (`cpu` / `gpu`) the UI maps to a translated
+ *  label; unknown values should be shown verbatim. */
+export type FanTachometer = { key: "cpu" | "gpu" | (string & {}); rpm: number; isReverse: boolean };
+
 export type FanStatus = {
   driverInstalled: boolean;
   capabilities: FanCapabilities;
@@ -81,6 +86,11 @@ export type FanStatus = {
    *  no such sensor, and neither does one whose card is powered down. */
   gpuTempC: number | null;
   fanRpm: number;
+  /** The same reading broken out per cooler, for a UI that wants to name
+   *  each fan. One entry per tachometer the board exposes: `cpu` is
+   *  `fan1`, `gpu` is `fan2` (the OMEN wiring). Empty on a machine with no
+   *  hp-wmi hwmon; a single entry on a single-fan machine. */
+  fans: FanTachometer[];
   isReverse: boolean;
   mode: FanDaemonMode;
   /** Raw 0-255 the driver reports, or null where `pwm1` does not exist. */

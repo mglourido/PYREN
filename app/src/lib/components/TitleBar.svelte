@@ -9,12 +9,29 @@
   import { t } from "$lib/i18n/index.svelte";
   import { hardware, type PowerMode } from "$lib/stores/hardware.svelte";
   import { notifications } from "$lib/stores/notifications.svelte";
+  import { settings } from "$lib/stores/settings.svelte";
+  import { THEME_CODES, type ThemeCode } from "$lib/styles/themes";
   import { goto } from "$app/navigation";
 
   const modes: PowerMode[] = ["eco", "balanced", "performance", "unlimited"];
 
   const unread = $derived(notifications.unreadCount);
+
+  // Small dropdown for the colour theme. Click-away and Esc close it, the
+  // same pattern the notifications panel uses.
+  let themeMenuOpen = $state(false);
+
+  function pickTheme(code: ThemeCode) {
+    settings.set("theme", code);
+    themeMenuOpen = false;
+  }
+
+  function onKey(event: KeyboardEvent) {
+    if (event.key === "Escape") themeMenuOpen = false;
+  }
 </script>
+
+<svelte:window onkeydown={onKey} />
 
 <header class="titlebar">
   <div class="brand">
@@ -34,6 +51,41 @@
         {/each}
       </select>
     </label>
+
+    <div class="theme">
+      <button
+        class="icon-btn"
+        onclick={() => (themeMenuOpen = !themeMenuOpen)}
+        title={t("settings.theme")}
+        aria-haspopup="menu"
+        aria-expanded={themeMenuOpen}
+      >
+        <Icon name="palette" size={18} />
+      </button>
+
+      {#if themeMenuOpen}
+        <button
+          class="menu-scrim"
+          aria-label={t("common.close")}
+          onclick={() => (themeMenuOpen = false)}
+        ></button>
+        <div class="menu" role="menu">
+          {#each THEME_CODES as code (code)}
+            <button
+              class="menu-item"
+              role="menuitemradio"
+              aria-checked={settings.current.theme === code}
+              onclick={() => pickTheme(code)}
+            >
+              <span class="tick">
+                {#if settings.current.theme === code}<Icon name="check" size={14} />{/if}
+              </span>
+              {t(`settings.themeNames.${code}`)}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
 
     <button
       class="icon-btn"
@@ -125,6 +177,65 @@
       5px 5px,
       5px 5px;
     background-repeat: no-repeat;
+  }
+
+  .theme {
+    position: relative;
+    display: flex;
+  }
+
+  .menu-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    border: none;
+    background: transparent;
+    cursor: default;
+  }
+
+  .menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 41;
+    min-width: 150px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--bg-panel);
+    box-shadow: var(--shadow);
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 13px;
+    text-align: left;
+  }
+
+  .menu-item:hover {
+    background: var(--bg-card-hover);
+    color: var(--text);
+  }
+
+  .menu-item[aria-checked="true"] {
+    color: var(--text);
+  }
+
+  .tick {
+    display: grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    color: var(--accent-2);
   }
 
   .icon-btn {

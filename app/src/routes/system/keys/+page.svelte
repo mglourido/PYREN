@@ -175,8 +175,8 @@
     padding: 9px 20px;
     border: none;
     border-radius: 2px;
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.05em;
@@ -214,7 +214,7 @@
     align-items: center;
     gap: 22px;
     padding: 14px 26px;
-    background: #4a4a50;
+    background: var(--track);
   }
 
   .action-label {
@@ -224,7 +224,7 @@
   select {
     min-width: 300px;
     padding: 7px 12px;
-    background: #2a2a2e;
+    background: var(--bg-card);
     color: var(--text);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
@@ -299,7 +299,7 @@
     padding: 10px 14px;
     border: 1px solid var(--text);
     border-radius: 2px;
-    background: #111114;
+    background: var(--bg-inset);
     font-size: 15px;
     text-align: center;
   }
@@ -321,7 +321,7 @@
     gap: 14px;
     padding: 18px;
     border-left: 1px solid var(--line-soft);
-    background: #111114;
+    background: var(--bg-inset);
   }
 
   .test h2 {

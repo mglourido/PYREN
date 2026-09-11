@@ -6,6 +6,7 @@
   import RichText from "$lib/components/RichText.svelte";
   import { availableLocales, localeName, t, tm } from "$lib/i18n/index.svelte";
   import { settings } from "$lib/stores/settings.svelte";
+  import { THEME_CODES, type ThemeCode } from "$lib/styles/themes";
   import { hardware } from "$lib/stores/hardware.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { session, type SessionStatus } from "$lib/api/session";
@@ -187,6 +188,20 @@
 <div class="settings">
   <h1 class="page-title">{t("settings.title")}</h1>
 
+  <Panel title={t("settings.appearance")}>
+    <div class="row">
+      <span>{t("settings.theme")}</span>
+      <select
+        value={settings.current.theme}
+        onchange={(e) => settings.set("theme", e.currentTarget.value as ThemeCode)}
+      >
+        {#each THEME_CODES as code (code)}
+          <option value={code}>{t(`settings.themeNames.${code}`)}</option>
+        {/each}
+      </select>
+    </div>
+  </Panel>
+
   <Panel title={t("settings.language")}>
     <div class="row">
       <label for="main-lang">{t("settings.mainLanguage")}</label>
@@ -282,6 +297,17 @@
           checked={fan.restoreModeOnStart}
           onchange={(v) => void hardware.setFanRestoreOnStart(v)}
           ariaLabel={t("settings.keepFanMode")}
+        />
+      </div>
+      <div class="row">
+        <span>
+          {t("settings.perFanRpm")}
+          <small class="hint-inline"><RichText text={t("settings.perFanRpmHint")} /></small>
+        </span>
+        <Toggle
+          checked={settings.current.perFanRpm}
+          onchange={(v) => settings.set("perFanRpm", v)}
+          ariaLabel={t("settings.perFanRpm")}
         />
       </div>
       {#if fan.capabilities.setSpeed}
@@ -639,7 +665,7 @@
     appearance: none;
     min-width: 220px;
     padding: 7px 30px 7px 12px;
-    background-color: #2a2a2e;
+    background-color: var(--bg-card);
     color: var(--text);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
@@ -659,7 +685,7 @@
   /* The native popup list ignores the control's colours on some engines,
      so it needs its own dark background to match the theme. */
   select option {
-    background: #2a2a2e;
+    background: var(--bg-card);
     color: var(--text);
   }
 

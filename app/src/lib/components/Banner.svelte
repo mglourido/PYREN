@@ -49,18 +49,20 @@
     border-left: 3px solid;
   }
 
+  /* A faint wash of the status colour over the panel surface, so the tint
+     reads on both the dark and the light theme. */
   .warning {
-    background: #3b2a05;
+    background: color-mix(in srgb, var(--warn) 14%, var(--bg-panel));
     border-color: var(--warn);
   }
 
   .info {
-    background: #0d2137;
+    background: color-mix(in srgb, var(--info) 14%, var(--bg-panel));
     border-color: var(--info);
   }
 
   .danger {
-    background: #351414;
+    background: color-mix(in srgb, var(--danger) 14%, var(--bg-panel));
     border-color: var(--danger);
   }
 
@@ -74,7 +76,7 @@
   .body {
     flex: 1;
     margin: 0;
-    color: #f2ede2;
+    color: var(--text);
   }
 
   .actions {

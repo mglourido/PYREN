@@ -642,7 +642,7 @@
   }
 
   input[type="color"]:hover {
-    border-color: #fff;
+    border-color: var(--text);
   }
 
   input[type="color"]::-webkit-color-swatch-wrapper {
@@ -744,7 +744,7 @@
     padding: 7px 30px 7px 12px;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    background-color: #2a2a2e;
+    background-color: var(--bg-card);
     color: var(--text);
     font: inherit;
     font-size: 13px;
@@ -762,7 +762,7 @@
   /* The native popup list ignores the control's colours on some engines,
      so it needs its own dark background to match the theme. */
   select option {
-    background: #2a2a2e;
+    background: var(--bg-card);
     color: var(--text);
   }
 

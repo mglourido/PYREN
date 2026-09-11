@@ -477,8 +477,8 @@
   }
 
   .start {
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
   }
 
   .stop {

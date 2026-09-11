@@ -49,7 +49,7 @@
   }
 
   .mode.selected {
-    background: #141416;
+    background: var(--bg-inset);
     color: var(--text);
   }
 

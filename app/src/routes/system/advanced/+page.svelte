@@ -393,13 +393,13 @@
 
   .head {
     padding: 14px 26px;
-    background: #1f1f23;
+    background: var(--bg-chrome);
     border-bottom: 1px solid var(--line-soft);
   }
 
   .panel {
     margin: 20px 26px;
-    background: #131316;
+    background: var(--bg-panel);
     border: 1px solid var(--line-soft);
     border-radius: var(--radius);
     padding: 20px 24px 26px;
@@ -441,14 +441,14 @@
   }
 
   .banner.warn {
-    background: #2a1f0c;
+    background: color-mix(in srgb, var(--warn) 16%, var(--bg-panel));
     color: var(--warn);
   }
 
   .banner.error {
     margin: 18px 0 0;
-    background: #2a1114;
-    color: #ff6b81;
+    background: color-mix(in srgb, var(--danger) 16%, var(--bg-panel));
+    color: var(--danger);
   }
 
   /* The consent gate. Deliberately the widest thing on the page: it is
@@ -458,7 +458,7 @@
     padding: 18px 20px;
     border: 1px solid var(--warn);
     border-radius: 4px;
-    background: #1c1710;
+    background: color-mix(in srgb, var(--warn) 12%, var(--bg-panel));
   }
 
   .consent h2 {
@@ -487,7 +487,7 @@
     padding: 12px 16px;
     border: 1px solid var(--warn);
     border-radius: 4px;
-    background: #1c1710;
+    background: color-mix(in srgb, var(--warn) 12%, var(--bg-panel));
     font-size: 13px;
   }
 
@@ -621,8 +621,8 @@
 
   .primary {
     border: none;
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
     font-weight: 600;
   }
 

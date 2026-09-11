@@ -805,6 +805,12 @@ impl FanModule {
             "cpuTempC": cpu_temp_c,
             "gpuTempC": gpu_temp_c,
             "fanRpm": fan_rpm,
+            // The same reading broken out per cooler, so a UI can show
+            // "CPU 2400 / GPU 3100" beneath the headline number.
+            "fans": read_labelled_fans(
+                self.paths().fan1_input.as_deref(),
+                self.paths().fan2_input.as_deref(),
+            ),
             "isReverse": is_reverse,
             "mode": state.mode.as_str(),
             "pwm": control::read_pwm(&self.paths()),
@@ -2263,6 +2269,22 @@ fn read_fan_rpm(fan1: Option<&Path>, fan2: Option<&Path>) -> (i64, bool) {
     (rpm1.max(rpm2), rev1 || rev2)
 }
 
+/// Per-fan tachometer readings, labelled by the cooler each drives. OMEN
+/// boards wire `fan1` to the CPU and `fan2` to the GPU — the same mapping
+/// `fan1_max_rpm` / `fan2_max_rpm` (`OMEN_CPU_MAX_RPM` / `OMEN_GPU_MAX_RPM`)
+/// already assume. A fan whose input file is absent (single-fan machines)
+/// is left out rather than reported as 0. `fanRpm` above stays the summary;
+/// this is the breakdown for a UI that wants to name each one.
+fn read_labelled_fans(fan1: Option<&Path>, fan2: Option<&Path>) -> Vec<Value> {
+    [("cpu", fan1), ("gpu", fan2)]
+        .into_iter()
+        .filter_map(|(key, path)| {
+            let (rpm, is_reverse) = parse_hwmon_rpm(Some(read_raw_rpm(path)?));
+            Some(json!({ "key": key, "rpm": rpm, "isReverse": is_reverse }))
+        })
+        .collect()
+}
+
 /// Test-only redirection of `PYREN_ACPI_CALL`.
 ///
 /// The variable is process-global and every test binary runs its tests in
@@ -2808,6 +2830,38 @@ mod tests {
         let config: FanConfig = serde_json::from_value(json!({ "mode": "auto" })).unwrap();
         assert_eq!(config.speed_control, SpeedControl::Untested);
         assert!(!config.speed_control.is_ignored());
+    }
+
+    /// The per-cooler breakdown: fan1 is the CPU, fan2 the GPU, each
+    /// decoded through the reverse-bit encoding, and a fan whose input
+    /// file is absent is left out rather than reported as a stopped one.
+    #[test]
+    fn labelled_fans_name_each_cooler_and_skip_a_missing_one() {
+        let dir = std::env::temp_dir().join(format!("pyren-labelled-fans-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("fan1_input"), "2400").unwrap();
+        // Reverse-bit encoded: raw >= 12800 means 3100 rpm, spinning backwards.
+        fs::write(dir.join("fan2_input"), format!("{}", 12800 + 3100)).unwrap();
+
+        let both = read_labelled_fans(Some(&dir.join("fan1_input")), Some(&dir.join("fan2_input")));
+        assert_eq!(
+            both,
+            vec![
+                json!({ "key": "cpu", "rpm": 2400, "isReverse": false }),
+                json!({ "key": "gpu", "rpm": 3100, "isReverse": true }),
+            ],
+        );
+
+        // A single-fan machine: fan2's path is discovered but the file is
+        // not there, so only the CPU entry comes back.
+        let one = read_labelled_fans(Some(&dir.join("fan1_input")), Some(&dir.join("fan2_input.missing")));
+        assert_eq!(one, vec![json!({ "key": "cpu", "rpm": 2400, "isReverse": false })]);
+
+        // No hp-wmi hwmon at all: an empty list, never a fake reading.
+        assert_eq!(read_labelled_fans(None, None), Vec::<Value>::new());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Fans on a fixture directory, driven by this module in curve mode,

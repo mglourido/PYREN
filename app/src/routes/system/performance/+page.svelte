@@ -24,7 +24,7 @@
   import Toggle from "$lib/components/Toggle.svelte";
   import { daemon, errorText, type HotkeyStatus } from "$lib/api/daemon";
   import { t, tm } from "$lib/i18n/index.svelte";
-  import { formatTemp } from "$lib/stores/settings.svelte";
+  import { formatTemp, settings } from "$lib/stores/settings.svelte";
   import { telemetry, tempColor } from "$lib/stores/telemetry.svelte";
   import { LIMITS, hardware, type FanMode, type PowerMode } from "$lib/stores/hardware.svelte";
   import type { FanReferenceSensor } from "$lib/api/daemon";
@@ -247,6 +247,21 @@
   const fansReleased = $derived(hardware.fan?.fansReleased ?? false);
 
   /**
+   * Each fan's own tachometer, shown under the headline RPM (which is the
+   * single speed sent to the controller). Only worth a breakdown when the
+   * board reports more than one fan; a single-fan machine is already fully
+   * described by the number above. Off unless the user asks for it.
+   */
+  const perFanRpm = $derived.by(() => {
+    const fans = hardware.fan?.fans ?? [];
+    return settings.current.perFanRpm && fans.length > 1 ? fans : [];
+  });
+  /** `cpu` / `gpu` are translated; anything else the daemon names is shown
+   *  as-is so a new role never renders as a missing-key path. */
+  const fanRoleLabel = (key: string) =>
+    key === "cpu" || key === "gpu" ? t(`performance.fanRole.${key}`) : key.toUpperCase();
+
+  /**
    * The daemon's supervisor stays out of the way for a while after a manual
    * mode change, and reports how long it has left. That figure is a
    * snapshot from the last power-state read, not a live counter - left
@@ -427,6 +442,19 @@
             <span class="reverse"><Icon name="refresh" size={14} /> {t("performance.fanReverse")}</span>
           {/if}
         </div>
+        {#if perFanRpm.length}
+          <ul class="per-fan">
+            {#each perFanRpm as fan (fan.key)}
+              <li>
+                <span class="per-fan-label">{fanRoleLabel(fan.key)}</span>
+                <span class="per-fan-rpm">{fan.rpm} RPM</span>
+                {#if fan.isReverse}
+                  <span class="reverse"><Icon name="refresh" size={11} /> {t("performance.fanReverse")}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
         {#if fansReleased && (showManualSlider || showCurve)}
           <p class="fan-note">{t("performance.fanStoppedByFirmware")}</p>
         {/if}
@@ -718,7 +746,7 @@
     appearance: none;
     min-width: 300px;
     padding: 7px 30px 7px 12px;
-    background: #2a2a2e;
+    background: var(--bg-card);
     color: var(--text);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
@@ -812,6 +840,37 @@
     font-family: var(--font);
     font-size: 13px;
     color: var(--warn);
+  }
+
+  /* The per-fan breakdown: small, quiet, directly under the headline rpm. */
+  .per-fan {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 22px;
+    margin: -8px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .per-fan li {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-mute);
+  }
+
+  .per-fan-label {
+    color: var(--text-dim);
+  }
+
+  .per-fan-rpm {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .per-fan .reverse {
+    font-size: 11px;
   }
 
   .manual {
@@ -915,7 +974,7 @@
 
   .probe-btn {
     padding: 7px 14px;
-    background: #2a2a2e;
+    background: var(--bg-card);
     color: var(--text);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);

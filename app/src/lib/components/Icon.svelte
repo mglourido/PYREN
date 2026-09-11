@@ -57,6 +57,8 @@
     refresh: "M20 12a8 8 0 1 1-2.3-5.6 M20 4v5h-5",
     external: "M14 4h6v6 M20 4l-9 9 M18 14v6H4V6h6",
     plug: "M9 3v6 M15 3v6 M6 9h12v3a6 6 0 0 1-12 0z M12 18v3",
+    palette:
+      "M12 3a9 9 0 0 0 0 18c1.7 0 2-1.3 1.2-2.2-.8-.9-.5-2.2.8-2.2H17a4 4 0 0 0 4-4c0-4.6-4-7.6-9-7.6z M7.5 12h.01 M9.5 8h.01 M14.5 8h.01",
   };
 
   const path = $derived(paths[name] ?? paths.info);

@@ -195,7 +195,7 @@
   }
 
   .handle {
-    fill: #fff;
+    fill: var(--knob);
     stroke: var(--accent-2);
     stroke-width: 2;
     cursor: grab;

@@ -86,7 +86,7 @@
     flex-direction: column;
     gap: 14px;
     padding: 16px 26px;
-    background: #1f1f23;
+    background: var(--bg-chrome);
     border-bottom: 1px solid var(--line-soft);
   }
 
@@ -162,7 +162,7 @@
     width: 240px;
     height: 240px;
     justify-content: center;
-    border: 1px solid #55555c;
+    border: 1px solid var(--line);
     border-radius: 50%;
   }
 

@@ -118,15 +118,15 @@
 
   .foot {
     padding: 14px 26px;
-    background: #303035;
+    background: var(--bg-card-hover);
   }
 
   .reset {
     padding: 10px 20px;
     border: none;
     border-radius: 2px;
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.05em;

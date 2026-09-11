@@ -78,7 +78,7 @@
     display: grid;
     place-items: center;
     padding: 0 22px;
-    background: #101013;
+    background: var(--bg-inset);
     border: 1px solid var(--line-soft);
     border-bottom: none;
     border-radius: 4px 4px 0 0;
@@ -89,7 +89,7 @@
   }
 
   .tab:hover {
-    background: #17171b;
+    background: var(--bg-card);
   }
 
   .tab.active {

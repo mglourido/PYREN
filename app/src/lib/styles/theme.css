@@ -1,9 +1,16 @@
 /* Design tokens read off the OMEN Gaming Hub reference screenshots: dark
    chrome, magenta -> orange accent gradient, phosphor-green readouts.
-   Every colour used in a component should come from here, so a light
-   theme / accessibility pass stays possible later. */
+   Every colour used in a component should come from here.
+
+   The colour tokens below are the *dark* theme and also the pre-script
+   fallback, so the first frame is styled before any JS runs. The actual
+   per-theme palettes live in `themes.ts`; `applyTheme` writes the chosen
+   one onto <html> as inline custom properties, overriding these. Structure
+   tokens (radii, fonts, sizes) are theme-independent and only live here. */
 
 :root {
+  color-scheme: dark;
+
   --omen-black: #000000;
   --bg-window: #0b0b0d;
   --bg-chrome: #131316;
@@ -14,6 +21,18 @@
 
   --line: #303035;
   --line-soft: #232327;
+  /* Alias kept for components that reach for a generic "border" colour. */
+  --border: #303035;
+
+  --scroll-thumb: #3a3a41;
+  --scroll-thumb-hover: #4d4d56;
+
+  /* Inert grey rail of a slider / toggle, plus the knob that rides it. */
+  --track: #4a4a52;
+  --knob: #ffffff;
+  /* "Inverted" selection chip (see Segmented): opposite lightness. */
+  --invert-bg: #f2f2f4;
+  --invert-text: #17171a;
 
   --text: #ffffff;
   --text-dim: #b6b6bd;
@@ -32,6 +51,10 @@
   --warn: #ffb020;
   --danger: #ff4747;
   --info: #2f8fff;
+  /* The "on / ticked" affordance: the filled Toggle rail and native
+     checkboxes. Its own token so a theme can part ways with --info
+     (Dracula ticks green, not blue). */
+  --check: #2f8fff;
 
   --radius-sm: 3px;
   --radius: 6px;
@@ -73,6 +96,8 @@ body {
 body {
   background: var(--omen-black);
   color: var(--text);
+  /* Softens the moment the theme switches. */
+  transition: background-color 0.15s ease, color 0.15s ease;
   font-family: var(--font);
   font-size: 14px;
   line-height: 1.45;
@@ -111,6 +136,11 @@ button {
   cursor: pointer;
 }
 
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--check);
+}
+
 a {
   color: var(--text);
 }
@@ -133,13 +163,13 @@ h4 {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3a3a41;
+  background: var(--scroll-thumb);
   border-radius: var(--radius-pill);
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4d4d56;
+  background: var(--scroll-thumb-hover);
   background-clip: content-box;
 }
 

@@ -385,7 +385,7 @@
     justify-content: space-between;
     gap: 20px;
     padding: 14px 26px;
-    background: #1f1f23;
+    background: var(--bg-chrome);
     border-bottom: 1px solid var(--line-soft);
   }
 
@@ -409,13 +409,13 @@
     height: 34px;
     border: none;
     border-radius: 2px;
-    background: #131316;
+    background: var(--bg-card);
     color: var(--text-dim);
   }
 
   .view-buttons button.active {
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
   }
 
   .unit {
@@ -474,7 +474,7 @@
     align-items: center;
     gap: 12px;
     padding: 18px;
-    background: #242428;
+    background: var(--bg-panel);
     border-radius: var(--radius-sm);
   }
 
@@ -552,7 +552,7 @@
 
   .bar {
     height: 12px;
-    background: #6a6a72;
+    background: var(--track);
     border-radius: 2px;
     overflow: hidden;
   }

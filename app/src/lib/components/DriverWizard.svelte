@@ -1178,7 +1178,7 @@
     padding: 7px 9px;
     border: 1px solid var(--line);
     border-radius: 2px;
-    background-color: #2a2a2e;
+    background-color: var(--bg-card);
     color: var(--text);
     font-size: 13px;
   }
@@ -1200,7 +1200,7 @@
   /* The native popup list ignores the control's colours on some engines,
      so it needs its own dark background to match the theme. */
   select option {
-    background: #2a2a2e;
+    background: var(--bg-card);
     color: var(--text);
   }
 
@@ -1224,8 +1224,8 @@
     padding: 9px 20px;
     border: none;
     border-radius: 2px;
-    background: #f2f2f4;
-    color: #17171a;
+    background: var(--invert-bg);
+    color: var(--invert-text);
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.05em;

@@ -60,14 +60,14 @@
     padding: 3px;
     border: none;
     border-radius: var(--radius-pill);
-    background: #4a4a52;
+    background: var(--track);
     display: flex;
     justify-content: flex-start;
     transition: background 0.15s ease;
   }
 
   .switch.on {
-    background: var(--info);
+    background: var(--check);
     justify-content: flex-end;
   }
 
@@ -75,7 +75,7 @@
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background: #fff;
+    background: var(--knob);
     transition: transform 0.15s ease;
   }
 </style>
