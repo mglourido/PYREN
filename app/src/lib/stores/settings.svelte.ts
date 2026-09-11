@@ -10,8 +10,22 @@ import { DEFAULT_LOCALE, detectLocale, i18n } from "$lib/i18n/index.svelte";
 import { applyTheme, DEFAULT_THEME, isThemeCode, type ThemeCode } from "$lib/styles/themes";
 import { DiskBacked } from "./persistence";
 import type { ConfigOutcome } from "$lib/api/config";
+import type { RgbEffect } from "$lib/api/daemon";
 
 export type TempUnit = "c" | "f";
+
+/** One saved lighting configuration - the lighting page's "5 slots", kept
+ *  here rather than in a namespace of their own so a rename or a delete is
+ *  just another settings write, with the same disk-then-cache guarantees. */
+export type LightingPreset = {
+  id: string;
+  name: string;
+  mode: "static" | "zones" | "effect";
+  zones: string[];
+  brightness: number;
+  effect: RgbEffect | null;
+  fps: number | null;
+};
 
 export type Settings = {
   mainLanguage: string;
@@ -37,6 +51,9 @@ export type Settings = {
   /** Show the power-mode row in the widget. On by default; only turned off
    *  while `widgetFanModes` is on, so the widget is never empty. */
   widgetPowerModes: boolean;
+  /** The lighting page's saved configurations. Capped at 5 in the page,
+   *  not here - this store just holds whatever it is given. */
+  lightingPresets: LightingPreset[];
 };
 
 function defaults(): Settings {
@@ -61,6 +78,7 @@ function defaults(): Settings {
     // is an extra someone opts into.
     widgetFanModes: false,
     widgetPowerModes: true,
+    lightingPresets: [],
   };
 }
 

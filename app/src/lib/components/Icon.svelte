@@ -47,6 +47,7 @@
     chevronDown: "M6 9l6 6 6-6",
     chevronUp: "M6 15l6-6 6 6",
     check: "M5 12.5 9.5 17 19 7.5",
+    edit: "M4 20l.9-4L16.5 4.4a2 2 0 0 1 2.8 0l.3.3a2 2 0 0 1 0 2.8L8 19 4 20z M14.5 6.4l3.1 3.1",
     close: "M6 6l12 12 M18 6 6 18",
     minimize: "M5 12h14",
     maximize: "M5 5h14v14H5z",

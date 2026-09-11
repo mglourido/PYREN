@@ -51,9 +51,11 @@
   import { frame } from "$lib/lighting-effects";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
+  import { settings, type LightingPreset } from "$lib/stores/settings.svelte";
   import { onMount } from "svelte";
 
   const ZONES = 4;
+  const MAX_SAVED = 5;
 
   /** A drag on the brightness slider is one ACPI write per pixel unless it
    *  is held back; the strip only has to catch up when the hand stops. */
@@ -111,8 +113,11 @@
   const presets = [
     ["#e5178c", "#f2374b", "#ff8a00", "#ffd400"],
     ["#7b2ff7", "#2f8fff", "#2fd0ff", "#21e065"],
-    ["#ffffff", "#ffffff", "#ffffff", "#ffffff"],
+    ["#00f5a0", "#00d9f5", "#7b2ff7", "#f72585"],
     ["#ff0000", "#00ff00", "#0000ff", "#ffffff"],
+    ["#ff0000", "#ff6a00", "#ffae00", "#ffe600"],
+    ["#003973", "#0074b7", "#00a8e8", "#90e0ef"],
+    ["#ff00e5", "#00fff5", "#39ff14", "#faff00"],
   ];
 
   const capabilities = $derived(probe ?? status?.capabilities ?? null);
@@ -339,6 +344,94 @@
     void apply(preset.every((c) => c === preset[0]) ? "static" : "zones");
   }
 
+  /** The user's own five slots, as opposed to the seven fixed `presets`
+   *  above: colours, brightness and (for an effect) its settings, exactly
+   *  as they are on screen when "Save" is pressed. */
+  const saved = $derived(settings.current.lightingPresets);
+
+  /** "{mode}-{effect if mode is effect}-{slot}", e.g. "Efecto-Espectro-1".
+   *  Only the default - renaming replaces it outright. */
+  function defaultPresetName(): string {
+    const parts = [t(`lighting.${mode}`)];
+    if (mode === "effect") parts.push(t(`lighting.effectNames.${effect.kind}`));
+    parts.push(String(saved.length + 1));
+    return parts.join("-");
+  }
+
+  function saveCurrentAsPreset() {
+    if (mode === "off" || saved.length >= MAX_SAVED) return;
+    const next: LightingPreset = {
+      id: crypto.randomUUID(),
+      name: defaultPresetName(),
+      mode,
+      zones: [...zones],
+      brightness,
+      effect: mode === "effect" ? $state.snapshot(effect) : null,
+      fps: mode === "effect" ? fps : null,
+    };
+    settings.set("lightingPresets", [...saved, next]);
+  }
+
+  function removeSavedPreset(id: string) {
+    settings.set(
+      "lightingPresets",
+      saved.filter((p) => p.id !== id),
+    );
+  }
+
+  function applySavedPreset(p: LightingPreset) {
+    zones = [...p.zones];
+    brightness = p.brightness;
+    if (p.mode === "effect" && p.effect) {
+      effect = { ...p.effect, colors: [...p.effect.colors] };
+      if (p.fps) fps = p.fps;
+      void applyEffect();
+    } else {
+      void apply(p.mode);
+    }
+  }
+
+  /** The rename dialog: a centred box like `NotificationsPanel`, not a
+   *  popover on the slot - there is no room for a text field on something
+   *  76px wide. */
+  let renameTarget = $state<LightingPreset | null>(null);
+  let renameDraft = $state("");
+
+  function openRename(p: LightingPreset) {
+    renameTarget = p;
+    renameDraft = p.name;
+  }
+
+  function closeRename() {
+    renameTarget = null;
+  }
+
+  function confirmRename() {
+    if (!renameTarget) return;
+    const name = renameDraft.trim();
+    if (name) {
+      settings.set(
+        "lightingPresets",
+        saved.map((p) => (p.id === renameTarget!.id ? { ...p, name } : p)),
+      );
+    }
+    closeRename();
+  }
+
+  function onRenameKey(e: KeyboardEvent) {
+    if (!renameTarget) return;
+    if (e.key === "Escape") closeRename();
+    if (e.key === "Enter") confirmRename();
+  }
+
+  /** Focuses the name field once, when the dialog mounts - a plain
+   *  `autofocus` attribute trips the a11y linter, and this is the dialog's
+   *  one input, so grabbing focus on open is expected, not a surprise. */
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
   /** Its own call rather than re-sending the colours: with an effect
    *  running, re-sending would stop it, and the slider is meant to dim it. */
   function setBrightness(value: number) {
@@ -427,6 +520,8 @@
     return lighting.commandAnswers ? ("wrongDialect" as const) : ("refused" as const);
   });
 </script>
+
+<svelte:window onkeydown={onRenameKey} />
 
 <div class="lighting">
   <div class="stage">
@@ -656,7 +751,7 @@
             <span class="digital value">{brightness}%</span>
           </div>
 
-          {#if mode !== "effect"}
+          {#if mode === "zones"}
           <div class="control">
             <span class="control-label">{t("lighting.presets")}</span>
             <div class="presets">
@@ -667,8 +762,8 @@
                   onclick={() => applyPreset(preset)}
                 >
                   <!-- Keyed by position, not by colour: a preset may repeat
-                       a colour (the white one is four identical swatches),
-                       and a duplicate key aborts this page's render. -->
+                       a colour, and a duplicate key aborts this page's
+                       render. -->
                   {#each preset as color, zone (zone)}
                     <span style="background:{color}"></span>
                   {/each}
@@ -679,6 +774,58 @@
           {/if}
         </div>
       {/if}
+    </Panel>
+
+    <!-- Five slots for whatever is on screen above - separate from the
+         fixed presets inside the controls panel, which never change. -->
+    <Panel title={t("lighting.saved")}>
+      <p class="lead small">{t("lighting.savedLead")}</p>
+
+      <div class="saved-row">
+        {#if saved.length === 0}
+          <p class="hint">{t("lighting.savedEmpty")}</p>
+        {:else}
+          {#each saved as p (p.id)}
+            <div class="saved-slot">
+              <button
+                class="preset saved-swatch"
+                disabled={!available || busy}
+                onclick={() => applySavedPreset(p)}
+              >
+                {#each Array.from({ length: ZONES }, (_, i) => p.zones[i] ?? "#000000") as color, zone (zone)}
+                  <span style="background:{color}"></span>
+                {/each}
+              </button>
+              <button
+                class="remove saved-remove"
+                disabled={busy}
+                aria-label={t("lighting.removeSaved")}
+                title={t("lighting.removeSaved")}
+                onclick={() => removeSavedPreset(p.id)}
+              >
+                <Icon name="close" size={11} />
+              </button>
+              <button
+                class="saved-name"
+                aria-label={t("lighting.renameSaved")}
+                title={t("lighting.renameSaved")}
+                onclick={() => openRename(p)}
+              >
+                <Icon name="edit" size={11} />
+                <span>{p.name}</span>
+              </button>
+            </div>
+          {/each}
+        {/if}
+      </div>
+
+      <button
+        class="ghost"
+        disabled={!available || busy || mode === "off" || saved.length >= MAX_SAVED}
+        onclick={saveCurrentAsPreset}
+      >
+        {t("lighting.saveButton", { used: saved.length, max: MAX_SAVED })}
+      </button>
     </Panel>
 
     <!-- The dialects. Not a debug panel: on a machine where auto picks
@@ -841,6 +988,36 @@
     </Panel>
   </div>
 </div>
+
+{#if renameTarget}
+  <!-- Centred like `NotificationsPanel`: a box in the middle of the app,
+       not a popover on a 76px-wide slot. -->
+  <div class="backdrop">
+    <button class="scrim" aria-label={t("common.close")} onclick={closeRename}></button>
+    <div class="rename-panel" role="dialog" aria-modal="true" aria-label={t("lighting.renameSavedTitle")}>
+      <header>
+        <h2>{t("lighting.renameSavedTitle")}</h2>
+        <button class="close" onclick={closeRename} aria-label={t("common.close")}>
+          <Icon name="close" size={16} />
+        </button>
+      </header>
+      <input
+        type="text"
+        bind:value={renameDraft}
+        placeholder={t("lighting.savedNamePlaceholder")}
+        aria-label={t("lighting.savedNamePlaceholder")}
+        maxlength="24"
+        use:focusOnMount
+      />
+      <div class="rename-actions">
+        <button class="ghost" onclick={closeRename}>{t("common.cancel")}</button>
+        <button class="ghost primary" disabled={!renameDraft.trim()} onclick={confirmRename}>
+          {t("common.save")}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   /* `min-height` and not just `flex-direction`: the page is shorter than
@@ -1169,7 +1346,8 @@
     display: inline-flex;
   }
 
-  .effect-colour .remove {
+  .effect-colour .remove,
+  .saved-remove {
     position: absolute;
     top: -6px;
     right: -6px;
@@ -1185,9 +1363,135 @@
     cursor: pointer;
   }
 
-  .effect-colour .remove:hover:not(:disabled) {
+  .effect-colour .remove:hover:not(:disabled),
+  .saved-remove:hover:not(:disabled) {
     color: var(--text);
     border-color: var(--text);
+  }
+
+  .saved-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin: 4px 0 14px;
+  }
+
+  .saved-slot {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 76px;
+  }
+
+  .saved-swatch {
+    width: 76px;
+  }
+
+  .saved-name {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .saved-name span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .saved-name:hover {
+    color: var(--text);
+  }
+
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+
+  .scrim {
+    position: absolute;
+    inset: 0;
+    border: none;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.72);
+    backdrop-filter: blur(3px);
+    cursor: default;
+  }
+
+  .rename-panel {
+    position: relative;
+    width: min(360px, 100%);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 20px 22px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--bg-panel);
+    box-shadow: var(--shadow);
+  }
+
+  .rename-panel header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rename-panel h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+
+  .rename-panel .close {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .rename-panel .close:hover {
+    background: var(--bg-card);
+    color: var(--text);
+  }
+
+  .rename-panel input[type="text"] {
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+  }
+
+  .rename-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  .ghost.primary {
+    border-color: var(--accent-2, var(--text));
   }
 
   .ghost.add {
