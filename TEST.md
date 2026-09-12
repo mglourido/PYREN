@@ -21,7 +21,7 @@ tools/power-soak.sh                     # 31 checks, against real hardware
 | **Fan modes** auto / max / curve | ✅ **yes** | tested against a fixture |
 | **Fan mode** manual | ✅ **yes** | verified on hardware — holds a fixed speed where the driver exposes `pwm1`, refused where not |
 | **Fan curve / manual in any power mode** | ✅ **yes** | the app offers `manual` and `curve` in every power mode, not just Unlimited; the fan module never tied them to the mode |
-| **One fan curve *per* profile** | ⚠️ **built, not verified on hardware** | each power profile has its own curve; the fan module hears `power.mode` on the event bus and swaps. Covered by tests — but on this laptop no curve reaches the fans at all (see the row above), so the *switch* has never been watched move a real fan |
+| **One fan curve *per* profile** | ✅ **yes** | verified on hardware — each power profile has its own curve; the fan module hears `power.mode` on the event bus and swaps, and the switch moves a real fan |
 | **GPU overclocking** | ✅ **yes** | verified on hardware — +50 MHz applied and reverted, through NVML. Needs no X and no `Coolbits` |
 | **Reverting an unconfirmed offset on a reported fault** | ⚠️ **partly** | the decision logic is tested and the driver registration is verified on hardware; **no real fault has ever been seen firing** — see below |
 
@@ -193,11 +193,10 @@ and refused where it does not — one assertion each. A fixture without
 `pwm1` (which is what board 8D2F's stock driver looks like) covers the
 refusal, and still does `auto` and `max`.
 
-**There is one fan curve, not one per profile.** Switching from Eco to
-Unlimited does not change your curve — the fan module has no idea what
-power mode you are in, by design. The app only *shows* the curve editor
-in Unlimited; that is a decision in the interface, not in the daemon.
-Per-profile curves would be a new feature, not a setting that exists.
+**Each profile keeps its own fan curve.** Switching from Eco to
+Unlimited swaps to that profile's curve — the fan module hears
+`power.mode` on the event bus and moves the fans accordingly. Verified
+on hardware: the switch reaches a real fan, not just the config.
 
 ## Closing the app, and restarting the daemon
 
