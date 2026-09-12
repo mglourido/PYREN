@@ -201,3 +201,14 @@ h4 {
 .muted {
   color: var(--text-mute);
 }
+
+/* Hide number input spin buttons globally. */
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

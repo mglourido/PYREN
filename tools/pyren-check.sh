@@ -257,6 +257,66 @@ else
 	esac
 fi
 
+# Which of the four modes this driver actually lets Pyren use. Mirrors
+# Capabilities::supports: auto and max only need pwm1_enable; manual and
+# curve need pwm1 too.
+SWITCH_MODE=0
+[ -n "$PWM_ENABLE" ] && [ -e "$PWM_ENABLE" ] && SWITCH_MODE=1
+SET_SPEED=0
+[ -n "$PWM" ] && [ -e "$PWM" ] && SET_SPEED=1
+MANUAL_SUPPORTED=0
+[ "$SWITCH_MODE" -eq 1 ] && [ "$SET_SPEED" -eq 1 ] && MANUAL_SUPPORTED=1
+
+record_fan_mode() {
+	id="$1"
+	title="$2"
+	supported="$3"
+	if [ "$supported" -eq 1 ]; then
+		record pass "$id" "$title" "supported by this driver"
+	else
+		if [ "$SWITCH_MODE" -eq 1 ]; then missing="pwm1"; else missing="pwm1_enable"; fi
+		record warn "$id" "$title" "not supported: missing $missing"
+	fi
+}
+
+record_fan_mode fan-mode-auto "Automatic mode" "$SWITCH_MODE"
+record_fan_mode fan-mode-max "Max mode" "$SWITCH_MODE"
+record_fan_mode fan-mode-manual "Manual mode" "$MANUAL_SUPPORTED"
+record_fan_mode fan-mode-curve "Curve mode" "$MANUAL_SUPPORTED"
+
+# hp_wmi's module parameters. Under PYREN_HWMON_DIR they are looked for
+# beside the fixture instead - a self-test pointed at a fixture must not
+# read the real driver's floor. Mirrors find_driver_params.
+DRIVER_PARAMS=""
+if [ -n "${PYREN_HWMON_DIR:-}" ]; then
+	[ -d "$PYREN_HWMON_DIR/parameters" ] && DRIVER_PARAMS="$PYREN_HWMON_DIR/parameters"
+elif [ -d /sys/module/hp_wmi/parameters ]; then
+	DRIVER_PARAMS="/sys/module/hp_wmi/parameters"
+fi
+
+table=""
+if [ -n "$DRIVER_PARAMS" ] && [ -r "$DRIVER_PARAMS/min_rpm_table" ]; then
+	table="$(read_value "$DRIVER_PARAMS/min_rpm_table")" || table=""
+fi
+if is_number "$table" && [ "$table" -gt 0 ]; then
+	record pass fan-floor-driver "Driver-reported fan floor" "$((table * 100)) rpm"
+else
+	record skip fan-floor-driver "Driver-reported fan floor" "not reported by this driver"
+fi
+
+if [ -n "$DRIVER_PARAMS" ] && [ -e "$DRIVER_PARAMS/min_rpm_override" ]; then
+	record pass fan-floor-override "Fan floor override" "this driver lets Pyren replace the fan table's floor"
+else
+	record skip fan-floor-override "Fan floor override" "not supported by this driver"
+fi
+
+PWM2="${HWMON:+$HWMON/pwm2}"
+if [ -n "$PWM2" ] && [ -e "$PWM2" ]; then
+	record pass fan-pwm2 "GPU fan channel (pwm2)" "pwm2 is present, so the GPU fan can be driven separately"
+else
+	record skip fan-pwm2 "GPU fan channel (pwm2)" "no separate GPU fan channel; pwm1 drives both fans"
+fi
+
 # The only check that writes. It writes a value the channel is *not*
 # already at - a round trip of the current one cannot fail, and on a board
 # whose pwm1 reports the measured speed it passed on hardware that ignores

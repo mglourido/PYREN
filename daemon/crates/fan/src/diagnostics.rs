@@ -30,6 +30,7 @@ use std::path::PathBuf;
 use pyren_core::{msg, Msg};
 use serde::Serialize;
 
+use crate::control::{self, Capabilities, FanMode};
 use crate::speed_probe::{self, SpeedProbe};
 use crate::FanPaths;
 
@@ -216,6 +217,19 @@ pub(crate) fn diagnose(
 
     checks.push(check_pwm(paths.pwm1.as_deref()));
     checks.push(check_pwm_enable(paths.pwm1_enable.as_deref()));
+
+    // Which of the four modes this driver actually lets Pyren use. Auto and
+    // max only need `pwm1_enable`; manual and curve need `pwm1` too - see
+    // `Capabilities::supports`. Read here rather than reusing `check_write`'s
+    // caps, which only exists when writes are enabled.
+    let caps = Capabilities::detect(paths);
+    for mode in [FanMode::Auto, FanMode::Max, FanMode::Manual, FanMode::Curve] {
+        checks.push(check_fan_mode(caps, mode));
+    }
+    checks.push(check_floor_reporting(paths));
+    checks.push(check_floor_override(paths));
+    checks.push(check_gpu_channel(paths.pwm2.as_deref()));
+
     checks.push(check_write(paths, allow_writes));
     checks.push(check_effect(probe));
     checks.push(check_hwmon_attributes(paths.hwmon_dir.as_deref()));
@@ -532,6 +546,159 @@ fn check_pwm_enable(path: Option<&Path>) -> Check {
             title(),
             CheckStatus::Fail,
             msg!("diagnostics.checks.genericError", { "error" => e.to_string() }, "{error}"),
+        ),
+    }
+}
+
+/// Whether this driver lets Pyren command one specific mode.
+///
+/// Derived from [`Capabilities::supports`] rather than re-deriving it here,
+/// so this can never disagree with what `fan.setMode` itself would refuse.
+/// Auto and max fail together (both need only `pwm1_enable`); manual and
+/// curve fail together too (both also need `pwm1`) - which is exactly the
+/// split board `8D2F` exists to illustrate.
+fn check_fan_mode(caps: Capabilities, mode: FanMode) -> Check {
+    let (id, title) = match mode {
+        FanMode::Auto => (
+            "fan-mode-auto",
+            msg!("diagnostics.checks.fan-mode-auto.title", "Automatic mode"),
+        ),
+        FanMode::Max => (
+            "fan-mode-max",
+            msg!("diagnostics.checks.fan-mode-max.title", "Max mode"),
+        ),
+        FanMode::Manual => (
+            "fan-mode-manual",
+            msg!("diagnostics.checks.fan-mode-manual.title", "Manual mode"),
+        ),
+        FanMode::Curve => (
+            "fan-mode-curve",
+            msg!("diagnostics.checks.fan-mode-curve.title", "Curve mode"),
+        ),
+    };
+
+    if caps.supports(mode) {
+        Check::new(
+            id,
+            title,
+            CheckStatus::Pass,
+            msg!(
+                "diagnostics.checks.fan-mode.supported",
+                "supported by this driver"
+            ),
+        )
+    } else {
+        // The same missing-file `caps.switch_mode`/`caps.set_speed` split
+        // `control::apply` reports as `ControlError::Unsupported`.
+        let missing = if caps.switch_mode { "pwm1" } else { "pwm1_enable" };
+        Check::new(
+            id,
+            title,
+            CheckStatus::Warn,
+            msg!(
+                "diagnostics.checks.fan-mode.unsupported",
+                { "missing" => missing },
+                "not supported: missing {missing}"
+            ),
+        )
+    }
+}
+
+/// Whether the loaded driver reports the fan table's slowest entry - the
+/// floor the upstream driver clamps every manual speed up to. `None` on a
+/// driver built before Pyren's patch added the parameter, or one that never
+/// read a table at all; neither is a fault, so this never fails.
+fn check_floor_reporting(paths: &FanPaths) -> Check {
+    const ID: &str = "fan-floor-driver";
+    let title = || {
+        msg!(
+            "diagnostics.checks.fan-floor-driver.title",
+            "Driver-reported fan floor"
+        )
+    };
+    match control::read_driver_floor(paths) {
+        Some(rpm) => Check::new(
+            ID,
+            title(),
+            CheckStatus::Pass,
+            msg!("diagnostics.checks.fan-floor-driver.ok", { "rpm" => rpm }, "{rpm} rpm"),
+        ),
+        None => Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.fan-floor-driver.absent",
+                "not reported by this driver"
+            ),
+        ),
+    }
+}
+
+/// Whether this driver lets Pyren replace that floor at runtime - what a
+/// calibration sweep needs to measure anything below it. A driver without
+/// this parameter is one where the fan table's floor is the only one there
+/// is, which is normal rather than broken.
+fn check_floor_override(paths: &FanPaths) -> Check {
+    const ID: &str = "fan-floor-override";
+    let title = || {
+        msg!(
+            "diagnostics.checks.fan-floor-override.title",
+            "Fan floor override"
+        )
+    };
+    if control::floor_override_supported(paths) {
+        Check::new(
+            ID,
+            title(),
+            CheckStatus::Pass,
+            msg!(
+                "diagnostics.checks.fan-floor-override.ok",
+                "this driver lets Pyren replace the fan table's floor"
+            ),
+        )
+    } else {
+        Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.fan-floor-override.absent",
+                "not supported by this driver"
+            ),
+        )
+    }
+}
+
+/// Whether the GPU fan has its own PWM channel, or shares `pwm1` with the
+/// CPU fan. Informational either way - plenty of boards only ever had one
+/// channel - so this is a skip rather than a failure when absent.
+fn check_gpu_channel(path: Option<&Path>) -> Check {
+    const ID: &str = "fan-pwm2";
+    let title = || {
+        msg!(
+            "diagnostics.checks.fan-pwm2.title",
+            "GPU fan channel (pwm2)"
+        )
+    };
+    match path {
+        Some(p) if p.exists() => Check::new(
+            ID,
+            title(),
+            CheckStatus::Pass,
+            msg!(
+                "diagnostics.checks.fan-pwm2.ok",
+                "pwm2 is present, so the GPU fan can be driven separately"
+            ),
+        ),
+        _ => Check::new(
+            ID,
+            title(),
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.fan-pwm2.absent",
+                "no separate GPU fan channel; pwm1 drives both fans"
+            ),
         ),
     }
 }

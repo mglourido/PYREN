@@ -13,19 +13,26 @@
   import InfoTip from "$lib/components/InfoTip.svelte";
   import Panel from "$lib/components/Panel.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
-  import { daemon, errorText, type FanDiagnosis, type CheckStatus } from "$lib/api/daemon";
+  import { daemon, errorText, type FanDiagnosis, type CheckStatus, type FanCalibration } from "$lib/api/daemon";
   import { admin, type AdminAction, type AdminStatus } from "$lib/api/admin";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
+  import { hardware } from "$lib/stores/hardware.svelte";
   import { onMount } from "svelte";
 
   let diagnosis = $state<FanDiagnosis | null>(null);
   let running = $state(false);
   let error = $state<string | null>(null);
   let allowWrites = $state(false);
+  /** Whether the in-flight run holds the daemon's `calibrating` lock - only
+   *  true with writes enabled, since a read-only diagnosis never drives the
+   *  fans. Captured at launch: flipping the toggle afterwards must not
+   *  relabel a run already in progress. */
+  let runningWithWrites = $state(false);
 
   async function run() {
     running = true;
+    runningWithWrites = allowWrites;
     error = null;
     try {
       diagnosis = await daemon.fanDiagnose(allowWrites);
@@ -61,6 +68,46 @@
     } finally {
       rgbChecking = false;
     }
+  }
+
+  /**
+   * The middle check: does a fresh reading match what was saved from the
+   * last calibration - no install step, just `fan.calibrate` against
+   * whatever driver is already there.
+   */
+  let calibrating = $state(false);
+  let calibration = $state<FanCalibration | null>(null);
+  let calibrationError = $state<string | null>(null);
+  let calibrationBaseline = $state<{ maxRpm: number | null; minRpm: number | null } | null>(null);
+
+  async function runCalibrationCheck() {
+    calibrating = true;
+    calibrationError = null;
+    calibrationBaseline = {
+      maxRpm: hardware.fan?.fanMaxRpm ?? null,
+      // The swept minimum (Pyren's floor before its margin), not
+      // `fanMinRpm`/`driverMinRpm` - those are the driver's fan-table
+      // floor, which stays put whether or not the clamp was ever lifted.
+      minRpm: hardware.fan?.slowestHeldRpm ?? null,
+    };
+    try {
+      calibration = await daemon.calibrateFans(30);
+    } catch (e) {
+      calibrationError = errorText(e);
+      calibration = null;
+    } finally {
+      calibrating = false;
+    }
+  }
+
+  function rpmText(rpm: number | null): string {
+    return rpm === null ? t("diagnostics.calibrationUnknown") : `${rpm} rpm`;
+  }
+
+  /** Exact match only: same number is green, anything else - including a
+   *  fresh reading with nothing to compare against - is yellow. */
+  function calibrationClass(oldRpm: number | null, newRpm: number | null): string {
+    return oldRpm !== null && newRpm !== null && oldRpm === newRpm ? "cal-green" : "cal-yellow";
   }
 
   // --- Admin mode --------------------------------------------------------
@@ -325,7 +372,7 @@
   <Panel title={t("diagnostics.checkPanelTitle")}>
     <div class="check">
       <div class="controls">
-        <button class="run" onclick={run} disabled={running}>
+        <button class="run" onclick={run} disabled={running || (calibrating && allowWrites)}>
           <Icon name="refresh" size={15} />
           {running ? t("diagnostics.running") : t("diagnostics.runCheck")}
         </button>
@@ -342,6 +389,10 @@
           </span>
         </label>
       </div>
+
+      {#if calibrating && allowWrites}
+        <p class="hint">{t("diagnostics.blockedByCalibration")}</p>
+      {/if}
 
       {#if error}
         <details class="result warn" open>
@@ -386,6 +437,55 @@
       {/if}
 
       <p class="hint">{@html t("diagnostics.cliHint")}</p>
+    </div>
+
+    <hr class="sep" />
+    <div class="check">
+      <div class="controls">
+        <button
+          class="run"
+          onclick={runCalibrationCheck}
+          disabled={calibrating || (running && runningWithWrites)}
+        >
+          <Icon name="refresh" size={15} />
+          {calibrating ? t("diagnostics.calibrationRunning") : t("diagnostics.calibrationCheck")}
+        </button>
+      </div>
+
+      {#if running && runningWithWrites}
+        <p class="hint">{t("diagnostics.blockedByWriteCheck")}</p>
+      {/if}
+
+      {#if calibrationError}
+        <p class="notice err">{calibrationError}</p>
+      {:else if calibration && calibrationBaseline}
+        <details class="result" open>
+          <summary>{t("diagnostics.viewResult")}</summary>
+          <table class="cal-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>{t("diagnostics.calibrationSaved")}</th>
+                <th>{t("diagnostics.calibrationNow")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class={calibrationClass(calibrationBaseline.maxRpm, calibration.fanMaxRpm)}>
+                <th class="cal-title">{t("diagnostics.calibrationMax")}</th>
+                <td class="cal-value">{rpmText(calibrationBaseline.maxRpm)}</td>
+                <td class="cal-value">{rpmText(calibration.fanMaxRpm)}</td>
+              </tr>
+              <tr class={calibrationClass(calibrationBaseline.minRpm, calibration.fanStableMinRpm)}>
+                <th class="cal-title">{t("diagnostics.calibrationMin")}</th>
+                <td class="cal-value">{rpmText(calibrationBaseline.minRpm)}</td>
+                <td class="cal-value">{rpmText(calibration.fanStableMinRpm)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+      {/if}
+
+      <p class="hint">{t("diagnostics.calibrationHint")}</p>
     </div>
 
     <hr class="sep" />
@@ -620,5 +720,43 @@
 
   .remedy {
     color: var(--text-mute);
+  }
+
+  .cal-table {
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .cal-table th,
+  .cal-table td {
+    text-align: left;
+    padding: 6px 20px 6px 0;
+  }
+
+  .cal-table thead th {
+    font-size: 11px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-mute);
+  }
+
+  .cal-title {
+    font-weight: 400;
+    color: var(--text);
+  }
+
+  .cal-value {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cal-green .cal-title,
+  .cal-green .cal-value {
+    color: var(--ok);
+  }
+
+  .cal-yellow .cal-title,
+  .cal-yellow .cal-value {
+    color: var(--warn);
   }
 </style>

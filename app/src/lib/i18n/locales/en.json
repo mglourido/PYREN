@@ -633,6 +633,16 @@
     "checkRgbHint": "Asks the keyboard lighting hardware directly rather than trusting the last state shown on the Lighting page. Detects whether any of the known RGB dialects actually answers.",
     "rgbPresent": "Keyboard RGB hardware answered. Lighting controls should work on this machine.",
     "rgbAbsent": "No keyboard RGB hardware answered. This machine may have no per-key or zone lighting, or the interface needed to reach it is missing.",
+    "calibrationCheck": "Check fan calibration",
+    "calibrationRunning": "Calibrating…",
+    "calibrationHint": "Briefly puts the fans at full speed to measure their real ceiling and the floor the driver enforces, without installing or reinstalling anything. Compares that reading against the values saved from the last calibration.",
+    "calibrationMax": "Maximum",
+    "calibrationMin": "Minimum",
+    "calibrationUnknown": "—",
+    "calibrationSaved": "Saved",
+    "calibrationNow": "Just measured",
+    "blockedByCalibration": "Disabled while the calibration check below is running: both hold the fans, and only one may at a time.",
+    "blockedByWriteCheck": "Disabled while the driver check above is running with writes enabled: both hold the fans, and only one may at a time.",
     "verdict": {
       "fullControl": "Fan control works",
       "monitoringOnly": "Monitoring only — fan speed cannot be set",
@@ -687,6 +697,37 @@
         "mode1": "1 - manual (pwm1 is in effect)",
         "mode2": "2 - automatic (firmware curve)",
         "modeUnknown": "{value} - unknown mode"
+      },
+      "fan-mode-auto": {
+        "title": "Automatic mode"
+      },
+      "fan-mode-max": {
+        "title": "Max mode"
+      },
+      "fan-mode-manual": {
+        "title": "Manual mode"
+      },
+      "fan-mode-curve": {
+        "title": "Curve mode"
+      },
+      "fan-mode": {
+        "supported": "supported by this driver",
+        "unsupported": "not supported: missing {missing}"
+      },
+      "fan-floor-driver": {
+        "title": "Driver-reported fan floor",
+        "ok": "{rpm} rpm",
+        "absent": "not reported by this driver"
+      },
+      "fan-floor-override": {
+        "title": "Fan floor override",
+        "ok": "this driver lets Pyren replace the fan table's floor",
+        "absent": "not supported by this driver"
+      },
+      "fan-pwm2": {
+        "title": "GPU fan channel (pwm2)",
+        "ok": "pwm2 is present, so the GPU fan can be driven separately",
+        "absent": "no separate GPU fan channel; pwm1 drives both fans"
       },
       "pwm-write": {
         "title": "PWM accepts writes",

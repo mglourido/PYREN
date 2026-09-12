@@ -633,6 +633,16 @@
     "checkRgbHint": "Pregunta directamente al hardware de iluminación del teclado, en lugar de fiarse del último estado mostrado en la página de Iluminación. Detecta si alguno de los dialectos RGB conocidos responde.",
     "rgbPresent": "El hardware RGB del teclado respondió. Los controles de iluminación deberían funcionar en este equipo.",
     "rgbAbsent": "Ningún hardware RGB del teclado respondió. Puede que este equipo no tenga iluminación por zonas o por tecla, o que falte la interfaz necesaria para alcanzarla.",
+    "calibrationCheck": "Comprobar calibración de ventiladores",
+    "calibrationRunning": "Calibrando…",
+    "calibrationHint": "Pone brevemente los ventiladores a máxima velocidad para medir su techo real y el suelo que aplica el driver, sin instalar ni reinstalar nada. Compara esa medición con los valores guardados de la última calibración.",
+    "calibrationMax": "Máximo",
+    "calibrationMin": "Mínimo",
+    "calibrationUnknown": "—",
+    "calibrationSaved": "Guardado",
+    "calibrationNow": "Medido ahora",
+    "blockedByCalibration": "Deshabilitado mientras se ejecuta la comprobación de calibración de abajo: ambas usan los ventiladores, y solo una puede hacerlo a la vez.",
+    "blockedByWriteCheck": "Deshabilitado mientras se ejecuta la comprobación del driver de arriba con escrituras activadas: ambas usan los ventiladores, y solo una puede hacerlo a la vez.",
     "verdict": {
       "fullControl": "El control de ventiladores funciona",
       "monitoringOnly": "Solo monitorización — no se puede fijar la velocidad",
@@ -687,6 +697,37 @@
         "mode1": "1 - manual (pwm1 está en efecto)",
         "mode2": "2 - automático (curva del firmware)",
         "modeUnknown": "{value} - modo desconocido"
+      },
+      "fan-mode-auto": {
+        "title": "Modo automático"
+      },
+      "fan-mode-max": {
+        "title": "Modo máximo"
+      },
+      "fan-mode-manual": {
+        "title": "Modo manual"
+      },
+      "fan-mode-curve": {
+        "title": "Modo curva"
+      },
+      "fan-mode": {
+        "supported": "compatible con este driver",
+        "unsupported": "no compatible: falta {missing}"
+      },
+      "fan-floor-driver": {
+        "title": "Suelo de ventilador reportado por el driver",
+        "ok": "{rpm} rpm",
+        "absent": "no reportado por este driver"
+      },
+      "fan-floor-override": {
+        "title": "Sustitución del suelo de ventilador",
+        "ok": "este driver permite a Pyren sustituir el suelo de la tabla de ventiladores",
+        "absent": "no compatible con este driver"
+      },
+      "fan-pwm2": {
+        "title": "Canal de ventilador GPU (pwm2)",
+        "ok": "pwm2 está presente, así que el ventilador de la GPU se puede controlar por separado",
+        "absent": "no hay canal de ventilador GPU independiente; pwm1 controla ambos ventiladores"
       },
       "pwm-write": {
         "title": "PWM acepta escrituras",
