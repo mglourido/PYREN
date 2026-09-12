@@ -116,6 +116,7 @@ dependencies = [
  "libc",
  "pyren-config",
  "pyren-core",
+ "pyren-rgb",
  "serde",
  "serde_json",
 ]

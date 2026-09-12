@@ -354,7 +354,7 @@ export type RgbStatus = {
   /** An effect's frame rate on battery; 0 pauses it there. */
   batteryFps: number;
   /** Why an effect is running slower than `fps`, or not at all. */
-  throttled: "lid" | "battery" | null;
+  throttled: "brightness" | "lid" | "battery" | null;
 };
 
 export type RgbEffectKind = "breathing" | "spectrum" | "rainbowWave" | "wave" | "fade";

@@ -281,7 +281,7 @@
     "savedNamePlaceholder": "Nombre",
     "hardware": "Hardware",
     "restoreOnStart": "Restaurar al arrancar",
-    "restoreOnStartHint": "Desactivado por defecto: encender las luces al arrancar porque estaban encendidas la semana pasada es decisión tuya, no del demonio. Activado, el demonio reenvía estos colores al iniciarse.",
+    "restoreOnStartHint": "Activado por defecto: un teclado que pusiste morado debería seguir morado tras reiniciar. El demonio reenvía estos colores al iniciarse, una vez hayas guardado alguno; desactivado, deja las luces al firmware.",
     "readBack": "Lo que dice el firmware",
     "readBackHint": "Pregunta al firmware por los colores de las cuatro zonas: son cuatro llamadas ACPI de ida y vuelta, por eso es un botón y no un sondeo. Además es la única comprobación de que el payload se entendió, y no solo de que se aceptó.",
     "read": "Leer zonas",
@@ -341,6 +341,7 @@
     "batteryFps": "Con batería",
     "batteryFpsHint": "Los fotogramas por segundo de un efecto con batería. Pausar deja encendido el último fotograma. Con la tapa cerrada los efectos siempre se pausan.",
     "pause": "Pausar",
+    "throttledBrightness": "El brillo está al 0 %: el efecto mantiene su sitio pero no se dibuja nada.",
     "throttledLid": "El efecto está en pausa: la tapa está cerrada.",
     "throttledBattery": "Con batería: el efecto va a {fps} fps.",
     "throttledBatteryPaused": "Con batería: el efecto está en pausa."

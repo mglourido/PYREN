@@ -553,6 +553,8 @@
       </div>
     {:else if status?.effect && !status.effectRunning && status.error}
       <p class="notice warn">{t("lighting.effectStopped")}</p>
+    {:else if mode === "effect" && status?.throttled === "brightness"}
+      <p class="notice">{t("lighting.throttledBrightness")}</p>
     {:else if mode === "effect" && status?.throttled === "lid"}
       <p class="notice">{t("lighting.throttledLid")}</p>
     {:else if mode === "effect" && status?.throttled === "battery"}

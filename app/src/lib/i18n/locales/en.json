@@ -281,7 +281,7 @@
     "savedNamePlaceholder": "Name",
     "hardware": "Hardware",
     "restoreOnStart": "Restore on start",
-    "restoreOnStartHint": "Off by default: turning a machine's lights on at boot because they were on last week is your decision, not the daemon's. On, the daemon re-sends these colours when it starts.",
+    "restoreOnStartHint": "On by default: a keyboard you set purple should still be purple after a reboot. The daemon re-sends these colours when it starts, once you have saved some; off, it leaves the lights to the firmware.",
     "readBack": "What the firmware says",
     "readBackHint": "Asks the firmware for the four zone colours - four ACPI round trips, so it is a button rather than a poll. It is also the only check that the payload was understood rather than merely accepted.",
     "read": "Read zones",
@@ -341,6 +341,7 @@
     "batteryFps": "On battery",
     "batteryFpsHint": "An effect's frame rate while on battery. Pausing leaves the last frame lit. Effects always pause with the lid shut.",
     "pause": "Pause",
+    "throttledBrightness": "Brightness is at 0 %: the effect keeps its place but nothing is drawn.",
     "throttledLid": "The effect is paused: the lid is shut.",
     "throttledBattery": "On battery: the effect runs at {fps} fps.",
     "throttledBatteryPaused": "On battery: the effect is paused."

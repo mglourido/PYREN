@@ -9,7 +9,7 @@
 //! | `rgb.setZones` | `{ "zones": [c, c, c, c], "brightness"?: 0-100 }` | the new status |
 //! | `rgb.setStatic` | `{ "color": c, "brightness"?: 0-100 }` | the new status |
 //! | `rgb.off` | none | the new status |
-//! | `rgb.readZones` | none | the four colours the firmware reports |
+//! | `rgb.readZones` | none | the colours the firmware reports - three, not four, wherever `acpi_call` truncates the reply |
 //! | `rgb.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `rgb.setDialect` | `{ "dialect": "auto" \| id }` | the new status |
 //! | `rgb.listEffects` | none | the effects, and the speed and fps ranges |
@@ -51,7 +51,7 @@
 //! ## Confirmed against the hardware (2026-09-04)
 //!
 //! On the one OMEN this has run on, the firmware speaks the [`fourzone`]
-//! dialect: `rgb.readZones` reads all four back and a write is visible on
+//! dialect: `rgb.readZones` reads back what the reply reaches and a write is visible on
 //! the keyboard. Two caveats, both in `dev/FINDINGS.md`: the [`lightbar`]
 //! dialect this project ported *first* answers `PASS` and does nothing
 //! here, and `acpi_call` truncates the reply so `fourZone`'s read reports
@@ -117,9 +117,18 @@ pub struct RgbConfig {
     pub brightness: u8,
     /// Which dialect to speak. `Auto` unless somebody has picked.
     pub dialect: Selection,
-    /// Off by default, like every other module's equivalent. Turning a
-    /// machine's lights on at boot because they were on last week is a
-    /// decision for the user, not for the daemon (`dev/TODO.md` §3).
+    /// On by default, unlike every other module's equivalent. The other
+    /// modules restore something that can make a machine unusable if it
+    /// comes back wrong - a fan curve, a power envelope, an offset - so
+    /// they wait to be asked. Lighting cannot: the worst a restored colour
+    /// does is be the wrong colour, and somebody who set their keyboard
+    /// purple expects it purple at the next boot, not back to whatever the
+    /// firmware felt like.
+    ///
+    /// It only ever restores a file somebody's settings actually reached;
+    /// see the `Loaded` check in [`RgbModule::with_store`], which keeps a
+    /// first run from writing the all-black default over a keyboard that
+    /// was lit by the firmware.
     pub restore_on_start: bool,
     /// The running effect, or none for the static `zones`. Restored with
     /// the zones when `restore_on_start` is on.
@@ -127,8 +136,9 @@ pub struct RgbConfig {
     /// Frames a second for an effect.
     pub fps: u8,
     /// Sweep the lights in when the daemon restores them and out when the
-    /// machine shuts down or suspends. Off by default for the same reason
-    /// `restore_on_start` is.
+    /// machine shuts down or suspends. Off by default: it holds up startup
+    /// for the length of the sweep, so it is opt-in even though the
+    /// restore itself is not.
     pub power_animation: bool,
     /// The most frames a second an effect gets on battery; 0 pauses it
     /// there. Each frame is an EC transaction, and the cost scales with
@@ -142,7 +152,7 @@ impl Default for RgbConfig {
             zones: vec![Rgb::BLACK; ZONES],
             brightness: 100,
             dialect: Selection::Auto,
-            restore_on_start: false,
+            restore_on_start: true,
             effect: None,
             fps: effects::FPS_DEFAULT,
             power_animation: false,
@@ -237,7 +247,12 @@ impl RgbModule {
         config.battery_fps = config.battery_fps.min(effects::FPS_MAX);
         config.effect = config.effect.map(Effect::normalised);
 
-        let restoring = config.restore_on_start && probe.lighting.present;
+        // `Loaded`, not merely "the flag is on": the default config is
+        // four black zones, and restoring that on a first run would put
+        // out a keyboard the firmware had lit. Nothing to restore until
+        // there is a file to restore from.
+        let stored = matches!(loaded.outcome, LoadOutcome::Loaded);
+        let restoring = config.restore_on_start && stored && probe.lighting.present;
         let module = Self {
             probe: Arc::new(Mutex::new(probe)),
             store,
@@ -352,7 +367,8 @@ impl RgbModule {
             "dark": state.dark,
             "batteryFps": state.config.battery_fps,
             // Why an effect is running slower than `fps`, or not at all:
-            // "lid" (paused), "battery" (capped or paused), or null.
+            // "brightness" (nothing drawn at 0 %), "lid" (paused),
+            // "battery" (capped or paused), or null.
             "throttled": throttle_reason(&state),
             // What is reported is what we wrote, and only if we wrote it.
             // Reading the hardware back is `rgb.readZones`, which is a
@@ -433,10 +449,10 @@ impl RgbModule {
     fn power_on(&self) -> Result<(), ModuleError> {
         let probe = self.current_probe();
         let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
-        let (zones, brightness, fps, effect) = {
+        let (zones, brightness, effect) = {
             let state = lock(&self.state);
             let c = &state.config;
-            (c.zones.clone(), c.brightness, c.fps, c.effect.clone())
+            (c.zones.clone(), c.brightness, c.effect.clone())
         };
         lock_animator(&self.animator).stop();
 
@@ -445,9 +461,11 @@ impl RgbModule {
             None => zones_array(&zones),
         };
         let mut sink = dialect.frames().map_err(|e| self.failed(e))?;
-        effects::play(&mut sink, brightness, fps, Transition::DURATION, |k, _| {
-            Transition::PowerOn.apply(&target, k)
-        })
+        let sweep = |k: f64, _: f64| Transition::PowerOn.apply(&target, k);
+        match self.sweep_rate() {
+            Some(fps) => effects::play(&mut sink, brightness, fps, Transition::DURATION, sweep),
+            None => effects::jump(&mut sink, brightness, Transition::DURATION, sweep),
+        }
         .map_err(|e| self.failed(e))?;
         drop(sink);
 
@@ -471,10 +489,11 @@ impl RgbModule {
     fn power_off(&self) -> Result<(), ModuleError> {
         let probe = self.current_probe();
         let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
-        let (zones, brightness, fps) = {
+        let (zones, brightness) = {
             let state = lock(&self.state);
-            (zones_array(&state.config.zones), state.config.brightness, state.config.fps)
+            (zones_array(&state.config.zones), state.config.brightness)
         };
+        let rate = self.sweep_rate();
         let running = {
             let mut animator = lock_animator(&self.animator);
             let running = animator.current();
@@ -483,13 +502,17 @@ impl RgbModule {
         };
 
         let mut sink = dialect.frames().map_err(|e| self.failed(e))?;
-        effects::play(&mut sink, brightness, fps, Transition::DURATION, |k, t| {
+        let sweep = |k: f64, t: f64| {
             let base = match &running {
                 Some((effect, into)) => effects::frame(effect, into + t),
                 None => zones,
             };
             Transition::PowerOff.apply(&base, k)
-        })
+        };
+        match rate {
+            Some(fps) => effects::play(&mut sink, brightness, fps, Transition::DURATION, sweep),
+            None => effects::jump(&mut sink, brightness, Transition::DURATION, sweep),
+        }
         .map_err(|e| self.failed(e))?;
 
         let mut state = lock(&self.state);
@@ -574,6 +597,15 @@ impl RgbModule {
 
     /// Hands the animator the limits that follow from the conditions and
     /// the battery setting.
+    ///
+    /// Brightness is deliberately **not** one of them, and the reason is
+    /// worth keeping so nobody adds it: zero brightness does cost what a
+    /// shut lid does, and it is already handled a layer down, twice. A
+    /// running effect idles itself at zero (`effects.rs`, the `level == 0`
+    /// arm) and a sweep collapses to a single write ([`effects::play`]).
+    /// Pausing from out here would not be redundant but wrong - pausing
+    /// returns before the one black frame that actually puts the keyboard
+    /// out, so the last lit frame would stay on the keys.
     fn apply_throttle(&self) {
         let (conditions, battery_fps) = {
             let state = lock(&self.state);
@@ -584,6 +616,34 @@ impl RgbModule {
         let animator = lock_animator(&self.animator);
         animator.set_paused(paused);
         animator.set_limit(limit);
+    }
+
+    /// The frame rate a power sweep gets, or `None` for no frames at all -
+    /// the same limits [`Self::apply_throttle`] puts on a running effect,
+    /// which a sweep used to be exempt from for no better reason than
+    /// being a different code path. A sweep is a second of writes at the
+    /// full rate, which is the most expensive second the lights have, and
+    /// it happens at exactly the moments that second is worth least: a
+    /// suspend, a shutdown, a lid coming down.
+    ///
+    /// `None` is not "skip it": the end of the sweep is still written, in
+    /// one go. The lights going out is the point of a power-off - it is
+    /// the fade that nobody is there to see.
+    fn sweep_rate(&self) -> Option<u8> {
+        let state = lock(&self.state);
+        let (fps, battery_fps) = (state.config.fps, state.config.battery_fps);
+        let conditions = state.conditions;
+        drop(state);
+        // The lid is shut over the keyboard: whatever it shows, it shows
+        // to nobody.
+        if conditions.lid_closed {
+            return None;
+        }
+        if conditions.on_battery {
+            // 0 is the setting that means "no animation on battery".
+            return (battery_fps > 0).then(|| fps.min(battery_fps));
+        }
+        Some(fps)
     }
 
     fn set_battery_fps(&self, fps: u8) -> ModuleResult {
@@ -632,23 +692,45 @@ impl RgbModule {
         self.apply(zones, brightness)
     }
 
+    /// The brightness slider. With an effect set this moves it without
+    /// restarting it; with none it is a write of the static zones.
+    ///
+    /// The one case worth spelling out is an effect that is *set* but not
+    /// *moving* - its writes failed often enough that it gave up, or
+    /// `powerOff` put the lights out under it. Sliding the brightness then
+    /// used to fall through to [`Self::apply`], which clears
+    /// `config.effect`: the effect the user chose disappeared from their
+    /// settings because they touched a slider. So it is started again
+    /// instead, at the new brightness, and a machine whose lighting really
+    /// has gone away answers with that error rather than quietly becoming
+    /// a static keyboard.
     fn set_brightness(&self, brightness: u8) -> ModuleResult {
-        let (running, zones) = {
+        let (effect, zones) = {
             let state = lock(&self.state);
-            (state.config.effect.is_some(), state.config.zones.clone())
+            (state.config.effect.clone(), state.config.zones.clone())
         };
+        let Some(effect) = effect else {
+            return self.apply(zones, brightness);
+        };
+
         let animator = lock_animator(&self.animator);
-        if running && animator.is_running() {
+        let moving = animator.is_running();
+        if moving {
             animator.set_brightness(brightness);
-            drop(animator);
+        }
+        drop(animator);
+
+        {
+            // Before the restart below, which reads the brightness from
+            // the config rather than being handed it.
             let mut state = lock(&self.state);
             state.config.brightness = brightness;
             persist(&self.store, &mut state);
-            drop(state);
-            return Ok(self.status());
         }
-        drop(animator);
-        self.apply(zones, brightness)
+        if !moving {
+            self.start_effect(effect)?;
+        }
+        Ok(self.status())
     }
 
     /// The dialect a call would go through: the user's if they pinned one,
@@ -896,7 +978,11 @@ fn lock(state: &Arc<Mutex<State>>) -> std::sync::MutexGuard<'_, State> {
 }
 
 fn throttle_reason(state: &State) -> Option<&'static str> {
-    if state.conditions.lid_closed {
+    // First, because it outranks both: at zero nothing is drawn at all,
+    // whatever the lid and the charger are doing.
+    if state.config.brightness == 0 {
+        Some("brightness")
+    } else if state.conditions.lid_closed {
         Some("lid")
     } else if state.conditions.on_battery && state.config.battery_fps < state.config.fps {
         Some("battery")
@@ -1104,6 +1190,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Lighting comes back on its own. Nothing in the power module -
+    /// the auto-switch, `restoreModeOnStart`, the mode in force - is
+    /// consulted here or reachable from here, and this pins that down: a
+    /// stored config restores with no power state in the picture at all,
+    /// and a machine with no stored config still has its lights left
+    /// alone.
+    #[test]
+    fn stored_colours_come_back_without_anything_from_the_power_side() {
+        let dir = std::env::temp_dir().join(format!("pyren-rgb-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("acpi_call");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let _acpi = crate::testenv::redirect(&file);
+
+        let config = dir.join("config");
+        let fresh = RgbModule::with_store(ConfigStore::at(&config));
+        assert_eq!(fresh.status()["restoreOnStart"], true, "on without being asked");
+        assert_eq!(fresh.status()["owned"], false, "a first run leaves the lights alone");
+
+        let store = ConfigStore::at(&config);
+        store
+            .save("rgb", &json!({ "zones": ["#c500fc", "#c500fc", "#c500fc", "#c500fc"] }))
+            .expect("a temp dir is writable");
+        let restored = RgbModule::with_store(store);
+        let status = restored.status();
+        assert_eq!(status["restoreOnStart"], true);
+        assert_eq!(
+            status["owned"],
+            restored.probe().lighting.present,
+            "a stored config is restored wherever there are lights to restore it to"
+        );
+        assert_eq!(status["zones"][0], "#c500fc");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_status_says_why_an_effect_is_held_back() {
         let _acpi = crate::testenv::real();
@@ -1117,6 +1240,69 @@ mod tests {
         assert_eq!(module.status()["throttled"], Value::Null);
     }
 
+    /// A sweep is the most expensive second the lights have, and it lands
+    /// on a suspend, a shutdown or a lid coming down - so it answers to
+    /// the same limits a running effect does.
+    #[test]
+    fn a_power_sweep_is_held_to_the_same_limits_as_an_effect() {
+        let _acpi = crate::testenv::real();
+        let module = module();
+        let fps = module.status()["fps"].as_u64().unwrap() as u8;
+
+        assert_eq!(module.sweep_rate(), Some(fps), "plugged in, lid up: the rate that was asked for");
+
+        module.set_conditions(Conditions { on_battery: true, lid_closed: false });
+        assert_eq!(
+            module.sweep_rate(),
+            Some(DEFAULT_BATTERY_FPS),
+            "on battery it is capped like any other animation"
+        );
+
+        module.call("setBatteryFps", json!({ "fps": 0 })).expect("0 is a setting");
+        assert_eq!(module.sweep_rate(), None, "0 on battery means no animation at all");
+
+        module.call("setBatteryFps", json!({ "fps": 60 })).expect("60 is a setting");
+        assert_eq!(module.sweep_rate(), Some(fps), "and a cap above the rate does not raise it");
+
+        module.set_conditions(Conditions { on_battery: false, lid_closed: true });
+        assert_eq!(module.sweep_rate(), None, "a shut lid shows the sweep to nobody");
+    }
+
+    /// The bug: an effect that had stopped - three failed writes, or a
+    /// `powerOff` under it - was thrown away by the next nudge of the
+    /// brightness slider, because that fell through to the static-colour
+    /// path. Whether the restart can succeed depends on the machine; that
+    /// the setting survives does not.
+    #[test]
+    fn the_brightness_slider_does_not_throw_away_a_stopped_effect() {
+        let dir = std::env::temp_dir().join(format!("pyren-rgb-slider-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = ConfigStore::at(&dir);
+        store
+            .save(
+                "rgb",
+                &json!({ "effect": { "kind": "breathing", "colors": ["#ff0000"] }, "brightness": 60 }),
+            )
+            .expect("a temp dir is writable");
+
+        let module = RgbModule::with_store(store);
+        lock_animator(&module.animator).stop();
+        assert!(!lock_animator(&module.animator).is_running(), "set, but not moving");
+
+        let _ = module.call("setBrightness", json!({ "brightness": 40 }));
+        let status = module.status();
+        assert_eq!(status["effect"]["kind"], "breathing", "the effect is still the one chosen");
+        assert_eq!(status["brightness"], 40, "and the slider moved");
+
+        // And it is still in the file, not only in memory: the next boot
+        // must not find a static keyboard either.
+        let stored = ConfigStore::at(&dir).load::<RgbConfig>("rgb").value;
+        assert!(stored.effect.is_some());
+        assert_eq!(stored.brightness, 40);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Nothing is written to the lights until someone asks - the same rule
     /// the fan module follows about the fans.
     #[test]
@@ -1125,6 +1311,6 @@ mod tests {
         let _acpi = crate::testenv::real();
         let status = module().status();
         assert_eq!(status["owned"], false);
-        assert_eq!(status["restoreOnStart"], false);
+        assert_eq!(status["restoreOnStart"], true, "lighting comes back by default");
     }
 }

@@ -334,6 +334,12 @@ pub fn play<S: Sink>(
     duration: Duration,
     mut frames: impl FnMut(f64, f64) -> [Rgb; ZONES],
 ) -> Result<(), DialectError> {
+    // Every frame of this scales to black, so the thirty writes and the
+    // second they take buy nothing. The one write still happens: it is
+    // what puts the lights where the sweep would have left them.
+    if brightness == 0 {
+        return jump(sink, 0, duration, frames);
+    }
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps.clamp(FPS_MIN, FPS_MAX)));
     let start = Instant::now();
     let mut next = start;
@@ -350,6 +356,24 @@ pub fn play<S: Sink>(
             std::thread::sleep(next - now);
         }
     }
+}
+
+/// Where a sweep would have ended, written once: [`play`] without the
+/// frames in between.
+///
+/// The end of a sweep is not decoration - it is the lights being on or
+/// off - so it is written whatever the machine thinks of animations. What
+/// the machine gets a say in is the second of frames leading up to it,
+/// and this is the answer when that second is not worth spending: the lid
+/// is shut and nobody is looking, or the brightness is at zero and every
+/// frame of it is black.
+pub fn jump<S: Sink>(
+    sink: &mut S,
+    brightness: u8,
+    duration: Duration,
+    mut frames: impl FnMut(f64, f64) -> [Rgb; ZONES],
+) -> Result<(), DialectError> {
+    sink.show(&frames(1.0, duration.as_secs_f64()), brightness)
 }
 
 /// Where frames go. The daemon's is [`crate::dialect::FrameSink`]; the
@@ -437,6 +461,10 @@ impl Animator {
                 let start = started;
                 let mut next = start;
                 let mut failures = 0;
+                // Whether the one black frame that zero brightness needs
+                // has been written. Cleared as soon as there is something
+                // to show again, so the next zero writes it once more.
+                let mut blanked = false;
                 loop {
                     if throttle.paused.load(Ordering::Relaxed) {
                         match stopped.recv_timeout(PAUSED_POLL) {
@@ -447,11 +475,49 @@ impl Animator {
                             Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
                         }
                     }
+                    let level = shared.load(Ordering::Relaxed);
+                    // Nothing this effect can draw is visible at zero, so
+                    // neither the frame nor the write is worth doing: one
+                    // black frame puts the keyboard out, and then this
+                    // costs four wake-ups a second until the brightness
+                    // comes back.
+                    //
+                    // The test is the brightness *setting*, never the
+                    // frame: breathing and fade are black at the bottom of
+                    // every cycle, and an effect that stopped writing
+                    // there would never come back up. The clock is not
+                    // stopped either, so what resumes is where the effect
+                    // would have been, not where it was left.
+                    if level == 0 {
+                        if !blanked {
+                            match sink.show(&[Rgb::BLACK; ZONES], 0) {
+                                Ok(()) => {
+                                    failures = 0;
+                                    blanked = true;
+                                }
+                                Err(e) => {
+                                    failures += 1;
+                                    if failures >= FAILURES_BEFORE_STOPPING {
+                                        on_failure(e);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        match stopped.recv_timeout(PAUSED_POLL) {
+                            Err(RecvTimeoutError::Timeout) => {
+                                next = Instant::now();
+                                continue;
+                            }
+                            Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                    blanked = false;
                     let limit = throttle.max_fps.load(Ordering::Relaxed);
                     let rate = if limit == 0 { fps } else { fps.min(limit) };
                     let interval = Duration::from_secs_f64(1.0 / f64::from(rate));
                     let t = start.elapsed().as_secs_f64();
-                    match sink.show(&frame(&effect, t), shared.load(Ordering::Relaxed)) {
+                    match sink.show(&frame(&effect, t), level) {
                         Ok(()) => failures = 0,
                         Err(e) => {
                             failures += 1;
@@ -835,6 +901,88 @@ mod tests {
         std::thread::sleep(Duration::from_millis(80));
         assert_eq!(first.frames.lock().unwrap().len(), before, "the first one is stopped");
         assert!(!second.frames.lock().unwrap().is_empty());
+    }
+
+    /// The saving that zero brightness is for: at 0 % every frame of every
+    /// effect scales to black, so computing and writing 60 of them a
+    /// second is 60 ACPI transactions to keep a keyboard dark.
+    #[test]
+    fn zero_brightness_writes_one_black_frame_and_then_nothing() {
+        let sink = Recorder::default();
+        let mut animator = Animator::new();
+        animator.start(effect(EffectKind::RainbowWave), 0, FPS_MAX, sink.clone(), |_| {});
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(animator.is_running(), "idle is not stopped");
+        {
+            let frames = sink.frames.lock().unwrap();
+            assert_eq!(frames.len(), 1, "200 ms at 60 fps would otherwise be a dozen");
+            assert_eq!(frames[0], (vec![Rgb::BLACK; ZONES], 0), "the lights are actually put out");
+        }
+
+        // And it comes straight back, without the effect restarting: the
+        // clock kept running under the idle.
+        animator.set_brightness(80);
+        std::thread::sleep(Duration::from_millis(300));
+        animator.stop();
+        let frames = sink.frames.lock().unwrap();
+        assert!(frames.len() > 3, "{} frames once the brightness is back", frames.len());
+        assert_eq!(frames.last().unwrap().1, 80);
+    }
+
+    /// The trap in the optimisation above. Breathing and fade are black at
+    /// the bottom of every cycle; if "the frame is black" were what
+    /// stopped the writes, they would go out at the first trough and never
+    /// come back.
+    #[test]
+    fn an_effect_that_passes_through_black_keeps_being_drawn() {
+        let sink = Recorder::default();
+        let mut animator = Animator::new();
+        // Speed 10 is the shortest cycle: two seconds, so the trough is
+        // at one and this runs well past it.
+        let mut breathing = effect(EffectKind::Breathing);
+        breathing.speed = SPEED_MAX;
+        animator.start(breathing, 100, FPS_MAX, sink.clone(), |_| {});
+        std::thread::sleep(Duration::from_millis(1300));
+        animator.stop();
+        let frames = sink.frames.lock().unwrap();
+        assert!(frames.iter().all(|(_, b)| *b == 100), "the brightness never moved");
+        let dark = frames
+            .iter()
+            .position(|(c, _)| c.iter().all(|z| *z == Rgb::BLACK))
+            .expect("the cycle does reach black");
+        assert!(
+            frames[dark..].iter().any(|(c, _)| c.iter().any(|z| *z != Rgb::BLACK)),
+            "and comes back up out of it"
+        );
+    }
+
+    #[test]
+    fn a_sweep_nobody_can_see_is_its_last_frame_and_nothing_else() {
+        let mut sink = Recorder::default();
+        let lit = [WHITE; ZONES];
+        let begun = Instant::now();
+        jump(&mut sink, 75, Duration::from_millis(200), |k, _| Transition::PowerOff.apply(&lit, k))
+            .unwrap();
+        assert!(begun.elapsed() < Duration::from_millis(100), "it does not wait out the sweep");
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0], (vec![Rgb::BLACK; ZONES], 75), "the lights are out, which was the point");
+    }
+
+    /// The same saving on the power sweep: a sweep whose every frame is
+    /// black is one write, not a second of them.
+    #[test]
+    fn a_sweep_at_zero_brightness_is_a_single_write() {
+        let mut sink = Recorder::default();
+        let lit = [WHITE; ZONES];
+        let begun = Instant::now();
+        play(&mut sink, 0, FPS_MAX, Duration::from_millis(200), |k, _| Transition::PowerOn.apply(&lit, k))
+            .unwrap();
+        assert!(begun.elapsed() < Duration::from_millis(100), "it does not wait out the sweep");
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].0, lit.to_vec(), "the frame the sweep would have ended on");
+        assert_eq!(frames[0].1, 0, "scaled to black by the brightness beside it");
     }
 
     #[test]
