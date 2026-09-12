@@ -60,6 +60,17 @@ tools/      helper scripts: release.sh, bump-version.sh, pyren-check.sh, …
 install/    the installer (install.sh / uninstall.sh), its .desktop file, and INSTALL.md
 ```
 
+## Support
+
+Pyren does not offer support limited to a fixed set of laptop boards. In
+the app you'll find check features where you can see which functions are
+supported on your specific board. If something isn't supported, open a
+report in [Issues](https://github.com/mglourido/PYREN/issues) — it may
+have a fix on our side.
+
+**Note:** Pyren did not use reverse engineering to improve the `hp-wmi`
+driver.
+
 ## Contributing
 
 If you want to help, read [CONTRIBUTING](CONTRIBUTING.md).

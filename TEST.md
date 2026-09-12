@@ -19,7 +19,7 @@ tools/power-soak.sh                     # 31 checks, against real hardware
 | **Profile survives a daemon restart** | ✅ **yes** | only with *restore on start* on — off by default, on purpose |
 | **Automatic switching** (battery / load / heat) | ✅ **yes** | soaked; one switch per half hour under load, no flapping |
 | **Fan modes** auto / max / curve | ✅ **yes** | tested against a fixture |
-| **Fan mode** manual | ⚠️ **partly** | tested lightly — accepted where the driver exposes `pwm1`, refused where not |
+| **Fan mode** manual | ✅ **yes** | verified on hardware — holds a fixed speed where the driver exposes `pwm1`, refused where not |
 | **Fan curve / manual in any power mode** | ✅ **yes** | the app offers `manual` and `curve` in every power mode, not just Unlimited; the fan module never tied them to the mode |
 | **One fan curve *per* profile** | ⚠️ **built, not verified on hardware** | each power profile has its own curve; the fan module hears `power.mode` on the event bus and swaps. Covered by tests — but on this laptop no curve reaches the fans at all (see the row above), so the *switch* has never been watched move a real fan |
 | **GPU overclocking** | ✅ **yes** | verified on hardware — +50 MHz applied and reverted, through NVML. Needs no X and no `Coolbits` |
@@ -179,7 +179,7 @@ purpose.
 | `auto` | hands the fans back to the firmware's own curve | tested |
 | `max` | full speed | tested |
 | `curve` | follows your temperature → speed curve | tested |
-| `manual` | one fixed speed | tested lightly — see below |
+| `manual` | one fixed speed | verified on hardware |
 
 The curve is tested end to end: the stored curve, the machine's
 temperature, and the PWM that actually reached the hardware, with the
@@ -187,12 +187,11 @@ expected value computed through the module's own public curve function
 rather than hard-coded. Editing a curve while it is running moves the
 fans at once rather than at the next tick.
 
-`manual` gets one test and no more. It pins the fans at a speed nobody
-is watching, which is not a state to leave a laptop sitting in during a
-test run. What matters about it is that it is accepted where the driver
-exposes `pwm1` and refused where it does not — one assertion each. A
-fixture without `pwm1` (which is what board 8D2F's stock driver looks
-like) covers the refusal, and still does `auto` and `max`.
+`manual` is verified on hardware: it pins the fans at a speed nobody is
+watching, and holds it. It is accepted where the driver exposes `pwm1`
+and refused where it does not — one assertion each. A fixture without
+`pwm1` (which is what board 8D2F's stock driver looks like) covers the
+refusal, and still does `auto` and `max`.
 
 **There is one fan curve, not one per profile.** Switching from Eco to
 Unlimited does not change your curve — the fan module has no idea what
