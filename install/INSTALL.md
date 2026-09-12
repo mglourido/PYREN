@@ -59,9 +59,10 @@ unaffected.
   tables, Pyren's own installer (in the app, or `pyren-ctl`) can build a
   patched module from the sources under `/usr/share/pyren/driver`.
 - **WebKitGTK** (`webkit2gtk-4.1`) for the app, and **GTK 4** +
-  **gtk4-layer-shell** for the widget. Most desktop installs already carry
-  these. On Arch / CachyOS:
-  `sudo pacman -S --needed webkit2gtk-4.1 gtk4 gtk4-layer-shell librsvg`.
+  **gtk4-layer-shell** for the widget. `install.sh` installs these for you
+  on current Arch, Fedora and Debian/Ubuntu; if that fails, or on anything
+  else, it prints the command to do it yourself (Arch: `sudo pacman -S
+  --needed webkit2gtk-4.1 gtk4 gtk4-layer-shell librsvg`).
 - Optional: `acpi_call` for the lightbar and the fan cleaner; the NVIDIA
   driver (with `libnvidia-ml`) for GPU tuning.
 

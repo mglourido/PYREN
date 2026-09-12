@@ -14,7 +14,11 @@
 #
 # This puts all of that where each piece is looked for, writes the daemon's
 # systemd unit (via `pyren-daemon --install-service`), creates the `pyren`
-# group the daemon's socket is handed to, and adds you to it.
+# group the daemon's socket is handed to, and adds you to it. It also
+# installs the runtime libraries the binaries are linked against
+# (webkit2gtk-4.1, gtk4, gtk4-layer-shell) on current Arch, Fedora and
+# Debian/Ubuntu - anywhere else, or if that fails, it prints the command to
+# do it yourself and carries on.
 #
 #   sudo ./install.sh                 install everything
 #   sudo ./install.sh --no-service    lay the files down, touch no units
@@ -58,7 +62,7 @@ while [ $# -gt 0 ]; do
     --purge) purge=yes; shift ;;
     --dry-run) dry_run=yes; shift ;;
     -h | --help)
-        sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     *)
@@ -92,6 +96,37 @@ as_root() {
         "$@"
     else
         sudo "$@"
+    fi
+}
+
+# webkit2gtk-4.1, gtk4, gtk4-layer-shell and librsvg (it renders the app's
+# scalable icon) are dynamically linked, not bundled in the tarball: whoever
+# built it already had them, but the machine this runs on may not.
+# Best-effort, current releases only (Arch, Fedora, Debian/Ubuntu latest) -
+# a package manager this does not recognise, or a package that manager
+# refuses, is not a reason to abort the install: it is left for the user to
+# do themselves, with the exact command to do it.
+ensure_runtime_deps() {
+    say "runtime libraries (webkit2gtk-4.1, gtk4, gtk4-layer-shell, librsvg)"
+    manual=
+    if command -v pacman >/dev/null 2>&1; then
+        as_root pacman -Sy --needed --noconfirm webkit2gtk-4.1 gtk4 gtk4-layer-shell librsvg ||
+            manual="sudo pacman -S --needed webkit2gtk-4.1 gtk4 gtk4-layer-shell librsvg"
+    elif command -v dnf >/dev/null 2>&1; then
+        as_root dnf install -y webkit2gtk4.1 gtk4 gtk4-layer-shell librsvg2 ||
+            manual="sudo dnf install webkit2gtk4.1 gtk4 gtk4-layer-shell librsvg2"
+    elif command -v apt-get >/dev/null 2>&1; then
+        as_root apt-get update -qq &&
+            as_root apt-get install -y libwebkit2gtk-4.1-0 libgtk-4-1 \
+                libgtk4-layer-shell0 librsvg2-common ||
+            manual="sudo apt-get install libwebkit2gtk-4.1-0 libgtk-4-1 libgtk4-layer-shell0 librsvg2-common"
+    else
+        manual="install webkit2gtk-4.1, gtk4, gtk4-layer-shell and librsvg with your package manager"
+    fi
+    if [ -n "$manual" ]; then
+        echo "  could not install them automatically - install them yourself, then" >&2
+        echo "  re-run this script:" >&2
+        echo "    $manual" >&2
     fi
 }
 
@@ -227,6 +262,8 @@ if [ "$action" = uninstall ]; then
 fi
 
 # --- install -----------------------------------------------------------
+
+ensure_runtime_deps
 
 say "checking the pieces ($MODE)"
 missing=

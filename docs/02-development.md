@@ -21,7 +21,11 @@
   ```sh
   sudo pacman -S --needed gtk4 gtk4-layer-shell
   ```
-  Debian/Ubuntu: `libgtk-4-dev libgtk4-layer-shell-dev`.
+  Debian/Ubuntu: `libgtk-4-dev libgtk4-layer-shell-dev` - but `libgtk4-layer-shell-dev`
+  is not packaged before Debian testing or Ubuntu 25.10 (questing); on an
+  older release (Ubuntu 24.04 included), build it from source instead:
+  <https://github.com/wmww/gtk4-layer-shell#building-from-source>. `.github/workflows/ci.yml`'s
+  `osd` job does this for CI and is a working recipe to copy.
 
 ## 0. All three at once
 
