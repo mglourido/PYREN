@@ -457,7 +457,7 @@
     "startup": "Inicio",
     "startMinimized": "Iniciar minimizado en la bandeja",
     "startMinimizedHint": "Cuando arranca al iniciar sesión, Pyren se abre sin ventana, como icono en la bandeja. Si lo abres tú, siempre muestra la ventana. Tu escritorio necesita una bandeja para que el icono aparezca.",
-    "closeToTray": "Cerrar a la bandeja",
+    "closeToTray": "Minimizar a la bandeja al cerrar",
     "closeToTrayHint": "El botón de cerrar guarda Pyren en vez de salir. Pyren es quien arranca el widget de rendimiento, así que dejarlo en marcha es lo que mantiene el widget disponible sin tener la ventana abierta.",
     "autostart": "Iniciar al arrancar sesión",
     "autostartUnmanaged": "Este escritorio no tiene gestor de sesión, así que nadie lee la entrada de autoarranque y las unidades de **systemd** tampoco llegan a activarse. Añade esto a la configuración de tu compositor para que ocurra:",

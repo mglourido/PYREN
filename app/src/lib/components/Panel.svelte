@@ -37,6 +37,6 @@
   }
 
   .body.padded {
-    padding: 18px;
+    padding: 10px 18px;
   }
 </style>

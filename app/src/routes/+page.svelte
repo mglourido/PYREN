@@ -45,17 +45,6 @@
           />
           <span>{t("home.autoEco")}<InfoTip>{t("home.autoEcoHint")}</InfoTip></span>
         </div>
-        {#if hardware.state.autoEco && hardware.power}
-          <div class="prefer-row">
-            <span>{t("home.preferOnBattery")}</span>
-            <Segmented
-              variant="pill"
-              options={preferable(["eco", "balanced"])}
-              value={hardware.power.auto.preferredOnBattery}
-              onchange={(v) => hardware.setAutoPreference("battery", v as PowerMode)}
-            />
-          </div>
-        {/if}
         <div class="switch-row">
           <Toggle
             checked={hardware.state.autoPerformance}
@@ -421,6 +410,10 @@
     margin-top: 10px;
     font-size: 13px;
     color: var(--text-dim);
+  }
+
+  .switch-row :global(.tip) {
+    margin-left: 2px;
   }
 
   .temps {

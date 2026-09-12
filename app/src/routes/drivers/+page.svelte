@@ -271,6 +271,7 @@
   {#if canInspect}
     <Panel title={t("admin.title")}>
       <p class="hint">{t("admin.intro")}</p>
+      <hr class="sep" />
 
       {#if !privileges}
         <!-- Without this the panel vanished whenever the status call
@@ -521,6 +522,13 @@
     margin: 14px 0 0;
     color: var(--text-mute);
     font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .sep {
+    margin: 14px 0 0;
+    border: none;
+    border-top: 1px solid var(--line-soft);
   }
 
   .notice {

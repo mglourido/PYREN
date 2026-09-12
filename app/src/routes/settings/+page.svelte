@@ -930,6 +930,7 @@
     appearance: none;
     min-width: 220px;
     max-width: 100%;
+    margin: 4px 0;
     padding: 7px 30px 7px 12px;
     background-color: var(--bg-card);
     color: var(--text);

@@ -6,7 +6,7 @@
    */
   import Icon from "$lib/components/Icon.svelte";
   import Panel from "$lib/components/Panel.svelte";
-  import { t, tm } from "$lib/i18n/index.svelte";
+  import { t } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import {
     APP_VERSION,
@@ -72,21 +72,6 @@
       <dt>{t("system.gpu")}</dt>
       <dd>{info?.gpus?.join(", ") || unknown}</dd>
     </dl>
-
-    <p
-      class="compat"
-      class:ok={info?.compatibility === "controllable"}
-      class:warn={info?.compatibility === "monitoringOnly"}
-      class:err={info?.compatibility === "unsupported"}
-    >
-      <Icon name={info?.compatibility === "controllable" ? "check" : "warning"} size={15} />
-      <span>
-        {#if info?.compatibility === "controllable"}{t("system.compatible")}
-        {:else if info?.compatibility === "monitoringOnly"}{t("system.monitoringOnly")}
-        {:else}{t("system.incompatible")}{/if}
-      </span>
-      {#if info?.reason}<span class="reason">— {tm(info.reason)}</span>{/if}
-    </p>
   </Panel>
 
   <Panel title={t("help.contribute")}>
@@ -199,22 +184,6 @@
     margin: 0;
     -webkit-user-select: text;
     user-select: text;
-  }
-
-  .compat {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 16px;
-  }
-
-  .warn {
-    color: var(--warn);
-  }
-
-  .reason {
-    color: var(--text-mute);
-    font-size: 13px;
   }
 
   .links {
