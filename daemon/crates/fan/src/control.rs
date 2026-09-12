@@ -184,11 +184,20 @@ fn speed_writes<'a>(
 ///
 /// `pwm` is only consulted for the modes that need one; see
 /// [`speed_writes`] for why those writes are ordered the way they are.
-pub fn apply(paths: &FanPaths, caps: Capabilities, mode: FanMode, pwm: u8) -> Result<(), ControlError> {
+pub fn apply(
+    paths: &FanPaths,
+    caps: Capabilities,
+    mode: FanMode,
+    pwm: u8,
+) -> Result<(), ControlError> {
     if !caps.supports(mode) {
         return Err(ControlError::Unsupported(
             mode.as_str(),
-            if caps.switch_mode { "pwm1" } else { "pwm1_enable" },
+            if caps.switch_mode {
+                "pwm1"
+            } else {
+                "pwm1_enable"
+            },
         ));
     }
 
@@ -201,7 +210,10 @@ pub fn apply(paths: &FanPaths, caps: Capabilities, mode: FanMode, pwm: u8) -> Re
         FanMode::Auto => write_sysfs(enable, "2"),
         FanMode::Max => write_sysfs(enable, "0"),
         FanMode::Manual | FanMode::Curve => {
-            let pwm1 = paths.pwm1.as_deref().ok_or(ControlError::Unsupported(mode.as_str(), "pwm1"))?;
+            let pwm1 = paths
+                .pwm1
+                .as_deref()
+                .ok_or(ControlError::Unsupported(mode.as_str(), "pwm1"))?;
             let pwm2 = paths.pwm2.as_deref().filter(|p| p.exists());
             for (path, value) in speed_writes(enable, pwm1, pwm2, read_hardware_mode(paths), pwm) {
                 write_sysfs(path, &value)?;
@@ -245,12 +257,17 @@ fn read_param(paths: &FanPaths, name: &str) -> Option<u8> {
 /// The floor the upstream driver enforces - the fan table's slowest entry -
 /// in rpm. `None` on a driver that does not report it, or read no table.
 pub fn read_driver_floor(paths: &FanPaths) -> Option<i64> {
-    read_param(paths, MIN_RPM_TABLE).filter(|&v| v > 0).map(|v| i64::from(v) * 100)
+    read_param(paths, MIN_RPM_TABLE)
+        .filter(|&v| v > 0)
+        .map(|v| i64::from(v) * 100)
 }
 
 /// Whether this driver lets the floor be replaced.
 pub fn floor_override_supported(paths: &FanPaths) -> bool {
-    paths.driver_params.as_deref().is_some_and(|dir| dir.join(MIN_RPM_OVERRIDE).exists())
+    paths
+        .driver_params
+        .as_deref()
+        .is_some_and(|dir| dir.join(MIN_RPM_OVERRIDE).exists())
 }
 
 /// The replacement floor in force, in hundreds of rpm; 0 is the table's.
@@ -264,10 +281,16 @@ pub fn set_floor_override(paths: &FanPaths, hundreds: u8) -> Result<(), ControlE
     let dir = paths
         .driver_params
         .as_deref()
-        .ok_or(ControlError::Unsupported("a floor override", MIN_RPM_OVERRIDE))?;
+        .ok_or(ControlError::Unsupported(
+            "a floor override",
+            MIN_RPM_OVERRIDE,
+        ))?;
     let path = dir.join(MIN_RPM_OVERRIDE);
     if !path.exists() {
-        return Err(ControlError::Unsupported("a floor override", MIN_RPM_OVERRIDE));
+        return Err(ControlError::Unsupported(
+            "a floor override",
+            MIN_RPM_OVERRIDE,
+        ));
     }
     write_sysfs(&path, &hundreds.to_string())
 }
@@ -278,8 +301,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture(tag: &str, files: &[&str]) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-fan-control-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pyren-fan-control-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         for f in files {
@@ -303,7 +326,10 @@ mod tests {
     }
 
     fn read(dir: &Path, name: &str) -> String {
-        fs::read_to_string(dir.join(name)).unwrap().trim().to_string()
+        fs::read_to_string(dir.join(name))
+            .unwrap()
+            .trim()
+            .to_string()
     }
 
     #[test]
@@ -329,11 +355,20 @@ mod tests {
     #[test]
     fn asking_such_a_machine_for_a_speed_is_an_error_not_a_silent_no_op() {
         let dir = fixture("nopwm-apply", &["pwm1_enable"]);
-        let err = apply(&paths(&dir), Capabilities::detect(&paths(&dir)), FanMode::Manual, 128)
-            .expect_err("manual must be refused");
+        let err = apply(
+            &paths(&dir),
+            Capabilities::detect(&paths(&dir)),
+            FanMode::Manual,
+            128,
+        )
+        .expect_err("manual must be refused");
 
         assert!(matches!(err, ControlError::Unsupported("manual", "pwm1")));
-        assert_eq!(read(&dir, "pwm1_enable"), "2", "the firmware curve must be left alone");
+        assert_eq!(
+            read(&dir, "pwm1_enable"),
+            "2",
+            "the firmware curve must be left alone"
+        );
     }
 
     #[test]
@@ -370,7 +405,10 @@ mod tests {
         apply(&p, Capabilities::detect(&p), FanMode::Curve, 90).unwrap();
 
         assert_eq!(read(&dir, "pwm1"), "90");
-        assert!(!dir.join("pwm2").exists(), "a missing channel must not be created");
+        assert!(
+            !dir.join("pwm2").exists(),
+            "a missing channel must not be created"
+        );
     }
 
     /// On a feature-table board `pwm1_enable = 1` replaces the setpoints
@@ -383,7 +421,11 @@ mod tests {
 
         assert_eq!(
             from_auto,
-            vec![(enable, "1".to_string()), (pwm1, "200".to_string()), (pwm2, "200".to_string())]
+            vec![
+                (enable, "1".to_string()),
+                (pwm1, "200".to_string()),
+                (pwm2, "200".to_string())
+            ]
         );
     }
 
@@ -403,7 +445,10 @@ mod tests {
     fn an_unreadable_mode_is_switched_to_be_sure() {
         let (enable, pwm1) = (Path::new("e"), Path::new("p1"));
 
-        assert_eq!(speed_writes(enable, pwm1, None, None, 120)[0], (enable, "1".to_string()));
+        assert_eq!(
+            speed_writes(enable, pwm1, None, None, 120)[0],
+            (enable, "1".to_string())
+        );
     }
 
     fn with_params(dir: &Path, table: &str) {
@@ -448,7 +493,10 @@ mod tests {
         let p = paths(&dir);
 
         assert!(!floor_override_supported(&p));
-        assert!(matches!(set_floor_override(&p, 7), Err(ControlError::Unsupported(..))));
+        assert!(matches!(
+            set_floor_override(&p, 7),
+            Err(ControlError::Unsupported(..))
+        ));
         assert!(!dir.join("parameters/min_rpm_override").exists());
     }
 

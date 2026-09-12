@@ -70,7 +70,12 @@ pub enum GpuMuxMode {
 }
 
 impl GpuMuxMode {
-    const ALL: [Self; 4] = [Self::Hybrid, Self::Discrete, Self::Optimus, Self::Integrated];
+    const ALL: [Self; 4] = [
+        Self::Hybrid,
+        Self::Discrete,
+        Self::Optimus,
+        Self::Integrated,
+    ];
 
     fn index(self) -> u8 {
         match self {
@@ -109,7 +114,9 @@ impl GpuMuxMode {
 }
 
 fn mux_path() -> PathBuf {
-    std::env::var("PYREN_GPU_MUX_PATH").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(MUX_PATH))
+    std::env::var("PYREN_GPU_MUX_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(MUX_PATH))
 }
 
 fn present() -> bool {
@@ -124,7 +131,11 @@ fn read_mode() -> Result<(u8, Option<GpuMuxMode>), ModuleError> {
     let path = mux_path();
     let text = std::fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
     let raw: u8 = text.trim().parse().map_err(|_| {
-        ModuleError::Io(format!("{}: not a number ({:?})", path.display(), text.trim()))
+        ModuleError::Io(format!(
+            "{}: not a number ({:?})",
+            path.display(),
+            text.trim()
+        ))
     })?;
     Ok((raw, GpuMuxMode::from_index(raw)))
 }
@@ -260,8 +271,11 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let dir = std::env::temp_dir()
-                .join(format!("pyren-gpu-test-{}-{:?}", std::process::id(), std::thread::current().id()));
+            let dir = std::env::temp_dir().join(format!(
+                "pyren-gpu-test-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("gpu_mux_mode");
             std::env::set_var("PYREN_GPU_MUX_PATH", &path);
@@ -289,7 +303,10 @@ mod tests {
 
     #[test]
     fn parse_accepts_the_apps_own_vocabulary_too() {
-        assert_eq!(GpuMuxMode::parse("integrated"), Some(GpuMuxMode::Integrated));
+        assert_eq!(
+            GpuMuxMode::parse("integrated"),
+            Some(GpuMuxMode::Integrated)
+        );
         assert_eq!(GpuMuxMode::parse("uma"), Some(GpuMuxMode::Integrated));
         assert_eq!(GpuMuxMode::parse("dgpu"), Some(GpuMuxMode::Discrete));
         assert_eq!(GpuMuxMode::parse("HYBRID"), Some(GpuMuxMode::Hybrid));
@@ -324,7 +341,9 @@ mod tests {
         let fx = Fixture::new();
         std::fs::write(fx.path(), "0\n").unwrap();
         let module = GpuModule::new();
-        let reply = module.call("setMode", json!({ "mode": "integrated" })).unwrap();
+        let reply = module
+            .call("setMode", json!({ "mode": "integrated" }))
+            .unwrap();
         assert_eq!(reply["mode"], json!("integrated"));
         assert_eq!(std::fs::read_to_string(fx.path()).unwrap(), "3");
     }
@@ -334,7 +353,9 @@ mod tests {
         let fx = Fixture::new();
         std::fs::write(fx.path(), "0\n").unwrap();
         let module = GpuModule::new();
-        let err = module.call("setMode", json!({ "mode": "quantum" })).unwrap_err();
+        let err = module
+            .call("setMode", json!({ "mode": "quantum" }))
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidParams);
         // Unchanged: the bad name never reached a write.
         assert_eq!(std::fs::read_to_string(fx.path()).unwrap(), "0\n");
@@ -354,7 +375,9 @@ mod tests {
         let fx = Fixture::new();
         assert!(!Path::new(&fx.path()).exists());
         let module = GpuModule::new();
-        let err = module.call("setMode", json!({ "mode": "hybrid" })).unwrap_err();
+        let err = module
+            .call("setMode", json!({ "mode": "hybrid" }))
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Unsupported);
     }
 

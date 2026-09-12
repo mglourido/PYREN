@@ -120,7 +120,9 @@ impl GpuReader {
         let mut gpus = Vec::new();
         for card in cards {
             let device = card.join("device");
-            let Ok(uevent) = fs::read_to_string(device.join("uevent")) else { continue };
+            let Ok(uevent) = fs::read_to_string(device.join("uevent")) else {
+                continue;
+            };
             let driver = uevent
                 .lines()
                 .find_map(|l| l.strip_prefix("DRIVER="))
@@ -200,7 +202,9 @@ fn is_on_the_root_bus(slot: &str) -> bool {
 /// to the driver name.
 fn pci_names() -> HashMap<String, String> {
     let mut names = HashMap::new();
-    let Ok(output) = Command::new("lspci").arg("-mm").output() else { return names };
+    let Ok(output) = Command::new("lspci").arg("-mm").output() else {
+        return names;
+    };
     if !output.status.success() {
         return names;
     }
@@ -208,7 +212,9 @@ fn pci_names() -> HashMap<String, String> {
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let fields = split_lspci_fields(line);
         // -mm output: slot, class, vendor, device, [rev/subsystem...]
-        let Some(class) = fields.get(1).map(|c| c.to_ascii_lowercase()) else { continue };
+        let Some(class) = fields.get(1).map(|c| c.to_ascii_lowercase()) else {
+            continue;
+        };
         if !(class.contains("vga") || class.contains("3d") || class.contains("display")) {
             continue;
         }
@@ -218,7 +224,11 @@ fn pci_names() -> HashMap<String, String> {
             continue;
         };
         // lspci abbreviates the domain; sysfs always spells it out.
-        let slot = if slot.matches(':').count() == 1 { format!("0000:{slot}") } else { slot.clone() };
+        let slot = if slot.matches(':').count() == 1 {
+            format!("0000:{slot}")
+        } else {
+            slot.clone()
+        };
         names.insert(slot, format!("{vendor} {device}"));
     }
     names
@@ -275,7 +285,9 @@ pub(crate) fn read_nvidia_gpus() -> Vec<GpuMetrics> {
         ])
         .output();
 
-    let Ok(output) = output else { return Vec::new() };
+    let Ok(output) = output else {
+        return Vec::new();
+    };
     if !output.status.success() {
         return Vec::new();
     }
@@ -346,8 +358,12 @@ impl I915Pmu {
         event_files.sort();
 
         for path in event_files {
-            let Some(config) = event_config(&path) else { continue };
-            let Some(counter) = Counter::open(pmu_type, config, cpu) else { continue };
+            let Some(config) = event_config(&path) else {
+                continue;
+            };
+            let Some(counter) = Counter::open(pmu_type, config, cpu) else {
+                continue;
+            };
             let seed = counter.read().unwrap_or(0);
             engines.push((counter, seed));
         }
@@ -368,7 +384,9 @@ impl I915Pmu {
 
         let mut busiest: Option<f64> = None;
         for (counter, previous) in &mut self.engines {
-            let Some(current) = counter.read() else { continue };
+            let Some(current) = counter.read() else {
+                continue;
+            };
             let delta = current.saturating_sub(*previous) as f64;
             *previous = current;
             let percent = (delta / window_ns * 100.0).clamp(0.0, 100.0);
@@ -546,19 +564,26 @@ impl DrmUsageReader {
     pub fn new() -> Self {
         // Primed, so the first real sample is a delta over a known window
         // rather than over "since each process started".
-        Self { previous: read_fdinfo() }
+        Self {
+            previous: read_fdinfo(),
+        }
     }
 
     pub fn sample(&mut self, elapsed: f64) -> GpuUsage {
         let window_ns = elapsed * 1_000_000_000.0;
         let current = read_fdinfo();
 
-        let mut usage = GpuUsage { per_pid: HashMap::new(), per_card: HashMap::new() };
+        let mut usage = GpuUsage {
+            per_pid: HashMap::new(),
+            per_card: HashMap::new(),
+        };
         if window_ns > 0.0 {
             for (pid, busy_ns) in &current.per_pid {
                 let previous = self.previous.per_pid.get(pid).copied().unwrap_or(*busy_ns);
                 let delta = busy_ns.saturating_sub(previous) as f64;
-                usage.per_pid.insert(*pid, (delta / window_ns * 100.0).clamp(0.0, 100.0));
+                usage
+                    .per_pid
+                    .insert(*pid, (delta / window_ns * 100.0).clamp(0.0, 100.0));
             }
             for (slot, engines) in &current.per_card {
                 let previous = self.previous.per_card.get(slot);
@@ -665,7 +690,9 @@ fn parse_drm_client(text: &str) -> Option<DrmClient> {
     let mut capacities: HashMap<&str, u64> = HashMap::new();
 
     for line in text.lines() {
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let value = value.trim();
 
         // The capacity keys share the engine prefix, so they have to be
@@ -674,7 +701,10 @@ fn parse_drm_client(text: &str) -> Option<DrmClient> {
         if let Some(engine) = key.strip_prefix(CAPACITY) {
             capacities.insert(engine, value.parse().unwrap_or(1));
         } else if let Some(engine) = key.strip_prefix(ENGINE) {
-            if let Some(ns) = value.strip_suffix("ns").and_then(|v| v.trim().parse::<u64>().ok()) {
+            if let Some(ns) = value
+                .strip_suffix("ns")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+            {
                 engines.insert(engine, ns);
             }
         } else if key == "drm-pdev" {
@@ -687,11 +717,17 @@ fn parse_drm_client(text: &str) -> Option<DrmClient> {
     let engines = engines
         .into_iter()
         .map(|(engine, ns)| {
-            (engine.to_string(), ns / capacities.get(engine).copied().unwrap_or(1).max(1))
+            (
+                engine.to_string(),
+                ns / capacities.get(engine).copied().unwrap_or(1).max(1),
+            )
         })
         .collect();
 
-    Some(DrmClient { key: (pdev, client_id?), engines })
+    Some(DrmClient {
+        key: (pdev, client_id?),
+        engines,
+    })
 }
 
 #[cfg(test)]
@@ -723,9 +759,8 @@ drm-engine-copy:\t50232 ns
         // Card and client id together are the key: ids restart per card, so
         // the iGPU's client 7 and the dGPU's client 7 must not collapse into
         // one and halve a hybrid laptop's totals.
-        let on = |pdev| {
-            format!("drm-pdev:\t{pdev}\ndrm-client-id:\t7\ndrm-engine-render:\t1000 ns\n")
-        };
+        let on =
+            |pdev| format!("drm-pdev:\t{pdev}\ndrm-client-id:\t7\ndrm-engine-render:\t1000 ns\n");
         let igpu = parse_drm_client(&on("0000:00:02.0")).expect("should parse");
         let dgpu = parse_drm_client(&on("0000:01:00.0")).expect("should parse");
         assert_ne!(igpu.key, dgpu.key);

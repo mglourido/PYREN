@@ -102,7 +102,11 @@ pub struct Lighting {
 pub fn probe() -> Probe {
     let per_key = probe_per_key();
     let lighting = probe_lighting();
-    Probe { supported: lighting.present, per_key, lighting }
+    Probe {
+        supported: lighting.present,
+        per_key,
+        lighting,
+    }
 }
 
 fn probe_per_key() -> PerKey {
@@ -157,7 +161,11 @@ impl Lighting {
 }
 
 fn probe_lighting() -> Lighting {
-    let Interfaces { hp_wmi, acpi_call, acpi_call_installed } = interfaces();
+    let Interfaces {
+        hp_wmi,
+        acpi_call,
+        acpi_call_installed,
+    } = interfaces();
 
     // Every dialect, always - including the ones that were skipped. A
     // dialect missing from the list would be indistinguishable from a
@@ -180,14 +188,19 @@ fn probe_lighting() -> Lighting {
         .map(|d| d.detail.clone());
 
     let detail = if present {
-        let names: Vec<&str> =
-            dialects.iter().filter(|d| d.available).map(|d| d.id).collect();
+        let names: Vec<&str> = dialects
+            .iter()
+            .filter(|d| d.available)
+            .map(|d| d.id)
+            .collect();
         format!("the lights answered on: {}", names.join(", "))
     } else if let Some(why) = &unreachable {
-        format!("the interfaces are here but nothing could be asked ({})", why.text)
+        format!(
+            "the interfaces are here but nothing could be asked ({})",
+            why.text
+        )
     } else if !hp_wmi && !kernel_zones_present() {
-        "no hp-wmi interface and no kernel rgb_zones files, so there is nothing to ask"
-            .to_string()
+        "no hp-wmi interface and no kernel rgb_zones files, so there is nothing to ask".to_string()
     } else if hp_wmi && !acpi_call {
         if acpi_call_installed {
             "hp-wmi is here and acpi_call is installed but not loaded; \
@@ -255,12 +268,18 @@ mod tests {
         // Asks the real machine, so nothing may redirect it meanwhile.
         let _acpi = crate::testenv::real();
         let probe = probe();
-        assert!(!probe.per_key.ported, "the per-key path is not ported in this build");
+        assert!(
+            !probe.per_key.ported,
+            "the per-key path is not ported in this build"
+        );
         assert!(!probe.per_key.detail.is_empty());
         assert!(!probe.lighting.detail.is_empty());
         // `present` is a claim about hardware: it may only be true when a
         // dialect actually answered a read.
-        assert_eq!(probe.lighting.present, probe.lighting.dialects.iter().any(|d| d.available));
+        assert_eq!(
+            probe.lighting.present,
+            probe.lighting.dialects.iter().any(|d| d.available)
+        );
         assert_eq!(probe.supported, probe.lighting.present);
     }
 
@@ -278,7 +297,10 @@ mod tests {
         assert_eq!(ids, expected);
         for d in &probe.lighting.dialects {
             assert!(!d.detail.is_empty(), "{} says nothing about itself", d.id);
-            assert!(!d.available || d.asked, "a dialect nobody asked cannot be available");
+            assert!(
+                !d.available || d.asked,
+                "a dialect nobody asked cannot be available"
+            );
         }
     }
 

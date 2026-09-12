@@ -71,7 +71,11 @@ impl EcProbe {
                         reason: String::from_utf8_lossy(&output.stderr).trim().to_string(),
                     }
                 }
-                Err(e) => return Self::Unavailable { reason: e.to_string() },
+                Err(e) => {
+                    return Self::Unavailable {
+                        reason: e.to_string(),
+                    }
+                }
             }
             if !Path::new(EC_IO).exists() {
                 return Self::Unavailable {
@@ -80,7 +84,10 @@ impl EcProbe {
             }
         }
 
-        match (read_byte(VICTUS_S_THERMAL_OFFSET), read_byte(OMEN_THERMAL_OFFSET)) {
+        match (
+            read_byte(VICTUS_S_THERMAL_OFFSET),
+            read_byte(OMEN_THERMAL_OFFSET),
+        ) {
             (Some(victus_s), Some(omen)) => Self::Read { victus_s, omen },
             _ => Self::NotPermitted,
         }
@@ -93,7 +100,9 @@ impl EcProbe {
     /// keeps its profile somewhere else, or nowhere the driver can see, and
     /// the variant that reads no EC byte at all is then the right one.
     pub fn omen_offset_in_use(&self) -> Option<u64> {
-        let Self::Read { victus_s, omen } = self else { return None };
+        let Self::Read { victus_s, omen } = self else {
+            return None;
+        };
         let plausible = |byte: &u8| OMEN_V1_PROFILE_VALUES.contains(byte);
 
         // Checked in this order because a board that answers at both is
@@ -130,13 +139,19 @@ mod tests {
 
     #[test]
     fn a_profile_value_at_the_omen_offset_names_that_offset() {
-        let probe = EcProbe::Read { victus_s: 0x00, omen: 0x31 };
+        let probe = EcProbe::Read {
+            victus_s: 0x00,
+            omen: 0x31,
+        };
         assert_eq!(probe.omen_offset_in_use(), Some(OMEN_THERMAL_OFFSET));
     }
 
     #[test]
     fn a_profile_value_at_the_victus_s_offset_names_that_one() {
-        let probe = EcProbe::Read { victus_s: 0x30, omen: 0x07 };
+        let probe = EcProbe::Read {
+            victus_s: 0x30,
+            omen: 0x07,
+        };
         assert_eq!(probe.omen_offset_in_use(), Some(VICTUS_S_THERMAL_OFFSET));
     }
 
@@ -146,7 +161,10 @@ mod tests {
     /// machine's performance mode.
     #[test]
     fn neither_offset_holding_a_profile_is_an_answer_not_a_tie() {
-        let probe = EcProbe::Read { victus_s: 0x07, omen: 0xa2 };
+        let probe = EcProbe::Read {
+            victus_s: 0x07,
+            omen: 0xa2,
+        };
         assert_eq!(probe.omen_offset_in_use(), None);
     }
 
@@ -156,7 +174,9 @@ mod tests {
             EcProbe::ModuleNotLoaded,
             EcProbe::NotPermitted,
             EcProbe::NotProbed,
-            EcProbe::Unavailable { reason: "no such module".into() },
+            EcProbe::Unavailable {
+                reason: "no such module".into(),
+            },
         ] {
             assert_eq!(probe.omen_offset_in_use(), None);
         }
@@ -167,7 +187,10 @@ mod tests {
     /// the plausible set. Matching on them would name an offset from noise.
     #[test]
     fn the_victus_profile_values_are_not_treated_as_evidence() {
-        let probe = EcProbe::Read { victus_s: 0x01, omen: 0x00 };
+        let probe = EcProbe::Read {
+            victus_s: 0x01,
+            omen: 0x00,
+        };
         assert_eq!(probe.omen_offset_in_use(), None);
     }
 }

@@ -339,7 +339,11 @@ fn describe_fans(caps: &Capabilities) -> String {
     match named.len() {
         0 => "no fan".to_string(),
         1 => named[0].to_string(),
-        _ => format!("{} and {}", named[..named.len() - 1].join(", "), named[named.len() - 1]),
+        _ => format!(
+            "{} and {}",
+            named[..named.len() - 1].join(", "),
+            named[named.len() - 1]
+        ),
     }
 }
 
@@ -349,7 +353,13 @@ fn describe_fans(caps: &Capabilities) -> String {
 ///
 /// A `FAIL` signature or a non-zero return code is a refusal: the call
 /// reached the firmware and the firmware said no.
-fn call(id: u8, command: u32, command_type: u32, size: usize, payload: &[u8]) -> Result<Vec<u8>, CleanerError> {
+fn call(
+    id: u8,
+    command: u32,
+    command_type: u32,
+    size: usize,
+    payload: &[u8],
+) -> Result<Vec<u8>, CleanerError> {
     send(id, &acpi::wmi_request(command, command_type, size, payload))
 }
 
@@ -442,7 +452,14 @@ fn write_modern(payload: &[u8; MODERN_LEN]) -> Result<(), CleanerError> {
 /// The speed the firmware is currently commanding, when it is commanding a
 /// reverse one. Used by the stop sequence to know where to ramp down from.
 fn current_reverse_speed() -> Option<u8> {
-    let data = call(ID_MODERN, CMD_MODERN, TYPE_QUERY, MODERN_LEN, &[0u8; MODERN_LEN]).ok()?;
+    let data = call(
+        ID_MODERN,
+        CMD_MODERN,
+        TYPE_QUERY,
+        MODERN_LEN,
+        &[0u8; MODERN_LEN],
+    )
+    .ok()?;
     let first = data.first().copied()?;
     (first & REVERSE != 0).then_some(first & !REVERSE)
 }
@@ -451,12 +468,22 @@ fn current_reverse_speed() -> Option<u8> {
 /// `off` clears bit 7 and leaves bit 1 - the pattern the original writes,
 /// byte for byte.
 fn toggle_legacy(on: bool) -> Result<(), CleanerError> {
-    let data = call(ID_LEGACY, CMD_LEGACY_READ, TYPE_QUERY, LEGACY_LEN, &[0u8; LEGACY_LEN])?;
+    let data = call(
+        ID_LEGACY,
+        CMD_LEGACY_READ,
+        TYPE_QUERY,
+        LEGACY_LEN,
+        &[0u8; LEGACY_LEN],
+    )?;
     let mut buffer = [0u8; LEGACY_LEN];
     for (slot, byte) in buffer.iter_mut().zip(data.iter()) {
         *slot = *byte;
     }
-    buffer[3] = if on { buffer[3] | 0x82 } else { (buffer[3] | 0x02) & !REVERSE };
+    buffer[3] = if on {
+        buffer[3] | 0x82
+    } else {
+        (buffer[3] | 0x02) & !REVERSE
+    };
     call(ID_LEGACY, CMD_LEGACY_WRITE, TYPE_QUERY, LEGACY_LEN, &buffer).map(|_| ())
 }
 
@@ -726,7 +753,10 @@ mod tests {
         assert_eq!(payload[0], 37 | 0x80);
         assert_eq!(payload[1], 39 | 0x80);
         assert_eq!(payload[2], 20 | 0x80);
-        assert!(payload[3..].iter().all(|&b| b == 0), "the rest of the buffer is zero");
+        assert!(
+            payload[3..].iter().all(|&b| b == 0),
+            "the rest of the buffer is zero"
+        );
 
         // A machine with no third fan gets a plain zero there, not 0x80:
         // the byte means something else on those boards.
@@ -744,19 +774,38 @@ mod tests {
 
     #[test]
     fn the_firmwares_own_speeds_win_and_a_request_replaces_them() {
-        let caps = Capabilities { cpu_speed: 30, gpu_speed: 32, fan3_speed: 28, ..Default::default() };
+        let caps = Capabilities {
+            cpu_speed: 30,
+            gpu_speed: 32,
+            fan3_speed: 28,
+            ..Default::default()
+        };
         assert_eq!(target_speeds(caps, None), (30, 32, 28));
 
         // Nothing configured, and the vendor's defaults stand in - 33 is
         // the firmware reporting a floor, not a choice.
-        let unset = Capabilities { cpu_speed: 33, gpu_speed: 0, fan3_speed: 0, ..Default::default() };
-        assert_eq!(target_speeds(unset, None), (DEFAULT_CPU_SPEED, DEFAULT_GPU_SPEED, DEFAULT_GPU_SPEED));
+        let unset = Capabilities {
+            cpu_speed: 33,
+            gpu_speed: 0,
+            fan3_speed: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            target_speeds(unset, None),
+            (DEFAULT_CPU_SPEED, DEFAULT_GPU_SPEED, DEFAULT_GPU_SPEED)
+        );
 
         // A request applies to every fan, and is clamped at both ends: a
         // speed the firmware will not take is worse than a slow clean.
         assert_eq!(target_speeds(caps, Some(25)), (25, 25, 25));
-        assert_eq!(target_speeds(caps, Some(200)), (MAX_SPEED, MAX_SPEED, MAX_SPEED));
-        assert_eq!(target_speeds(caps, Some(1)), (MIN_SPEED, MIN_SPEED, MIN_SPEED));
+        assert_eq!(
+            target_speeds(caps, Some(200)),
+            (MAX_SPEED, MAX_SPEED, MAX_SPEED)
+        );
+        assert_eq!(
+            target_speeds(caps, Some(1)),
+            (MIN_SPEED, MIN_SPEED, MIN_SPEED)
+        );
     }
 
     /// A request built by hand carries the header the firmware checks. If
@@ -766,11 +815,22 @@ mod tests {
     fn the_query_and_the_write_are_different_commands() {
         let query = acpi::wmi_request(CMD_MODERN, TYPE_QUERY, MODERN_LEN, &[0u8; MODERN_LEN]);
         let write = acpi::wmi_request(CMD_MODERN, TYPE_WRITE, MODERN_LEN, &[0u8; MODERN_LEN]);
-        assert_ne!(query, write, "44 asks and 46 sets; they must not build the same buffer");
+        assert_ne!(
+            query, write,
+            "44 asks and 46 sets; they must not build the same buffer"
+        );
 
         // "SECU", command 0x00020008, type 44, size 128 - little-endian.
-        assert!(query.starts_with("b53454355080002002c00000080000000"), "got: {}", &query[..34]);
-        assert!(write.starts_with("b53454355080002002e00000080000000"), "got: {}", &write[..34]);
+        assert!(
+            query.starts_with("b53454355080002002c00000080000000"),
+            "got: {}",
+            &query[..34]
+        );
+        assert!(
+            write.starts_with("b53454355080002002e00000080000000"),
+            "got: {}",
+            &write[..34]
+        );
         // Header plus payload, hex, plus the 'b'.
         assert_eq!(query.len(), 1 + (acpi::HEADER_LEN + MODERN_LEN) * 2);
     }
@@ -788,7 +848,10 @@ mod tests {
         assert!(!cycle.expired());
         assert!(cycle.remaining() <= Duration::from_secs(30));
 
-        let done = Cycle { duration: Duration::ZERO, ..cycle };
+        let done = Cycle {
+            duration: Duration::ZERO,
+            ..cycle
+        };
         assert!(done.expired(), "an elapsed cycle is expired, whoever asks");
         assert!(done.remaining().is_zero());
     }
@@ -798,7 +861,11 @@ mod tests {
         let ids: Vec<u64> = (0..8).map(|_| cycle_id()).collect();
         let mut sorted = ids.clone();
         sorted.dedup();
-        assert_eq!(ids.len(), sorted.len(), "a stale watchdog must not match a new cycle");
+        assert_eq!(
+            ids.len(),
+            sorted.len(),
+            "a stale watchdog must not match a new cycle"
+        );
     }
 
     /// With no `acpi_call`, the probe must say so and offer the remedy -
@@ -812,8 +879,14 @@ mod tests {
 
         let probe = probe();
         assert!(!probe.supported);
-        assert!(!probe.answered, "nothing was asked, so nothing was answered");
-        assert!(probe.unreachable.is_some(), "not being able to ask comes with a remedy");
+        assert!(
+            !probe.answered,
+            "nothing was asked, so nothing was answered"
+        );
+        assert!(
+            probe.unreachable.is_some(),
+            "not being able to ask comes with a remedy"
+        );
         assert!(!probe.detail.contains("has no fan cleaner"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -821,11 +894,26 @@ mod tests {
 
     #[test]
     fn the_fans_a_machine_can_clean_are_named_rather_than_counted() {
-        let both = Capabilities { cpu: true, gpu: true, ..Default::default() };
+        let both = Capabilities {
+            cpu: true,
+            gpu: true,
+            ..Default::default()
+        };
         assert_eq!(describe_fans(&both), "the CPU fan and the GPU fan");
-        let one = Capabilities { cpu: true, ..Default::default() };
+        let one = Capabilities {
+            cpu: true,
+            ..Default::default()
+        };
         assert_eq!(describe_fans(&one), "the CPU fan");
-        let all = Capabilities { cpu: true, gpu: true, fan3: true, ..Default::default() };
-        assert_eq!(describe_fans(&all), "the CPU fan, the GPU fan and a third fan");
+        let all = Capabilities {
+            cpu: true,
+            gpu: true,
+            fan3: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            describe_fans(&all),
+            "the CPU fan, the GPU fan and a third fan"
+        );
     }
 }

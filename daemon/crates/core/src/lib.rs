@@ -241,7 +241,11 @@ pub struct Response {
 
 impl Response {
     pub(crate) fn ok(id: u64, result: Value) -> Self {
-        Self { id, result: Some(result), error: None }
+        Self {
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     pub(crate) fn err(id: u64, kind: ErrorKind, message: impl Into<String>) -> Self {
@@ -261,7 +265,12 @@ impl Response {
         Self {
             id,
             result: None,
-            error: Some(WireError { kind, message: msg.text, key: msg.key, params: msg.params }),
+            error: Some(WireError {
+                kind,
+                message: msg.text,
+                key: msg.key,
+                params: msg.params,
+            }),
         }
     }
 }
@@ -289,7 +298,10 @@ pub struct Registry {
 
 impl Registry {
     pub fn new() -> Self {
-        Self { modules: Vec::new(), events: Arc::new(EventBus::new()) }
+        Self {
+            modules: Vec::new(),
+            events: Arc::new(EventBus::new()),
+        }
     }
 
     /// The bus this registry serves. Clone the `Arc` into whatever
@@ -306,7 +318,10 @@ impl Registry {
     pub fn capabilities(&self) -> Vec<ModuleCapability> {
         self.modules
             .iter()
-            .map(|m| ModuleCapability { id: m.id().to_string(), supported: m.is_supported() })
+            .map(|m| ModuleCapability {
+                id: m.id().to_string(),
+                supported: m.is_supported(),
+            })
             .collect()
     }
 
@@ -426,7 +441,10 @@ mod tests {
     }
 
     fn kind_of(module: &str, method: &str, error: fn() -> ModuleError) -> String {
-        reply(module, method, error)["error"]["kind"].as_str().unwrap().to_string()
+        reply(module, method, error)["error"]["kind"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     /// The whole point of the change: a caller branches on `kind` and shows
@@ -439,7 +457,10 @@ mod tests {
         });
 
         assert_eq!(reply["error"]["kind"], "permissionDenied");
-        assert!(reply["error"]["message"].as_str().unwrap().contains("/sys/x"));
+        assert!(reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("/sys/x"));
         assert_eq!(reply["id"], 7);
         assert!(reply.get("result").is_none(), "a refusal has no result");
     }
@@ -482,15 +503,21 @@ mod tests {
     #[test]
     fn the_three_kinds_of_refusal_are_told_apart() {
         assert_eq!(
-            kind_of("stub", "x", || ModuleError::NotCapable("no pwm1 here".into())),
+            kind_of("stub", "x", || ModuleError::NotCapable(
+                "no pwm1 here".into()
+            )),
             "notCapable"
         );
         assert_eq!(
-            kind_of("stub", "x", || ModuleError::InvalidParams("pwm must be 0-255".into())),
+            kind_of("stub", "x", || ModuleError::InvalidParams(
+                "pwm must be 0-255".into()
+            )),
             "invalidParams"
         );
         assert_eq!(
-            kind_of("stub", "x", || ModuleError::PermissionDenied("needs root".into())),
+            kind_of("stub", "x", || ModuleError::PermissionDenied(
+                "needs root".into()
+            )),
             "permissionDenied"
         );
     }
@@ -498,11 +525,20 @@ mod tests {
     #[test]
     fn every_variant_reaches_the_wire_as_its_own_kind() {
         for (error, expected) in [
-            (ModuleError::UnknownMethod("x".into()), ErrorKind::UnknownMethod),
+            (
+                ModuleError::UnknownMethod("x".into()),
+                ErrorKind::UnknownMethod,
+            ),
             (ModuleError::Unsupported, ErrorKind::Unsupported),
             (ModuleError::NotCapable("x".into()), ErrorKind::NotCapable),
-            (ModuleError::InvalidParams("x".into()), ErrorKind::InvalidParams),
-            (ModuleError::PermissionDenied("x".into()), ErrorKind::PermissionDenied),
+            (
+                ModuleError::InvalidParams("x".into()),
+                ErrorKind::InvalidParams,
+            ),
+            (
+                ModuleError::PermissionDenied("x".into()),
+                ErrorKind::PermissionDenied,
+            ),
             (ModuleError::Io("x".into()), ErrorKind::Io),
             (ModuleError::Busy("x".into()), ErrorKind::Busy),
             (ModuleError::Internal("x".into()), ErrorKind::Internal),
@@ -517,12 +553,18 @@ mod tests {
     /// looking in the wrong place.
     #[test]
     fn an_absent_module_and_an_absent_method_are_different_kinds() {
-        assert_eq!(kind_of("nosuch", "x", || ModuleError::Failed("x".into())), "unknownModule");
+        assert_eq!(
+            kind_of("nosuch", "x", || ModuleError::Failed("x".into())),
+            "unknownModule"
+        );
         assert_eq!(
             kind_of("stub", "x", || ModuleError::UnknownMethod("x".into())),
             "unknownMethod"
         );
-        assert_eq!(kind_of("core", "nosuch", || ModuleError::Failed("x".into())), "unknownMethod");
+        assert_eq!(
+            kind_of("core", "nosuch", || ModuleError::Failed("x".into())),
+            "unknownMethod"
+        );
     }
 
     /// `as_str` is exhaustive because the compiler says so; `ALL` is not,
@@ -546,8 +588,12 @@ mod tests {
     }
 
     fn core_call(registry: &Registry, method: &str, params: Value) -> Value {
-        let response =
-            registry.dispatch(Request { id: 1, module: "core".into(), method: method.into(), params });
+        let response = registry.dispatch(Request {
+            id: 1,
+            module: "core".into(),
+            method: method.into(),
+            params,
+        });
         serde_json::to_value(response).expect("a response must serialise")
     }
 
@@ -556,20 +602,35 @@ mod tests {
     #[test]
     fn a_first_poll_starts_from_now_rather_than_replaying_the_ring() {
         let registry = Registry::new();
-        registry.events().publish("hotkey.pressed", serde_json::json!({ "action": "powerCycle" }));
+        registry.events().publish(
+            "hotkey.pressed",
+            serde_json::json!({ "action": "powerCycle" }),
+        );
 
-        let reply = core_call(&registry, "nextEvent", serde_json::json!({ "timeoutMs": 0 }));
+        let reply = core_call(
+            &registry,
+            "nextEvent",
+            serde_json::json!({ "timeoutMs": 0 }),
+        );
         assert_eq!(reply["result"]["events"].as_array().unwrap().len(), 0);
-        assert_eq!(reply["result"]["seq"], 1, "it still learns where the stream is");
+        assert_eq!(
+            reply["result"]["seq"], 1,
+            "it still learns where the stream is"
+        );
     }
 
     #[test]
     fn polling_with_a_sequence_returns_what_happened_after_it() {
         let registry = Registry::new();
-        registry.events().publish("power.mode", serde_json::json!({ "mode": "eco" }));
+        registry
+            .events()
+            .publish("power.mode", serde_json::json!({ "mode": "eco" }));
 
-        let reply =
-            core_call(&registry, "nextEvent", serde_json::json!({ "since": 0, "timeoutMs": 0 }));
+        let reply = core_call(
+            &registry,
+            "nextEvent",
+            serde_json::json!({ "since": 0, "timeoutMs": 0 }),
+        );
         assert_eq!(reply["result"]["events"][0]["topic"], "power.mode");
         assert_eq!(reply["result"]["events"][0]["payload"]["mode"], "eco");
     }
@@ -580,8 +641,15 @@ mod tests {
     #[test]
     fn a_malformed_since_is_a_caller_error_and_not_a_hang() {
         let registry = Registry::new();
-        let reply = core_call(&registry, "nextEvent", serde_json::json!({ "since": "latest" }));
+        let reply = core_call(
+            &registry,
+            "nextEvent",
+            serde_json::json!({ "since": "latest" }),
+        );
         assert_eq!(reply["error"]["kind"], "invalidParams");
-        assert!(reply["error"]["message"].as_str().unwrap().contains("since"));
+        assert!(reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("since"));
     }
 }

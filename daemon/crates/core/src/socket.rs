@@ -219,8 +219,7 @@ mod tests {
     /// the mode after creating it is immune to whatever umask was in
     /// force.
     fn fixture(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-socket-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pyren-socket-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -240,7 +239,10 @@ mod tests {
             if entry.is_null() {
                 return None;
             }
-            std::ffi::CStr::from_ptr((*entry).gr_name).to_str().ok().map(str::to_string)
+            std::ffi::CStr::from_ptr((*entry).gr_name)
+                .to_str()
+                .ok()
+                .map(str::to_string)
         }
     }
 
@@ -251,7 +253,11 @@ mod tests {
             bind_restricted(&path, "pyren-group-that-does-not-exist").unwrap();
 
         assert_eq!(audience, Audience::OwnerOnly);
-        assert_eq!(mode_of(&path), 0o600, "must not be reachable by other users");
+        assert_eq!(
+            mode_of(&path),
+            0o600,
+            "must not be reachable by other users"
+        );
     }
 
     #[test]

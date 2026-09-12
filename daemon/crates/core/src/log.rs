@@ -90,7 +90,10 @@ static LEVEL: OnceLock<Level> = OnceLock::new();
 /// would be a worse outcome than logging slightly more than was asked for.
 pub fn level() -> Level {
     *LEVEL.get_or_init(|| {
-        std::env::var("PYREN_LOG").ok().and_then(|v| Level::parse(&v)).unwrap_or(Level::Info)
+        std::env::var("PYREN_LOG")
+            .ok()
+            .and_then(|v| Level::parse(&v))
+            .unwrap_or(Level::Info)
     })
 }
 

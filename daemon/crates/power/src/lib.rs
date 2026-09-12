@@ -81,8 +81,12 @@ impl PowerMode {
     /// The same order the app lists them in - a widget that highlights the
     /// current one has to agree with the key that moves the highlight, so
     /// there is one list and this is it.
-    pub const ALL: &'static [Self] =
-        &[Self::Eco, Self::Balanced, Self::Performance, Self::Unlimited];
+    pub const ALL: &'static [Self] = &[
+        Self::Eco,
+        Self::Balanced,
+        Self::Performance,
+        Self::Unlimited,
+    ];
 
     /// The next mode round the loop, wrapping back to Eco.
     pub fn next(self) -> Self {
@@ -293,7 +297,10 @@ impl PowerModule {
         let loaded = store.load::<PowerConfig>("power");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
-                log_info!("power config loaded from {}", store.path_for("power").display());
+                log_info!(
+                    "power config loaded from {}",
+                    store.path_for("power").display()
+                );
             }
             LoadOutcome::Missing => {}
             LoadOutcome::Recovered { backup, reason } => {
@@ -376,7 +383,14 @@ impl PowerModule {
             announce.clone(),
             Arc::downgrade(&alive),
         );
-        Self { state, store, limits: limit_paths, announce, sensors, _alive: alive }
+        Self {
+            state,
+            store,
+            limits: limit_paths,
+            announce,
+            sensors,
+            _alive: alive,
+        }
     }
 
     /// One look at the machine, as the watcher thread takes every
@@ -420,7 +434,12 @@ impl PowerModule {
         let from = self.mode();
         let to = from.next();
         let report = self.choose(to, "hotkey");
-        Cycled { from, to: self.mode(), asked_for: to, report }
+        Cycled {
+            from,
+            to: self.mode(),
+            asked_for: to,
+            report,
+        }
     }
 
     /// A mode the user picked - in the app, from `pyren-ctl` or with the
@@ -687,12 +706,15 @@ impl Module for PowerModule {
             }
 
             "setApplyToOsProfile" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::localised(
-                        ErrorKind::InvalidParams,
-                        msg!("power.err.enabledBool", "params.enabled must be a boolean"),
-                    )
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!("power.err.enabledBool", "params.enabled must be a boolean"),
+                        )
+                    })?;
                 let mode = {
                     let mut state = lock(&self.state);
                     state.config.apply_to_os_profile = enabled;
@@ -707,12 +729,15 @@ impl Module for PowerModule {
             }
 
             "setRestoreOnStart" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::localised(
-                        ErrorKind::InvalidParams,
-                        msg!("power.err.enabledBool", "params.enabled must be a boolean"),
-                    )
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!("power.err.enabledBool", "params.enabled must be a boolean"),
+                        )
+                    })?;
                 let mut state = lock(&self.state);
                 state.config.restore_mode_on_start = enabled;
                 // Remember the current mode straight away, so enabling this
@@ -829,7 +854,9 @@ fn spawn_watcher(
     std::thread::spawn(move || loop {
         std::thread::sleep(watch::INTERVAL);
         // Held for the look, so a module dropped mid-way finishes it first.
-        let Some(_alive) = alive.upgrade() else { return };
+        let Some(_alive) = alive.upgrade() else {
+            return;
+        };
         watch_once(&state, &store, &paths, &announce);
     });
 }
@@ -842,7 +869,12 @@ fn watch_once(
 ) -> Option<PowerMode> {
     let mut guard = lock(state);
     let now = watch::Knobs::read(paths);
-    let found = watch::examine(guard.mode, &guard.expected, &now, guard.expected_at.elapsed());
+    let found = watch::examine(
+        guard.mode,
+        &guard.expected,
+        &now,
+        guard.expected_at.elapsed(),
+    );
 
     if let Some(profile) = found.same_mode_profile {
         guard.expected.platform_profile = Some(profile);
@@ -861,7 +893,11 @@ fn watch_once(
             finding.knob,
             finding.expected,
             finding.found,
-            if finding.reverted { ", straight after pyren set it" } else { "" }
+            if finding.reverted {
+                ", straight after pyren set it"
+            } else {
+                ""
+            }
         );
         news.push(finding.clone());
         match known {
@@ -881,7 +917,10 @@ fn watch_once(
     let envelope = apply_envelope(mode, &guard.config, paths);
     guard.mode = mode;
     guard.config.mode = Some(mode);
-    guard.expected = watch::Knobs { platform_profile: Some(profile.clone()), ..envelope.expected };
+    guard.expected = watch::Knobs {
+        platform_profile: Some(profile.clone()),
+        ..envelope.expected
+    };
     guard.expected_at = Instant::now();
     // Someone other than the supervisor picked this, which is what a
     // manual choice is: the supervisor stands back, then works around it.
@@ -896,7 +935,9 @@ fn watch_once(
     persist(store, &mut guard);
     drop(guard);
 
-    log_info!("power: firmware profile changed to {profile} elsewhere, following {from:?} -> {mode:?}");
+    log_info!(
+        "power: firmware profile changed to {profile} elsewhere, following {from:?} -> {mode:?}"
+    );
     news.iter().for_each(|finding| announce.overridden(finding));
     announce.publish(mode, "external");
     Some(mode)
@@ -940,9 +981,16 @@ fn apply_profile(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPat
 /// each knob it was meant to set and did not fail to: a value the kernel
 /// clamped is the value to watch, and one this daemon could not write is
 /// not its to watch at all.
-fn apply_envelope(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPaths) -> ApplyReport {
-    let mut report =
-        ApplyReport { applied: Vec::new(), failed: Vec::new(), expected: watch::Knobs::default() };
+fn apply_envelope(
+    mode: PowerMode,
+    config: &PowerConfig,
+    paths: &limits::LimitPaths,
+) -> ApplyReport {
+    let mut report = ApplyReport {
+        applied: Vec::new(),
+        failed: Vec::new(),
+        expected: watch::Knobs::default(),
+    };
 
     let stock = config.stock_limits.unwrap_or_default();
     let tuning = config.tuning.get(mode);
@@ -1022,7 +1070,10 @@ fn saved_response(state: &State) -> Value {
 /// mechanism is present.
 fn current_mode() -> Option<PowerMode> {
     let state = backend::read_state();
-    let name = state.platform_profile.or(state.power_profiles_daemon).or(state.tlp)?;
+    let name = state
+        .platform_profile
+        .or(state.power_profiles_daemon)
+        .or(state.tlp)?;
     mode_for_profile(&name)
 }
 
@@ -1054,7 +1105,10 @@ fn percent_of(watts: f64, stock_uw: Option<u64>) -> Result<u8, ModuleError> {
     if !watts.is_finite() || watts <= 0.0 {
         return Err(ModuleError::localised(
             ErrorKind::InvalidParams,
-            msg!("power.err.wattsPositive", "power limits must be a positive number of watts"),
+            msg!(
+                "power.err.wattsPositive",
+                "power limits must be a positive number of watts"
+            ),
         ));
     }
     let percent = (watts * 1_000_000.0 / stock_uw as f64 * 100.0).round();
@@ -1090,8 +1144,16 @@ mod tests {
     /// the machine's ceiling, and every boot would shave a little more off.
     #[test]
     fn a_capped_machine_does_not_become_its_own_new_ceiling() {
-        let stored = Limits { pl1_uw: Some(77 * W), pl2_uw: Some(77 * W), pl4_uw: None };
-        let while_capped = Limits { pl1_uw: Some(34 * W), pl2_uw: Some(42 * W), pl4_uw: None };
+        let stored = Limits {
+            pl1_uw: Some(77 * W),
+            pl2_uw: Some(77 * W),
+            pl4_uw: None,
+        };
+        let while_capped = Limits {
+            pl1_uw: Some(34 * W),
+            pl2_uw: Some(42 * W),
+            pl4_uw: None,
+        };
 
         assert_eq!(highest(Some(stored), while_capped), stored);
     }
@@ -1099,12 +1161,23 @@ mod tests {
     /// A value above what is on file can only have come from the firmware.
     #[test]
     fn a_higher_reading_replaces_the_recorded_stock() {
-        let stored = Limits { pl1_uw: Some(45 * W), ..Default::default() };
-        let observed = Limits { pl1_uw: Some(77 * W), pl4_uw: Some(168 * W) , ..Default::default() };
+        let stored = Limits {
+            pl1_uw: Some(45 * W),
+            ..Default::default()
+        };
+        let observed = Limits {
+            pl1_uw: Some(77 * W),
+            pl4_uw: Some(168 * W),
+            ..Default::default()
+        };
 
         let merged = highest(Some(stored), observed);
         assert_eq!(merged.pl1_uw, Some(77 * W));
-        assert_eq!(merged.pl4_uw, Some(168 * W), "a limit seen for the first time is recorded");
+        assert_eq!(
+            merged.pl4_uw,
+            Some(168 * W),
+            "a limit seen for the first time is recorded"
+        );
     }
 
     #[test]
@@ -1137,7 +1210,8 @@ mod tests {
     /// a machine it is allowed to change.
     #[test]
     fn a_profile_on_a_machine_without_powercap_still_applies_the_os_half() {
-        let nowhere = std::env::temp_dir().join(format!("pyren-power-nowhere-{}", std::process::id()));
+        let nowhere =
+            std::env::temp_dir().join(format!("pyren-power-nowhere-{}", std::process::id()));
         std::env::set_var("PYREN_PLATFORM_PROFILE", nowhere.join("platform_profile"));
         std::env::set_var("PYREN_CPU_ROOT", nowhere.join("cpu"));
         std::env::set_var("PYREN_TOOLS_DIR", nowhere.join("bin"));
@@ -1148,7 +1222,11 @@ mod tests {
         assert!(!report.applied.iter().any(|a| a.starts_with("PL")));
         assert!(!report.applied.iter().any(|a| a.starts_with("turbo")));
 
-        for name in ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_TOOLS_DIR"] {
+        for name in [
+            "PYREN_PLATFORM_PROFILE",
+            "PYREN_CPU_ROOT",
+            "PYREN_TOOLS_DIR",
+        ] {
             std::env::remove_var(name);
         }
     }
@@ -1166,7 +1244,10 @@ mod tests {
     fn a_mode_change_is_announced_with_who_asked_for_it() {
         let bus = Arc::new(EventBus::new());
         let announce = Announcer::default();
-        announce.0.set(Arc::clone(&bus)).expect("a fresh announcer is empty");
+        announce
+            .0
+            .set(Arc::clone(&bus))
+            .expect("a fresh announcer is empty");
 
         announce.publish(PowerMode::Performance, "hotkey");
 
@@ -1198,18 +1279,25 @@ mod tests {
         while seen.len() < PowerMode::ALL.len() {
             seen.push(seen[seen.len() - 1].next());
         }
-        assert_eq!(seen, PowerMode::ALL, "every mode is reachable by pressing the key");
+        assert_eq!(
+            seen,
+            PowerMode::ALL,
+            "every mode is reachable by pressing the key"
+        );
     }
 
     #[test]
     fn modes_serialize_as_the_names_the_frontend_sends() {
-        assert_eq!(serde_json::to_string(&PowerMode::Performance).unwrap(), "\"performance\"");
+        assert_eq!(
+            serde_json::to_string(&PowerMode::Performance).unwrap(),
+            "\"performance\""
+        );
     }
 
     /// A store under the temp dir, so tests never touch the real /etc.
     fn test_store(tag: &str) -> ConfigStore {
-        let root = std::env::temp_dir()
-            .join(format!("pyren-power-test-{tag}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pyren-power-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         ConfigStore::at(root)
     }
@@ -1219,7 +1307,11 @@ mod tests {
         let store = test_store("restart");
 
         let module = PowerModule::with_store(store.clone());
-        let wanted = AutoConfig { enabled: true, load_high: 0.42, ..AutoConfig::default() };
+        let wanted = AutoConfig {
+            enabled: true,
+            load_high: 0.42,
+            ..AutoConfig::default()
+        };
         module
             .call("setAutoConfig", serde_json::to_value(&wanted).unwrap())
             .expect("setAutoConfig should succeed");
@@ -1237,19 +1329,35 @@ mod tests {
     #[test]
     fn switching_auto_back_on_starts_the_supervisor_from_scratch() {
         let module = PowerModule::with_store(test_store("re-enable"));
-        let off = AutoConfig { enabled: false, ..AutoConfig::default() };
-        module.call("setAutoConfig", serde_json::to_value(&off).unwrap()).unwrap();
+        let off = AutoConfig {
+            enabled: false,
+            ..AutoConfig::default()
+        };
+        module
+            .call("setAutoConfig", serde_json::to_value(&off).unwrap())
+            .unwrap();
         lock(&module.state).switcher.adopt(PowerMode::Unlimited);
 
-        let on = AutoConfig { enabled: true, ..off };
-        module.call("setAutoConfig", serde_json::to_value(&on).unwrap()).unwrap();
+        let on = AutoConfig {
+            enabled: true,
+            ..off
+        };
+        module
+            .call("setAutoConfig", serde_json::to_value(&on).unwrap())
+            .unwrap();
 
         let state = lock(&module.state);
         // Only the baseline is asserted: the supervisor thread is live, and
         // may already have taken a real sample of the power source - which
         // is a first sample, and so cannot bring a baseline back.
-        assert_eq!(state.switcher.manual_baseline(&state.config.auto, false), None);
-        assert_eq!(state.switcher.manual_baseline(&state.config.auto, true), None);
+        assert_eq!(
+            state.switcher.manual_baseline(&state.config.auto, false),
+            None
+        );
+        assert_eq!(
+            state.switcher.manual_baseline(&state.config.auto, true),
+            None
+        );
     }
 
     /// A config the supervisor cannot run on is refused, and the stored
@@ -1257,9 +1365,18 @@ mod tests {
     #[test]
     fn an_auto_config_with_crossed_thresholds_is_refused() {
         let module = PowerModule::with_store(test_store("crossed"));
-        let crossed = AutoConfig { load_low: 0.9, load_high: 0.5, ..AutoConfig::default() };
-        assert!(module.call("setAutoConfig", serde_json::to_value(&crossed).unwrap()).is_err());
-        assert_eq!(lock(&module.state).config.auto.load_low, AutoConfig::default().load_low);
+        let crossed = AutoConfig {
+            load_low: 0.9,
+            load_high: 0.5,
+            ..AutoConfig::default()
+        };
+        assert!(module
+            .call("setAutoConfig", serde_json::to_value(&crossed).unwrap())
+            .is_err());
+        assert_eq!(
+            lock(&module.state).config.auto.load_low,
+            AutoConfig::default().load_low
+        );
     }
 
     #[test]
@@ -1282,6 +1399,8 @@ mod tests {
     #[test]
     fn a_bad_enabled_parameter_is_rejected() {
         let module = PowerModule::with_store(test_store("bad-param"));
-        assert!(module.call("setRestoreOnStart", json!({ "enabled": "yes" })).is_err());
+        assert!(module
+            .call("setRestoreOnStart", json!({ "enabled": "yes" }))
+            .is_err());
     }
 }

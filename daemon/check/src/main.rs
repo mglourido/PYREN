@@ -64,7 +64,10 @@ fn main() -> ExitCode {
         print!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    if let Some(unknown) = args.iter().find(|a| !matches!(a.as_str(), "--write" | "--json")) {
+    if let Some(unknown) = args
+        .iter()
+        .find(|a| !matches!(a.as_str(), "--write" | "--json"))
+    {
         eprintln!("pyren-check: unknown argument '{unknown}'\n\n{HELP}");
         return ExitCode::from(64);
     }
@@ -103,9 +106,18 @@ fn main() -> ExitCode {
             "power": power_section,
             "lighting": lighting_section,
         });
-        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_default()
+        );
     } else {
-        print_report(&identity, &diagnosis, &power_section, &lighting_section, allow_writes);
+        print_report(
+            &identity,
+            &diagnosis,
+            &power_section,
+            &lighting_section,
+            allow_writes,
+        );
     }
 
     match diagnosis.verdict {
@@ -132,7 +144,11 @@ fn print_report(
     for check in &diagnosis.checks {
         print_check(check);
     }
-    println!("  {} passed, {} failed", diagnosis.passed(), diagnosis.failed());
+    println!(
+        "  {} passed, {} failed",
+        diagnosis.passed(),
+        diagnosis.failed()
+    );
     for line in wrap(&diagnosis.summary.text, 72) {
         println!("  {line}");
     }
@@ -168,7 +184,12 @@ fn print_section(title: &str, section: &compat::Section) {
 }
 
 fn print_check(check: &Check) {
-    println!("  {}  {:<28} {}", marker(check.status), check.title.text, check.detail.text);
+    println!(
+        "  {}  {:<28} {}",
+        marker(check.status),
+        check.title.text,
+        check.detail.text
+    );
     if let Some(remedy) = &check.remedy {
         for line in wrap(&remedy.text, 68) {
             println!("        {line}");

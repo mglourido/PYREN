@@ -131,7 +131,10 @@ struct Tokens<'a> {
 
 impl<'a> Tokens<'a> {
     fn new(path: &'a str) -> Self {
-        Self { bytes: path.as_bytes(), at: 0 }
+        Self {
+            bytes: path.as_bytes(),
+            at: 0,
+        }
     }
 
     fn skip_separators(&mut self) {
@@ -169,7 +172,10 @@ impl<'a> Tokens<'a> {
         if start == self.at {
             return None;
         }
-        std::str::from_utf8(&self.bytes[start..self.at]).ok()?.parse().ok()
+        std::str::from_utf8(&self.bytes[start..self.at])
+            .ok()?
+            .parse()
+            .ok()
     }
 
     fn pair(&mut self) -> Option<(f64, f64)> {
@@ -211,7 +217,10 @@ mod tests {
                 x1 - x0,
                 y1 - y0
             );
-            assert!(x0 >= 0.0 && y0 >= 0.0 && x1 <= VIEWBOX && y1 <= VIEWBOX, "{name} left the box");
+            assert!(
+                x0 >= 0.0 && y0 >= 0.0 && x1 <= VIEWBOX && y1 <= VIEWBOX,
+                "{name} left the box"
+            );
         }
     }
 
@@ -219,14 +228,20 @@ mod tests {
     fn a_repeated_coordinate_pair_continues_the_previous_command() {
         // "M12 3 21 12" is a move followed by a line, with no `L` in it.
         let (x0, _, x1, _) = extents("M12 3 21 12");
-        assert!((x1 - x0 - 9.0).abs() < 0.01, "the implicit lineto was not drawn");
+        assert!(
+            (x1 - x0 - 9.0).abs() < 0.01,
+            "the implicit lineto was not drawn"
+        );
     }
 
     #[test]
     fn an_unknown_command_stops_the_walk_rather_than_being_skipped() {
         // `A` (an arc) is not supported; what came before it still draws.
         let (_, _, x1, _) = extents("M2 2 10 2 A 5 5 0 0 1 20 2");
-        assert!(x1 <= 10.01, "the arc's endpoint was drawn as though it were a line");
+        assert!(
+            x1 <= 10.01,
+            "the arc's endpoint was drawn as though it were a line"
+        );
     }
 
     /// The app and the widget draw the same four icons. This reads the
@@ -239,9 +254,12 @@ mod tests {
         ))
         .expect("the app's Icon.svelte must be readable from here");
 
-        for (name, path) in
-            [("leaf", LEAF), ("diamond", DIAMOND), ("bars", BARS), ("boltbars", BOLTBARS)]
-        {
+        for (name, path) in [
+            ("leaf", LEAF),
+            ("diamond", DIAMOND),
+            ("bars", BARS),
+            ("boltbars", BOLTBARS),
+        ] {
             let expected = format!("{name}: \"{path}\"");
             assert!(
                 source.contains(&expected),

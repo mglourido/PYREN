@@ -26,18 +26,30 @@ pub enum Message {
     /// mode itself. Kept because the event is a released protocol and a
     /// widget that cannot read the previous daemon is a widget that breaks
     /// on the one upgrade nobody sequences.
-    Pressed { mode: Mode, changed: bool, refusal: Option<String> },
+    Pressed {
+        mode: Mode,
+        changed: bool,
+        refusal: Option<String>,
+    },
     /// The mode is this now - from the daemon at startup, or after a click.
     Mode(Mode),
     /// The fan mode and what this machine can do with it - from
     /// `fan.getStatus` on reconnect, and from the reply to a click. The
     /// widget needs `switch_mode`/`set_speed` to know which of the four
     /// cards to draw, so this carries more than `FanModeChanged`.
-    FanState { mode: FanMode, manual_percent: u8, switch_mode: bool, set_speed: bool },
+    FanState {
+        mode: FanMode,
+        manual_percent: u8,
+        switch_mode: bool,
+        set_speed: bool,
+    },
     /// The fan mode moved - a `fan.mode` event, from the app, the CLI, or
     /// this widget. `manual_percent` rides along so the slider tracks a
     /// change made elsewhere.
-    FanModeChanged { mode: FanMode, manual_percent: u8 },
+    FanModeChanged {
+        mode: FanMode,
+        manual_percent: u8,
+    },
     /// A call the widget asked for was refused.
     Refused(String),
     /// The daemon could not be reached. Carried rather than logged because
@@ -132,7 +144,9 @@ fn fan_state(status: &Value) -> Option<Message> {
     let manual_pwm = status.get("manualPwm").and_then(Value::as_u64).unwrap_or(0);
     let caps = status.get("capabilities");
     let cap = |name: &str| {
-        caps.and_then(|c| c.get(name)).and_then(Value::as_bool).unwrap_or(false)
+        caps.and_then(|c| c.get(name))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     };
     Some(Message::FanState {
         mode,
@@ -195,7 +209,12 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
                     (previous, seq) => seq.or(previous),
                 };
 
-                for event in reply.get("events").and_then(Value::as_array).into_iter().flatten() {
+                for event in reply
+                    .get("events")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if let Some(message) = interpret(event) {
                         if events.send_blocking(message).is_err() {
                             return;
@@ -208,7 +227,9 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
                 // if it was never there - not on every retry, which would
                 // be a line every two seconds for as long as it is down.
                 if (connected || since.is_none())
-                    && events.send_blocking(Message::Unreachable(e.to_string())).is_err()
+                    && events
+                        .send_blocking(Message::Unreachable(e.to_string()))
+                        .is_err()
                 {
                     return;
                 }
@@ -253,15 +274,26 @@ fn interpret(event: &Value) -> Option<Message> {
             if payload.get("action").and_then(Value::as_str) == Some("show") {
                 return Some(Message::Show(mode));
             }
-            let changed = payload.get("changed").and_then(Value::as_bool).unwrap_or(true);
+            let changed = payload
+                .get("changed")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             let refusal = payload
                 .get("failed")
                 .and_then(Value::as_array)
                 .map(|failed| {
-                    failed.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")
+                    failed
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 })
                 .filter(|failed| !failed.is_empty());
-            Some(Message::Pressed { mode, changed, refusal })
+            Some(Message::Pressed {
+                mode,
+                changed,
+                refusal,
+            })
         }
         "power.mode" => Some(Message::Mode(Mode::parse(payload.get("mode")?.as_str()?)?)),
         "fan.mode" => {
@@ -271,7 +303,10 @@ fn interpret(event: &Value) -> Option<Message> {
                 .and_then(Value::as_u64)
                 .map(|pwm| percent_from_pwm(pwm.min(255) as u8))
                 .unwrap_or(0);
-            Some(Message::FanModeChanged { mode, manual_percent })
+            Some(Message::FanModeChanged {
+                mode,
+                manual_percent,
+            })
         }
         _ => None,
     }
@@ -329,7 +364,11 @@ mod tests {
         ));
 
         match message {
-            Some(Message::Pressed { mode, changed, refusal }) => {
+            Some(Message::Pressed {
+                mode,
+                changed,
+                refusal,
+            }) => {
                 assert_eq!(mode, Mode::Performance);
                 assert!(changed);
                 assert_eq!(refusal, None);
@@ -353,7 +392,9 @@ mod tests {
         ));
 
         match message {
-            Some(Message::Pressed { changed, refusal, .. }) => {
+            Some(Message::Pressed {
+                changed, refusal, ..
+            }) => {
                 assert!(!changed);
                 assert!(refusal.unwrap().contains("busy"));
             }
@@ -370,7 +411,10 @@ mod tests {
 
     #[test]
     fn a_mode_change_from_anywhere_moves_the_highlight() {
-        match interpret(&event("power.mode", json!({ "mode": "unlimited", "source": "hotkey" }))) {
+        match interpret(&event(
+            "power.mode",
+            json!({ "mode": "unlimited", "source": "hotkey" }),
+        )) {
             Some(Message::Mode(mode)) => assert_eq!(mode, Mode::Unlimited),
             other => panic!("expected a mode, got {other:?}"),
         }
@@ -380,8 +424,14 @@ mod tests {
     /// highlight, and the manual speed rides along for the slider.
     #[test]
     fn a_fan_mode_change_moves_the_second_row_and_carries_the_manual_speed() {
-        match interpret(&event("fan.mode", json!({ "mode": "manual", "manualPwm": 128 }))) {
-            Some(Message::FanModeChanged { mode, manual_percent }) => {
+        match interpret(&event(
+            "fan.mode",
+            json!({ "mode": "manual", "manualPwm": 128 }),
+        )) {
+            Some(Message::FanModeChanged {
+                mode,
+                manual_percent,
+            }) => {
                 assert_eq!(mode, FanMode::Manual);
                 assert_eq!(manual_percent, 50, "128/255 rounds to 50 %");
             }
@@ -399,7 +449,11 @@ mod tests {
     /// positive percentage.
     #[test]
     fn the_manual_speed_survives_the_round_trip_through_pwm() {
-        assert_eq!(pwm_from_percent(0), 1, "0 % is still a commanded speed, not the auto sentinel");
+        assert_eq!(
+            pwm_from_percent(0),
+            1,
+            "0 % is still a commanded speed, not the auto sentinel"
+        );
         assert_eq!(pwm_from_percent(100), 255);
         assert_eq!(percent_from_pwm(255), 100);
         assert_eq!(percent_from_pwm(0), 0);

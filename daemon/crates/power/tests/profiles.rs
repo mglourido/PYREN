@@ -70,17 +70,29 @@ impl Machine {
     /// The full machine: every mechanism present, at stock, in Balanced.
     fn new(tag: &str) -> Self {
         let guard = machine_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let root = std::env::temp_dir()
-            .join(format!("pyren-power-profiles-{tag}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pyren-power-profiles-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
-        let machine = Self { root, _guard: guard };
+        let machine = Self {
+            root,
+            _guard: guard,
+        };
         machine.write("acpi/platform_profile", "balanced");
-        machine.write("acpi/platform_profile_choices", "low-power balanced performance");
+        machine.write(
+            "acpi/platform_profile_choices",
+            "low-power balanced performance",
+        );
 
         for cpu in 0..4 {
-            machine.write(&format!("cpu/cpu{cpu}/cpufreq/energy_performance_preference"), "balance_performance");
-            machine.write(&format!("cpu/cpu{cpu}/cpufreq/scaling_governor"), "powersave");
+            machine.write(
+                &format!("cpu/cpu{cpu}/cpufreq/energy_performance_preference"),
+                "balance_performance",
+            );
+            machine.write(
+                &format!("cpu/cpu{cpu}/cpufreq/scaling_governor"),
+                "powersave",
+            );
         }
         // `intel_pstate/no_turbo`, whose polarity is inverted: 1 is off.
         machine.write("cpu/intel_pstate/no_turbo", "0");
@@ -97,7 +109,10 @@ impl Machine {
         // could not catch a regression in it.
         machine.write("powercap/intel-rapl:0:0/name", "core");
         machine.write("powercap/intel-rapl-mmio:0/name", "package-0");
-        machine.write("powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw", "28000000");
+        machine.write(
+            "powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw",
+            "28000000",
+        );
 
         machine.write_os_profile("balanced");
         machine.install_profiles_service();
@@ -107,12 +122,15 @@ impl Machine {
 
     fn write(&self, name: &str, contents: &str) {
         let path = self.root.join(name);
-        std::fs::create_dir_all(path.parent().expect("fixture files are nested")).expect("fixture dir");
+        std::fs::create_dir_all(path.parent().expect("fixture files are nested"))
+            .expect("fixture dir");
         std::fs::write(path, contents).expect("fixture file");
     }
 
     fn read(&self, name: &str) -> Option<String> {
-        std::fs::read_to_string(self.root.join(name)).ok().map(|v| v.trim().to_string())
+        std::fs::read_to_string(self.root.join(name))
+            .ok()
+            .map(|v| v.trim().to_string())
     }
 
     fn zone(&self) -> PathBuf {
@@ -120,10 +138,10 @@ impl Machine {
     }
 
     fn write_limits(&self, limits: Limits) {
-        for (constraint, value) in
-            [(0, limits.pl1_uw), (1, limits.pl2_uw), (2, limits.pl4_uw)]
-        {
-            let path = self.zone().join(format!("constraint_{constraint}_power_limit_uw"));
+        for (constraint, value) in [(0, limits.pl1_uw), (1, limits.pl2_uw), (2, limits.pl4_uw)] {
+            let path = self
+                .zone()
+                .join(format!("constraint_{constraint}_power_limit_uw"));
             match value {
                 Some(value) => {
                     std::fs::create_dir_all(self.zone()).expect("zone dir");
@@ -280,7 +298,10 @@ impl Machine {
     /// that removes a mechanism, since the variables are what say where -
     /// and what says a path is absent is the file not being there.
     fn apply_env(&self) {
-        std::env::set_var("PYREN_PLATFORM_PROFILE", self.root.join("acpi/platform_profile"));
+        std::env::set_var(
+            "PYREN_PLATFORM_PROFILE",
+            self.root.join("acpi/platform_profile"),
+        );
         std::env::set_var("PYREN_CPU_ROOT", self.root.join("cpu"));
         std::env::set_var("PYREN_POWERCAP", self.root.join("powercap"));
         std::env::set_var("PYREN_TOOLS_DIR", self.root.join("bin"));
@@ -301,12 +322,14 @@ impl Machine {
 
     /// The laptop's own profile - the half that moves the EC's fan curve.
     fn hardware_profile(&self) -> String {
-        self.read("acpi/platform_profile").expect("the fixture has a platform profile")
+        self.read("acpi/platform_profile")
+            .expect("the fixture has a platform profile")
     }
 
     /// The OS profile - the half the desktop's battery menu shows.
     fn os_profile(&self) -> String {
-        self.read("os_profile").expect("the fixture has an OS profile")
+        self.read("os_profile")
+            .expect("the fixture has an OS profile")
     }
 
     /// Every OS profile ever asked for, oldest first.
@@ -318,10 +341,16 @@ impl Machine {
 
     fn limits(&self) -> Limits {
         let read = |constraint: u8| {
-            self.read(&format!("powercap/intel-rapl:0/constraint_{constraint}_power_limit_uw"))
-                .and_then(|v| v.parse().ok())
+            self.read(&format!(
+                "powercap/intel-rapl:0/constraint_{constraint}_power_limit_uw"
+            ))
+            .and_then(|v| v.parse().ok())
         };
-        Limits { pl1_uw: read(0), pl2_uw: read(1), pl4_uw: read(2) }
+        Limits {
+            pl1_uw: read(0),
+            pl2_uw: read(1),
+            pl4_uw: read(2),
+        }
     }
 
     fn turbo(&self) -> bool {
@@ -339,9 +368,12 @@ impl Drop for Machine {
     fn drop(&mut self) {
         // Left behind for whoever is reading a failure; the next run with
         // the same tag clears it.
-        for name in
-            ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_POWERCAP", "PYREN_TOOLS_DIR"]
-        {
+        for name in [
+            "PYREN_PLATFORM_PROFILE",
+            "PYREN_CPU_ROOT",
+            "PYREN_POWERCAP",
+            "PYREN_TOOLS_DIR",
+        ] {
             std::env::remove_var(name);
         }
     }
@@ -393,20 +425,38 @@ fn every_mode_moves_both_the_hardware_profile_and_the_os_profile() {
         let report = set(&daemon, *mode);
         let (hardware, os) = expected(*mode);
 
-        assert_eq!(machine.hardware_profile(), hardware, "{mode:?}: the laptop's own profile");
+        assert_eq!(
+            machine.hardware_profile(),
+            hardware,
+            "{mode:?}: the laptop's own profile"
+        );
         assert_eq!(machine.os_profile(), os, "{mode:?}: the OS profile");
-        assert_eq!(daemon.mode(), *mode, "{mode:?}: the daemon agrees with the machine");
+        assert_eq!(
+            daemon.mode(),
+            *mode,
+            "{mode:?}: the daemon agrees with the machine"
+        );
 
-        let applied = report["applied"].as_array().expect("a report lists what it applied");
+        let applied = report["applied"]
+            .as_array()
+            .expect("a report lists what it applied");
         assert!(
-            applied.iter().any(|a| a == &json!(format!("platform_profile={hardware}"))),
+            applied
+                .iter()
+                .any(|a| a == &json!(format!("platform_profile={hardware}"))),
             "{mode:?} should say it set the firmware profile, said {applied:?}"
         );
         assert!(
-            applied.iter().any(|a| a == &json!(format!("power-profiles-daemon={os}"))),
+            applied
+                .iter()
+                .any(|a| a == &json!(format!("power-profiles-daemon={os}"))),
             "{mode:?} should say it set the OS profile, said {applied:?}"
         );
-        assert_eq!(report["failed"], json!([]), "{mode:?} should have nothing to complain about");
+        assert_eq!(
+            report["failed"],
+            json!([]),
+            "{mode:?} should have nothing to complain about"
+        );
     }
 }
 
@@ -422,23 +472,38 @@ fn unlimited_differs_from_performance_only_in_the_envelope() {
     // Give Performance an envelope somebody measured, and leave Unlimited
     // at the machine's own.
     daemon
-        .call("setTuning", json!({ "mode": "performance", "pl1W": 55.0, "pl2W": 65.0 }))
+        .call(
+            "setTuning",
+            json!({ "mode": "performance", "pl1W": 55.0, "pl2W": 65.0 }),
+        )
         .expect("tuning Performance");
 
     set(&daemon, PowerMode::Performance);
     // 71 % of 77 W, not 55 W exactly: the envelope is stored as a whole
     // percentage so that a restored config means the same thing on
     // different hardware, and one percent of this machine is 0.77 W.
-    assert_eq!(machine.limits().pl1_uw, Some(54_670_000), "Performance is capped near where it was told");
+    assert_eq!(
+        machine.limits().pl1_uw,
+        Some(54_670_000),
+        "Performance is capped near where it was told"
+    );
     assert!(
         (machine.limits().pl1_uw.unwrap() as i64 - 55 * W as i64).abs() <= STOCK_PL1 as i64 / 100,
         "and never further out than the one percent that quantisation costs"
     );
 
     set(&daemon, PowerMode::Unlimited);
-    assert_eq!(machine.hardware_profile(), "performance", "the firmware sees no difference");
+    assert_eq!(
+        machine.hardware_profile(),
+        "performance",
+        "the firmware sees no difference"
+    );
     assert_eq!(machine.os_profile(), "performance", "nor does the desktop");
-    assert_eq!(machine.limits().pl1_uw, Some(STOCK_PL1), "Unlimited is the whole envelope back");
+    assert_eq!(
+        machine.limits().pl1_uw,
+        Some(STOCK_PL1),
+        "Unlimited is the whole envelope back"
+    );
 }
 
 /// Twenty times round the loop. A mode switch that is not idempotent
@@ -454,15 +519,27 @@ fn cycling_the_four_modes_for_twenty_rounds_lands_in_the_same_place_every_time()
         for mode in PowerMode::ALL {
             set(&daemon, *mode);
             let (hardware, os) = expected(*mode);
-            assert_eq!(machine.hardware_profile(), hardware, "round {round}, {mode:?}");
+            assert_eq!(
+                machine.hardware_profile(),
+                hardware,
+                "round {round}, {mode:?}"
+            );
             assert_eq!(machine.os_profile(), os, "round {round}, {mode:?}");
-            assert_eq!(machine.limits(), stock(), "round {round}, {mode:?}: envelope untouched");
+            assert_eq!(
+                machine.limits(),
+                stock(),
+                "round {round}, {mode:?}: envelope untouched"
+            );
             visited.push(*mode);
         }
     }
 
     assert_eq!(visited.len(), 80);
-    assert_eq!(daemon.mode(), PowerMode::Unlimited, "it ends where the last round left it");
+    assert_eq!(
+        daemon.mode(),
+        PowerMode::Unlimited,
+        "it ends where the last round left it"
+    );
     // The envelope was never tuned, so no mode ever had a limit to write:
     // the guard against writing a value the hardware already holds is what
     // keeps an unprivileged daemon from reporting eighty failures.
@@ -481,17 +558,32 @@ fn four_presses_of_the_performance_key_return_to_the_starting_mode() {
     let mut seen = Vec::new();
     for _ in 0..4 {
         let cycled = daemon.cycle();
-        assert!(cycled.changed(), "a press that applies nothing is a lie the widget would tell");
-        assert_eq!(cycled.to, cycled.asked_for, "the machine went where the key asked");
+        assert!(
+            cycled.changed(),
+            "a press that applies nothing is a lie the widget would tell"
+        );
+        assert_eq!(
+            cycled.to, cycled.asked_for,
+            "the machine went where the key asked"
+        );
         assert_eq!(machine.hardware_profile(), expected(cycled.to).0);
         seen.push(cycled.to);
     }
 
     assert_eq!(
         seen,
-        vec![PowerMode::Balanced, PowerMode::Performance, PowerMode::Unlimited, PowerMode::Eco]
+        vec![
+            PowerMode::Balanced,
+            PowerMode::Performance,
+            PowerMode::Unlimited,
+            PowerMode::Eco
+        ]
     );
-    assert_eq!(machine.os_profile(), "power-saver", "back to Eco, and the OS knows");
+    assert_eq!(
+        machine.os_profile(),
+        "power-saver",
+        "back to Eco, and the OS knows"
+    );
 }
 
 /// The switch that exists because the two halves have different owners.
@@ -508,7 +600,11 @@ fn declining_the_os_profile_still_moves_the_laptops_own() {
 
     for mode in PowerMode::ALL {
         set(&daemon, *mode);
-        assert_eq!(machine.hardware_profile(), expected(*mode).0, "{mode:?}: firmware still moves");
+        assert_eq!(
+            machine.hardware_profile(),
+            expected(*mode).0,
+            "{mode:?}: firmware still moves"
+        );
     }
 
     assert_eq!(
@@ -516,12 +612,22 @@ fn declining_the_os_profile_still_moves_the_laptops_own() {
         before,
         "not one OS profile was asked for while the switch was off"
     );
-    assert_eq!(machine.os_profile(), "balanced", "the desktop was left where it was");
+    assert_eq!(
+        machine.os_profile(),
+        "balanced",
+        "the desktop was left where it was"
+    );
 
     // ...and turning it back on catches the OS up at once, rather than at
     // the next mode change.
-    daemon.call("setApplyToOsProfile", json!({ "enabled": true })).expect("turning it back on");
-    assert_eq!(machine.os_profile(), "performance", "Unlimited's OS profile, applied on the spot");
+    daemon
+        .call("setApplyToOsProfile", json!({ "enabled": true }))
+        .expect("turning it back on");
+    assert_eq!(
+        machine.os_profile(),
+        "performance",
+        "Unlimited's OS profile, applied on the spot"
+    );
 }
 
 /// A machine whose only mechanism is the OS profile - board 8D2F has no
@@ -531,19 +637,31 @@ fn declining_the_os_profile_still_moves_the_laptops_own() {
 #[test]
 fn a_mode_that_could_not_be_applied_anywhere_is_an_error_not_a_silent_no_op() {
     let machine = Machine::new("no-mechanism");
-    std::fs::remove_file(machine.root.join("acpi/platform_profile")).expect("remove the firmware profile");
-    std::fs::remove_file(machine.root.join("acpi/platform_profile_choices")).expect("and its choices");
+    std::fs::remove_file(machine.root.join("acpi/platform_profile"))
+        .expect("remove the firmware profile");
+    std::fs::remove_file(machine.root.join("acpi/platform_profile_choices"))
+        .expect("and its choices");
 
     let daemon = machine.boot();
     set(&daemon, PowerMode::Eco);
-    assert_eq!(machine.os_profile(), "power-saver", "the OS half is the whole answer here");
+    assert_eq!(
+        machine.os_profile(),
+        "power-saver",
+        "the OS half is the whole answer here"
+    );
 
-    daemon.call("setApplyToOsProfile", json!({ "enabled": false })).ok();
+    daemon
+        .call("setApplyToOsProfile", json!({ "enabled": false }))
+        .ok();
     let before = daemon.mode();
 
     let refused = daemon.call("setMode", json!({ "mode": "performance" }));
     assert!(refused.is_err(), "nothing to apply must not report success");
-    assert_eq!(daemon.mode(), before, "and the mode must not move on a machine that did not");
+    assert_eq!(
+        daemon.mode(),
+        before,
+        "and the mode must not move on a machine that did not"
+    );
 }
 
 /// Ten threads clicking modes at once - the app, the widget, the hotkey
@@ -579,7 +697,11 @@ fn concurrent_switches_leave_the_daemon_and_the_machine_agreeing() {
 }
 
 fn stock() -> Limits {
-    Limits { pl1_uw: Some(STOCK_PL1), pl2_uw: Some(STOCK_PL2), pl4_uw: Some(STOCK_PL4) }
+    Limits {
+        pl1_uw: Some(STOCK_PL1),
+        pl2_uw: Some(STOCK_PL2),
+        pl4_uw: Some(STOCK_PL4),
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -613,9 +735,17 @@ fn closing_the_app_leaves_the_machine_in_the_mode_it_was_put_in() {
     assert_eq!(machine.hardware_profile(), "low-power");
     drop(app);
 
-    assert_eq!(machine.hardware_profile(), "low-power", "the firmware profile is still Eco's");
+    assert_eq!(
+        machine.hardware_profile(),
+        "low-power",
+        "the firmware profile is still Eco's"
+    );
     assert_eq!(machine.os_profile(), "power-saver", "and so is the OS's");
-    assert_eq!(daemon.mode(), PowerMode::Eco, "the daemon did not notice and had no reason to");
+    assert_eq!(
+        daemon.mode(),
+        PowerMode::Eco,
+        "the daemon did not notice and had no reason to"
+    );
 
     // ...and re-opening it finds the same machine rather than a default.
     let reopened = daemon.clone();
@@ -640,9 +770,16 @@ fn the_supervisor_keeps_working_after_the_app_is_gone() {
     // thread is on a real clock, so the timeline is driven here instead.
     let switches = run_minutes(&daemon, &machine, 15, &busy_on_mains());
 
-    assert!(!switches.is_empty(), "a machine under sustained load should have been stepped up");
+    assert!(
+        !switches.is_empty(),
+        "a machine under sustained load should have been stepped up"
+    );
     assert_eq!(daemon.mode(), PowerMode::Performance);
-    assert_eq!(machine.hardware_profile(), "performance", "with nobody watching, on its own");
+    assert_eq!(
+        machine.hardware_profile(),
+        "performance",
+        "with nobody watching, on its own"
+    );
 }
 
 /// A restart with the box unticked changes nothing, which is the default
@@ -662,13 +799,21 @@ fn a_daemon_restart_leaves_the_machine_alone_unless_asked_to_restore() {
 
     let restarted = machine.boot();
 
-    assert_eq!(machine.hardware_profile(), "performance", "the daemon did not overrule the machine");
+    assert_eq!(
+        machine.hardware_profile(),
+        "performance",
+        "the daemon did not overrule the machine"
+    );
     assert_eq!(
         restarted.mode(),
         PowerMode::Performance,
         "and it reports what it found, not what it remembered"
     );
-    assert_eq!(machine.saved_config().mode, Some(PowerMode::Eco), "the memory is still there");
+    assert_eq!(
+        machine.saved_config().mode,
+        Some(PowerMode::Eco),
+        "the memory is still there"
+    );
 }
 
 /// With the box ticked, the mode comes back - both halves of it.
@@ -677,12 +822,22 @@ fn restore_on_start_puts_the_whole_profile_back() {
     let machine = Machine::new("restart-restore");
     let first = machine.boot();
 
-    first.call("setTuning", json!({ "mode": "eco", "pl1W": 34.0, "turbo": false })).expect("tune Eco");
-    first.call("setRestoreOnStart", json!({ "enabled": true })).expect("restore on");
+    first
+        .call(
+            "setTuning",
+            json!({ "mode": "eco", "pl1W": 34.0, "turbo": false }),
+        )
+        .expect("tune Eco");
+    first
+        .call("setRestoreOnStart", json!({ "enabled": true }))
+        .expect("restore on");
     set(&first, PowerMode::Eco);
 
     let capped = machine.limits().pl1_uw.expect("Eco capped the package");
-    assert!(capped < STOCK_PL1, "Eco's envelope is smaller than the machine's");
+    assert!(
+        capped < STOCK_PL1,
+        "Eco's envelope is smaller than the machine's"
+    );
     assert!(!machine.turbo(), "and it turned turbo off");
     drop(first);
 
@@ -695,9 +850,21 @@ fn restore_on_start_puts_the_whole_profile_back() {
     let restarted = machine.boot();
 
     assert_eq!(restarted.mode(), PowerMode::Eco);
-    assert_eq!(machine.hardware_profile(), "low-power", "the laptop's own profile is back");
-    assert_eq!(machine.os_profile(), "power-saver", "the OS profile is back");
-    assert_eq!(machine.limits().pl1_uw, Some(capped), "and so is the envelope, to the watt");
+    assert_eq!(
+        machine.hardware_profile(),
+        "low-power",
+        "the laptop's own profile is back"
+    );
+    assert_eq!(
+        machine.os_profile(),
+        "power-saver",
+        "the OS profile is back"
+    );
+    assert_eq!(
+        machine.limits().pl1_uw,
+        Some(capped),
+        "and so is the envelope, to the watt"
+    );
     assert!(!machine.turbo(), "turbo included");
 }
 
@@ -711,8 +878,15 @@ fn restore_on_start_puts_the_whole_profile_back() {
 fn restarting_while_capped_never_lowers_the_machines_recorded_ceiling() {
     let machine = Machine::new("ratchet");
     let first = machine.boot();
-    first.call("setTuning", json!({ "mode": "eco", "pl1W": 30.0, "pl2W": 30.0 })).expect("tune Eco");
-    first.call("setRestoreOnStart", json!({ "enabled": true })).expect("restore on");
+    first
+        .call(
+            "setTuning",
+            json!({ "mode": "eco", "pl1W": 30.0, "pl2W": 30.0 }),
+        )
+        .expect("tune Eco");
+    first
+        .call("setRestoreOnStart", json!({ "enabled": true }))
+        .expect("restore on");
     set(&first, PowerMode::Eco);
     drop(first);
 
@@ -727,7 +901,11 @@ fn restarting_while_capped_never_lowers_the_machines_recorded_ceiling() {
             "boot {boot}: the ceiling is still the firmware's"
         );
         assert_eq!(daemon.mode(), PowerMode::Eco, "boot {boot}");
-        assert_eq!(machine.limits(), capped, "boot {boot}: and Eco still means the same watts");
+        assert_eq!(
+            machine.limits(),
+            capped,
+            "boot {boot}: and Eco still means the same watts"
+        );
         drop(daemon);
     }
 
@@ -743,19 +921,30 @@ fn restarting_while_capped_never_lowers_the_machines_recorded_ceiling() {
 fn a_firmware_that_raises_its_limits_raises_the_recorded_ceiling() {
     let machine = Machine::new("ratchet-up");
     let first = machine.boot();
-    assert_eq!(first.call("getState", Value::Null).unwrap()["limits"]["stock"], json!(stock()));
+    assert_eq!(
+        first.call("getState", Value::Null).unwrap()["limits"]["stock"],
+        json!(stock())
+    );
     // A mode change is what commits the reading to disk; see
     // `the_recorded_ceiling_only_reaches_disk_once_something_is_saved`.
     set(&first, PowerMode::Balanced);
     drop(first);
     assert_eq!(machine.saved_config().stock_limits, Some(stock()));
 
-    machine.write_limits(Limits { pl1_uw: Some(90 * W), pl2_uw: Some(90 * W), pl4_uw: Some(200 * W) });
+    machine.write_limits(Limits {
+        pl1_uw: Some(90 * W),
+        pl2_uw: Some(90 * W),
+        pl4_uw: Some(200 * W),
+    });
     let second = machine.boot();
     set(&second, PowerMode::Balanced);
 
     let recorded = machine.saved_config().stock_limits.expect("a ceiling");
-    assert_eq!(recorded.pl1_uw, Some(90 * W), "the firmware's word is final upwards");
+    assert_eq!(
+        recorded.pl1_uw,
+        Some(90 * W),
+        "the firmware's word is final upwards"
+    );
     assert_eq!(recorded.pl4_uw, Some(200 * W));
 }
 
@@ -774,13 +963,24 @@ fn the_recorded_ceiling_only_reaches_disk_once_something_is_saved() {
     let machine = Machine::new("ceiling-persistence");
 
     let quiet = machine.boot();
-    assert_eq!(quiet.call("getState", Value::Null).unwrap()["limits"]["stock"], json!(stock()));
+    assert_eq!(
+        quiet.call("getState", Value::Null).unwrap()["limits"]["stock"],
+        json!(stock())
+    );
     drop(quiet);
-    assert_eq!(machine.saved_config().stock_limits, None, "nothing asked, nothing written");
+    assert_eq!(
+        machine.saved_config().stock_limits,
+        None,
+        "nothing asked, nothing written"
+    );
 
     let asked = machine.boot();
     set(&asked, PowerMode::Balanced);
-    assert_eq!(machine.saved_config().stock_limits, Some(stock()), "one mode change commits it");
+    assert_eq!(
+        machine.saved_config().stock_limits,
+        Some(stock()),
+        "one mode change commits it"
+    );
 }
 
 /// A daemon that cannot write its config has still changed the machine.
@@ -800,7 +1000,9 @@ fn a_mode_that_could_not_be_saved_is_still_applied_and_says_so() {
 
     // The config directory goes read-only underneath a running daemon.
     let config = machine.root.join("config");
-    let mode = std::fs::metadata(&config).expect("config dir").permissions();
+    let mode = std::fs::metadata(&config)
+        .expect("config dir")
+        .permissions();
     let mut readonly = mode.clone();
     #[cfg(unix)]
     {
@@ -810,7 +1012,11 @@ fn a_mode_that_could_not_be_saved_is_still_applied_and_says_so() {
     std::fs::set_permissions(&config, readonly).expect("make it read-only");
 
     set(&daemon, PowerMode::Eco);
-    assert_eq!(machine.hardware_profile(), "low-power", "the machine changed anyway");
+    assert_eq!(
+        machine.hardware_profile(),
+        "low-power",
+        "the machine changed anyway"
+    );
 
     let state = daemon.call("getState", Value::Null).expect("getState");
     assert!(
@@ -847,14 +1053,22 @@ extern "C" {
 const TICKS_PER_MINUTE: u64 = 6;
 
 fn supervising() -> AutoConfig {
-    AutoConfig { enabled: true, ..AutoConfig::default() }
+    AutoConfig {
+        enabled: true,
+        ..AutoConfig::default()
+    }
 }
 
 /// Conditions at a given minute.
 type Conditions = dyn Fn(f64) -> AutoInputs;
 
 fn conditions(on_battery: Option<bool>, load: f64, battery: Option<f64>, temp: f64) -> AutoInputs {
-    AutoInputs { on_battery, load_ratio: load, battery_percent: battery, temp_c: Some(temp) }
+    AutoInputs {
+        on_battery,
+        load_ratio: load,
+        battery_percent: battery,
+        temp_c: Some(temp),
+    }
 }
 
 fn busy_on_mains() -> Box<Conditions> {
@@ -920,7 +1134,11 @@ fn half_an_hour_under_sustained_load_produces_exactly_one_switch() {
 
     let switches = run_minutes(&daemon, &machine, 30, &busy_on_mains());
 
-    assert_eq!(switches.len(), 1, "it settled and stayed settled, made {switches:?}");
+    assert_eq!(
+        switches.len(),
+        1,
+        "it settled and stayed settled, made {switches:?}"
+    );
     assert_eq!(switches[0].1, PowerMode::Performance);
     assert!(
         switches[0].0 <= 1.0,
@@ -938,20 +1156,37 @@ fn twenty_minutes_of_borderline_load_never_moves_the_machine() {
     let machine = Machine::new("minutes-deadband");
     let daemon = machine.boot();
     set(&daemon, PowerMode::Balanced);
-    let prefers_balanced =
-        AutoConfig { preferred_on_mains: PowerMode::Balanced, ..supervising() };
+    let prefers_balanced = AutoConfig {
+        preferred_on_mains: PowerMode::Balanced,
+        ..supervising()
+    };
 
     let switches = run_minutes_with(&prefers_balanced, &daemon, &machine, 20, &borderline());
 
-    assert!(switches.is_empty(), "the dead band exists for exactly this, made {switches:?}");
+    assert!(
+        switches.is_empty(),
+        "the dead band exists for exactly this, made {switches:?}"
+    );
     assert_eq!(machine.hardware_profile(), "balanced");
-    assert_eq!(machine.os_profile_requests().last().map(String::as_str), Some("balanced"));
+    assert_eq!(
+        machine.os_profile_requests().last().map(String::as_str),
+        Some("balanced")
+    );
 }
 
 /// Straddling the middle of the dead band (0.50) once a minute.
 fn borderline() -> Box<Conditions> {
     Box::new(|minute| {
-        conditions(Some(false), if (minute as u64).is_multiple_of(2) { 0.45 } else { 0.55 }, None, 60.0)
+        conditions(
+            Some(false),
+            if (minute as u64).is_multiple_of(2) {
+                0.45
+            } else {
+                0.55
+            },
+            None,
+            60.0,
+        )
     })
 }
 
@@ -1001,7 +1236,11 @@ fn forty_minutes_of_a_realistic_afternoon_ends_in_eco_without_thrashing() {
     let switches = run_minutes(&daemon, &machine, 40, &afternoon);
     let modes: Vec<PowerMode> = switches.iter().map(|(_, mode)| *mode).collect();
 
-    assert_eq!(daemon.mode(), PowerMode::Eco, "a warm laptop on a low battery ends in Eco");
+    assert_eq!(
+        daemon.mode(),
+        PowerMode::Eco,
+        "a warm laptop on a low battery ends in Eco"
+    );
     assert_eq!(machine.hardware_profile(), "low-power");
     assert_eq!(machine.os_profile(), "power-saver");
 
@@ -1015,7 +1254,10 @@ fn forty_minutes_of_a_realistic_afternoon_ends_in_eco_without_thrashing() {
     );
     // Never above Performance: the supervisor may not refine its way into
     // Unlimited, whatever the afternoon looked like.
-    assert!(!modes.contains(&PowerMode::Unlimited), "Unlimited is the user's own choice");
+    assert!(
+        !modes.contains(&PowerMode::Unlimited),
+        "Unlimited is the user's own choice"
+    );
 }
 
 /// Unplugging is the user speaking, and it is answered at once - even
@@ -1026,9 +1268,8 @@ fn unplugging_mid_run_is_answered_immediately_and_the_machine_follows() {
     let daemon = machine.boot();
     set(&daemon, PowerMode::Performance);
 
-    let unplug_at_five: Box<Conditions> = Box::new(|minute| {
-        conditions(Some(minute >= 5.0), 0.95, Some(90.0), 60.0)
-    });
+    let unplug_at_five: Box<Conditions> =
+        Box::new(|minute| conditions(Some(minute >= 5.0), 0.95, Some(90.0), 60.0));
 
     let switches = run_minutes(&daemon, &machine, 10, &unplug_at_five);
 
@@ -1043,9 +1284,15 @@ fn unplugging_mid_run_is_answered_immediately_and_the_machine_follows() {
     );
     // Still busy, so it earns Balanced back - but on battery load can
     // never reach Performance again.
-    assert_eq!(daemon.mode(), PowerMode::Balanced, "the battery range tops out at Balanced");
+    assert_eq!(
+        daemon.mode(),
+        PowerMode::Balanced,
+        "the battery range tops out at Balanced"
+    );
     assert_eq!(machine.hardware_profile(), "balanced");
-    assert!(!switches.iter().any(|(minute, mode)| *minute > 5.0 && *mode == PowerMode::Performance));
+    assert!(!switches
+        .iter()
+        .any(|(minute, mode)| *minute > 5.0 && *mode == PowerMode::Performance));
 }
 
 /// A mode picked in the app or with the performance key is what the
@@ -1068,7 +1315,10 @@ fn a_mode_picked_by_hand_is_reported_as_the_supervisors_baseline() {
     let pressed = daemon.cycle();
     assert_eq!(pressed.to, PowerMode::Unlimited);
     let state = daemon.call("getState", Value::Null).expect("getState");
-    assert_eq!(state["autoManualBaseline"], "unlimited", "a key press is the user choosing");
+    assert_eq!(
+        state["autoManualBaseline"], "unlimited",
+        "a key press is the user choosing"
+    );
 }
 
 /// The real thread, the real clock, nobody connected. Ignored by default
@@ -1129,11 +1379,17 @@ fn the_real_supervisor_stays_in_step_with_the_machine_for_minutes() {
         );
 
         let state = daemon.call("getState", Value::Null).expect("getState");
-        assert!(state["configSaveError"].is_null(), "the daemon should keep saving cleanly");
+        assert!(
+            state["configSaveError"].is_null(),
+            "the daemon should keep saving cleanly"
+        );
         assert_ne!(state["mode"], Value::Null);
     }
 
-    println!("soak: {seconds}s, {} switches: {observed:?}", observed.len());
+    println!(
+        "soak: {seconds}s, {} switches: {observed:?}",
+        observed.len()
+    );
     assert!(
         observed.len() as u64 <= seconds / 20,
         "a supervisor switching more than once every twenty seconds is flapping: {observed:?}"
@@ -1161,8 +1417,16 @@ fn a_firmware_that_spells_eco_cool_gets_the_same_four_modes() {
 
     for mode in PowerMode::ALL {
         set(&daemon, *mode);
-        assert_eq!(machine.hardware_profile(), on_this_firmware(*mode), "{mode:?}");
-        assert_eq!(machine.os_profile(), expected(*mode).1, "{mode:?}: the OS half is unaffected");
+        assert_eq!(
+            machine.hardware_profile(),
+            on_this_firmware(*mode),
+            "{mode:?}"
+        );
+        assert_eq!(
+            machine.os_profile(),
+            expected(*mode).1,
+            "{mode:?}: the OS half is unaffected"
+        );
     }
 
     // Performance has no `balanced-performance` to prefer here, so it and
@@ -1188,11 +1452,23 @@ fn a_firmware_with_unknown_names_is_reported_not_ignored() {
 
     let report = set(&daemon, PowerMode::Eco);
 
-    assert_eq!(machine.hardware_profile(), "custom", "nothing was written blindly");
-    assert_eq!(machine.os_profile(), "power-saver", "the OS half still happened");
-    let failed = report["failed"].as_array().expect("a report lists what it could not do");
+    assert_eq!(
+        machine.hardware_profile(),
+        "custom",
+        "nothing was written blindly"
+    );
+    assert_eq!(
+        machine.os_profile(),
+        "power-saver",
+        "the OS half still happened"
+    );
+    let failed = report["failed"]
+        .as_array()
+        .expect("a report lists what it could not do");
     assert!(
-        failed.iter().any(|f| f.as_str().unwrap_or_default().contains("platform_profile")),
+        failed
+            .iter()
+            .any(|f| f.as_str().unwrap_or_default().contains("platform_profile")),
         "the firmware half should say it had no name to use, said {failed:?}"
     );
 }
@@ -1229,7 +1505,11 @@ fn pyrens_own_firmware_write_wins_even_when_ppd_writes_it_too() {
             hardware,
             "{mode:?}: pyren's own choice must survive ppd's side effect"
         );
-        assert_eq!(machine.os_profile(), os, "{mode:?}: the OS profile is still what was asked");
+        assert_eq!(
+            machine.os_profile(),
+            os,
+            "{mode:?}: the OS profile is still what was asked"
+        );
     }
 }
 
@@ -1244,13 +1524,23 @@ fn a_ppd_that_misses_once_is_retried_and_the_call_still_succeeds() {
 
     let report = set(&daemon, PowerMode::Eco);
 
-    assert_eq!(machine.os_profile(), "power-saver", "the retry got there in the end");
+    assert_eq!(
+        machine.os_profile(),
+        "power-saver",
+        "the retry got there in the end"
+    );
     let applied = report["applied"].as_array().expect("applied is a list");
     assert!(
-        applied.iter().any(|a| a == "power-profiles-daemon=power-saver"),
+        applied
+            .iter()
+            .any(|a| a == "power-profiles-daemon=power-saver"),
         "a recovered attempt is a success, not a footnote in failed: {applied:?}"
     );
-    assert_eq!(report["failed"], json!([]), "the caller never sees the first miss");
+    assert_eq!(
+        report["failed"],
+        json!([]),
+        "the caller never sees the first miss"
+    );
     assert_eq!(
         machine.os_profile_requests().len(),
         2,
@@ -1270,7 +1560,11 @@ fn a_permanently_wrong_ppd_is_given_up_on_and_reported_failed() {
 
     let report = set(&daemon, PowerMode::Eco);
 
-    assert_eq!(machine.hardware_profile(), "low-power", "the firmware half is unrelated and still works");
+    assert_eq!(
+        machine.hardware_profile(),
+        "low-power",
+        "the firmware half is unrelated and still works"
+    );
     let failed = report["failed"].as_array().expect("failed is a list");
     assert!(
         failed.iter().any(|f| {
@@ -1280,11 +1574,10 @@ fn a_permanently_wrong_ppd_is_given_up_on_and_reported_failed() {
         "should say what was asked for and what it got instead, said {failed:?}"
     );
     assert!(
-        !report["applied"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a.as_str().unwrap_or_default().starts_with("power-profiles-daemon")),
+        !report["applied"].as_array().unwrap().iter().any(|a| a
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("power-profiles-daemon")),
         "never claimed as applied: {:?}",
         report["applied"]
     );
@@ -1332,7 +1625,11 @@ fn asking_about_the_os_profile_never_starts_a_power_manager() {
     daemon.call("getState", json!(null)).expect("getState");
     let report = set(&daemon, PowerMode::Eco);
 
-    assert_eq!(machine.read("activated.log"), None, "powerprofilesctl would have started the service");
+    assert_eq!(
+        machine.read("activated.log"),
+        None,
+        "powerprofilesctl would have started the service"
+    );
     let calls = machine.read("busctl.log").expect("the bus was asked");
     assert!(
         calls.lines().all(|call| call.contains("--auto-start=no")),
@@ -1385,21 +1682,37 @@ fn on_a_tlp_machine_every_mode_is_a_tlp_profile() {
 
     let state = daemon.call("getState", json!(null)).expect("getState");
     assert_eq!(state["backend"]["tlp"], json!("balanced"));
-    assert!(state["backend"]["available"].as_array().unwrap().contains(&json!("tlp")));
+    assert!(state["backend"]["available"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("tlp")));
 
     for mode in PowerMode::ALL {
         let report = set(&daemon, *mode);
         let (hardware, os) = expected(*mode);
-        assert_eq!(machine.read("tlp_profile").as_deref(), Some(os), "{mode:?}: TLP's profile");
-        assert_eq!(machine.hardware_profile(), hardware, "{mode:?}: the laptop's own");
+        assert_eq!(
+            machine.read("tlp_profile").as_deref(),
+            Some(os),
+            "{mode:?}: TLP's profile"
+        );
+        assert_eq!(
+            machine.hardware_profile(),
+            hardware,
+            "{mode:?}: the laptop's own"
+        );
         assert!(
-            report["applied"].as_array().unwrap().contains(&json!(format!("tlp={os}"))),
+            report["applied"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(format!("tlp={os}"))),
             "{mode:?}: {report}"
         );
         assert_eq!(report["failed"], json!([]), "{mode:?}");
     }
     assert_eq!(
-        machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(),
+        machine
+            .read("cpu/cpu0/cpufreq/energy_performance_preference")
+            .as_deref(),
         Some("balance_performance"),
         "the hint is TLP's to set"
     );
@@ -1416,7 +1729,11 @@ fn a_tlp_without_profiles_is_not_mistaken_for_one() {
     let daemon = machine.boot();
 
     let report = set(&daemon, PowerMode::Eco);
-    assert_eq!(machine.read("tlp.log"), None, "an old TLP is never sent a profile");
+    assert_eq!(
+        machine.read("tlp.log"),
+        None,
+        "an old TLP is never sent a profile"
+    );
     assert!(report["applied"].as_array().unwrap().iter().any(|a| a
         .as_str()
         .unwrap_or_default()
@@ -1445,16 +1762,26 @@ fn a_running_auto_cpufreq_is_forced_and_reset_with_the_modes() {
     ] {
         let report = set(&daemon, mode);
         let applied = report["applied"].as_array().unwrap();
-        assert!(applied.contains(&json!(format!("auto-cpufreq={force}"))), "{mode:?}: {report}");
-        assert!(applied.contains(&json!(format!("tlp={}", expected(mode).1))), "{mode:?}: {report}");
+        assert!(
+            applied.contains(&json!(format!("auto-cpufreq={force}"))),
+            "{mode:?}: {report}"
+        );
+        assert!(
+            applied.contains(&json!(format!("tlp={}", expected(mode).1))),
+            "{mode:?}: {report}"
+        );
         assert_eq!(
-            machine.read("acf_override").unwrap_or_else(|| "default".into()),
+            machine
+                .read("acf_override")
+                .unwrap_or_else(|| "default".into()),
             state,
             "{mode:?}"
         );
     }
     assert_eq!(
-        machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(),
+        machine
+            .read("cpu/cpu0/cpufreq/energy_performance_preference")
+            .as_deref(),
         Some("balance_performance"),
         "never written underneath auto-cpufreq"
     );
@@ -1472,7 +1799,11 @@ fn an_auto_cpufreq_that_is_not_running_is_left_alone() {
 
     set(&daemon, PowerMode::Eco);
     assert_eq!(machine.read("acf.log"), None);
-    assert_eq!(machine.os_profile(), "power-saver", "the profiles service is still asked");
+    assert_eq!(
+        machine.os_profile(),
+        "power-saver",
+        "the profiles service is still asked"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -1500,19 +1831,42 @@ fn a_firmware_profile_moved_from_outside_is_followed() {
     daemon.check_external();
 
     assert_eq!(daemon.mode(), PowerMode::Performance);
-    assert_eq!(machine.limits().pl1_uw, Some(54_670_000), "Performance's envelope came with it");
-    assert_eq!(machine.hardware_profile(), "performance", "the outside choice is left standing");
-    assert_eq!(machine.os_profile_requests().len(), requests, "the OS profile is not pushed back");
+    assert_eq!(
+        machine.limits().pl1_uw,
+        Some(54_670_000),
+        "Performance's envelope came with it"
+    );
+    assert_eq!(
+        machine.hardware_profile(),
+        "performance",
+        "the outside choice is left standing"
+    );
+    assert_eq!(
+        machine.os_profile_requests().len(),
+        requests,
+        "the OS profile is not pushed back"
+    );
 
     let state = daemon.call("getState", json!(null)).expect("getState");
     assert_eq!(state["mode"], json!("performance"));
-    assert!(state["lastExternal"]["text"].as_str().unwrap_or_default().contains("performance"));
+    assert!(state["lastExternal"]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("performance"));
     // Seconds after the daemon's own write, so it also reads as a revert.
     assert_eq!(state["overrides"][0]["knob"], json!("platform_profile"));
     assert_eq!(state["overrides"][0]["reverted"], json!(true));
 
-    assert_eq!(daemon.check_external(), None, "followed once, not on every look");
-    assert_eq!(machine.saved_config().mode, Some(PowerMode::Performance), "and remembered");
+    assert_eq!(
+        daemon.check_external(),
+        None,
+        "followed once, not on every look"
+    );
+    assert_eq!(
+        machine.saved_config().mode,
+        Some(PowerMode::Performance),
+        "and remembered"
+    );
 
     // The daemon's own next choice starts from a clean slate.
     set(&daemon, PowerMode::Balanced);
@@ -1551,15 +1905,29 @@ fn a_hint_changed_by_an_unknown_program_is_reported_and_not_rewritten() {
     machine.apply_env();
     let daemon = machine.boot();
     set(&daemon, PowerMode::Eco);
-    assert_eq!(machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(), Some("power"));
+    assert_eq!(
+        machine
+            .read("cpu/cpu0/cpufreq/energy_performance_preference")
+            .as_deref(),
+        Some("power")
+    );
 
-    machine.write("cpu/cpu0/cpufreq/energy_performance_preference", "balance_performance");
-    assert_eq!(daemon.check_external(), None, "the hint says nothing about the mode");
+    machine.write(
+        "cpu/cpu0/cpufreq/energy_performance_preference",
+        "balance_performance",
+    );
+    assert_eq!(
+        daemon.check_external(),
+        None,
+        "the hint says nothing about the mode"
+    );
     daemon.check_external();
 
     assert_eq!(daemon.mode(), PowerMode::Eco);
     assert_eq!(
-        machine.read("cpu/cpu0/cpufreq/energy_performance_preference").as_deref(),
+        machine
+            .read("cpu/cpu0/cpufreq/energy_performance_preference")
+            .as_deref(),
         Some("balance_performance"),
         "not fought over"
     );
@@ -1589,5 +1957,9 @@ fn the_watcher_follows_the_machine_with_nobody_asking() {
     while daemon.mode() != PowerMode::Balanced && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    assert_eq!(daemon.mode(), PowerMode::Balanced, "followed within a few seconds");
+    assert_eq!(
+        daemon.mode(),
+        PowerMode::Balanced,
+        "followed within a few seconds"
+    );
 }

@@ -372,7 +372,10 @@ mod tests {
     fn every_dialect_round_trips_through_its_id() {
         for dialect in ORDER {
             assert_eq!(Dialect::from_id(dialect.id()), Some(dialect));
-            assert_eq!(Selection::from_id(dialect.id()), Some(Selection::Fixed(dialect)));
+            assert_eq!(
+                Selection::from_id(dialect.id()),
+                Some(Selection::Fixed(dialect))
+            );
         }
         assert_eq!(Selection::from_id("auto"), Some(Selection::Auto));
         assert_eq!(Selection::from_id("nonsense"), None);
@@ -383,13 +386,25 @@ mod tests {
     /// listed, and not the last to answer.
     #[test]
     fn auto_takes_the_first_dialect_that_answered() {
-        let none = [probe("kernelZones", false), probe("fourZone", false), probe("lightbar", false)];
+        let none = [
+            probe("kernelZones", false),
+            probe("fourZone", false),
+            probe("lightbar", false),
+        ];
         assert_eq!(Selection::Auto.resolve(&none), None);
 
-        let wmi = [probe("kernelZones", false), probe("fourZone", true), probe("lightbar", true)];
+        let wmi = [
+            probe("kernelZones", false),
+            probe("fourZone", true),
+            probe("lightbar", true),
+        ];
         assert_eq!(Selection::Auto.resolve(&wmi), Some(Dialect::FourZone));
 
-        let all = [probe("kernelZones", true), probe("fourZone", true), probe("lightbar", true)];
+        let all = [
+            probe("kernelZones", true),
+            probe("fourZone", true),
+            probe("lightbar", true),
+        ];
         assert_eq!(Selection::Auto.resolve(&all), Some(Dialect::KernelZones));
     }
 
@@ -397,8 +412,15 @@ mod tests {
     /// wrongly and writes rightly is still drivable by hand.
     #[test]
     fn a_forced_dialect_is_used_even_when_nothing_probed() {
-        let none = [probe("kernelZones", false), probe("fourZone", false), probe("lightbar", false)];
-        assert_eq!(Selection::Fixed(Dialect::Lightbar).resolve(&none), Some(Dialect::Lightbar));
+        let none = [
+            probe("kernelZones", false),
+            probe("fourZone", false),
+            probe("lightbar", false),
+        ];
+        assert_eq!(
+            Selection::Fixed(Dialect::Lightbar).resolve(&none),
+            Some(Dialect::Lightbar)
+        );
     }
 
     /// Command type 4 is the answer that says "this firmware has lighting,
@@ -409,6 +431,8 @@ mod tests {
         assert!(return_code_meaning(3).contains("does not have the lighting command"));
         assert!(return_code_meaning(4).contains("not this operation"));
         assert_eq!(return_code_meaning(99), "undocumented");
-        assert!(DialectError::ReturnCode(4).to_string().contains("not this operation"));
+        assert!(DialectError::ReturnCode(4)
+            .to_string()
+            .contains("not this operation"));
     }
 }

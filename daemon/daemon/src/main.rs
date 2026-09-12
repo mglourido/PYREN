@@ -12,10 +12,10 @@ use pyren_core::{serve_unix_socket, Audience, EventBus, Module, Registry};
 use pyren_fan::FanModule;
 use pyren_gpu::GpuModule;
 use pyren_hotkey::{HotkeyModule, KeyPress};
-use pyren_keymap::KeymapModule;
 use pyren_installer::{
     execute, plan, Action, Environment, ExecuteContext, InstallerModule, PlanOptions,
 };
+use pyren_keymap::KeymapModule;
 use pyren_network::NetworkModule;
 use pyren_overclock::OverclockModule;
 use pyren_power::{PowerModule, PowerSupplyState};
@@ -32,10 +32,12 @@ fn socket_path() -> String {
 /// Whether the socket being owner-only is a problem. Unprivileged
 /// development is the case where it isn't: the app runs as the same user.
 fn is_root() -> bool {
-    std::fs::metadata("/proc/self").map(|m| {
-        use std::os::unix::fs::MetadataExt;
-        m.uid() == 0
-    }).unwrap_or(false)
+    std::fs::metadata("/proc/self")
+        .map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            m.uid() == 0
+        })
+        .unwrap_or(false)
 }
 
 /// Installing the systemd unit is the one privileged action that cannot go
@@ -71,7 +73,10 @@ fn run_service_action(action: Action) -> ! {
     let report = execute(&plan, &env, &context, false);
 
     for result in &report.results {
-        println!("  [{:?}] {} - {}", result.status, result.description, result.detail);
+        println!(
+            "  [{:?}] {} - {}",
+            result.status, result.description, result.detail
+        );
     }
     std::process::exit(if report.succeeded { 0 } else { 1 });
 }
@@ -133,7 +138,10 @@ fn hotkey_summary(hotkey: &HotkeyModule, watching: bool) -> String {
         Ok(status) => status,
         Err(e) => return format!("unavailable: {e}"),
     };
-    let detail = status["detail"].as_str().unwrap_or("unavailable").to_string();
+    let detail = status["detail"]
+        .as_str()
+        .unwrap_or("unavailable")
+        .to_string();
     if !watching {
         return detail;
     }
@@ -165,13 +173,15 @@ fn lid_closed() -> bool {
 /// nothing unless one of them changed, and a lid shut for two seconds
 /// before an effect pauses costs nobody anything.
 fn watch_conditions(rgb: RgbModule) {
-    let spawned = std::thread::Builder::new().name("pyren-rgb-conditions".into()).spawn(move || loop {
-        rgb.set_conditions(Conditions {
-            on_battery: PowerSupplyState::read().on_battery.unwrap_or(false),
-            lid_closed: lid_closed(),
+    let spawned = std::thread::Builder::new()
+        .name("pyren-rgb-conditions".into())
+        .spawn(move || loop {
+            rgb.set_conditions(Conditions {
+                on_battery: PowerSupplyState::read().on_battery.unwrap_or(false),
+                lid_closed: lid_closed(),
+            });
+            std::thread::sleep(std::time::Duration::from_secs(2));
         });
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    });
     if let Err(e) = spawned {
         pyren_core::log_warn!("could not start the lighting conditions watcher: {e}");
     }
@@ -364,7 +374,11 @@ fn main() {
         log_info!(
             "{}: leaving{}",
             pyren_core::signals::name(signal),
-            if stopping { " (the machine is shutting down)" } else { "" }
+            if stopping {
+                " (the machine is shutting down)"
+            } else {
+                ""
+            }
         );
         rgb.on_exit(stopping);
     });
@@ -388,7 +402,10 @@ fn main() {
     let socket_path = socket_path();
 
     let announce = |audience: &Audience| {
-        println!("pyren-daemon: listening on {socket_path}, {}", audience.summary());
+        println!(
+            "pyren-daemon: listening on {socket_path}, {}",
+            audience.summary()
+        );
         // A root daemon nobody can reach looks exactly like a working one
         // until the app fails to connect, so name the fix here.
         if matches!(audience, Audience::OwnerOnly) && is_root() {

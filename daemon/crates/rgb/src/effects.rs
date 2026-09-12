@@ -71,8 +71,13 @@ pub enum EffectKind {
 }
 
 impl EffectKind {
-    pub const ALL: [Self; 5] =
-        [Self::Breathing, Self::Spectrum, Self::RainbowWave, Self::Wave, Self::Fade];
+    pub const ALL: [Self; 5] = [
+        Self::Breathing,
+        Self::Spectrum,
+        Self::RainbowWave,
+        Self::Wave,
+        Self::Fade,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -140,7 +145,12 @@ fn default_speed() -> u8 {
 
 impl Effect {
     pub fn new(kind: EffectKind) -> Self {
-        Self { kind, colors: Vec::new(), speed: SPEED_DEFAULT, direction: Direction::default() }
+        Self {
+            kind,
+            colors: Vec::new(),
+            speed: SPEED_DEFAULT,
+            direction: Direction::default(),
+        }
     }
 
     /// Squared up to what [`frame`] can run: speed in range, a bounded
@@ -218,7 +228,14 @@ pub fn frame(effect: &Effect, t: f64) -> [Rgb; ZONES] {
             const WIDTH: f64 = 0.5;
             let span = (ZONES - 1) as f64 + 2.0 * MARGIN;
             let centre = phase * span - MARGIN;
-            let (front, back) = (color(0), if effect.colors.len() > 1 { color(1) } else { Rgb::BLACK });
+            let (front, back) = (
+                color(0),
+                if effect.colors.len() > 1 {
+                    color(1)
+                } else {
+                    Rgb::BLACK
+                },
+            );
             for (z, zone) in out.iter_mut().enumerate() {
                 let d = effect.position(z) - centre;
                 *zone = mix(back, front, (-(d * d) / WIDTH).exp());
@@ -252,7 +269,11 @@ fn channel(v: f64) -> u8 {
 }
 
 fn dim(c: Rgb, level: f64) -> Rgb {
-    Rgb::new(channel(f64::from(c.r) * level), channel(f64::from(c.g) * level), channel(f64::from(c.b) * level))
+    Rgb::new(
+        channel(f64::from(c.r) * level),
+        channel(f64::from(c.g) * level),
+        channel(f64::from(c.b) * level),
+    )
 }
 
 /// `a` at 0, `b` at 1.
@@ -417,7 +438,10 @@ impl Default for Animator {
     fn default() -> Self {
         Self {
             running: None,
-            throttle: Arc::new(Throttle { max_fps: AtomicU8::new(0), paused: AtomicBool::new(false) }),
+            throttle: Arc::new(Throttle {
+                max_fps: AtomicU8::new(0),
+                paused: AtomicBool::new(false),
+            }),
         }
     }
 }
@@ -440,8 +464,14 @@ impl Animator {
     /// Runs `effect` until [`Animator::stop`], or until writes keep
     /// failing - in which case `on_failure` is told why, once, from the
     /// animation's thread.
-    pub fn start<S, F>(&mut self, effect: Effect, brightness: u8, fps: u8, mut sink: S, on_failure: F)
-    where
+    pub fn start<S, F>(
+        &mut self,
+        effect: Effect,
+        brightness: u8,
+        fps: u8,
+        mut sink: S,
+        on_failure: F,
+    ) where
         S: Sink,
         F: FnOnce(DialectError) + Send + 'static,
     {
@@ -544,8 +574,13 @@ impl Animator {
 
         match handle {
             Ok(handle) => {
-                self.running =
-                    Some(Running { effect: running, started, stop, handle, brightness: level })
+                self.running = Some(Running {
+                    effect: running,
+                    started,
+                    stop,
+                    handle,
+                    brightness: level,
+                })
             }
             Err(e) => on_failure_spawn(e),
         }
@@ -565,7 +600,9 @@ impl Animator {
     /// Does nothing when nothing is running.
     pub fn set_brightness(&self, brightness: u8) {
         if let Some(running) = &self.running {
-            running.brightness.store(brightness.min(100), Ordering::Relaxed);
+            running
+                .brightness
+                .store(brightness.min(100), Ordering::Relaxed);
         }
     }
 
@@ -596,7 +633,9 @@ impl Animator {
     /// Whether a thread is still writing frames. False after a stop, and
     /// after an animation gave up on its own.
     pub fn is_running(&self) -> bool {
-        self.running.as_ref().is_some_and(|r| !r.handle.is_finished())
+        self.running
+            .as_ref()
+            .is_some_and(|r| !r.handle.is_finished())
     }
 }
 
@@ -619,7 +658,11 @@ mod tests {
         Effect::new(kind).normalised()
     }
 
-    const WHITE: Rgb = Rgb { r: 255, g: 255, b: 255 };
+    const WHITE: Rgb = Rgb {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
 
     #[test]
     fn every_kind_round_trips_through_its_id() {
@@ -635,7 +678,11 @@ mod tests {
         let e: Effect = serde_json::from_value(serde_json::json!({ "kind": "wave" })).unwrap();
         assert_eq!(e.speed, SPEED_DEFAULT);
         assert_eq!(e.direction, Direction::LeftToRight);
-        assert_eq!(e.normalised().colors.len(), 2, "wave gets its default colours");
+        assert_eq!(
+            e.normalised().colors.len(),
+            2,
+            "wave gets its default colours"
+        );
     }
 
     #[test]
@@ -665,10 +712,21 @@ mod tests {
     fn fade_goes_from_white_to_black_and_back() {
         let e = effect(EffectKind::Fade);
         assert_eq!(frame(&e, 0.0), [WHITE; ZONES]);
-        assert_eq!(frame(&e, e.period() * 0.999)[0].r, 0, "black by the end of the first step");
+        assert_eq!(
+            frame(&e, e.period() * 0.999)[0].r,
+            0,
+            "black by the end of the first step"
+        );
         let middle = frame(&e, e.period() * 0.5)[0];
-        assert!((120..=135).contains(&middle.r), "grey half way, got {middle:?}");
-        assert_eq!(frame(&e, e.period() * 2.0), [WHITE; ZONES], "back to white after both");
+        assert!(
+            (120..=135).contains(&middle.r),
+            "grey half way, got {middle:?}"
+        );
+        assert_eq!(
+            frame(&e, e.period() * 2.0),
+            [WHITE; ZONES],
+            "back to white after both"
+        );
     }
 
     #[test]
@@ -684,7 +742,11 @@ mod tests {
         let e = effect(EffectKind::Spectrum);
         let f = frame(&e, 1.3);
         assert!(f.iter().all(|c| *c == f[0]));
-        assert_ne!(frame(&e, 0.0), frame(&e, e.period() / 3.0), "and it changes");
+        assert_ne!(
+            frame(&e, 0.0),
+            frame(&e, e.period() / 3.0),
+            "and it changes"
+        );
     }
 
     #[test]
@@ -757,7 +819,10 @@ mod tests {
         assert_eq!(Transition::PowerOn.apply(&lit, 0.0), [Rgb::BLACK; ZONES]);
         assert_eq!(Transition::PowerOn.apply(&lit, 1.0), lit);
         let early = Transition::PowerOn.apply(&lit, 0.3);
-        assert!(early[0].r > early[3].r, "the left comes on first: {early:?}");
+        assert!(
+            early[0].r > early[3].r,
+            "the left comes on first: {early:?}"
+        );
     }
 
     #[test]
@@ -773,10 +838,14 @@ mod tests {
     fn every_zone_moves_monotonically_through_a_transition() {
         for transition in [Transition::PowerOn, Transition::PowerOff] {
             for zone in 0..ZONES {
-                let levels: Vec<f64> = (0..=100).map(|i| transition.level(i as f64 / 100.0, zone)).collect();
+                let levels: Vec<f64> = (0..=100)
+                    .map(|i| transition.level(i as f64 / 100.0, zone))
+                    .collect();
                 let rising = transition == Transition::PowerOn;
                 assert!(
-                    levels.windows(2).all(|w| if rising { w[1] >= w[0] } else { w[1] <= w[0] }),
+                    levels
+                        .windows(2)
+                        .all(|w| if rising { w[1] >= w[0] } else { w[1] <= w[0] }),
                     "{transition:?} zone {zone}"
                 );
             }
@@ -788,13 +857,23 @@ mod tests {
         let mut sink = Recorder::default();
         let lit = [WHITE; ZONES];
         let begun = Instant::now();
-        play(&mut sink, 90, FPS_MAX, Duration::from_millis(100), |k, _| Transition::PowerOn.apply(&lit, k))
-            .unwrap();
+        play(
+            &mut sink,
+            90,
+            FPS_MAX,
+            Duration::from_millis(100),
+            |k, _| Transition::PowerOn.apply(&lit, k),
+        )
+        .unwrap();
         assert!(begun.elapsed() >= Duration::from_millis(100));
         let frames = sink.frames.lock().unwrap();
         assert!(frames.len() >= 3);
         assert_eq!(frames.first().unwrap().0, vec![Rgb::BLACK; ZONES]);
-        assert_eq!(frames.last().unwrap().0, lit.to_vec(), "always ends on k = 1");
+        assert_eq!(
+            frames.last().unwrap().0,
+            lit.to_vec(),
+            "always ends on k = 1"
+        );
         assert!(frames.iter().all(|(_, b)| *b == 90));
     }
 
@@ -802,7 +881,13 @@ mod tests {
     fn the_running_effect_can_be_asked_for() {
         let mut animator = Animator::new();
         assert!(animator.current().is_none());
-        animator.start(effect(EffectKind::Wave), 100, FPS_MAX, Recorder::default(), |_| {});
+        animator.start(
+            effect(EffectKind::Wave),
+            100,
+            FPS_MAX,
+            Recorder::default(),
+            |_| {},
+        );
         std::thread::sleep(Duration::from_millis(30));
         let (running, t) = animator.current().expect("it is running");
         assert_eq!(running.kind, EffectKind::Wave);
@@ -826,7 +911,10 @@ mod tests {
             if *self.fail.lock().unwrap() {
                 return Err(DialectError::Io("gone".into()));
             }
-            self.frames.lock().unwrap().push((colors.to_vec(), brightness));
+            self.frames
+                .lock()
+                .unwrap()
+                .push((colors.to_vec(), brightness));
             Ok(())
         }
     }
@@ -835,7 +923,13 @@ mod tests {
     fn an_animation_writes_frames_until_it_is_stopped() {
         let sink = Recorder::default();
         let mut animator = Animator::new();
-        animator.start(effect(EffectKind::Spectrum), 70, FPS_MAX, sink.clone(), |_| {});
+        animator.start(
+            effect(EffectKind::Spectrum),
+            70,
+            FPS_MAX,
+            sink.clone(),
+            |_| {},
+        );
         std::thread::sleep(Duration::from_millis(150));
         assert!(animator.is_running());
         animator.stop();
@@ -843,17 +937,30 @@ mod tests {
 
         let written = sink.frames.lock().unwrap().len();
         assert!(written >= 3, "{written} frames in 150 ms at 60 fps");
-        assert!(sink.frames.lock().unwrap().iter().all(|(_, b)| *b == 70), "brightness is passed through");
+        assert!(
+            sink.frames.lock().unwrap().iter().all(|(_, b)| *b == 70),
+            "brightness is passed through"
+        );
 
         std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(sink.frames.lock().unwrap().len(), written, "nothing lands after stop returns");
+        assert_eq!(
+            sink.frames.lock().unwrap().len(),
+            written,
+            "nothing lands after stop returns"
+        );
     }
 
     #[test]
     fn brightness_moves_a_running_effect_without_restarting_it() {
         let sink = Recorder::default();
         let mut animator = Animator::new();
-        animator.start(effect(EffectKind::Spectrum), 100, FPS_MAX, sink.clone(), |_| {});
+        animator.start(
+            effect(EffectKind::Spectrum),
+            100,
+            FPS_MAX,
+            sink.clone(),
+            |_| {},
+        );
         std::thread::sleep(Duration::from_millis(60));
         animator.set_brightness(20);
         std::thread::sleep(Duration::from_millis(60));
@@ -868,7 +975,13 @@ mod tests {
         let sink = Recorder::default();
         let mut animator = Animator::new();
         animator.set_paused(true);
-        animator.start(effect(EffectKind::Spectrum), 100, FPS_MAX, sink.clone(), |_| {});
+        animator.start(
+            effect(EffectKind::Spectrum),
+            100,
+            FPS_MAX,
+            sink.clone(),
+            |_| {},
+        );
         std::thread::sleep(Duration::from_millis(80));
         assert!(sink.frames.lock().unwrap().is_empty());
         assert!(animator.is_running(), "paused is not stopped");
@@ -882,11 +995,20 @@ mod tests {
         let sink = Recorder::default();
         let mut animator = Animator::new();
         animator.set_limit(Some(10));
-        animator.start(effect(EffectKind::Spectrum), 100, FPS_MAX, sink.clone(), |_| {});
+        animator.start(
+            effect(EffectKind::Spectrum),
+            100,
+            FPS_MAX,
+            sink.clone(),
+            |_| {},
+        );
         std::thread::sleep(Duration::from_millis(500));
         animator.stop();
         let written = sink.frames.lock().unwrap().len();
-        assert!((3..=8).contains(&written), "{written} frames in 500 ms capped at 10 fps");
+        assert!(
+            (3..=8).contains(&written),
+            "{written} frames in 500 ms capped at 10 fps"
+        );
     }
 
     #[test]
@@ -894,12 +1016,28 @@ mod tests {
         let first = Recorder::default();
         let second = Recorder::default();
         let mut animator = Animator::new();
-        animator.start(effect(EffectKind::Spectrum), 100, FPS_MAX, first.clone(), |_| {});
+        animator.start(
+            effect(EffectKind::Spectrum),
+            100,
+            FPS_MAX,
+            first.clone(),
+            |_| {},
+        );
         std::thread::sleep(Duration::from_millis(50));
-        animator.start(effect(EffectKind::Wave), 100, FPS_MAX, second.clone(), |_| {});
+        animator.start(
+            effect(EffectKind::Wave),
+            100,
+            FPS_MAX,
+            second.clone(),
+            |_| {},
+        );
         let before = first.frames.lock().unwrap().len();
         std::thread::sleep(Duration::from_millis(80));
-        assert_eq!(first.frames.lock().unwrap().len(), before, "the first one is stopped");
+        assert_eq!(
+            first.frames.lock().unwrap().len(),
+            before,
+            "the first one is stopped"
+        );
         assert!(!second.frames.lock().unwrap().is_empty());
     }
 
@@ -910,13 +1048,27 @@ mod tests {
     fn zero_brightness_writes_one_black_frame_and_then_nothing() {
         let sink = Recorder::default();
         let mut animator = Animator::new();
-        animator.start(effect(EffectKind::RainbowWave), 0, FPS_MAX, sink.clone(), |_| {});
+        animator.start(
+            effect(EffectKind::RainbowWave),
+            0,
+            FPS_MAX,
+            sink.clone(),
+            |_| {},
+        );
         std::thread::sleep(Duration::from_millis(200));
         assert!(animator.is_running(), "idle is not stopped");
         {
             let frames = sink.frames.lock().unwrap();
-            assert_eq!(frames.len(), 1, "200 ms at 60 fps would otherwise be a dozen");
-            assert_eq!(frames[0], (vec![Rgb::BLACK; ZONES], 0), "the lights are actually put out");
+            assert_eq!(
+                frames.len(),
+                1,
+                "200 ms at 60 fps would otherwise be a dozen"
+            );
+            assert_eq!(
+                frames[0],
+                (vec![Rgb::BLACK; ZONES], 0),
+                "the lights are actually put out"
+            );
         }
 
         // And it comes straight back, without the effect restarting: the
@@ -925,7 +1077,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         animator.stop();
         let frames = sink.frames.lock().unwrap();
-        assert!(frames.len() > 3, "{} frames once the brightness is back", frames.len());
+        assert!(
+            frames.len() > 3,
+            "{} frames once the brightness is back",
+            frames.len()
+        );
         assert_eq!(frames.last().unwrap().1, 80);
     }
 
@@ -945,13 +1101,18 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1300));
         animator.stop();
         let frames = sink.frames.lock().unwrap();
-        assert!(frames.iter().all(|(_, b)| *b == 100), "the brightness never moved");
+        assert!(
+            frames.iter().all(|(_, b)| *b == 100),
+            "the brightness never moved"
+        );
         let dark = frames
             .iter()
             .position(|(c, _)| c.iter().all(|z| *z == Rgb::BLACK))
             .expect("the cycle does reach black");
         assert!(
-            frames[dark..].iter().any(|(c, _)| c.iter().any(|z| *z != Rgb::BLACK)),
+            frames[dark..]
+                .iter()
+                .any(|(c, _)| c.iter().any(|z| *z != Rgb::BLACK)),
             "and comes back up out of it"
         );
     }
@@ -961,12 +1122,21 @@ mod tests {
         let mut sink = Recorder::default();
         let lit = [WHITE; ZONES];
         let begun = Instant::now();
-        jump(&mut sink, 75, Duration::from_millis(200), |k, _| Transition::PowerOff.apply(&lit, k))
-            .unwrap();
-        assert!(begun.elapsed() < Duration::from_millis(100), "it does not wait out the sweep");
+        jump(&mut sink, 75, Duration::from_millis(200), |k, _| {
+            Transition::PowerOff.apply(&lit, k)
+        })
+        .unwrap();
+        assert!(
+            begun.elapsed() < Duration::from_millis(100),
+            "it does not wait out the sweep"
+        );
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0], (vec![Rgb::BLACK; ZONES], 75), "the lights are out, which was the point");
+        assert_eq!(
+            frames[0],
+            (vec![Rgb::BLACK; ZONES], 75),
+            "the lights are out, which was the point"
+        );
     }
 
     /// The same saving on the power sweep: a sweep whose every frame is
@@ -976,13 +1146,25 @@ mod tests {
         let mut sink = Recorder::default();
         let lit = [WHITE; ZONES];
         let begun = Instant::now();
-        play(&mut sink, 0, FPS_MAX, Duration::from_millis(200), |k, _| Transition::PowerOn.apply(&lit, k))
-            .unwrap();
-        assert!(begun.elapsed() < Duration::from_millis(100), "it does not wait out the sweep");
+        play(&mut sink, 0, FPS_MAX, Duration::from_millis(200), |k, _| {
+            Transition::PowerOn.apply(&lit, k)
+        })
+        .unwrap();
+        assert!(
+            begun.elapsed() < Duration::from_millis(100),
+            "it does not wait out the sweep"
+        );
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].0, lit.to_vec(), "the frame the sweep would have ended on");
-        assert_eq!(frames[0].1, 0, "scaled to black by the brightness beside it");
+        assert_eq!(
+            frames[0].0,
+            lit.to_vec(),
+            "the frame the sweep would have ended on"
+        );
+        assert_eq!(
+            frames[0].1, 0,
+            "scaled to black by the brightness beside it"
+        );
     }
 
     #[test]
@@ -991,10 +1173,18 @@ mod tests {
         *sink.fail.lock().unwrap() = true;
         let (tell, told) = mpsc::channel();
         let mut animator = Animator::new();
-        animator.start(effect(EffectKind::Breathing), 100, FPS_MAX, sink, move |e| {
-            let _ = tell.send(e.to_string());
-        });
-        let why = told.recv_timeout(Duration::from_secs(2)).expect("the failure is reported");
+        animator.start(
+            effect(EffectKind::Breathing),
+            100,
+            FPS_MAX,
+            sink,
+            move |e| {
+                let _ = tell.send(e.to_string());
+            },
+        );
+        let why = told
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the failure is reported");
         assert!(why.contains("gone"));
         std::thread::sleep(Duration::from_millis(20));
         assert!(!animator.is_running());

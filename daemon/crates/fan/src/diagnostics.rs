@@ -120,11 +120,17 @@ pub struct Diagnosis {
 
 impl Diagnosis {
     pub fn passed(&self) -> usize {
-        self.checks.iter().filter(|c| c.status == CheckStatus::Pass).count()
+        self.checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Pass)
+            .count()
     }
 
     pub fn failed(&self) -> usize {
-        self.checks.iter().filter(|c| c.status == CheckStatus::Fail).count()
+        self.checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Fail)
+            .count()
     }
 }
 
@@ -150,14 +156,20 @@ pub(crate) fn diagnose(
             "hp-wmi",
             hp_wmi_title,
             CheckStatus::Pass,
-            msg!("diagnostics.checks.hp-wmi.present", "/sys/devices/platform/hp-wmi is present"),
+            msg!(
+                "diagnostics.checks.hp-wmi.present",
+                "/sys/devices/platform/hp-wmi is present"
+            ),
         )
     } else {
         Check::new(
             "hp-wmi",
             hp_wmi_title,
             CheckStatus::Fail,
-            msg!("diagnostics.checks.hp-wmi.absent", "/sys/devices/platform/hp-wmi does not exist"),
+            msg!(
+                "diagnostics.checks.hp-wmi.absent",
+                "/sys/devices/platform/hp-wmi does not exist"
+            ),
         )
         .with_remedy(msg!(
             "diagnostics.checks.hp-wmi.remedy",
@@ -345,7 +357,10 @@ fn describe_rpm(raw: i64) -> (CheckStatus, Msg) {
             msg!("diagnostics.checks.fan.tooHigh", { "raw" => raw }, "{raw} rpm is implausibly high"),
         );
     }
-    (CheckStatus::Pass, msg!("diagnostics.checks.fan.rpm", { "raw" => raw }, "{raw} rpm"))
+    (
+        CheckStatus::Pass,
+        msg!("diagnostics.checks.fan.rpm", { "raw" => raw }, "{raw} rpm"),
+    )
 }
 
 fn check_readable_number(
@@ -354,8 +369,12 @@ fn check_readable_number(
     path: Option<&Path>,
     describe: impl Fn(i64) -> (CheckStatus, Msg),
 ) -> Check {
-    let not_exposed =
-        || msg!("diagnostics.checks.notExposed", "not exposed by this driver");
+    let not_exposed = || {
+        msg!(
+            "diagnostics.checks.notExposed",
+            "not exposed by this driver"
+        )
+    };
     let Some(path) = path else {
         return Check::new(id, title, CheckStatus::Skip, not_exposed());
     };
@@ -471,7 +490,10 @@ fn check_pwm_enable(path: Option<&Path>) -> Check {
             "pwm1_enable",
             title(),
             CheckStatus::Fail,
-            msg!("diagnostics.checks.pwm1_enable.notExposed", "pwm1_enable is not exposed"),
+            msg!(
+                "diagnostics.checks.pwm1_enable.notExposed",
+                "pwm1_enable is not exposed"
+            ),
         );
     };
     match fs::read_to_string(path) {
@@ -482,9 +504,15 @@ fn check_pwm_enable(path: Option<&Path>) -> Check {
                     "diagnostics.checks.pwm1_enable.mode0",
                     "0 - max (firmware overridden to full speed)"
                 ),
-                "1" => msg!("diagnostics.checks.pwm1_enable.mode1", "1 - manual (pwm1 is in effect)"),
+                "1" => msg!(
+                    "diagnostics.checks.pwm1_enable.mode1",
+                    "1 - manual (pwm1 is in effect)"
+                ),
                 "2" => {
-                    msg!("diagnostics.checks.pwm1_enable.mode2", "2 - automatic (firmware curve)")
+                    msg!(
+                        "diagnostics.checks.pwm1_enable.mode2",
+                        "2 - automatic (firmware curve)"
+                    )
                 }
                 _ => msg!(
                     "diagnostics.checks.pwm1_enable.modeUnknown",
@@ -492,8 +520,11 @@ fn check_pwm_enable(path: Option<&Path>) -> Check {
                     "{value} - unknown mode"
                 ),
             };
-            let status =
-                if matches!(value, "0" | "1" | "2") { CheckStatus::Pass } else { CheckStatus::Warn };
+            let status = if matches!(value, "0" | "1" | "2") {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            };
             Check::new("pwm1_enable", title(), status, detail)
         }
         Err(e) => Check::new(
@@ -532,7 +563,10 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
             ID,
             title(),
             CheckStatus::Skip,
-            msg!("diagnostics.checks.pwm-write.noChannel", "no PWM channel to write to"),
+            msg!(
+                "diagnostics.checks.pwm-write.noChannel",
+                "no PWM channel to write to"
+            ),
         );
     };
     if !allow_writes {
@@ -552,7 +586,10 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
             ID,
             title(),
             CheckStatus::Fail,
-            msg!("diagnostics.checks.pwm-write.noMode", "could not read the current mode"),
+            msg!(
+                "diagnostics.checks.pwm-write.noMode",
+                "could not read the current mode"
+            ),
         );
     };
     let Ok(original_pwm) = fs::read_to_string(pwm) else {
@@ -560,7 +597,10 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
             ID,
             title(),
             CheckStatus::Fail,
-            msg!("diagnostics.checks.pwm-write.noValue", "could not read the current PWM value"),
+            msg!(
+                "diagnostics.checks.pwm-write.noValue",
+                "could not read the current PWM value"
+            ),
         );
     };
     let (original_mode, original_pwm) = (original_mode.trim(), original_pwm.trim());
@@ -636,7 +676,9 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
 fn probe_value(current: &str) -> u8 {
     let current: u8 = current.parse().unwrap_or(0);
     if current > 128 {
-        current.saturating_sub(37).max(crate::curve::MIN_COMMANDED_PWM)
+        current
+            .saturating_sub(37)
+            .max(crate::curve::MIN_COMMANDED_PWM)
     } else {
         current.saturating_add(37)
     }
@@ -651,7 +693,12 @@ fn probe_value(current: &str) -> u8 {
 /// report. `None` means it was not attempted.
 fn check_effect(probe: Option<&SpeedProbe>) -> Check {
     const ID: &str = "pwm-effect";
-    let title = || msg!("diagnostics.checks.pwm-effect.title", "Fans follow a commanded speed");
+    let title = || {
+        msg!(
+            "diagnostics.checks.pwm-effect.title",
+            "Fans follow a commanded speed"
+        )
+    };
 
     let Some(probe) = probe else {
         return Check::new(
@@ -699,7 +746,10 @@ fn check_effect(probe: Option<&SpeedProbe>) -> Check {
         ),
         speed_probe::Verdict::NoChannel => (
             CheckStatus::Skip,
-            msg!("diagnostics.checks.pwm-effect.noChannel", "no PWM channel to write to"),
+            msg!(
+                "diagnostics.checks.pwm-effect.noChannel",
+                "no PWM channel to write to"
+            ),
         ),
     };
 
@@ -750,7 +800,10 @@ fn check_hwmon_attributes(hwmon_dir: Option<&Path>) -> Check {
             ID,
             title(),
             CheckStatus::Warn,
-            msg!("diagnostics.checks.hwmon-attrs.empty", "the hwmon node is empty"),
+            msg!(
+                "diagnostics.checks.hwmon-attrs.empty",
+                "the hwmon node is empty"
+            ),
         );
     }
     // A bare list of attribute names - not a sentence, nothing to translate.
@@ -761,7 +814,12 @@ fn check_hwmon_attributes(hwmon_dir: Option<&Path>) -> Check {
 /// with reduced functionality.
 fn check_kernel_log() -> Check {
     const ID: &str = "kernel-log";
-    let title = || msg!("diagnostics.checks.kernel-log.title", "hp-wmi kernel messages");
+    let title = || {
+        msg!(
+            "diagnostics.checks.kernel-log.title",
+            "hp-wmi kernel messages"
+        )
+    };
 
     // Via `dmesg` rather than /dev/kmsg: reading that device directly can
     // block waiting for new messages, and it is root-only wherever
@@ -771,7 +829,10 @@ fn check_kernel_log() -> Check {
             ID,
             title(),
             CheckStatus::Skip,
-            msg!("diagnostics.checks.kernel-log.noDmesg", "dmesg is not available"),
+            msg!(
+                "diagnostics.checks.kernel-log.noDmesg",
+                "dmesg is not available"
+            ),
         );
     };
     if !output.status.success() {
@@ -881,7 +942,12 @@ fn check_platform_profile() -> Check {
     const PATH: &str = "/sys/firmware/acpi/platform_profile";
     const CHOICES: &str = "/sys/firmware/acpi/platform_profile_choices";
 
-    let title = || msg!("diagnostics.checks.platform-profile.title", "ACPI platform profile");
+    let title = || {
+        msg!(
+            "diagnostics.checks.platform-profile.title",
+            "ACPI platform profile"
+        )
+    };
     match (fs::read_to_string(PATH), fs::read_to_string(CHOICES)) {
         (Ok(current), Ok(choices)) => Check::new(
             "platform-profile",
@@ -941,7 +1007,10 @@ fn check_acpi_call() -> Check {
             "acpi-call",
             title(),
             CheckStatus::Pass,
-            msg!("diagnostics.checks.acpi-call.ok", "/proc/acpi/call is available"),
+            msg!(
+                "diagnostics.checks.acpi-call.ok",
+                "/proc/acpi/call is available"
+            ),
         )
     } else {
         Check::new(
@@ -974,7 +1043,12 @@ fn check_acpi_call() -> Check {
 /// package or a missing `sudo`, and reporting it as the first sends
 /// someone looking for a different laptop.
 fn check_fan_cleaner() -> Check {
-    let title = || msg!("diagnostics.checks.fan-cleaner.title", "Fan cleaner (reverse spin)");
+    let title = || {
+        msg!(
+            "diagnostics.checks.fan-cleaner.title",
+            "Fan cleaner (reverse spin)"
+        )
+    };
     let probe = crate::cleaner::probe();
 
     if let Some(why) = probe.unreachable {
@@ -1027,8 +1101,15 @@ mod tests {
 
         let check = check_fan_cleaner();
         assert_eq!(check.id, "fan-cleaner");
-        assert_eq!(check.status, CheckStatus::Skip, "not asked is not a verdict");
-        assert!(check.remedy.is_some(), "not being able to ask comes with a way to ask");
+        assert_eq!(
+            check.status,
+            CheckStatus::Skip,
+            "not asked is not a verdict"
+        );
+        assert!(
+            check.remedy.is_some(),
+            "not being able to ask comes with a way to ask"
+        );
         assert!(!check.detail.contains("has no fan cleaner"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1074,8 +1155,7 @@ mod tests {
     }
 
     fn fixture(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-fan-diag-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pyren-fan-diag-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -1086,7 +1166,11 @@ mod tests {
     }
 
     fn check<'a>(diagnosis: &'a Diagnosis, id: &str) -> &'a Check {
-        diagnosis.checks.iter().find(|c| c.id == id).expect("check should exist")
+        diagnosis
+            .checks
+            .iter()
+            .find(|c| c.id == id)
+            .expect("check should exist")
     }
 
     #[test]
@@ -1160,7 +1244,11 @@ mod tests {
         let diagnosis = diagnose(&paths_for_testing(dir, None), true, None);
         let write_check = check(&diagnosis, "pwm-write");
         assert_eq!(write_check.status, CheckStatus::Skip);
-        assert!(write_check.detail.contains("root"), "got: {}", write_check.detail);
+        assert!(
+            write_check.detail.contains("root"),
+            "got: {}",
+            write_check.detail
+        );
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
     }
 
@@ -1176,7 +1264,11 @@ mod tests {
         let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
         // ...but it must say the write path is unverified.
-        assert!(diagnosis.summary.contains("Re-run"), "got: {}", diagnosis.summary);
+        assert!(
+            diagnosis.summary.contains("Re-run"),
+            "got: {}",
+            diagnosis.summary
+        );
     }
 
     #[test]
@@ -1192,7 +1284,9 @@ mod tests {
         let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
         assert_eq!(check(&diagnosis, "pwm1").status, CheckStatus::Pass);
-        assert!(check(&diagnosis, "pwm1_enable").detail.contains("automatic"));
+        assert!(check(&diagnosis, "pwm1_enable")
+            .detail
+            .contains("automatic"));
     }
 
     #[test]
@@ -1236,7 +1330,10 @@ mod tests {
         let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None);
         assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Pass);
         // Automatic mode, and the same speed, exactly as before.
-        assert_eq!(fs::read_to_string(dir.join("pwm1_enable")).unwrap().trim(), "2");
+        assert_eq!(
+            fs::read_to_string(dir.join("pwm1_enable")).unwrap().trim(),
+            "2"
+        );
         assert_eq!(fs::read_to_string(dir.join("pwm1")).unwrap().trim(), "128");
     }
 
@@ -1253,7 +1350,10 @@ mod tests {
                 current,
                 "writing back {current} would pass on a channel that ignores it"
             );
-            assert!(probe >= crate::curve::MIN_COMMANDED_PWM, "0 is the automatic sentinel");
+            assert!(
+                probe >= crate::curve::MIN_COMMANDED_PWM,
+                "0 is the automatic sentinel"
+            );
         }
     }
 
@@ -1333,9 +1433,14 @@ mod tests {
         let notice = notice.expect("an HP machine with no pwm should get the notice");
         // Upgrading the kernel comes first: fan control is upstream now, so
         // replacing a kernel module should be the fallback, not the advice.
-        let kernel_hint =
-            notice.text.find("upgrading the kernel").expect("should suggest the kernel");
-        let driver_hint = notice.text.find("patched").expect("should mention the patched driver");
+        let kernel_hint = notice
+            .text
+            .find("upgrading the kernel")
+            .expect("should suggest the kernel");
+        let driver_hint = notice
+            .text
+            .find("patched")
+            .expect("should mention the patched driver");
         assert!(kernel_hint < driver_hint);
     }
 
@@ -1372,7 +1477,10 @@ mod tests {
         write(&dir, "pwm1_enable", "2\n");
 
         let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
-        assert_eq!(diagnosis.summary.key, "diagnostics.summary.fullControlUntested");
+        assert_eq!(
+            diagnosis.summary.key,
+            "diagnostics.summary.fullControlUntested"
+        );
         let pwm1 = check(&diagnosis, "pwm1");
         assert_eq!(pwm1.title.key, "diagnostics.checks.pwm1.title");
         assert_eq!(pwm1.detail.key, "diagnostics.checks.pwm1.ok");

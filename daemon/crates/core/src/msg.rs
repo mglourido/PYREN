@@ -45,7 +45,11 @@ impl Msg {
     /// A `Msg` with no interpolation and key and text carrying the same
     /// literal - for a plain sentence not worth a catalog entry yet.
     pub fn literal(text: impl Into<String>) -> Self {
-        Self { key: "", params: Map::new(), text: text.into() }
+        Self {
+            key: "",
+            params: Map::new(),
+            text: text.into(),
+        }
     }
 
     /// Whether the English text contains `needle`. A convenience for tests,
@@ -68,7 +72,11 @@ impl Msg {
             0 => None,
             1 => parts.into_iter().next(),
             _ => {
-                let text = parts.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join(sep);
+                let text = parts
+                    .iter()
+                    .map(|m| m.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(sep);
                 let list = Value::Array(
                     parts
                         .into_iter()
@@ -85,7 +93,11 @@ impl Msg {
                 );
                 let mut params = Map::new();
                 params.insert("parts".into(), list);
-                Some(Msg { key: "", params, text })
+                Some(Msg {
+                    key: "",
+                    params,
+                    text,
+                })
             }
         }
     }
@@ -189,7 +201,9 @@ mod tests {
     #[test]
     fn no_message_carries_its_own_source_indentation() {
         fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_dir() {
@@ -198,7 +212,9 @@ mod tests {
                     }
                     walk(&path, found);
                 } else if path.extension().is_some_and(|e| e == "rs") {
-                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    let Ok(text) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
                     for (number, line) in text.lines().enumerate() {
                         if swallowed_indentation(line.trim_start()) {
                             found.push(format!("{}:{}", path.display(), number + 1));
@@ -216,7 +232,10 @@ mod tests {
 
         let mut found = Vec::new();
         walk(&workspace.join("crates"), &mut found);
-        assert!(found.is_empty(), "string literals carrying source indentation: {found:#?}");
+        assert!(
+            found.is_empty(),
+            "string literals carrying source indentation: {found:#?}"
+        );
     }
 
     /// A run of spaces sitting mid-sentence inside a string literal.
@@ -281,9 +300,15 @@ mod tests {
 
         // What it does not: a dmesg timestamp fixture, and the CLI help
         // text, which marks its deliberate alignment with `\x20`.
-        assert!(!swallowed_indentation("\"[    5.585175] input: HP WMI hotkeys\""));
-        assert!(!swallowed_indentation("\"\\x20 --help              this text\\n\\\""));
-        assert!(!swallowed_indentation("\"a normal sentence with single spaces\""));
+        assert!(!swallowed_indentation(
+            "\"[    5.585175] input: HP WMI hotkeys\""
+        ));
+        assert!(!swallowed_indentation(
+            "\"\\x20 --help              this text\\n\\\""
+        ));
+        assert!(!swallowed_indentation(
+            "\"a normal sentence with single spaces\""
+        ));
     }
     use super::*;
 

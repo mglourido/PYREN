@@ -35,7 +35,9 @@ const POWERCAP: &str = "/sys/class/powercap";
 /// developer's own CPU, and reverting it afterwards is not something a
 /// failed assertion can be relied on to do.
 fn powercap_root() -> PathBuf {
-    std::env::var_os("PYREN_POWERCAP").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(POWERCAP))
+    std::env::var_os("PYREN_POWERCAP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(POWERCAP))
 }
 
 /// The two knobs for turbo, whichever this CPU has. Both live under the
@@ -72,7 +74,10 @@ pub struct LimitPaths {
 
 impl LimitPaths {
     pub fn discover() -> Self {
-        Self { zone: find_package_zone(), turbo: find_turbo_knob() }
+        Self {
+            zone: find_package_zone(),
+            turbo: find_turbo_knob(),
+        }
     }
 
     pub fn has_limits(&self) -> bool {
@@ -154,7 +159,11 @@ impl Tuning {
     /// in. Importing the Windows OMEN profile would be another (see
     /// `dev/TODO.md`); guessing is not.
     pub fn default_for(_mode: PowerMode) -> Self {
-        Self { pl1_percent: 100, pl2_percent: 100, turbo: true }
+        Self {
+            pl1_percent: 100,
+            pl2_percent: 100,
+            turbo: true,
+        }
     }
 
     /// The absolute limits this tuning asks for, given the machine's stock.
@@ -226,7 +235,11 @@ fn find_package_zone() -> Option<PathBuf> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             // The mmio interface addresses the same package; one is enough.
             name.starts_with("intel-rapl:") && !name.contains("mmio")
         })
@@ -261,7 +274,11 @@ pub fn read(paths: &LimitPaths) -> Limits {
     let Some(zone) = paths.zone.as_deref() else {
         return Limits::default();
     };
-    Limits { pl1_uw: read_uw(zone, 0), pl2_uw: read_uw(zone, 1), pl4_uw: read_uw(zone, 2) }
+    Limits {
+        pl1_uw: read_uw(zone, 0),
+        pl2_uw: read_uw(zone, 1),
+        pl4_uw: read_uw(zone, 2),
+    }
 }
 
 /// Whether turbo is currently allowed, or `None` when the machine has no
@@ -284,9 +301,11 @@ pub fn apply(paths: &LimitPaths, target: Limits) -> (Vec<String>, Vec<String>) {
         return (applied, failed);
     };
 
-    for (constraint, wanted, label) in
-        [(0u8, target.pl1_uw, "PL1"), (1, target.pl2_uw, "PL2"), (2, target.pl4_uw, "PL4")]
-    {
+    for (constraint, wanted, label) in [
+        (0u8, target.pl1_uw, "PL1"),
+        (1, target.pl2_uw, "PL2"),
+        (2, target.pl4_uw, "PL4"),
+    ] {
         let Some(wanted) = wanted else { continue };
         let path = zone.join(format!("constraint_{constraint}_power_limit_uw"));
         if !path.exists() {
@@ -334,22 +353,33 @@ mod tests {
     const W: u64 = 1_000_000;
 
     fn stock() -> Limits {
-        Limits { pl1_uw: Some(77 * W), pl2_uw: Some(77 * W), pl4_uw: Some(168 * W) }
+        Limits {
+            pl1_uw: Some(77 * W),
+            pl2_uw: Some(77 * W),
+            pl4_uw: Some(168 * W),
+        }
     }
 
     /// No mode ships an opinion about watts. Whose watts would they be?
     #[test]
     fn every_mode_starts_at_the_machines_own_envelope() {
-        for mode in
-            [PowerMode::Eco, PowerMode::Balanced, PowerMode::Performance, PowerMode::Unlimited]
-        {
+        for mode in [
+            PowerMode::Eco,
+            PowerMode::Balanced,
+            PowerMode::Performance,
+            PowerMode::Unlimited,
+        ] {
             assert_eq!(Tuning::default_for(mode).target(stock()), stock());
         }
     }
 
     #[test]
     fn a_tuning_someone_set_is_a_fraction_of_that_envelope() {
-        let measured = Tuning { pl1_percent: 45, pl2_percent: 55, turbo: false };
+        let measured = Tuning {
+            pl1_percent: 45,
+            pl2_percent: 55,
+            turbo: false,
+        };
         let target = measured.target(stock());
 
         assert_eq!(target.pl1_uw, Some(34 * W + 650_000));
@@ -360,13 +390,21 @@ mod tests {
     /// firmware shipped is overclocking, and is not something a mode does.
     #[test]
     fn nothing_may_ask_for_more_than_stock() {
-        let greedy = Limits { pl1_uw: Some(200 * W), pl2_uw: Some(200 * W), pl4_uw: Some(500 * W) };
+        let greedy = Limits {
+            pl1_uw: Some(200 * W),
+            pl2_uw: Some(200 * W),
+            pl4_uw: Some(500 * W),
+        };
         assert_eq!(greedy.clamp_to_stock(stock()), stock());
     }
 
     #[test]
     fn a_percentage_that_works_out_to_nothing_is_floored() {
-        let tiny = Tuning { pl1_percent: 1, pl2_percent: 1, turbo: false };
+        let tiny = Tuning {
+            pl1_percent: 1,
+            pl2_percent: 1,
+            turbo: false,
+        };
         let clamped = tiny.target(stock()).clamp_to_stock(stock());
         assert_eq!(clamped.pl1_uw, Some(FLOOR_UW));
     }
@@ -375,7 +413,10 @@ mod tests {
     /// all - there is nothing to be sure we are staying under.
     #[test]
     fn without_a_recorded_stock_value_nothing_is_commanded() {
-        let target = Limits { pl1_uw: Some(30 * W), ..Default::default() };
+        let target = Limits {
+            pl1_uw: Some(30 * W),
+            ..Default::default()
+        };
         assert!(target.clamp_to_stock(Limits::default()).is_empty());
     }
 
@@ -383,9 +424,12 @@ mod tests {
     /// this daemon makes for anyone either.
     #[test]
     fn no_mode_gives_up_turbo_unless_someone_says_so() {
-        for mode in
-            [PowerMode::Eco, PowerMode::Balanced, PowerMode::Performance, PowerMode::Unlimited]
-        {
+        for mode in [
+            PowerMode::Eco,
+            PowerMode::Balanced,
+            PowerMode::Performance,
+            PowerMode::Unlimited,
+        ] {
             assert!(Tuning::default_for(mode).turbo);
         }
     }
@@ -393,11 +437,18 @@ mod tests {
     #[test]
     fn tuning_round_trips_through_the_mode_table() {
         let mut table = ModeTuning::default();
-        let custom = Tuning { pl1_percent: 60, pl2_percent: 70, turbo: false };
+        let custom = Tuning {
+            pl1_percent: 60,
+            pl2_percent: 70,
+            turbo: false,
+        };
         table.set(PowerMode::Balanced, custom);
 
         assert_eq!(table.get(PowerMode::Balanced), custom);
-        assert_eq!(table.get(PowerMode::Eco), Tuning::default_for(PowerMode::Eco));
+        assert_eq!(
+            table.get(PowerMode::Eco),
+            Tuning::default_for(PowerMode::Eco)
+        );
     }
 
     /// Writing a limit the machine already holds is a no-op that, on an
@@ -407,13 +458,32 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pyren-rapl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("constraint_0_power_limit_uw"), (45 * W).to_string()).unwrap();
-        let paths = LimitPaths { zone: Some(dir.clone()), turbo: None };
+        fs::write(
+            dir.join("constraint_0_power_limit_uw"),
+            (45 * W).to_string(),
+        )
+        .unwrap();
+        let paths = LimitPaths {
+            zone: Some(dir.clone()),
+            turbo: None,
+        };
 
-        let (applied, failed) = apply(&paths, Limits { pl1_uw: Some(45 * W), ..Default::default() });
+        let (applied, failed) = apply(
+            &paths,
+            Limits {
+                pl1_uw: Some(45 * W),
+                ..Default::default()
+            },
+        );
         assert!(applied.is_empty() && failed.is_empty(), "nothing to do");
 
-        let (applied, _) = apply(&paths, Limits { pl1_uw: Some(30 * W), ..Default::default() });
+        let (applied, _) = apply(
+            &paths,
+            Limits {
+                pl1_uw: Some(30 * W),
+                ..Default::default()
+            },
+        );
         assert_eq!(applied, vec!["PL1=30W".to_string()]);
     }
 

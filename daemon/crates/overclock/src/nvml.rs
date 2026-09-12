@@ -231,7 +231,9 @@ fn translate(symbols: &Symbols, rc: c_int) -> NvmlError {
         // SAFETY: the driver returns a pointer to one of its own static
         // strings, valid for the life of the process.
         other => NvmlError::Failed(unsafe {
-            CStr::from_ptr((symbols.error_string)(other)).to_string_lossy().into_owned()
+            CStr::from_ptr((symbols.error_string)(other))
+                .to_string_lossy()
+                .into_owned()
         }),
     }
 }
@@ -266,11 +268,7 @@ fn read(
     Ok((value, range))
 }
 
-fn write(
-    index: u32,
-    set: fn(&Symbols) -> Option<SetOffset>,
-    mhz: i32,
-) -> Result<(), NvmlError> {
+fn write(index: u32, set: fn(&Symbols) -> Option<SetOffset>, mhz: i32) -> Result<(), NvmlError> {
     let symbols = symbols().ok_or(NvmlError::Unavailable)?;
     let set = set(symbols).ok_or(NvmlError::Unavailable)?;
     let handle = device(symbols, index)?;
@@ -305,7 +303,15 @@ pub fn set_mem_offset(index: u32, mhz: i32) -> Result<(), NvmlError> {
 ///
 /// All five or none: a set that can be created and never waited on is a
 /// leak, and a wait with no way to register anything never fires.
-fn event_symbols(symbols: &Symbols) -> Option<(EventSetCreate, EventSetFree, RegisterEvents, EventSetWait, SupportedEvents)> {
+fn event_symbols(
+    symbols: &Symbols,
+) -> Option<(
+    EventSetCreate,
+    EventSetFree,
+    RegisterEvents,
+    EventSetWait,
+    SupportedEvents,
+)> {
     Some((
         symbols.event_set_create?,
         symbols.event_set_free?,
@@ -321,9 +327,15 @@ fn event_symbols(symbols: &Symbols) -> Option<(EventSetCreate, EventSetFree, Reg
 /// message: it simply has one fewer signal than the reference card, and
 /// everything else keeps working exactly as before.
 pub fn supports_fault_events(index: u32) -> bool {
-    let Some(symbols) = symbols() else { return false };
-    let Some((.., supported)) = event_symbols(symbols) else { return false };
-    let Ok(handle) = device(symbols, index) else { return false };
+    let Some(symbols) = symbols() else {
+        return false;
+    };
+    let Some((.., supported)) = event_symbols(symbols) else {
+        return false;
+    };
+    let Ok(handle) = device(symbols, index) else {
+        return false;
+    };
 
     let mut mask: c_ulonglong = 0;
     // SAFETY: a handle the driver gave us, and a valid out-pointer.
@@ -446,8 +458,14 @@ mod tests {
         }
         // GPU 0 exists wherever NVML loaded at all.
         if let Ok((offset, Some(range))) = core_offset(0) {
-            assert!(range.min <= offset && offset <= range.max, "{offset} outside {range:?}");
-            assert!(range.min <= 0 && range.max >= 0, "stock must be inside the range");
+            assert!(
+                range.min <= offset && offset <= range.max,
+                "{offset} outside {range:?}"
+            );
+            assert!(
+                range.min <= 0 && range.max >= 0,
+                "stock must be inside the range"
+            );
         }
     }
 
@@ -457,7 +475,10 @@ mod tests {
     #[test]
     fn asking_whether_a_gpu_reports_faults_is_safe_on_any_machine() {
         let _ = supports_fault_events(0);
-        assert!(!supports_fault_events(u32::MAX), "a GPU that is not there reports nothing");
+        assert!(
+            !supports_fault_events(u32::MAX),
+            "a GPU that is not there reports nothing"
+        );
     }
 
     /// The gate the whole feature hangs on: no NVML, no old driver, no
@@ -478,9 +499,14 @@ mod tests {
     /// watchdog calls this every 500 ms and must not be blocked by it.
     #[test]
     fn polling_a_healthy_card_is_prompt_and_reports_nothing() {
-        let Some(watch) = EventWatch::create(0) else { return };
+        let Some(watch) = EventWatch::create(0) else {
+            return;
+        };
         let start = std::time::Instant::now();
-        assert!(!watch.poll(), "a healthy GPU must not report a critical fault");
+        assert!(
+            !watch.poll(),
+            "a healthy GPU must not report a critical fault"
+        );
         assert!(
             start.elapsed() < std::time::Duration::from_millis(100),
             "a poll took {:?}, which would push the watchdog's own tick late",

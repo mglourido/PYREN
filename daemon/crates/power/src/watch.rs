@@ -137,7 +137,11 @@ pub(crate) fn examine(mode: PowerMode, expected: &Knobs, now: &Knobs, since: Dur
 
     if let Some(want) = &expected.energy_preference {
         if now.energy_preference.as_ref() != Some(want) {
-            overridden("energy_performance_preference", want.clone(), now.energy_preference.clone());
+            overridden(
+                "energy_performance_preference",
+                want.clone(),
+                now.energy_preference.clone(),
+            );
         }
     }
 
@@ -166,7 +170,13 @@ pub(crate) fn examine(mode: PowerMode, expected: &Knobs, now: &Knobs, since: Dur
 /// `backend::pick_platform_profile`), so seeing `performance` while in
 /// Unlimited is not a change of mode.
 fn same_family(seen: PowerMode, mode: PowerMode) -> bool {
-    let family = |m| if m == PowerMode::Unlimited { PowerMode::Performance } else { m };
+    let family = |m| {
+        if m == PowerMode::Unlimited {
+            PowerMode::Performance
+        } else {
+            m
+        }
+    };
     family(seen) == family(mode)
 }
 
@@ -195,13 +205,20 @@ mod tests {
             platform_profile: Some("low-power".into()),
             energy_preference: Some("power".into()),
             turbo: Some(false),
-            limits: Limits { pl1_uw: Some(40 * W), pl2_uw: Some(50 * W), pl4_uw: None },
+            limits: Limits {
+                pl1_uw: Some(40 * W),
+                pl2_uw: Some(50 * W),
+                pl4_uw: None,
+            },
         }
     }
 
     #[test]
     fn a_machine_left_alone_has_nothing_to_report() {
-        assert_eq!(examine(PowerMode::Eco, &eco(), &eco(), LONG_AGO), Examined::default());
+        assert_eq!(
+            examine(PowerMode::Eco, &eco(), &eco(), LONG_AGO),
+            Examined::default()
+        );
     }
 
     /// Fn+P, the desktop's menu, TLP on a charger event: the machine is in
@@ -209,9 +226,15 @@ mod tests {
     /// override - it happened long after the daemon's own write.
     #[test]
     fn a_firmware_profile_of_another_mode_is_followed() {
-        let now = Knobs { platform_profile: Some("performance".into()), ..eco() };
+        let now = Knobs {
+            platform_profile: Some("performance".into()),
+            ..eco()
+        };
         let found = examine(PowerMode::Eco, &eco(), &now, LONG_AGO);
-        assert_eq!(found.adopt, Some((PowerMode::Performance, "performance".into())));
+        assert_eq!(
+            found.adopt,
+            Some((PowerMode::Performance, "performance".into()))
+        );
         assert!(found.overrides.is_empty(), "{:?}", found.overrides);
     }
 
@@ -219,7 +242,10 @@ mod tests {
     /// it is where the machine is - but reported as a revert.
     #[test]
     fn a_firmware_profile_undone_straight_away_is_followed_and_reported() {
-        let now = Knobs { platform_profile: Some("balanced".into()), ..eco() };
+        let now = Knobs {
+            platform_profile: Some("balanced".into()),
+            ..eco()
+        };
         let found = examine(PowerMode::Eco, &eco(), &now, JUST_NOW);
         assert_eq!(found.adopt, Some((PowerMode::Balanced, "balanced".into())));
         assert_eq!(found.overrides.len(), 1);
@@ -229,7 +255,10 @@ mod tests {
 
     #[test]
     fn another_name_for_the_same_mode_is_not_a_change_of_mode() {
-        let now = Knobs { platform_profile: Some("quiet".into()), ..eco() };
+        let now = Knobs {
+            platform_profile: Some("quiet".into()),
+            ..eco()
+        };
         let found = examine(PowerMode::Eco, &eco(), &now, JUST_NOW);
         assert_eq!(found.adopt, None);
         assert_eq!(found.same_mode_profile.as_deref(), Some("quiet"));
@@ -238,15 +267,24 @@ mod tests {
 
     #[test]
     fn performance_while_in_unlimited_is_not_a_change_of_mode() {
-        let expected = Knobs { platform_profile: Some("balanced-performance".into()), ..Knobs::default() };
-        let now = Knobs { platform_profile: Some("performance".into()), ..Knobs::default() };
+        let expected = Knobs {
+            platform_profile: Some("balanced-performance".into()),
+            ..Knobs::default()
+        };
+        let now = Knobs {
+            platform_profile: Some("performance".into()),
+            ..Knobs::default()
+        };
         let found = examine(PowerMode::Unlimited, &expected, &now, LONG_AGO);
         assert_eq!(found.adopt, None);
     }
 
     #[test]
     fn a_firmware_profile_no_mode_maps_onto_is_reported_not_followed() {
-        let now = Knobs { platform_profile: Some("custom".into()), ..eco() };
+        let now = Knobs {
+            platform_profile: Some("custom".into()),
+            ..eco()
+        };
         let found = examine(PowerMode::Eco, &eco(), &now, LONG_AGO);
         assert_eq!(found.adopt, None);
         assert_eq!(found.overrides[0].found, "custom");
@@ -261,14 +299,26 @@ mod tests {
             platform_profile: Some("low-power".into()),
             energy_preference: Some("balance_power".into()),
             turbo: Some(true),
-            limits: Limits { pl1_uw: Some(40 * W), pl2_uw: Some(64_500_000), pl4_uw: Some(9 * W) },
+            limits: Limits {
+                pl1_uw: Some(40 * W),
+                pl2_uw: Some(64_500_000),
+                pl4_uw: Some(9 * W),
+            },
         };
         let found = examine(PowerMode::Eco, &eco(), &now, JUST_NOW);
         assert_eq!(found.adopt, None);
-        let knobs: Vec<_> = found.overrides.iter().map(|o| (o.knob, o.found.as_str())).collect();
+        let knobs: Vec<_> = found
+            .overrides
+            .iter()
+            .map(|o| (o.knob, o.found.as_str()))
+            .collect();
         assert_eq!(
             knobs,
-            vec![("energy_performance_preference", "balance_power"), ("turbo", "on"), ("PL2", "64.5 W")],
+            vec![
+                ("energy_performance_preference", "balance_power"),
+                ("turbo", "on"),
+                ("PL2", "64.5 W")
+            ],
             "PL4 was never the daemon's to watch"
         );
         assert!(found.overrides.iter().all(|o| o.reverted));
@@ -278,13 +328,23 @@ mod tests {
     /// owns the hint, TLP changing it is nobody's business here.
     #[test]
     fn knobs_the_daemon_did_not_set_are_not_watched() {
-        let expected = Knobs { platform_profile: Some("balanced".into()), ..Knobs::default() };
+        let expected = Knobs {
+            platform_profile: Some("balanced".into()),
+            ..Knobs::default()
+        };
         let now = Knobs {
             platform_profile: Some("balanced".into()),
             energy_preference: Some("power".into()),
             turbo: Some(false),
-            limits: Limits { pl1_uw: Some(W), pl2_uw: Some(W), pl4_uw: Some(W) },
+            limits: Limits {
+                pl1_uw: Some(W),
+                pl2_uw: Some(W),
+                pl4_uw: Some(W),
+            },
         };
-        assert_eq!(examine(PowerMode::Balanced, &expected, &now, JUST_NOW), Examined::default());
+        assert_eq!(
+            examine(PowerMode::Balanced, &expected, &now, JUST_NOW),
+            Examined::default()
+        );
     }
 }

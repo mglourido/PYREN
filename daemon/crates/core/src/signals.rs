@@ -51,18 +51,20 @@ pub fn on_termination<F>(tidy: F)
 where
     F: FnOnce(libc::c_int) + Send + 'static,
 {
-    let spawned = std::thread::Builder::new().name("pyren-signals".into()).spawn(move || {
-        let set = set();
-        let mut signal: libc::c_int = 0;
-        // SAFETY: `set` is initialised and `signal` is a valid out pointer.
-        let waited = unsafe { libc::sigwait(&set, &mut signal) };
-        if waited != 0 {
-            crate::log_warn!("sigwait failed ({waited}); SIGTERM will not be handled");
-            return;
-        }
-        tidy(signal);
-        std::process::exit(0);
-    });
+    let spawned = std::thread::Builder::new()
+        .name("pyren-signals".into())
+        .spawn(move || {
+            let set = set();
+            let mut signal: libc::c_int = 0;
+            // SAFETY: `set` is initialised and `signal` is a valid out pointer.
+            let waited = unsafe { libc::sigwait(&set, &mut signal) };
+            if waited != 0 {
+                crate::log_warn!("sigwait failed ({waited}); SIGTERM will not be handled");
+                return;
+            }
+            tidy(signal);
+            std::process::exit(0);
+        });
     if let Err(e) = spawned {
         crate::log_warn!("could not start the signal thread: {e}");
     }

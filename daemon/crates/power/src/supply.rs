@@ -70,7 +70,12 @@ impl PowerSupplyState {
             (true, None) => battery_status.as_deref().map(|s| s == "Discharging"),
         };
 
-        Self { on_battery, battery_percent, battery_status, has_battery }
+        Self {
+            on_battery,
+            battery_percent,
+            battery_status,
+            has_battery,
+        }
     }
 }
 

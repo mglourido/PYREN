@@ -95,7 +95,12 @@ pub fn clamp_brightness(value: i64) -> u8 {
 
 /// The 144-byte buffer for a write, as the hex argument `acpi_call` takes.
 pub fn write_request(colors: &[Rgb], brightness: u8) -> String {
-    acpi::wmi_request(COMMAND_WRITE, TYPE_WRITE, PAYLOAD_LEN, &payload_for(colors, brightness))
+    acpi::wmi_request(
+        COMMAND_WRITE,
+        TYPE_WRITE,
+        PAYLOAD_LEN,
+        &payload_for(colors, brightness),
+    )
 }
 
 /// The 128 payload bytes of a write.
@@ -129,7 +134,6 @@ pub fn read_request(zone: usize) -> String {
     payload[0] = zone as u8;
     acpi::wmi_request(COMMAND_READ, TYPE_READ, PAYLOAD_LEN, &payload)
 }
-
 
 /// Whether a reply means the firmware did the thing.
 ///
@@ -166,7 +170,9 @@ pub fn zone_color(reply: &[u8]) -> Option<Rgb> {
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 // --- the hardware ------------------------------------------------------
@@ -221,13 +227,12 @@ pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
     for zone in 0..ZONES {
         let mut payload = [0u8; PAYLOAD_LEN];
         payload[0] = zone as u8;
-        let reply =
-            acpi::wmi_call(COMMAND_READ, TYPE_READ, &payload, PAYLOAD_LEN, PAYLOAD_LEN)?;
+        let reply = acpi::wmi_call(COMMAND_READ, TYPE_READ, &payload, PAYLOAD_LEN, PAYLOAD_LEN)?;
         if !is_success(&reply) {
             return Err(DialectError::Refused(reply.trim().to_string()));
         }
-        let bytes = acpi::parse_bytes(&reply)
-            .ok_or_else(|| DialectError::Unreadable(reply.clone()))?;
+        let bytes =
+            acpi::parse_bytes(&reply).ok_or_else(|| DialectError::Unreadable(reply.clone()))?;
         colors.push(zone_color(&bytes).ok_or(DialectError::Unreadable(reply))?);
     }
     Ok(colors)
@@ -255,20 +260,30 @@ mod tests {
 
         assert_eq!(buffer.len(), 16 + 128);
         assert_eq!(&buffer[0..4], b"SECU");
-        assert_eq!(u32::from_le_bytes(buffer[4..8].try_into().unwrap()), 0x20009);
+        assert_eq!(
+            u32::from_le_bytes(buffer[4..8].try_into().unwrap()),
+            0x20009
+        );
         assert_eq!(u32::from_le_bytes(buffer[8..12].try_into().unwrap()), 0x0b);
         assert_eq!(u32::from_le_bytes(buffer[12..16].try_into().unwrap()), 128);
     }
 
     #[test]
     fn the_four_zones_land_where_the_firmware_reads_them() {
-        let colors =
-            [Rgb::new(255, 0, 0), Rgb::new(0, 255, 0), Rgb::new(0, 0, 255), Rgb::new(255, 255, 0)];
+        let colors = [
+            Rgb::new(255, 0, 0),
+            Rgb::new(0, 255, 0),
+            Rgb::new(0, 0, 255),
+            Rgb::new(255, 255, 0),
+        ];
         let payload = bytes_of(&write_request(&colors, 80))[16..].to_vec();
 
         assert_eq!(payload[3], 80, "brightness");
         assert_eq!(payload[6], 4, "zone count");
-        assert_eq!(&payload[7..19], &[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]);
+        assert_eq!(
+            &payload[7..19],
+            &[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]
+        );
         assert!(payload[19..].iter().all(|&b| b == 0), "the tail is padding");
     }
 
@@ -278,7 +293,10 @@ mod tests {
     fn a_short_or_long_list_of_zones_still_fills_exactly_four() {
         let short = bytes_of(&write_request(&[Rgb::new(9, 9, 9)], 100))[16..].to_vec();
         assert_eq!(&short[7..10], &[9, 9, 9]);
-        assert!(short[10..19].iter().all(|&b| b == 0), "zones 2-4 stay black");
+        assert!(
+            short[10..19].iter().all(|&b| b == 0),
+            "zones 2-4 stay black"
+        );
 
         let long = bytes_of(&write_request(&[Rgb::new(1, 1, 1); 6], 100))[16..].to_vec();
         assert_eq!(&long[7..19], &[1u8; 12]);
@@ -295,10 +313,16 @@ mod tests {
     #[test]
     fn a_read_asks_for_one_zone_and_writes_no_colour() {
         let buffer = bytes_of(&read_request(2));
-        assert_eq!(u32::from_le_bytes(buffer[4..8].try_into().unwrap()), 0x20008);
+        assert_eq!(
+            u32::from_le_bytes(buffer[4..8].try_into().unwrap()),
+            0x20008
+        );
         assert_eq!(u32::from_le_bytes(buffer[8..12].try_into().unwrap()), 0x04);
         assert_eq!(buffer[16], 2, "the zone index");
-        assert!(buffer[17..].iter().all(|&b| b == 0), "a read carries no payload");
+        assert!(
+            buffer[17..].iter().all(|&b| b == 0),
+            "a read carries no payload"
+        );
     }
 
     #[test]
@@ -319,12 +343,18 @@ mod tests {
     #[test]
     fn stripping_the_prefix_does_not_eat_data_bytes() {
         assert_eq!(parse_bytes("0xb0b0aa").unwrap(), vec![0xb0, 0xb0, 0xaa]);
-        assert_eq!(parse_bytes("0x0050415353").unwrap(), vec![0x00, 0x50, 0x41, 0x53, 0x53]);
+        assert_eq!(
+            parse_bytes("0x0050415353").unwrap(),
+            vec![0x00, 0x50, 0x41, 0x53, 0x53]
+        );
     }
 
     #[test]
     fn a_token_list_and_a_single_blob_both_read_back_as_bytes() {
-        assert_eq!(parse_bytes("{0x50, 0x41, 0x53, 0x53}").unwrap(), b"PASS".to_vec());
+        assert_eq!(
+            parse_bytes("{0x50, 0x41, 0x53, 0x53}").unwrap(),
+            b"PASS".to_vec()
+        );
         assert_eq!(parse_bytes("b50415353").unwrap(), b"PASS".to_vec());
         // A blob wide enough that its `0x…` run is not a byte falls
         // through to being read as a blob, not as one huge token.
@@ -335,7 +365,10 @@ mod tests {
     fn garbage_is_none_rather_than_a_guess() {
         assert!(parse_bytes("").is_none());
         assert!(parse_bytes("Error: AE_NOT_FOUND").is_none());
-        assert!(parse_bytes("0x5041535").is_none(), "an odd number of digits is not bytes");
+        assert!(
+            parse_bytes("0x5041535").is_none(),
+            "an odd number of digits is not bytes"
+        );
     }
 
     #[test]
@@ -344,7 +377,11 @@ mod tests {
         reply.extend_from_slice(&[0x11, 0x22, 0x33]);
         assert_eq!(zone_color(&reply), Some(Rgb::new(0x11, 0x22, 0x33)));
 
-        assert_eq!(zone_color(b"PASS"), None, "a truncated reply is not a colour");
+        assert_eq!(
+            zone_color(b"PASS"),
+            None,
+            "a truncated reply is not a colour"
+        );
         assert_eq!(zone_color(b"nothing here"), None);
     }
 }

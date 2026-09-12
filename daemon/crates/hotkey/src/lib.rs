@@ -52,13 +52,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{log_warn};
+use pyren_core::log_warn;
 use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub use devices::{KeyPress, Modifiers};
 use devices::{is_button, is_modifier, Unavailable};
+pub use devices::{KeyPress, Modifiers};
 
 /// Longest a `learn` call will hold the socket waiting for a key press.
 const MAX_LEARN: Duration = Duration::from_secs(30);
@@ -177,7 +177,11 @@ pub struct HotkeyConfig {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        Self { enabled: true, triggers: Vec::new(), repeat_guard_ms: 300 }
+        Self {
+            enabled: true,
+            triggers: Vec::new(),
+            repeat_guard_ms: 300,
+        }
     }
 }
 
@@ -264,7 +268,9 @@ impl HotkeyModule {
             action: None,
             watching: false,
             unavailable,
-            devices: probe.map(|d| d.iter().map(|d| d.name.clone()).collect()).unwrap_or_default(),
+            devices: probe
+                .map(|d| d.iter().map(|d| d.name.clone()).collect())
+                .unwrap_or_default(),
             fired: 0,
             last_fired: None,
             last_save_error: None,
@@ -428,7 +434,10 @@ impl HotkeyModule {
                     ),
                 ));
             }
-            state.learning = Learning { open: true, caught: None };
+            state.learning = Learning {
+                open: true,
+                caught: None,
+            };
         }
 
         let deadline = Instant::now() + timeout.min(MAX_LEARN);
@@ -505,7 +514,10 @@ impl HotkeyModule {
             );
         }
         if !state.config.enabled {
-            return msg!("hotkey.detail.disabled", "a key is bound and the hotkey is switched off");
+            return msg!(
+                "hotkey.detail.disabled",
+                "a key is bound and the hotkey is switched off"
+            );
         }
         msg!(
             "hotkey.detail.watching",
@@ -583,7 +595,10 @@ impl HotkeyModule {
             }
             None => Err(ModuleError::localised(
                 ErrorKind::Failed,
-                msg!("hotkey.err.noAction", "this daemon has no hotkey action wired up"),
+                msg!(
+                    "hotkey.err.noAction",
+                    "this daemon has no hotkey action wired up"
+                ),
             )),
         }
     }
@@ -600,7 +615,9 @@ impl HotkeyModule {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -655,9 +672,14 @@ impl Module for HotkeyModule {
             }
 
             "setEnabled" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled is required: true or false".into())
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams(
+                            "params.enabled is required: true or false".into(),
+                        )
+                    })?;
                 self.set_enabled(enabled)
             }
 
@@ -673,12 +695,16 @@ mod tests {
     use super::*;
 
     fn press(device: &str, keycode: Option<u16>, scancode: Option<u32>) -> KeyPress {
-        KeyPress { device: device.into(), keycode, scancode, modifiers: Modifiers::default() }
+        KeyPress {
+            device: device.into(),
+            keycode,
+            scancode,
+            modifiers: Modifiers::default(),
+        }
     }
 
     fn store(tag: &str) -> ConfigStore {
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-hotkey-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pyren-hotkey-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         ConfigStore::at(dir)
     }
@@ -700,8 +726,15 @@ mod tests {
     /// that on Ctrl+Shift+P would hijack whatever they had bound there.
     #[test]
     fn a_combination_matches_only_the_modifiers_it_was_learned_with() {
-        let ctrl = Modifiers { ctrl: true, ..Default::default() };
-        let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Default::default() };
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
 
         let mut learned = press("AT Translated Set 2 keyboard", Some(25), Some(0x19));
         learned.modifiers = ctrl;
@@ -716,7 +749,10 @@ mod tests {
 
         let mut more = learned.clone();
         more.modifiers = ctrl_shift;
-        assert!(!trigger.matches(&more), "Ctrl+Shift+P is a different shortcut");
+        assert!(
+            !trigger.matches(&more),
+            "Ctrl+Shift+P is a different shortcut"
+        );
     }
 
     /// A binding on a modifier alone can only come from a hand-written
@@ -725,10 +761,7 @@ mod tests {
     #[test]
     fn a_modifier_on_its_own_is_refused_as_a_shortcut() {
         let module = HotkeyModule::with_store(store("modifier-alone"));
-        let refused = module.call(
-            "setTriggers",
-            json!({ "triggers": [{ "keycode": 29 }] }),
-        );
+        let refused = module.call("setTriggers", json!({ "triggers": [{ "keycode": 29 }] }));
 
         match refused {
             Err(e) => {
@@ -743,7 +776,8 @@ mod tests {
     /// bindable, by its scancode.
     #[test]
     fn a_key_with_no_keycode_is_still_bindable() {
-        let trigger = Trigger::from_press(&press("AT Translated Set 2 keyboard", None, Some(0xe02b)));
+        let trigger =
+            Trigger::from_press(&press("AT Translated Set 2 keyboard", None, Some(0xe02b)));
 
         assert!(trigger.is_specific());
         assert!(trigger.matches(&press("AT Translated Set 2 keyboard", None, Some(0xe02b))));
@@ -756,7 +790,10 @@ mod tests {
     fn a_trigger_that_names_no_key_is_refused() {
         let module = HotkeyModule::with_store(store("vague"));
         let error = module
-            .call("setTriggers", json!({ "triggers": [{ "device": "some keyboard" }] }))
+            .call(
+                "setTriggers",
+                json!({ "triggers": [{ "device": "some keyboard" }] }),
+            )
             .expect_err("a device on its own is not a key");
 
         assert_eq!(error.kind(), pyren_core::ErrorKind::InvalidParams);
@@ -794,7 +831,10 @@ mod tests {
         let module = HotkeyModule::with_store(store("keys"));
         for keycode in [148u16, 0x160, 0x264] {
             module
-                .call("setTriggers", json!({ "triggers": [{ "keycode": keycode }] }))
+                .call(
+                    "setTriggers",
+                    json!({ "triggers": [{ "keycode": keycode }] }),
+                )
                 .unwrap_or_else(|e| panic!("keycode {keycode} should bind: {e}"));
         }
     }
@@ -804,7 +844,10 @@ mod tests {
         let store = store("persist");
         let module = HotkeyModule::with_store(store.clone());
         module
-            .call("setTriggers", json!({ "triggers": [{ "keycode": 148, "device": "HP WMI hotkeys" }] }))
+            .call(
+                "setTriggers",
+                json!({ "triggers": [{ "keycode": 148, "device": "HP WMI hotkeys" }] }),
+            )
             .expect("a specific trigger is accepted");
 
         let restarted = HotkeyModule::with_store(store);
@@ -822,13 +865,18 @@ mod tests {
         // Either no key is bound yet, or this machine will not let a test
         // process read /dev/input. Both are sentences with a fix in them.
         assert!(
-            detail.contains("no key bound") || detail.contains("root") || detail.contains("/dev/input"),
+            detail.contains("no key bound")
+                || detail.contains("root")
+                || detail.contains("/dev/input"),
             "unhelpful detail: {detail}"
         );
         // ...and it is shown in the user's language: the sentence carries a
         // catalog key beside its English text.
         assert!(
-            status["detail"]["key"].as_str().unwrap().starts_with("hotkey."),
+            status["detail"]["key"]
+                .as_str()
+                .unwrap()
+                .starts_with("hotkey."),
             "detail must be a translatable Msg: {}",
             status["detail"]
         );
@@ -840,7 +888,9 @@ mod tests {
     #[test]
     fn a_simulated_press_with_no_action_is_an_honest_failure() {
         let module = HotkeyModule::with_store(store("nopress"));
-        let error = module.call("press", Value::Null).expect_err("nothing is wired up");
+        let error = module
+            .call("press", Value::Null)
+            .expect_err("nothing is wired up");
         assert!(error.to_string().contains("no hotkey action"));
     }
 
@@ -861,11 +911,16 @@ mod tests {
     fn switching_the_hotkey_off_is_remembered() {
         let store = store("enabled");
         let module = HotkeyModule::with_store(store.clone());
-        let status = module.call("setEnabled", json!({ "enabled": false })).unwrap();
+        let status = module
+            .call("setEnabled", json!({ "enabled": false }))
+            .unwrap();
         assert_eq!(status["enabled"], false);
 
         let restarted = HotkeyModule::with_store(store);
-        assert_eq!(restarted.call("getStatus", Value::Null).unwrap()["enabled"], false);
+        assert_eq!(
+            restarted.call("getStatus", Value::Null).unwrap()["enabled"],
+            false
+        );
     }
 
     #[test]

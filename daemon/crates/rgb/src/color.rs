@@ -50,10 +50,18 @@ impl Rgb {
             }
         };
         let byte = |i: usize| {
-            u8::from_str_radix(&bytes[i..i + 2], 16)
-                .map_err(|_| format!("'{text}' is not a colour: '{}' is not hex", &bytes[i..i + 2]))
+            u8::from_str_radix(&bytes[i..i + 2], 16).map_err(|_| {
+                format!(
+                    "'{text}' is not a colour: '{}' is not hex",
+                    &bytes[i..i + 2]
+                )
+            })
         };
-        Ok(Self { r: byte(0)?, g: byte(2)?, b: byte(4)? })
+        Ok(Self {
+            r: byte(0)?,
+            g: byte(2)?,
+            b: byte(4)?,
+        })
     }
 }
 
@@ -79,7 +87,11 @@ impl<'de> Deserialize<'de> for Rgb {
                 // there is, and a caller that sent 300 meant "as much red
                 // as there is", not "reject my whole request".
                 let clamp = |v: i64| v.clamp(0, 255) as u8;
-                Ok(Rgb::new(clamp(values[0]), clamp(values[1]), clamp(values[2])))
+                Ok(Rgb::new(
+                    clamp(values[0]),
+                    clamp(values[1]),
+                    clamp(values[2]),
+                ))
             }
         }
     }

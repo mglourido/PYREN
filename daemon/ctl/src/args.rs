@@ -51,8 +51,12 @@ impl Command {
 /// `power set eco` and `fan curve 40:20,80:100` parse the same way without
 /// a grammar per command.
 pub fn parse(args: &[String]) -> Result<Command, String> {
-    let mut command =
-        Command { path: Vec::new(), positional: Vec::new(), options: BTreeMap::new(), json: false };
+    let mut command = Command {
+        path: Vec::new(),
+        positional: Vec::new(),
+        options: BTreeMap::new(),
+        json: false,
+    };
     let mut seen_option = false;
 
     let mut i = 0;
@@ -112,10 +116,14 @@ pub fn parse_curve(spec: &str) -> Result<Vec<(f64, f64)>, String> {
         let (temp, percent) = pair
             .split_once(':')
             .ok_or_else(|| format!("'{pair}' should look like temperature:percent, e.g. 60:50"))?;
-        let temp: f64 =
-            temp.trim().parse().map_err(|_| format!("'{temp}' is not a temperature"))?;
-        let percent: f64 =
-            percent.trim().parse().map_err(|_| format!("'{percent}' is not a percentage"))?;
+        let temp: f64 = temp
+            .trim()
+            .parse()
+            .map_err(|_| format!("'{temp}' is not a temperature"))?;
+        let percent: f64 = percent
+            .trim()
+            .parse()
+            .map_err(|_| format!("'{percent}' is not a percentage"))?;
         if !(0.0..=100.0).contains(&percent) {
             return Err(format!("{percent} is not a percentage between 0 and 100"));
         }
@@ -193,11 +201,10 @@ mod tests {
 
     #[test]
     fn a_curve_parses_into_points() {
-        assert_eq!(parse_curve("40:20, 60:50,80:100").unwrap(), [
-            (40.0, 20.0),
-            (60.0, 50.0),
-            (80.0, 100.0)
-        ]);
+        assert_eq!(
+            parse_curve("40:20, 60:50,80:100").unwrap(),
+            [(40.0, 20.0), (60.0, 50.0), (80.0, 100.0)]
+        );
     }
 
     #[test]

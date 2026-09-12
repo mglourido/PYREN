@@ -64,7 +64,10 @@ fn run(program: &str, args: &[&str], hwmon: &Path) -> Run {
     let report = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("{program} produced invalid JSON: {e}\n{stdout}"));
 
-    Run { exit_code: output.status.code().unwrap_or(-1), report }
+    Run {
+        exit_code: output.status.code().unwrap_or(-1),
+        report,
+    }
 }
 
 fn compare(tag: &str, files: &[(&str, &str)]) {
@@ -107,8 +110,14 @@ fn compare(tag: &str, files: &[(&str, &str)]) {
     // and absent on the other would silently compare as two empty lists.
     for section in ["fan", "power", "lighting"] {
         let (rust_section, shell_section) = (&rust.report[section], &shell.report[section]);
-        assert!(rust_section.is_object(), "{tag}: rust has no '{section}' section");
-        assert!(shell_section.is_object(), "{tag}: sh has no '{section}' section");
+        assert!(
+            rust_section.is_object(),
+            "{tag}: rust has no '{section}' section"
+        );
+        assert!(
+            shell_section.is_object(),
+            "{tag}: sh has no '{section}' section"
+        );
         assert_eq!(
             statuses(rust_section),
             statuses(shell_section),
@@ -151,7 +160,14 @@ fn agree_on_a_machine_with_full_fan_control() {
 #[test]
 fn agree_on_an_hwmon_node_with_no_pwm() {
     // The case the tool exists for: readable fans, no control channel.
-    compare("nopwm", &[("name", "hp\n"), ("fan1_input", "2400\n"), ("fan2_input", "2300\n")]);
+    compare(
+        "nopwm",
+        &[
+            ("name", "hp\n"),
+            ("fan1_input", "2400\n"),
+            ("fan2_input", "2300\n"),
+        ],
+    );
 }
 
 #[test]
@@ -176,7 +192,12 @@ fn agree_on_the_reverse_spin_encoding() {
 fn agree_on_an_unparseable_sysfs_value() {
     compare(
         "garbage",
-        &[("name", "hp\n"), ("fan1_input", "not a number\n"), ("pwm1", "128\n"), ("pwm1_enable", "2\n")],
+        &[
+            ("name", "hp\n"),
+            ("fan1_input", "not a number\n"),
+            ("pwm1", "128\n"),
+            ("pwm1_enable", "2\n"),
+        ],
     );
 }
 
@@ -199,10 +220,13 @@ fn agree_on_a_machine_with_a_per_key_keyboard_attached() {
         ],
     );
 
-    let hwmon = fixture("perkey-detail", &[
-        ("usb/2-1/idVendor", "0d62\n"),
-        ("usb/2-1/idProduct", "54bf\n"),
-    ]);
+    let hwmon = fixture(
+        "perkey-detail",
+        &[
+            ("usb/2-1/idVendor", "0d62\n"),
+            ("usb/2-1/idProduct", "54bf\n"),
+        ],
+    );
     let rust = run(env!("CARGO_BIN_EXE_pyren-check"), &["--json"], &hwmon);
     assert_eq!(
         statuses(&rust.report["lighting"])[0],

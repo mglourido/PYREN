@@ -396,9 +396,12 @@ fn patched_driver_installed(kernel_release: &str, distro_id: &str) -> bool {
     if !hook.is_empty() && Path::new(hook).exists() {
         return true;
     }
-    let module_dir =
-        PathBuf::from(format!("/lib/modules/{kernel_release}/kernel/drivers/platform/x86/hp"));
-    let Ok(entries) = fs::read_dir(module_dir) else { return false };
+    let module_dir = PathBuf::from(format!(
+        "/lib/modules/{kernel_release}/kernel/drivers/platform/x86/hp"
+    ));
+    let Ok(entries) = fs::read_dir(module_dir) else {
+        return false;
+    };
     let modules: Vec<String> = entries
         .filter_map(|e| e.ok())
         .map(|entry| entry.file_name().to_string_lossy().to_string())
@@ -415,7 +418,10 @@ fn patched_driver_installed(kernel_release: &str, distro_id: &str) -> bool {
     // compressed one, and `depmod` resolves that in our favour. It is the
     // state a restore used to leave behind, and the only trace of us that
     // survives it.
-    let live: Vec<&String> = modules.iter().filter(|name| !name.ends_with(".bak")).collect();
+    let live: Vec<&String> = modules
+        .iter()
+        .filter(|name| !name.ends_with(".bak"))
+        .collect();
     live.len() > 1 && live.iter().any(|name| name.as_str() == "hp-wmi.ko")
 }
 

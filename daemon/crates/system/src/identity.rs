@@ -409,7 +409,11 @@ mod tests {
     /// What 8D2F actually is once the fan module has reported in.
     #[test]
     fn fan_mode_without_fan_speed_says_so_rather_than_promising_fans() {
-        let controls = Controls { fan_mode: true, fan_speed: false, ..Controls::default() };
+        let controls = Controls {
+            fan_mode: true,
+            fan_speed: false,
+            ..Controls::default()
+        };
         let (compat, reason) = classify(controls, true);
 
         assert_eq!(compat, Compatibility::Controllable);
@@ -418,19 +422,21 @@ mod tests {
 
     #[test]
     fn a_controllable_machine_lists_what_works() {
-        let controls =
-            Controls {
-                fan_mode: true,
-                fan_speed: true,
-                power_mode: true,
-                lightbar: false,
-                gpu_mux: false,
-                network_qos: false,
-            };
+        let controls = Controls {
+            fan_mode: true,
+            fan_speed: true,
+            power_mode: true,
+            lightbar: false,
+            gpu_mux: false,
+            network_qos: false,
+        };
         let (compat, reason) = classify(controls, true);
 
         assert_eq!(compat, Compatibility::Controllable);
-        assert!(reason.contains("fan speed") && reason.contains("power modes"), "got: {reason}");
+        assert!(
+            reason.contains("fan speed") && reason.contains("power modes"),
+            "got: {reason}"
+        );
     }
 
     /// Power modes are not HP-specific, and a machine where only they work
@@ -438,7 +444,10 @@ mod tests {
     /// observed, not what the vendor string says.
     #[test]
     fn power_modes_alone_are_enough_to_be_controllable() {
-        let controls = Controls { power_mode: true, ..Controls::default() };
+        let controls = Controls {
+            power_mode: true,
+            ..Controls::default()
+        };
         assert_eq!(classify(controls, false).0, Compatibility::Controllable);
     }
 
@@ -447,7 +456,10 @@ mod tests {
     /// it would be the board-list mistake in a new costume.
     #[test]
     fn a_lightbar_alone_is_enough_to_be_controllable() {
-        let controls = Controls { lightbar: true, ..Controls::default() };
+        let controls = Controls {
+            lightbar: true,
+            ..Controls::default()
+        };
         let (compat, reason) = classify(controls, true);
 
         assert_eq!(compat, Compatibility::Controllable);

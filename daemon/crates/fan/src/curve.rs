@@ -131,7 +131,11 @@ pub fn release_fans(target: u8, stop_below: u8, released: bool) -> bool {
     if stop_below == 0 {
         return false;
     }
-    let threshold = if released { stop_below.saturating_add(PWM_DEADBAND) } else { stop_below };
+    let threshold = if released {
+        stop_below.saturating_add(PWM_DEADBAND)
+    } else {
+        stop_below
+    };
     target < threshold
 }
 
@@ -148,7 +152,10 @@ pub struct TempSmoother {
 
 impl TempSmoother {
     pub fn new(window: usize) -> Self {
-        Self { window: window.max(1), samples: Vec::new() }
+        Self {
+            window: window.max(1),
+            samples: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, temp_c: f64) -> f64 {
@@ -254,9 +261,18 @@ mod tests {
 
     fn curve() -> Vec<CurvePoint> {
         vec![
-            CurvePoint { temp_c: 40.0, percent: 20.0 },
-            CurvePoint { temp_c: 60.0, percent: 50.0 },
-            CurvePoint { temp_c: 80.0, percent: 100.0 },
+            CurvePoint {
+                temp_c: 40.0,
+                percent: 20.0,
+            },
+            CurvePoint {
+                temp_c: 60.0,
+                percent: 50.0,
+            },
+            CurvePoint {
+                temp_c: 80.0,
+                percent: 100.0,
+            },
         ]
     }
 
@@ -275,13 +291,22 @@ mod tests {
     #[test]
     fn smooth_interpolates_linearly_between_points() {
         let at = percent_at(&curve(), 50.0, Interpolation::Smooth).unwrap();
-        assert!((at - 35.0).abs() < 1e-9, "midpoint of 20..50 is 35, got {at}");
+        assert!(
+            (at - 35.0).abs() < 1e-9,
+            "midpoint of 20..50 is 35, got {at}"
+        );
     }
 
     #[test]
     fn discrete_holds_the_lower_point() {
-        assert_eq!(percent_at(&curve(), 59.0, Interpolation::Discrete), Some(20.0));
-        assert_eq!(percent_at(&curve(), 60.0, Interpolation::Discrete), Some(50.0));
+        assert_eq!(
+            percent_at(&curve(), 59.0, Interpolation::Discrete),
+            Some(20.0)
+        );
+        assert_eq!(
+            percent_at(&curve(), 60.0, Interpolation::Discrete),
+            Some(50.0)
+        );
     }
 
     /// The frontend sorts before interpolating; a curve arriving over IPC
@@ -301,9 +326,18 @@ mod tests {
     #[test]
     fn two_points_at_the_same_temperature_are_a_step_not_a_panic() {
         let c = vec![
-            CurvePoint { temp_c: 50.0, percent: 20.0 },
-            CurvePoint { temp_c: 50.0, percent: 80.0 },
-            CurvePoint { temp_c: 60.0, percent: 90.0 },
+            CurvePoint {
+                temp_c: 50.0,
+                percent: 20.0,
+            },
+            CurvePoint {
+                temp_c: 50.0,
+                percent: 80.0,
+            },
+            CurvePoint {
+                temp_c: 60.0,
+                percent: 90.0,
+            },
         ];
         // At the step itself the lower of the two holds (the sort is
         // stable, so it is the one the user drew first); above it, the

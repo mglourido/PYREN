@@ -310,7 +310,9 @@ impl Sampler {
             .per_core
             .iter()
             .enumerate()
-            .map(|(i, core)| core.usage_since(self.cpu.per_core.get(i).unwrap_or(&CpuTimes::default())))
+            .map(|(i, core)| {
+                core.usage_since(self.cpu.per_core.get(i).unwrap_or(&CpuTimes::default()))
+            })
             .collect();
 
         self.cpu = current;
@@ -337,13 +339,21 @@ impl Sampler {
             let up = to_mbps(counters.tx_bytes.saturating_sub(previous.tx_bytes), elapsed);
             up_total += up;
             down_total += down;
-            interfaces.push(InterfaceRate { name: name.clone(), up_mbps: up, down_mbps: down });
+            interfaces.push(InterfaceRate {
+                name: name.clone(),
+                up_mbps: up,
+                down_mbps: down,
+            });
         }
 
         interfaces.sort_by(|a, b| a.name.cmp(&b.name));
         self.net = current;
 
-        NetworkMetrics { up_mbps: up_total, down_mbps: down_total, interfaces }
+        NetworkMetrics {
+            up_mbps: up_total,
+            down_mbps: down_total,
+            interfaces,
+        }
     }
 
     /// Turns one `/proc` walk into the busiest processes. The walk itself is
@@ -361,7 +371,11 @@ impl Sampler {
 
         for (pid, parsed) in stats {
             current_ticks.insert(pid, parsed.cpu_ticks);
-            let previous = self.process_ticks.get(&pid).copied().unwrap_or(parsed.cpu_ticks);
+            let previous = self
+                .process_ticks
+                .get(&pid)
+                .copied()
+                .unwrap_or(parsed.cpu_ticks);
             let delta = parsed.cpu_ticks.saturating_sub(previous) as f64;
 
             processes.push(ProcessUsage {
@@ -381,12 +395,15 @@ impl Sampler {
             b.cpu_percent
                 .partial_cmp(&a.cpu_percent)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.mem_mb.partial_cmp(&a.mem_mb).unwrap_or(std::cmp::Ordering::Equal))
+                .then(
+                    b.mem_mb
+                        .partial_cmp(&a.mem_mb)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
         });
         processes.truncate(TOP_PROCESSES);
         processes
     }
-
 }
 
 fn to_mbps(bytes: u64, elapsed: f64) -> f64 {
@@ -420,7 +437,10 @@ fn read_cpu_sample() -> CpuSample {
         }
         let total: u64 = values.iter().sum();
         let idle = values[3] + values[4];
-        let times = CpuTimes { busy: total.saturating_sub(idle), total };
+        let times = CpuTimes {
+            busy: total.saturating_sub(idle),
+            total,
+        };
 
         if label == "cpu" {
             sample.total = times;
@@ -455,7 +475,9 @@ fn read_memory() -> MemoryMetrics {
     let text = fs::read_to_string("/proc/meminfo").unwrap_or_default();
 
     for line in text.lines() {
-        let Some((key, rest)) = line.split_once(':') else { continue };
+        let Some((key, rest)) = line.split_once(':') else {
+            continue;
+        };
         let kb = rest
             .split_whitespace()
             .next()
@@ -479,7 +501,11 @@ fn read_memory() -> MemoryMetrics {
     let swap_free_gb = to_gb(values.get("SwapFree").copied().unwrap_or(0.0));
 
     MemoryMetrics {
-        percent: if total_gb > 0.0 { used_gb / total_gb * 100.0 } else { 0.0 },
+        percent: if total_gb > 0.0 {
+            used_gb / total_gb * 100.0
+        } else {
+            0.0
+        },
         total_gb,
         used_gb,
         available_gb,
@@ -617,7 +643,10 @@ struct HwmonCatalog {
 
 impl HwmonCatalog {
     fn new() -> Self {
-        let mut catalog = Self { chips: discover_hwmon(), discovered: Instant::now() };
+        let mut catalog = Self {
+            chips: discover_hwmon(),
+            discovered: Instant::now(),
+        };
         // Read once here, at startup, rather than leaving it to the first
         // client: this is where the cost of a slow chip is discovered, and
         // paying it before anyone is waiting means the first `getMetrics`
@@ -653,7 +682,10 @@ impl HwmonCatalog {
             // Carry over what was already learned about a chip that is
             // still there. Without this, every rescan would re-measure the
             // slow chips by reading them - which is the cost being avoided.
-            let Some(known) = self.chips.iter().find(|c| c.dir == chip.dir && c.name == chip.name)
+            let Some(known) = self
+                .chips
+                .iter()
+                .find(|c| c.dir == chip.dir && c.name == chip.name)
             else {
                 continue;
             };
@@ -677,7 +709,10 @@ fn discover_hwmon() -> Vec<HwmonChip> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter_map(|dir| {
-            let name = fs::read_to_string(dir.join("name")).ok()?.trim().to_string();
+            let name = fs::read_to_string(dir.join("name"))
+                .ok()?
+                .trim()
+                .to_string();
             let mut temps = Vec::new();
             let mut fans = Vec::new();
 
@@ -691,9 +726,15 @@ fn discover_hwmon() -> Vec<HwmonChip> {
                 };
 
                 if let Some(i) = index("temp") {
-                    temps.push(HwmonInput { label: label_for(&dir, "temp", &i), path: entry.path() });
+                    temps.push(HwmonInput {
+                        label: label_for(&dir, "temp", &i),
+                        path: entry.path(),
+                    });
                 } else if let Some(i) = index("fan") {
-                    fans.push(HwmonInput { label: label_for(&dir, "fan", &i), path: entry.path() });
+                    fans.push(HwmonInput {
+                        label: label_for(&dir, "fan", &i),
+                        path: entry.path(),
+                    });
                 }
             }
 
@@ -740,7 +781,9 @@ fn cpu_temperature(readings: &[TempReading]) -> Option<f64> {
             .iter()
             .filter(|r| CPU_CHIPS.contains(&r.chip.as_str()) && predicate(r))
             .map(|r| r.celsius)
-            .fold(None, |acc: Option<f64>, c| Some(acc.map_or(c, |a| a.max(c))))
+            .fold(None, |acc: Option<f64>, c| {
+                Some(acc.map_or(c, |a| a.max(c)))
+            })
     };
 
     from_cpu_chip(&|r| {
@@ -774,7 +817,9 @@ fn read_disks() -> Vec<DiskUsage> {
     let mut disks: Vec<DiskUsage> = Vec::new();
     for line in mounts.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let [device, mount, fstype, ..] = fields[..] else { continue };
+        let [device, mount, fstype, ..] = fields[..] else {
+            continue;
+        };
         if !REAL_FSTYPES.contains(&fstype) {
             continue;
         }
@@ -786,7 +831,9 @@ fn read_disks() -> Vec<DiskUsage> {
             }
             continue;
         }
-        let Some((total_bytes, free_bytes)) = statvfs(mount) else { continue };
+        let Some((total_bytes, free_bytes)) = statvfs(mount) else {
+            continue;
+        };
 
         disks.push(DiskUsage {
             mount: unescape_mount(mount),
@@ -835,8 +882,15 @@ fn statvfs(mount: &str) -> Option<(u64, u64)> {
         return None;
     }
 
-    let block_size = if stat.f_frsize > 0 { stat.f_frsize } else { stat.f_bsize } as u64;
-    Some((stat.f_blocks as u64 * block_size, stat.f_bavail as u64 * block_size))
+    let block_size = if stat.f_frsize > 0 {
+        stat.f_frsize
+    } else {
+        stat.f_bsize
+    } as u64;
+    Some((
+        stat.f_blocks as u64 * block_size,
+        stat.f_bavail as u64 * block_size,
+    ))
 }
 
 fn read_net_counters() -> HashMap<String, NetCounters> {
@@ -858,7 +912,13 @@ fn read_net_counters() -> HashMap<String, NetCounters> {
         let rx = read_number(&stats.join("rx_bytes"));
         let tx = read_number(&stats.join("tx_bytes"));
         if let (Some(rx), Some(tx)) = (rx, tx) {
-            counters.insert(name, NetCounters { rx_bytes: rx as u64, tx_bytes: tx as u64 });
+            counters.insert(
+                name,
+                NetCounters {
+                    rx_bytes: rx as u64,
+                    tx_bytes: tx as u64,
+                },
+            );
         }
     }
     counters
@@ -887,7 +947,11 @@ fn parse_process_stat(stat: &str) -> Option<ProcessStat> {
     let stime = fields.get(12)?.parse::<u64>().ok()?;
     let rss_pages = fields.get(21)?.parse::<u64>().ok()?;
 
-    Some(ProcessStat { name, cpu_ticks: utime + stime, rss_pages })
+    Some(ProcessStat {
+        name,
+        cpu_ticks: utime + stime,
+        rss_pages,
+    })
 }
 
 /// One walk of `/proc/*/stat`.
@@ -911,7 +975,10 @@ fn read_process_stats() -> Vec<(i32, ProcessStat)> {
 }
 
 fn read_process_ticks() -> HashMap<i32, u64> {
-    read_process_stats().into_iter().map(|(pid, stat)| (pid, stat.cpu_ticks)).collect()
+    read_process_stats()
+        .into_iter()
+        .map(|(pid, stat)| (pid, stat.cpu_ticks))
+        .collect()
 }
 
 #[cfg(test)]
@@ -931,22 +998,37 @@ mod tests {
 
     #[test]
     fn cpu_usage_is_the_busy_share_of_the_delta() {
-        let previous = CpuTimes { busy: 100, total: 200 };
-        let current = CpuTimes { busy: 150, total: 300 };
+        let previous = CpuTimes {
+            busy: 100,
+            total: 200,
+        };
+        let current = CpuTimes {
+            busy: 150,
+            total: 300,
+        };
         assert!((current.usage_since(&previous) - 50.0).abs() < 1e-9);
     }
 
     #[test]
     fn cpu_usage_of_an_empty_delta_is_zero_not_nan() {
-        let same = CpuTimes { busy: 10, total: 20 };
+        let same = CpuTimes {
+            busy: 10,
+            total: 20,
+        };
         assert_eq!(same.usage_since(&same), 0.0);
     }
 
     #[test]
     fn counters_that_go_backwards_do_not_underflow() {
         // Can happen when an interface is reset or a process is replaced.
-        let previous = CpuTimes { busy: 500, total: 900 };
-        let current = CpuTimes { busy: 100, total: 200 };
+        let previous = CpuTimes {
+            busy: 500,
+            total: 900,
+        };
+        let current = CpuTimes {
+            busy: 100,
+            total: 200,
+        };
         assert_eq!(current.usage_since(&previous), 0.0);
     }
 
@@ -959,17 +1041,32 @@ mod tests {
     #[test]
     fn package_sensor_wins_over_individual_cores() {
         let readings = vec![
-            TempReading { chip: "coretemp".into(), label: "Core 0".into(), celsius: 80.0 },
-            TempReading { chip: "coretemp".into(), label: "Package id 0".into(), celsius: 65.0 },
-            TempReading { chip: "acpitz".into(), label: "temp1".into(), celsius: 27.0 },
+            TempReading {
+                chip: "coretemp".into(),
+                label: "Core 0".into(),
+                celsius: 80.0,
+            },
+            TempReading {
+                chip: "coretemp".into(),
+                label: "Package id 0".into(),
+                celsius: 65.0,
+            },
+            TempReading {
+                chip: "acpitz".into(),
+                label: "temp1".into(),
+                celsius: 27.0,
+            },
         ];
         assert_eq!(cpu_temperature(&readings), Some(65.0));
     }
 
     #[test]
     fn without_a_cpu_chip_the_thermal_zone_is_used() {
-        let readings =
-            vec![TempReading { chip: "acpitz".into(), label: "temp1".into(), celsius: 42.0 }];
+        let readings = vec![TempReading {
+            chip: "acpitz".into(),
+            label: "temp1".into(),
+            celsius: 42.0,
+        }];
         assert_eq!(cpu_temperature(&readings), Some(42.0));
     }
 

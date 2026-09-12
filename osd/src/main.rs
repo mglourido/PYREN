@@ -124,16 +124,22 @@ fn main() -> glib::ExitCode {
             while let Ok(message) = receiver.recv().await {
                 match message {
                     Message::Show(mode) => ui.show(mode),
-                    Message::Pressed { mode, changed, refusal } => {
-                        ui.pressed(mode, changed, refusal)
-                    }
+                    Message::Pressed {
+                        mode,
+                        changed,
+                        refusal,
+                    } => ui.pressed(mode, changed, refusal),
                     Message::Mode(mode) => ui.mode_is(mode),
-                    Message::FanState { mode, manual_percent, switch_mode, set_speed } => {
-                        ui.fan_state(mode, manual_percent, switch_mode, set_speed)
-                    }
-                    Message::FanModeChanged { mode, manual_percent } => {
-                        ui.fan_mode_is(mode, manual_percent)
-                    }
+                    Message::FanState {
+                        mode,
+                        manual_percent,
+                        switch_mode,
+                        set_speed,
+                    } => ui.fan_state(mode, manual_percent, switch_mode, set_speed),
+                    Message::FanModeChanged {
+                        mode,
+                        manual_percent,
+                    } => ui.fan_mode_is(mode, manual_percent),
                     Message::Refused(why) => ui.refused(why),
                     Message::Unreachable(why) => ui.unreachable(why),
                     Message::Reachable => {}

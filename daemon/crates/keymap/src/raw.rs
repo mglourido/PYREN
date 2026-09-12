@@ -37,7 +37,11 @@ pub struct InputEvent {
 pub const EVENT_SIZE: usize = std::mem::size_of::<InputEvent>();
 
 pub fn open_nonblocking(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new().read(true).write(true).custom_flags(libc::O_NONBLOCK).open(path)
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
 }
 
 /// Reads whatever is buffered, decoded into whole events. A trailing
@@ -77,11 +81,26 @@ const IOC_WRITE: u32 = 1;
 pub const EVIOCGRAB: u32 = ioc(IOC_WRITE, b'E', 0x90, std::mem::size_of::<libc::c_int>());
 
 const UINPUT_IOCTL_BASE: u8 = b'U';
-pub const UI_SET_EVBIT: u32 = ioc(IOC_WRITE, UINPUT_IOCTL_BASE, 100, std::mem::size_of::<libc::c_int>());
-pub const UI_SET_KEYBIT: u32 = ioc(IOC_WRITE, UINPUT_IOCTL_BASE, 101, std::mem::size_of::<libc::c_int>());
+pub const UI_SET_EVBIT: u32 = ioc(
+    IOC_WRITE,
+    UINPUT_IOCTL_BASE,
+    100,
+    std::mem::size_of::<libc::c_int>(),
+);
+pub const UI_SET_KEYBIT: u32 = ioc(
+    IOC_WRITE,
+    UINPUT_IOCTL_BASE,
+    101,
+    std::mem::size_of::<libc::c_int>(),
+);
 pub const UI_DEV_CREATE: u32 = ioc(IOC_NONE, UINPUT_IOCTL_BASE, 1, 0);
 pub const UI_DEV_DESTROY: u32 = ioc(IOC_NONE, UINPUT_IOCTL_BASE, 2, 0);
-pub const UI_DEV_SETUP: u32 = ioc(IOC_WRITE, UINPUT_IOCTL_BASE, 3, std::mem::size_of::<UinputSetup>());
+pub const UI_DEV_SETUP: u32 = ioc(
+    IOC_WRITE,
+    UINPUT_IOCTL_BASE,
+    3,
+    std::mem::size_of::<UinputSetup>(),
+);
 
 pub const UINPUT_MAX_NAME_SIZE: usize = 80;
 
@@ -115,7 +134,10 @@ pub fn grab(file: &File, grab: bool) -> std::io::Result<()> {
 /// since one virtual device stands in for all of them.
 pub fn create_uinput(name: &str, keys: &[u16]) -> std::io::Result<File> {
     let path = std::env::var("PYREN_UINPUT_PATH").unwrap_or_else(|_| "/dev/uinput".to_string());
-    let file = OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(path)?;
+    let file = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
 
     ioctl_arg(&file, UI_SET_EVBIT, &(EV_KEY as libc::c_int))?;
     ioctl_arg(&file, UI_SET_EVBIT, &(EV_SYN as libc::c_int))?;
@@ -124,7 +146,12 @@ pub fn create_uinput(name: &str, keys: &[u16]) -> std::io::Result<File> {
     }
 
     let mut setup = UinputSetup {
-        id: InputId { bustype: 0x03 /* BUS_USB */, vendor: 0x1209, product: 0x0001, version: 1 },
+        id: InputId {
+            bustype: 0x03, /* BUS_USB */
+            vendor: 0x1209,
+            product: 0x0001,
+            version: 1,
+        },
         name: [0u8; UINPUT_MAX_NAME_SIZE],
         ff_effects_max: 0,
     };
@@ -166,7 +193,10 @@ pub fn device_paths() -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .map(|entry| entry.path())
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("event")))
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("event"))
+        })
         .collect();
     paths.sort();
     paths
@@ -174,8 +204,12 @@ pub fn device_paths() -> Vec<PathBuf> {
 
 pub fn device_name(path: &Path) -> Option<String> {
     let event_name = path.file_name()?.to_string_lossy().to_string();
-    let sysfs = PathBuf::from("/sys/class/input").join(event_name).join("device/name");
-    std::fs::read_to_string(sysfs).ok().map(|n| n.trim().to_string())
+    let sysfs = PathBuf::from("/sys/class/input")
+        .join(event_name)
+        .join("device/name");
+    std::fs::read_to_string(sysfs)
+        .ok()
+        .map(|n| n.trim().to_string())
 }
 
 #[cfg(test)]

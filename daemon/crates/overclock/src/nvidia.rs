@@ -174,7 +174,11 @@ pub struct Nvidia {
 
 impl Nvidia {
     pub fn detect() -> Self {
-        Self { smi: which("nvidia-smi"), settings: which("nvidia-settings"), display: find_display() }
+        Self {
+            smi: which("nvidia-smi"),
+            settings: which("nvidia-settings"),
+            display: find_display(),
+        }
     }
 
     // --- nvidia-smi: listing, supported clocks, clock locks -------------
@@ -207,7 +211,10 @@ impl Nvidia {
     }
 
     pub fn lock_clocks(&self, index: u32, lock: ClockLock) -> Result<(), NvidiaError> {
-        self.smi_write(index, &format!("--lock-gpu-clocks={},{}", lock.min_mhz, lock.max_mhz))
+        self.smi_write(
+            index,
+            &format!("--lock-gpu-clocks={},{}", lock.min_mhz, lock.max_mhz),
+        )
     }
 
     pub fn reset_clocks(&self, index: u32) -> Result<(), NvidiaError> {
@@ -221,7 +228,10 @@ impl Nvidia {
         let output = Command::new("nvidia-smi")
             .args(["-i", &index.to_string(), argument])
             .output()
-            .map_err(|e| NvidiaError::Unreadable { what: "nvidia-smi", detail: e.to_string() })?;
+            .map_err(|e| NvidiaError::Unreadable {
+                what: "nvidia-smi",
+                detail: e.to_string(),
+            })?;
         if output.status.success() {
             return Ok(());
         }
@@ -388,7 +398,11 @@ impl Nvidia {
     /// cannot help with a cookie that does not exist; one line typed inside
     /// the session can.
     fn refused_hint(&self) -> Msg {
-        let display = self.display.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "?".into());
+        let display = self
+            .display
+            .as_ref()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "?".into());
         msg!(
             "overclock.nvidia.refused",
             { "display" => display },
@@ -461,7 +475,10 @@ impl Nvidia {
             .arg("-q")
             .arg(format!("[gpu:{index}]/{attribute}"))
             .output()
-            .map_err(|e| NvidiaError::Unreadable { what: "nvidia-settings", detail: e.to_string() })?;
+            .map_err(|e| NvidiaError::Unreadable {
+                what: "nvidia-settings",
+                detail: e.to_string(),
+            })?;
 
         // nvidia-settings exits 0 even when it prints only an error, so the
         // status says nothing and the text is what has to be read.
@@ -481,7 +498,10 @@ impl Nvidia {
             .arg("-a")
             .arg(format!("[gpu:{index}]/{attribute}={value}"))
             .output()
-            .map_err(|e| NvidiaError::Unreadable { what: "nvidia-settings", detail: e.to_string() })?;
+            .map_err(|e| NvidiaError::Unreadable {
+                what: "nvidia-settings",
+                detail: e.to_string(),
+            })?;
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -502,7 +522,11 @@ pub fn parse_gpu_list(text: &str) -> Vec<NvGpu> {
             let index = fields.next()?.parse().ok()?;
             let name = fields.next()?.to_string();
             let max_core_mhz = fields.next().and_then(|v| v.parse().ok());
-            Some(NvGpu { index, name, max_core_mhz })
+            Some(NvGpu {
+                index,
+                name,
+                max_core_mhz,
+            })
         })
         .collect()
 }
@@ -526,7 +550,13 @@ pub fn parse_clock_list(text: &str) -> Option<Range> {
 pub fn parse_attribute(text: &str, attribute: &str) -> Option<(i32, Option<Range>)> {
     let needle = format!("Attribute '{attribute}'");
     let value_line = text.lines().find(|line| line.contains(&needle))?;
-    let value: i32 = value_line.rsplit_once("): ")?.1.trim_end_matches('.').trim().parse().ok()?;
+    let value: i32 = value_line
+        .rsplit_once("): ")?
+        .1
+        .trim_end_matches('.')
+        .trim()
+        .parse()
+        .ok()?;
 
     let range = text
         .lines()
@@ -608,17 +638,25 @@ pub fn find_display() -> Option<XDisplay> {
     }
 
     let sockets = x11_sockets();
-    let env_display = std::env::var("DISPLAY").ok().filter(|name| !name.is_empty());
+    let env_display = std::env::var("DISPLAY")
+        .ok()
+        .filter(|name| !name.is_empty());
     let (name, owner_uid) = pick_display(env_display.as_deref(), &sockets, own_uid())?;
 
     // The cookie is looked up for whoever owns the display, not for
     // whoever we are: the whole difficulty is that those are different.
     let xauthority = if Some(name.as_str()) == env_display.as_deref() && owner_uid == own_uid() {
-        std::env::var_os("XAUTHORITY").map(PathBuf::from).or_else(|| find_xauthority(owner_uid))
+        std::env::var_os("XAUTHORITY")
+            .map(PathBuf::from)
+            .or_else(|| find_xauthority(owner_uid))
     } else {
         find_xauthority(owner_uid)
     };
-    Some(XDisplay { xauthority, name, owner_uid })
+    Some(XDisplay {
+        xauthority,
+        name,
+        owner_uid,
+    })
 }
 
 /// Which display to try, given what the environment says and what sockets
@@ -737,14 +775,18 @@ fn own_uid() -> u32 {
 fn which(program: &str) -> bool {
     std::env::var("PATH")
         .map(|path| {
-            path.split(':').any(|dir| std::path::Path::new(dir).join(program).is_file())
+            path.split(':')
+                .any(|dir| std::path::Path::new(dir).join(program).is_file())
         })
         .unwrap_or(false)
 }
 
 fn run_ok(command: &mut Command) -> Option<String> {
     let output = command.output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).to_string())
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn message_of(stdout: &[u8], stderr: &[u8]) -> String {
@@ -804,7 +846,9 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
     #[test]
     fn a_refusal_is_not_read_as_a_value() {
         assert!(parse_attribute(REFUSED, CORE_ATTRIBUTE).is_none());
-        assert!(first_error(REFUSED).unwrap().contains("does not have permission"));
+        assert!(first_error(REFUSED)
+            .unwrap()
+            .contains("does not have permission"));
     }
 
     /// The refusal that costs the most time to misread: it is a missing
@@ -814,11 +858,18 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
         let explained = explain(first_error(REFUSED).unwrap());
         assert!(explained.contains("Coolbits"));
         assert!(explained.contains("root does not"));
-        assert_eq!(explain("no such attribute".to_string()).text, "no such attribute");
+        assert_eq!(
+            explain("no such attribute".to_string()).text,
+            "no such attribute"
+        );
     }
 
     fn nvidia_with(display: Option<XDisplay>) -> Nvidia {
-        Nvidia { smi: false, settings: false, display }
+        Nvidia {
+            smi: false,
+            settings: false,
+            display,
+        }
     }
 
     /// What a root daemon really gets on a Wayland desktop: the server
@@ -856,7 +907,10 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
         let message = e.to_string();
         assert!(message.contains(":1") && message.contains("1000"));
         assert!(message.contains("PYREN_X_DISPLAY"));
-        assert!(message.contains("no cookie file"), "the missing cookie is half the diagnosis");
+        assert!(
+            message.contains("no cookie file"),
+            "the missing cookie is half the diagnosis"
+        );
     }
 
     /// ...and a refusal that is about neither keeps its own explanation, so
@@ -874,7 +928,10 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
     #[test]
     fn a_desktop_session_beats_an_inherited_display() {
         let sockets = vec![(":0".to_string(), 0), (":1".to_string(), 1000)];
-        assert_eq!(pick_display(Some(":0"), &sockets, 0), Some((":1".to_string(), 1000)));
+        assert_eq!(
+            pick_display(Some(":0"), &sockets, 0),
+            Some((":1".to_string(), 1000))
+        );
     }
 
     /// A developer running the daemon unprivileged inside their own
@@ -883,7 +940,10 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
     #[test]
     fn an_unprivileged_run_lands_on_its_own_session() {
         let sockets = vec![(":1".to_string(), 1000)];
-        assert_eq!(pick_display(Some(":1"), &sockets, 1000), Some((":1".to_string(), 1000)));
+        assert_eq!(
+            pick_display(Some(":1"), &sockets, 1000),
+            Some((":1".to_string(), 1000))
+        );
     }
 
     /// With no session socket to be found, `$DISPLAY` is still a better
@@ -891,7 +951,10 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
     #[test]
     fn an_inherited_display_is_used_when_there_is_no_session() {
         let sockets = vec![(":0".to_string(), 0)];
-        assert_eq!(pick_display(Some(":7"), &sockets, 0), Some((":7".to_string(), 0)));
+        assert_eq!(
+            pick_display(Some(":7"), &sockets, 0),
+            Some((":7".to_string(), 0))
+        );
         assert_eq!(pick_display(None, &sockets, 0), Some((":0".to_string(), 0)));
         assert_eq!(pick_display(None, &[], 0), None);
     }
@@ -907,7 +970,9 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
             xauthority: None,
             owner_uid: 0,
         }));
-        let message = nvidia.classify("The control display is undefined".into(), "").to_string();
+        let message = nvidia
+            .classify("The control display is undefined".into(), "")
+            .to_string();
         assert!(message.contains("overclock.probe"), "{message}");
         assert!(message.contains("No desktop session was running"));
     }
@@ -922,16 +987,23 @@ ERROR: Error assigning value 0 to attribute 'GPUGraphicsClockOffsetAllPerformanc
 
     #[test]
     fn the_gpu_list_survives_a_name_with_no_clock_beside_it() {
-        let gpus = parse_gpu_list("0, NVIDIA GeForce RTX 5060 Laptop GPU, 3090\n1, Quadro, [N/A]\n");
+        let gpus =
+            parse_gpu_list("0, NVIDIA GeForce RTX 5060 Laptop GPU, 3090\n1, Quadro, [N/A]\n");
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[0].index, 0);
         assert_eq!(gpus[0].max_core_mhz, Some(3090));
-        assert_eq!(gpus[1].max_core_mhz, None, "an unreadable clock is absent, not zero");
+        assert_eq!(
+            gpus[1].max_core_mhz, None,
+            "an unreadable clock is absent, not zero"
+        );
     }
 
     #[test]
     fn the_supported_clocks_become_a_range() {
-        assert_eq!(parse_clock_list("3090\n3082\n3075\n210\n"), Some(Range::new(210, 3090)));
+        assert_eq!(
+            parse_clock_list("3090\n3082\n3075\n210\n"),
+            Some(Range::new(210, 3090))
+        );
         assert_eq!(parse_clock_list(""), None);
     }
 }

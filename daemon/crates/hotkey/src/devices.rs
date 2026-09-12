@@ -134,9 +134,12 @@ impl Modifiers {
     /// compositor's config sees the same string.
     pub fn prefix(&self) -> String {
         let mut out = String::new();
-        for (held, name) in
-            [(self.ctrl, "Ctrl"), (self.alt, "Alt"), (self.shift, "Shift"), (self.meta, "Super")]
-        {
+        for (held, name) in [
+            (self.ctrl, "Ctrl"),
+            (self.alt, "Alt"),
+            (self.shift, "Shift"),
+            (self.meta, "Super"),
+        ] {
             if held {
                 out.push_str(name);
                 out.push('+');
@@ -185,7 +188,10 @@ impl KeyPress {
         };
         match self.modifiers.is_empty() {
             true => codes,
-            false => format!("{} held, {codes}", self.modifiers.prefix().trim_end_matches('+')),
+            false => format!(
+                "{} held, {codes}",
+                self.modifiers.prefix().trim_end_matches('+')
+            ),
         }
     }
 
@@ -213,17 +219,64 @@ impl KeyPress {
 /// key it cannot name still shows its number rather than nothing.
 pub fn key_name(keycode: u16) -> Option<&'static str> {
     const LETTERS: [(u16, &str); 26] = [
-        (30, "A"), (48, "B"), (46, "C"), (32, "D"), (18, "E"), (33, "F"), (34, "G"), (35, "H"),
-        (23, "I"), (36, "J"), (37, "K"), (38, "L"), (50, "M"), (49, "N"), (24, "O"), (25, "P"),
-        (16, "Q"), (19, "R"), (31, "S"), (20, "T"), (22, "U"), (47, "V"), (17, "W"), (45, "X"),
-        (21, "Y"), (44, "Z"),
+        (30, "A"),
+        (48, "B"),
+        (46, "C"),
+        (32, "D"),
+        (18, "E"),
+        (33, "F"),
+        (34, "G"),
+        (35, "H"),
+        (23, "I"),
+        (36, "J"),
+        (37, "K"),
+        (38, "L"),
+        (50, "M"),
+        (49, "N"),
+        (24, "O"),
+        (25, "P"),
+        (16, "Q"),
+        (19, "R"),
+        (31, "S"),
+        (20, "T"),
+        (22, "U"),
+        (47, "V"),
+        (17, "W"),
+        (45, "X"),
+        (21, "Y"),
+        (44, "Z"),
     ];
     const OTHERS: [(u16, &str); 30] = [
-        (1, "Esc"), (2, "1"), (3, "2"), (4, "3"), (5, "4"), (6, "5"), (7, "6"), (8, "7"),
-        (9, "8"), (10, "9"), (11, "0"), (14, "Backspace"), (15, "Tab"), (28, "Enter"),
-        (57, "Space"), (59, "F1"), (60, "F2"), (61, "F3"), (62, "F4"), (63, "F5"), (64, "F6"),
-        (65, "F7"), (66, "F8"), (67, "F9"), (68, "F10"), (87, "F11"), (88, "F12"),
-        (110, "Insert"), (111, "Delete"), (119, "Pause"),
+        (1, "Esc"),
+        (2, "1"),
+        (3, "2"),
+        (4, "3"),
+        (5, "4"),
+        (6, "5"),
+        (7, "6"),
+        (8, "7"),
+        (9, "8"),
+        (10, "9"),
+        (11, "0"),
+        (14, "Backspace"),
+        (15, "Tab"),
+        (28, "Enter"),
+        (57, "Space"),
+        (59, "F1"),
+        (60, "F2"),
+        (61, "F3"),
+        (62, "F4"),
+        (63, "F5"),
+        (64, "F6"),
+        (65, "F7"),
+        (66, "F8"),
+        (67, "F9"),
+        (68, "F10"),
+        (87, "F11"),
+        (88, "F12"),
+        (110, "Insert"),
+        (111, "Delete"),
+        (119, "Pause"),
     ];
     LETTERS
         .iter()
@@ -401,7 +454,9 @@ fn reports_keys(sysfs: &Path) -> bool {
 }
 
 fn device_name(sysfs: &Path) -> Option<String> {
-    std::fs::read_to_string(sysfs.join("device/name")).ok().map(|n| n.trim().to_string())
+    std::fs::read_to_string(sysfs.join("device/name"))
+        .ok()
+        .map(|n| n.trim().to_string())
 }
 
 /// Opens every keyboard-ish device in `/dev/input`.
@@ -466,7 +521,10 @@ pub fn open_all() -> Result<Vec<Device>, Unavailable> {
 
 fn open_nonblocking(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
 }
 
 /// Waits for any of `devices` to have something to say, then returns every
@@ -482,7 +540,11 @@ pub fn wait_for_presses(devices: &mut Vec<Device>, timeout: Duration) -> Vec<Key
 
     let mut fds: Vec<libc::pollfd> = devices
         .iter()
-        .map(|d| libc::pollfd { fd: d.file.as_raw_fd(), events: libc::POLLIN, revents: 0 })
+        .map(|d| libc::pollfd {
+            fd: d.file.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        })
         .collect();
 
     let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
@@ -537,7 +599,10 @@ mod tests {
         let mut buffer = Vec::new();
         for (kind, code, value) in events {
             let event = InputEvent {
-                time: libc::timeval { tv_sec: 0, tv_usec: 0 },
+                time: libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                },
                 kind: *kind,
                 code: *code,
                 value: *value,
@@ -569,8 +634,10 @@ mod tests {
     #[test]
     fn an_unmapped_key_is_still_a_press_even_with_no_keycode() {
         let mut device = device();
-        let presses =
-            device.absorb(&bytes(&[(EV_MSC, MSC_SCAN, 0xe02b), (EV_SYN, SYN_REPORT, 0)]));
+        let presses = device.absorb(&bytes(&[
+            (EV_MSC, MSC_SCAN, 0xe02b),
+            (EV_SYN, SYN_REPORT, 0),
+        ]));
 
         assert_eq!(presses.len(), 1);
         assert_eq!(presses[0].keycode, None);
@@ -600,7 +667,9 @@ mod tests {
     #[test]
     fn a_packet_split_across_two_reads_still_pairs_correctly() {
         let mut device = device();
-        assert!(device.absorb(&bytes(&[(EV_MSC, MSC_SCAN, 0xe02b)])).is_empty());
+        assert!(device
+            .absorb(&bytes(&[(EV_MSC, MSC_SCAN, 0xe02b)]))
+            .is_empty());
 
         let presses = device.absorb(&bytes(&[(EV_KEY, 148, 1), (EV_SYN, SYN_REPORT, 0)]));
         assert_eq!(presses.len(), 1);
@@ -616,12 +685,15 @@ mod tests {
         let presses = device.absorb(&bytes(&[(EV_KEY, 148, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         assert_eq!(presses.len(), 1);
-        assert_eq!(presses[0], KeyPress {
-            device: "AT Translated Set 2 keyboard".into(),
-            keycode: Some(148),
-            scancode: None,
-            modifiers: Modifiers::default(),
-        });
+        assert_eq!(
+            presses[0],
+            KeyPress {
+                device: "AT Translated Set 2 keyboard".into(),
+                keycode: Some(148),
+                scancode: None,
+                modifiers: Modifiers::default(),
+            }
+        );
     }
 
     /// The case the settings page exists for: a combination. The modifier
@@ -645,7 +717,11 @@ mod tests {
             (EV_SYN, SYN_REPORT, 0),
         ]));
 
-        assert_eq!(presses.len(), 1, "only the key is a press; the modifiers are not");
+        assert_eq!(
+            presses.len(),
+            1,
+            "only the key is a press; the modifiers are not"
+        );
         assert_eq!(presses[0].keycode, Some(25));
         assert!(presses[0].modifiers.ctrl && presses[0].modifiers.alt);
         assert!(!presses[0].modifiers.shift && !presses[0].modifiers.meta);
@@ -657,8 +733,14 @@ mod tests {
     #[test]
     fn releasing_a_modifier_stops_it_being_held() {
         let mut device = device();
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTCTRL, 1), (EV_SYN, SYN_REPORT, 0)]));
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTCTRL, 0), (EV_SYN, SYN_REPORT, 0)]));
+        device.absorb(&bytes(&[
+            (EV_KEY, KEY_LEFTCTRL, 1),
+            (EV_SYN, SYN_REPORT, 0),
+        ]));
+        device.absorb(&bytes(&[
+            (EV_KEY, KEY_LEFTCTRL, 0),
+            (EV_SYN, SYN_REPORT, 0),
+        ]));
         let presses = device.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         assert_eq!(presses.len(), 1);
@@ -670,8 +752,14 @@ mod tests {
     #[test]
     fn a_held_modifier_repeating_is_still_held() {
         let mut device = device();
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT, 1), (EV_SYN, SYN_REPORT, 0)]));
-        device.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT, 2), (EV_SYN, SYN_REPORT, 0)]));
+        device.absorb(&bytes(&[
+            (EV_KEY, KEY_LEFTSHIFT, 1),
+            (EV_SYN, SYN_REPORT, 0),
+        ]));
+        device.absorb(&bytes(&[
+            (EV_KEY, KEY_LEFTSHIFT, 2),
+            (EV_SYN, SYN_REPORT, 0),
+        ]));
         let presses = device.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         assert!(presses[0].modifiers.shift);
@@ -682,11 +770,17 @@ mod tests {
     #[test]
     fn the_two_sides_of_a_modifier_are_the_same_modifier() {
         let mut left = device();
-        left.absorb(&bytes(&[(EV_KEY, KEY_LEFTSHIFT, 1), (EV_SYN, SYN_REPORT, 0)]));
+        left.absorb(&bytes(&[
+            (EV_KEY, KEY_LEFTSHIFT, 1),
+            (EV_SYN, SYN_REPORT, 0),
+        ]));
         let from_left = left.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         let mut right = device();
-        right.absorb(&bytes(&[(EV_KEY, KEY_RIGHTSHIFT, 1), (EV_SYN, SYN_REPORT, 0)]));
+        right.absorb(&bytes(&[
+            (EV_KEY, KEY_RIGHTSHIFT, 1),
+            (EV_SYN, SYN_REPORT, 0),
+        ]));
         let from_right = right.absorb(&bytes(&[(EV_KEY, 25, 1), (EV_SYN, SYN_REPORT, 0)]));
 
         assert_eq!(from_left[0].modifiers, from_right[0].modifiers);
@@ -722,9 +816,15 @@ mod tests {
             !has_keyboard_keys("e520 10000 0 0 0 0"),
             "the touchpad reports BTN_TOOL_FINGER and no key at all"
         );
-        assert!(!has_keyboard_keys("30000 0 0 0 0"), "the mouse reports two buttons");
+        assert!(
+            !has_keyboard_keys("30000 0 0 0 0"),
+            "the mouse reports two buttons"
+        );
         assert!(!has_keyboard_keys("0"), "a lid switch reports no keys");
-        assert!(!has_keyboard_keys(""), "an unreadable mask is not a keyboard");
+        assert!(
+            !has_keyboard_keys(""),
+            "an unreadable mask is not a keyboard"
+        );
     }
 
     #[test]
@@ -736,7 +836,9 @@ mod tests {
         // The virtual device the hp-wmi driver creates. Its keys live high
         // in the keyboard range, which is exactly the case a naive "is the
         // last word non-zero" test would get wrong.
-        assert!(has_keyboard_keys("180000 20000 0 4000000000 0 101000700000000 2302400 0 0"));
+        assert!(has_keyboard_keys(
+            "180000 20000 0 4000000000 0 101000700000000 2302400 0 0"
+        ));
     }
 
     /// The two button ranges, and the block of `KEY_*` codes the kernel
@@ -749,7 +851,10 @@ mod tests {
 
         assert!(!is_button(1), "KEY_ESC");
         assert!(!is_button(148), "KEY_PROG1");
-        assert!(!is_button(0x160), "KEY_OK sits above the first button block");
+        assert!(
+            !is_button(0x160),
+            "KEY_OK sits above the first button block"
+        );
         assert!(!is_button(0x264), "KEY_KBDINPUTASSIST_CANCEL, higher still");
     }
 

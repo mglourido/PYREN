@@ -180,7 +180,10 @@ pub fn clamp(request: Target, ceiling: &Ceiling) -> Clamped {
             // partner, not an attack; the two are swapped rather than
             // refused, and only the clamp is worth a note.
             let max = range.clamp(lock.max_mhz).max(min);
-            let clamped = ClockLock { min_mhz: min, max_mhz: max };
+            let clamped = ClockLock {
+                min_mhz: min,
+                max_mhz: max,
+            };
             if clamped != lock {
                 notes.push(msg!(
                     "overclock.clamp.lockOutOfRange",
@@ -220,13 +223,18 @@ pub fn clamp(request: Target, ceiling: &Ceiling) -> Clamped {
 /// A revert does not go through here - see the module docs.
 pub fn ramp(from: Target, to: Target) -> Vec<Target> {
     let mut steps = Vec::new();
-    let mut current = Target { core_clock: from.core_clock, ..from };
+    let mut current = Target {
+        core_clock: from.core_clock,
+        ..from
+    };
 
     while current.core_offset_mhz != to.core_offset_mhz
         || current.mem_offset_mhz != to.mem_offset_mhz
     {
-        current.core_offset_mhz = step_towards(current.core_offset_mhz, to.core_offset_mhz, CORE_STEP_MHZ);
-        current.mem_offset_mhz = step_towards(current.mem_offset_mhz, to.mem_offset_mhz, MEM_STEP_MHZ);
+        current.core_offset_mhz =
+            step_towards(current.core_offset_mhz, to.core_offset_mhz, CORE_STEP_MHZ);
+        current.mem_offset_mhz =
+            step_towards(current.mem_offset_mhz, to.mem_offset_mhz, MEM_STEP_MHZ);
         steps.push(current);
     }
 
@@ -263,10 +271,17 @@ mod tests {
 
     #[test]
     fn a_request_inside_the_advertised_range_is_left_alone() {
-        let request = Target { core_offset_mhz: 120, mem_offset_mhz: 400, core_clock: None };
+        let request = Target {
+            core_offset_mhz: 120,
+            mem_offset_mhz: 400,
+            core_clock: None,
+        };
         let clamped = clamp(request, &ceiling());
         assert_eq!(clamped.target, request);
-        assert!(clamped.notes.is_empty(), "an untouched request must not be decorated");
+        assert!(
+            clamped.notes.is_empty(),
+            "an untouched request must not be decorated"
+        );
     }
 
     /// The driver's own number is the ceiling. Passing a bigger one through
@@ -274,7 +289,11 @@ mod tests {
     #[test]
     fn a_request_past_the_advertised_range_is_cut_down_and_said_so() {
         let clamped = clamp(
-            Target { core_offset_mhz: 5000, mem_offset_mhz: 0, core_clock: None },
+            Target {
+                core_offset_mhz: 5000,
+                mem_offset_mhz: 0,
+                core_clock: None,
+            },
             &ceiling(),
         );
         assert_eq!(clamped.target.core_offset_mhz, 1000);
@@ -286,9 +305,16 @@ mod tests {
     /// written, and the one that does not is reported rather than refused.
     #[test]
     fn a_knob_this_card_lacks_is_dropped_not_refused() {
-        let ceiling = Ceiling { mem_offset: None, ..ceiling() };
+        let ceiling = Ceiling {
+            mem_offset: None,
+            ..ceiling()
+        };
         let clamped = clamp(
-            Target { core_offset_mhz: 90, mem_offset_mhz: 300, core_clock: None },
+            Target {
+                core_offset_mhz: 90,
+                mem_offset_mhz: 300,
+                core_clock: None,
+            },
             &ceiling,
         );
         assert_eq!(clamped.target.core_offset_mhz, 90);
@@ -300,16 +326,34 @@ mod tests {
     #[test]
     fn a_clock_lock_is_clamped_to_the_clocks_the_card_lists() {
         let clamped = clamp(
-            Target { core_clock: Some(ClockLock { min_mhz: 100, max_mhz: 9000 }), ..Target::default() },
+            Target {
+                core_clock: Some(ClockLock {
+                    min_mhz: 100,
+                    max_mhz: 9000,
+                }),
+                ..Target::default()
+            },
             &ceiling(),
         );
-        assert_eq!(clamped.target.core_clock, Some(ClockLock { min_mhz: 210, max_mhz: 3090 }));
+        assert_eq!(
+            clamped.target.core_clock,
+            Some(ClockLock {
+                min_mhz: 210,
+                max_mhz: 3090
+            })
+        );
         assert_eq!(clamped.notes.len(), 1);
     }
 
     #[test]
     fn the_climb_moves_by_one_step_at_a_time() {
-        let steps = ramp(Target::default(), Target { core_offset_mhz: 40, ..Target::default() });
+        let steps = ramp(
+            Target::default(),
+            Target {
+                core_offset_mhz: 40,
+                ..Target::default()
+            },
+        );
         let offsets: Vec<i32> = steps.iter().map(|t| t.core_offset_mhz).collect();
         assert_eq!(offsets, vec![15, 30, 40]);
     }
@@ -320,7 +364,11 @@ mod tests {
     fn the_two_offsets_climb_together() {
         let steps = ramp(
             Target::default(),
-            Target { core_offset_mhz: 30, mem_offset_mhz: 200, core_clock: None },
+            Target {
+                core_offset_mhz: 30,
+                mem_offset_mhz: 200,
+                core_clock: None,
+            },
         );
         assert_eq!(steps.len(), 4);
         assert_eq!(steps.last().unwrap().core_offset_mhz, 30);
@@ -329,7 +377,10 @@ mod tests {
 
     #[test]
     fn the_climb_works_downwards_too() {
-        let from = Target { core_offset_mhz: 45, ..Target::default() };
+        let from = Target {
+            core_offset_mhz: 45,
+            ..Target::default()
+        };
         let steps = ramp(from, Target::default());
         let offsets: Vec<i32> = steps.iter().map(|t| t.core_offset_mhz).collect();
         assert_eq!(offsets, vec![30, 15, 0]);
@@ -339,9 +390,24 @@ mod tests {
     /// "pin the clocks and leave the offsets alone" would do nothing.
     #[test]
     fn a_clock_lock_on_its_own_is_still_one_step() {
-        let lock = Some(ClockLock { min_mhz: 2000, max_mhz: 2500 });
-        let steps = ramp(Target::default(), Target { core_clock: lock, ..Target::default() });
-        assert_eq!(steps, vec![Target { core_clock: lock, ..Target::default() }]);
+        let lock = Some(ClockLock {
+            min_mhz: 2000,
+            max_mhz: 2500,
+        });
+        let steps = ramp(
+            Target::default(),
+            Target {
+                core_clock: lock,
+                ..Target::default()
+            },
+        );
+        assert_eq!(
+            steps,
+            vec![Target {
+                core_clock: lock,
+                ..Target::default()
+            }]
+        );
     }
 
     /// The lock is part of the destination, so it must not be written on
@@ -350,18 +416,31 @@ mod tests {
     /// tested at.
     #[test]
     fn the_clock_lock_arrives_with_the_last_step() {
-        let lock = Some(ClockLock { min_mhz: 2000, max_mhz: 2500 });
+        let lock = Some(ClockLock {
+            min_mhz: 2000,
+            max_mhz: 2500,
+        });
         let steps = ramp(
             Target::default(),
-            Target { core_offset_mhz: 30, core_clock: lock, ..Target::default() },
+            Target {
+                core_offset_mhz: 30,
+                core_clock: lock,
+                ..Target::default()
+            },
         );
-        assert!(steps[..steps.len() - 1].iter().all(|s| s.core_clock.is_none()));
+        assert!(steps[..steps.len() - 1]
+            .iter()
+            .all(|s| s.core_clock.is_none()));
         assert_eq!(steps.last().unwrap().core_clock, lock);
     }
 
     #[test]
     fn stock_is_the_default_and_knows_it() {
         assert!(Target::default().is_stock());
-        assert!(!Target { core_offset_mhz: 1, ..Target::default() }.is_stock());
+        assert!(!Target {
+            core_offset_mhz: 1,
+            ..Target::default()
+        }
+        .is_stock());
     }
 }

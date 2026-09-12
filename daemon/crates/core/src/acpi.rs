@@ -66,7 +66,11 @@ static GATE: Mutex<()> = Mutex::new(());
 #[derive(Debug, thiserror::Error)]
 pub enum AcpiError {
     /// `/proc/acpi/call` is not there. Installable, not permanent.
-    #[error("the acpi_call kernel module is not loaded, so {} does not exist; {}", CALL_PATH, missing_hint())]
+    #[error(
+        "the acpi_call kernel module is not loaded, so {} does not exist; {}",
+        CALL_PATH,
+        missing_hint()
+    )]
     NotLoaded,
     /// The file exists and this process may not write to it.
     #[error("writing {CALL_PATH} needs root")]
@@ -171,13 +175,16 @@ pub fn call(method: &str, args: &str) -> Result<String, AcpiError> {
         .create(is_redirected())
         .open(&path)
         .map_err(map_open_error)?;
-    file.write_all(request.as_bytes()).map_err(|e| map_io_error(&e))?;
+    file.write_all(request.as_bytes())
+        .map_err(|e| map_io_error(&e))?;
     drop(file);
 
     let response = read_reply(&path)?;
     // acpi_call terminates its reply with a NUL, which `trim` does not
     // remove and `str::parse` chokes on.
-    Ok(response.trim_matches(|c: char| c == '\0' || c.is_whitespace()).to_string())
+    Ok(response
+        .trim_matches(|c: char| c == '\0' || c.is_whitespace())
+        .to_string())
 }
 
 /// How big a first read to ask for. Comfortably past `acpi_call`'s own
@@ -292,7 +299,10 @@ pub fn wmi_call(
     outsize: usize,
 ) -> Result<String, AcpiError> {
     let request = wmi_request(command, command_type, insize, payload);
-    call(WMI_METHOD, &format!("0 {} {request}", method_for_outsize(outsize)))
+    call(
+        WMI_METHOD,
+        &format!("0 {} {request}", method_for_outsize(outsize)),
+    )
 }
 
 /// The ASCII signature every one of these buffers starts with. It is the
@@ -324,16 +334,24 @@ pub fn parse_bytes(response: &str) -> Option<Vec<u8>> {
     // start `0x`, and the branch below is the one that reads it.
     let tokens = hex_tokens(text);
     if !tokens.is_empty() {
-        let parsed: Option<Vec<u8>> =
-            tokens.iter().map(|t| u8::from_str_radix(t, 16).ok()).collect();
+        let parsed: Option<Vec<u8>> = tokens
+            .iter()
+            .map(|t| u8::from_str_radix(t, 16).ok())
+            .collect();
         if let Some(bytes) = parsed {
             return Some(bytes);
         }
     }
 
     let blob = text.trim_matches(|c| c == '{' || c == '}').trim();
-    let blob = blob.strip_prefix("0x").or_else(|| blob.strip_prefix('b')).unwrap_or(blob);
-    let blob: String = blob.chars().filter(|c| !c.is_whitespace() && *c != '\0').collect();
+    let blob = blob
+        .strip_prefix("0x")
+        .or_else(|| blob.strip_prefix('b'))
+        .unwrap_or(blob);
+    let blob: String = blob
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\0')
+        .collect();
     from_hex(&blob)
 }
 
@@ -363,7 +381,9 @@ fn hex_tokens(text: &str) -> Vec<String> {
 }
 
 fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if text.is_empty() || !text.len().is_multiple_of(2) || !text.chars().all(|c| c.is_ascii_hexdigit())
+    if text.is_empty()
+        || !text.len().is_multiple_of(2)
+        || !text.chars().all(|c| c.is_ascii_hexdigit())
     {
         return None;
     }
@@ -411,8 +431,7 @@ mod tests {
         let path = dir.join("call");
 
         // Longer than REPLY_CAPACITY, so the growth path is exercised too.
-        let reply: String =
-            std::iter::repeat_n("{0x50, 0x41, 0x53, 0x53}", 1000).collect();
+        let reply: String = std::iter::repeat_n("{0x50, 0x41, 0x53, 0x53}", 1000).collect();
         std::fs::write(&path, &reply).expect("a temp file is writable");
 
         let got = read_reply(path.to_str().unwrap()).expect("a readable file");

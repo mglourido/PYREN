@@ -26,8 +26,8 @@ use pyren_core::{Module, ModuleError, ModuleResult};
 use serde::Serialize;
 use serde_json::Value;
 
-pub use identity::{Compatibility, Controls, SystemIdentity};
 pub use gpu::GpuMetrics;
+pub use identity::{Compatibility, Controls, SystemIdentity};
 pub use metrics::Metrics;
 
 /// What the daemon was allowed to do, as opposed to what the machine can

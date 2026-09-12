@@ -49,9 +49,15 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    #[error("{path} was written by a newer version of pyren (v{found} > v{supported}); \
-             refusing to overwrite it")]
-    FutureVersion { path: PathBuf, found: u32, supported: u32 },
+    #[error(
+        "{path} was written by a newer version of pyren (v{found} > v{supported}); \
+             refusing to overwrite it"
+    )]
+    FutureVersion {
+        path: PathBuf,
+        found: u32,
+        supported: u32,
+    },
     #[error("could not serialize config: {0}")]
     Serialize(#[from] serde_json::Error),
 }
@@ -65,7 +71,10 @@ pub enum LoadOutcome {
     Missing,
     /// The file was unreadable or invalid; it has been moved aside and
     /// defaults are in use. Carries the path of the preserved copy.
-    Recovered { backup: Option<PathBuf>, reason: String },
+    Recovered {
+        backup: Option<PathBuf>,
+        reason: String,
+    },
     /// The file is from a newer build; defaults are in use and the file has
     /// been left untouched, so the newer build still finds its settings.
     TooNew { found: u32 },
@@ -129,7 +138,11 @@ impl ConfigStore {
             .ok()
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".config"))
+            })
             .unwrap_or_else(|| PathBuf::from("."));
         Self::at(base.join("pyren"))
     }
@@ -163,12 +176,18 @@ impl ConfigStore {
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Loaded { value: T::default(), outcome: LoadOutcome::Missing };
+                return Loaded {
+                    value: T::default(),
+                    outcome: LoadOutcome::Missing,
+                };
             }
             Err(e) => {
                 return Loaded {
                     value: T::default(),
-                    outcome: LoadOutcome::Recovered { backup: None, reason: e.to_string() },
+                    outcome: LoadOutcome::Recovered {
+                        backup: None,
+                        reason: e.to_string(),
+                    },
                 };
             }
         };
@@ -180,18 +199,26 @@ impl ConfigStore {
             if probe.version > CURRENT_VERSION {
                 return Loaded {
                     value: T::default(),
-                    outcome: LoadOutcome::TooNew { found: probe.version },
+                    outcome: LoadOutcome::TooNew {
+                        found: probe.version,
+                    },
                 };
             }
         }
 
         match serde_json::from_str::<Versioned<T>>(&text) {
-            Ok(parsed) => Loaded { value: parsed.inner, outcome: LoadOutcome::Loaded },
+            Ok(parsed) => Loaded {
+                value: parsed.inner,
+                outcome: LoadOutcome::Loaded,
+            },
             Err(e) => {
                 let backup = self.preserve_broken(&path);
                 Loaded {
                     value: T::default(),
-                    outcome: LoadOutcome::Recovered { backup, reason: e.to_string() },
+                    outcome: LoadOutcome::Recovered {
+                        backup,
+                        reason: e.to_string(),
+                    },
                 }
             }
         }
@@ -200,8 +227,10 @@ impl ConfigStore {
     /// Writes one namespace atomically.
     pub fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<(), ConfigError> {
         let path = self.path_for(name);
-        fs::create_dir_all(&self.root)
-            .map_err(|source| ConfigError::Io { path: self.root.clone(), source })?;
+        fs::create_dir_all(&self.root).map_err(|source| ConfigError::Io {
+            path: self.root.clone(),
+            source,
+        })?;
 
         let payload = serde_json::to_string_pretty(&Versioned {
             version: CURRENT_VERSION,
@@ -212,18 +241,31 @@ impl ConfigStore {
         // filesystem and is therefore atomic.
         let temp = path.with_extension("json.tmp");
         {
-            let mut file = fs::File::create(&temp)
-                .map_err(|source| ConfigError::Io { path: temp.clone(), source })?;
+            let mut file = fs::File::create(&temp).map_err(|source| ConfigError::Io {
+                path: temp.clone(),
+                source,
+            })?;
             file.write_all(payload.as_bytes())
-                .map_err(|source| ConfigError::Io { path: temp.clone(), source })?;
-            file.write_all(b"\n")
-                .map_err(|source| ConfigError::Io { path: temp.clone(), source })?;
+                .map_err(|source| ConfigError::Io {
+                    path: temp.clone(),
+                    source,
+                })?;
+            file.write_all(b"\n").map_err(|source| ConfigError::Io {
+                path: temp.clone(),
+                source,
+            })?;
             // Without this the rename can land before the data does, which
             // on a crash leaves an empty file where the config used to be.
-            file.sync_all().map_err(|source| ConfigError::Io { path: temp.clone(), source })?;
+            file.sync_all().map_err(|source| ConfigError::Io {
+                path: temp.clone(),
+                source,
+            })?;
         }
 
-        fs::rename(&temp, &path).map_err(|source| ConfigError::Io { path: path.clone(), source })
+        fs::rename(&temp, &path).map_err(|source| ConfigError::Io {
+            path: path.clone(),
+            source,
+        })
     }
 
     /// Moves an unparseable file aside so the user can recover it.
@@ -279,13 +321,18 @@ mod tests {
 
     impl Default for Sample {
         fn default() -> Self {
-            Self { enabled: false, threshold: 0.5, name: "default".into() }
+            Self {
+                enabled: false,
+                threshold: 0.5,
+                name: "default".into(),
+            }
         }
     }
 
     /// Each test gets its own directory under the process temp dir.
     fn store(tag: &str) -> ConfigStore {
-        let root = std::env::temp_dir().join(format!("pyren-config-test-{tag}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pyren-config-test-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         ConfigStore::at(root)
     }
@@ -301,7 +348,11 @@ mod tests {
     #[test]
     fn saved_values_round_trip() {
         let store = store("roundtrip");
-        let value = Sample { enabled: true, threshold: 0.9, name: "custom".into() };
+        let value = Sample {
+            enabled: true,
+            threshold: 0.9,
+            name: "custom".into(),
+        };
         store.save("thing", &value).expect("save");
 
         let loaded = store.load::<Sample>("thing");
@@ -358,10 +409,18 @@ mod tests {
         fs::write(store.path_for("thing"), &original).unwrap();
 
         let loaded = store.load::<Sample>("thing");
-        assert_eq!(loaded.outcome, LoadOutcome::TooNew { found: CURRENT_VERSION + 1 });
+        assert_eq!(
+            loaded.outcome,
+            LoadOutcome::TooNew {
+                found: CURRENT_VERSION + 1
+            }
+        );
         assert_eq!(loaded.value, Sample::default());
         // Crucially the newer build's settings are still on disk.
-        assert_eq!(fs::read_to_string(store.path_for("thing")).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(store.path_for("thing")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -374,8 +433,14 @@ mod tests {
     #[test]
     fn namespaces_do_not_collide() {
         let store = store("namespaces");
-        let power = Sample { name: "power".into(), ..Sample::default() };
-        let app = Sample { name: "app".into(), ..Sample::default() };
+        let power = Sample {
+            name: "power".into(),
+            ..Sample::default()
+        };
+        let app = Sample {
+            name: "app".into(),
+            ..Sample::default()
+        };
         store.save("power", &power).unwrap();
         store.save("app", &app).unwrap();
 
@@ -386,10 +451,19 @@ mod tests {
     #[test]
     fn a_namespace_cannot_escape_the_config_directory() {
         let store = ConfigStore::at("/tmp/pyren-root");
-        assert_eq!(store.path_for("../../etc/shadow"), Path::new("/tmp/pyren-root/etcshadow.json"));
-        assert_eq!(store.path_for("power"), Path::new("/tmp/pyren-root/power.json"));
+        assert_eq!(
+            store.path_for("../../etc/shadow"),
+            Path::new("/tmp/pyren-root/etcshadow.json")
+        );
+        assert_eq!(
+            store.path_for("power"),
+            Path::new("/tmp/pyren-root/power.json")
+        );
         // A name with nothing usable left still stays inside the root.
-        assert_eq!(store.path_for("../.."), Path::new("/tmp/pyren-root/invalid.json"));
+        assert_eq!(
+            store.path_for("../.."),
+            Path::new("/tmp/pyren-root/invalid.json")
+        );
     }
 
     #[test]

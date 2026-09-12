@@ -165,7 +165,11 @@ impl KeymapModule {
             last_save_error: None,
         };
 
-        let module = Self { state: Arc::new(Mutex::new(state)), store, stop: Arc::new(AtomicBool::new(false)) };
+        let module = Self {
+            state: Arc::new(Mutex::new(state)),
+            store,
+            stop: Arc::new(AtomicBool::new(false)),
+        };
         if module.lock().config.enabled {
             module.start();
         }
@@ -173,7 +177,9 @@ impl KeymapModule {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn persist(&self, state: &mut State) {
@@ -211,7 +217,10 @@ impl KeymapModule {
             );
         }
         if state.config.mappings.is_empty() {
-            return msg!("keymap.detail.noMappings", "enabled, with nothing mapped yet");
+            return msg!(
+                "keymap.detail.noMappings",
+                "enabled, with nothing mapped yet"
+            );
         }
         msg!(
             "keymap.detail.running",
@@ -229,10 +238,15 @@ impl KeymapModule {
         }
         self.stop.store(false, Ordering::SeqCst);
         let module = self.clone();
-        let spawned = std::thread::Builder::new().name("pyren-keymap".into()).spawn(move || module.run()).is_ok();
+        let spawned = std::thread::Builder::new()
+            .name("pyren-keymap".into())
+            .spawn(move || module.run())
+            .is_ok();
         if !spawned {
             let mut state = self.lock();
-            state.unavailable = Some(Unavailable::Io("could not start the remapper thread".into()));
+            state.unavailable = Some(Unavailable::Io(
+                "could not start the remapper thread".into(),
+            ));
         }
     }
 
@@ -272,8 +286,11 @@ impl KeymapModule {
 
         if grabbed.is_empty() {
             let mut state = self.lock();
-            state.unavailable =
-                Some(if saw_permission_denied { Unavailable::NeedsRoot } else { Unavailable::NoDevices });
+            state.unavailable = Some(if saw_permission_denied {
+                Unavailable::NeedsRoot
+            } else {
+                Unavailable::NoDevices
+            });
             return;
         }
 
@@ -325,7 +342,9 @@ impl KeymapModule {
                 if fd.revents & libc::POLLIN == 0 {
                     continue;
                 }
-                let Ok(events) = raw::read_events(&mut grabbed[index], &mut buffer) else { continue };
+                let Ok(events) = raw::read_events(&mut grabbed[index], &mut buffer) else {
+                    continue;
+                };
                 for mut event in events {
                     if event.kind == raw::EV_KEY {
                         if let Some(&to) = table.get(&event.code) {
@@ -352,12 +371,19 @@ impl KeymapModule {
     /// two keyboards is the exception - a device-specific entry still
     /// round-trips through config and `getStatus`, for when it is not.
     fn table(&self) -> HashMap<u16, u16> {
-        self.lock().config.mappings.iter().map(|m| (m.from.keycode, m.to)).collect()
+        self.lock()
+            .config
+            .mappings
+            .iter()
+            .map(|m| (m.from.keycode, m.to))
+            .collect()
     }
 
     fn set_mapping(&self, mapping: KeyMapping) -> ModuleResult {
         let mut state = self.lock();
-        state.config.mappings.retain(|m| m.from.keycode != mapping.from.keycode || m.from.device != mapping.from.device);
+        state.config.mappings.retain(|m| {
+            m.from.keycode != mapping.from.keycode || m.from.device != mapping.from.device
+        });
         state.config.mappings.push(mapping);
         self.persist(&mut state);
         drop(state);
@@ -432,12 +458,18 @@ impl Module for KeymapModule {
             }
 
             "setEnabled" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::localised(
-                        ErrorKind::InvalidParams,
-                        msg!("keymap.err.enabledRequired", "params.enabled is required: true or false"),
-                    )
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!(
+                                "keymap.err.enabledRequired",
+                                "params.enabled is required: true or false"
+                            ),
+                        )
+                    })?;
                 self.set_enabled(enabled)
             }
 
@@ -452,14 +484,20 @@ mod tests {
     use std::path::PathBuf;
 
     fn store() -> ConfigStore {
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-keymap-test-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-keymap-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         ConfigStore::at(dir)
     }
 
     fn spec(keycode: u16) -> KeySpec {
-        KeySpec { device: None, keycode }
+        KeySpec {
+            device: None,
+            keycode,
+        }
     }
 
     #[test]
@@ -474,10 +512,18 @@ mod tests {
     #[test]
     fn setting_a_mapping_persists_and_replaces_the_same_key() {
         let module = KeymapModule::with_store(store());
-        module.call("setMapping", json!({ "from": { "keycode": 1 }, "to": 2 })).unwrap();
-        let status = module.call("setMapping", json!({ "from": { "keycode": 1 }, "to": 3 })).unwrap();
+        module
+            .call("setMapping", json!({ "from": { "keycode": 1 }, "to": 2 }))
+            .unwrap();
+        let status = module
+            .call("setMapping", json!({ "from": { "keycode": 1 }, "to": 3 }))
+            .unwrap();
         let mappings = status["mappings"].as_array().unwrap();
-        assert_eq!(mappings.len(), 1, "the second call replaces the first, not adds to it");
+        assert_eq!(
+            mappings.len(),
+            1,
+            "the second call replaces the first, not adds to it"
+        );
         assert_eq!(mappings[0]["to"], json!(3));
     }
 
@@ -485,10 +531,16 @@ mod tests {
     fn two_devices_can_map_the_same_keycode_independently() {
         let module = KeymapModule::with_store(store());
         module
-            .call("setMapping", json!({ "from": { "device": "kbd A", "keycode": 1 }, "to": 2 }))
+            .call(
+                "setMapping",
+                json!({ "from": { "device": "kbd A", "keycode": 1 }, "to": 2 }),
+            )
             .unwrap();
         let status = module
-            .call("setMapping", json!({ "from": { "device": "kbd B", "keycode": 1 }, "to": 3 }))
+            .call(
+                "setMapping",
+                json!({ "from": { "device": "kbd B", "keycode": 1 }, "to": 3 }),
+            )
             .unwrap();
         assert_eq!(status["mappings"].as_array().unwrap().len(), 2);
     }
@@ -496,9 +548,15 @@ mod tests {
     #[test]
     fn removing_a_mapping_drops_only_that_key() {
         let module = KeymapModule::with_store(store());
-        module.call("setMapping", json!({ "from": { "keycode": 1 }, "to": 2 })).unwrap();
-        module.call("setMapping", json!({ "from": { "keycode": 5 }, "to": 6 })).unwrap();
-        let status = module.call("removeMapping", json!({ "keycode": 1 })).unwrap();
+        module
+            .call("setMapping", json!({ "from": { "keycode": 1 }, "to": 2 }))
+            .unwrap();
+        module
+            .call("setMapping", json!({ "from": { "keycode": 5 }, "to": 6 }))
+            .unwrap();
+        let status = module
+            .call("removeMapping", json!({ "keycode": 1 }))
+            .unwrap();
         let mappings = status["mappings"].as_array().unwrap();
         assert_eq!(mappings.len(), 1);
         assert_eq!(mappings[0]["from"]["keycode"], json!(5));
@@ -507,8 +565,12 @@ mod tests {
     #[test]
     fn the_substitution_table_is_built_from_current_mappings() {
         let module = KeymapModule::with_store(store());
-        module.call("setMapping", json!({ "from": { "keycode": 1 }, "to": 2 })).unwrap();
-        module.call("setMapping", json!({ "from": { "keycode": 3 }, "to": 4 })).unwrap();
+        module
+            .call("setMapping", json!({ "from": { "keycode": 1 }, "to": 2 }))
+            .unwrap();
+        module
+            .call("setMapping", json!({ "from": { "keycode": 3 }, "to": 4 }))
+            .unwrap();
         let table = module.table();
         assert_eq!(table.get(&1), Some(&2));
         assert_eq!(table.get(&3), Some(&4));
@@ -518,7 +580,9 @@ mod tests {
     #[test]
     fn an_invalid_mapping_is_rejected_before_touching_the_config() {
         let module = KeymapModule::with_store(store());
-        let err = module.call("setMapping", json!({ "from": {} })).unwrap_err();
+        let err = module
+            .call("setMapping", json!({ "from": {} }))
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidParams);
     }
 
@@ -538,7 +602,13 @@ mod tests {
 
     #[test]
     fn key_spec_equality_ignores_nothing() {
-        assert_ne!(spec(1), KeySpec { device: Some("x".into()), keycode: 1 });
+        assert_ne!(
+            spec(1),
+            KeySpec {
+                device: Some("x".into()),
+                keycode: 1
+            }
+        );
         assert_eq!(spec(1), spec(1));
     }
 

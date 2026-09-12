@@ -151,7 +151,11 @@ impl Autodetected {
         // Asked for only when it can change the answer. Loading a module
         // to settle a question whose answer is inert would be a side
         // effect bought for nothing.
-        let ec = if probe_ec { EcProbe::detect(true) } else { EcProbe::NotProbed };
+        let ec = if probe_ec {
+            EcProbe::detect(true)
+        } else {
+            EcProbe::NotProbed
+        };
         decide(Dmi::read(), source.as_deref(), max_rpm, rpm_source, ec)
     }
 
@@ -165,7 +169,10 @@ impl Autodetected {
     }
 
     pub fn max_rpm(&self) -> MaxRpm {
-        MaxRpm { cpu: self.cpu_max_rpm, gpu: self.gpu_max_rpm }
+        MaxRpm {
+            cpu: self.cpu_max_rpm,
+            gpu: self.gpu_max_rpm,
+        }
     }
 }
 
@@ -508,7 +515,10 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
         let result = suggest("8C99", "OMEN Gaming Laptop 16-am0xxx");
         assert!(result.board_known);
         assert_eq!(result.experimental_board, None);
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.boardKnown"));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.boardKnown"));
     }
 
     /// The test laptop: listed as an omen thermal-profile board, but absent
@@ -534,9 +544,15 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
     fn a_board_on_the_omen_profile_path_is_told_the_variant_is_inert() {
         let result = suggest("8D2F", "OMEN Gaming Laptop 16-am0xxx");
         assert_eq!(result.params_effect, ParamsEffect::InertOmenPath);
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.paramsInert"));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.paramsInert"));
         assert!(
-            !result.notes.iter().any(|n| n.key == "installer.auto.paramsUnmeasured"),
+            !result
+                .notes
+                .iter()
+                .any(|n| n.key == "installer.auto.paramsUnmeasured"),
             "no caveat about a choice that does not matter"
         );
     }
@@ -545,40 +561,71 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
     /// 0x95 is the classic OMEN layout, which is what omen_v1_legacy reads.
     #[test]
     fn a_board_off_the_profile_path_has_its_variant_measured() {
-        let ec = EcProbe::Read { victus_s: 0x00, omen: 0x31 };
+        let ec = EcProbe::Read {
+            victus_s: 0x00,
+            omen: 0x31,
+        };
         let result = suggest_with("8FFF", "OMEN Gaming Laptop 16-am0xxx", ec);
         assert_eq!(result.params_effect, ParamsEffect::DecidesReadback);
         assert_eq!(
             result.board_table,
             Some(BoardTable::Features(BoardParams::OmenV1Legacy))
         );
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.paramsMeasuredOmen"));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.paramsMeasuredOmen"));
     }
 
     #[test]
     fn the_other_offset_names_the_other_variant() {
-        let ec = EcProbe::Read { victus_s: 0x30, omen: 0x00 };
+        let ec = EcProbe::Read {
+            victus_s: 0x30,
+            omen: 0x00,
+        };
         let result = suggest_with("8FFF", "OMEN Gaming Laptop 16-am0xxx", ec);
-        assert_eq!(result.board_table, Some(BoardTable::Features(BoardParams::OmenV1)));
+        assert_eq!(
+            result.board_table,
+            Some(BoardTable::Features(BoardParams::OmenV1))
+        );
     }
 
     /// An EC holding a profile at neither offset is a real answer, not a
     /// failure: the variant that reads none of them is then correct.
     #[test]
     fn an_ec_with_no_profile_at_either_offset_settles_on_no_ec() {
-        let ec = EcProbe::Read { victus_s: 0x07, omen: 0xa2 };
+        let ec = EcProbe::Read {
+            victus_s: 0x07,
+            omen: 0xa2,
+        };
         let result = suggest_with("8FFF", "OMEN Gaming Laptop 16-am0xxx", ec);
-        assert_eq!(result.board_table, Some(BoardTable::Features(BoardParams::OmenV1NoEc)));
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.paramsNoOffset"));
+        assert_eq!(
+            result.board_table,
+            Some(BoardTable::Features(BoardParams::OmenV1NoEc))
+        );
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.paramsNoOffset"));
     }
 
     /// And an unreadable one still gets the safe variant, but says it did
     /// not measure - the two must not read the same.
     #[test]
     fn an_unreadable_ec_says_so_rather_than_claiming_a_measurement() {
-        let result = suggest_with("8FFF", "OMEN Gaming Laptop 16-am0xxx", EcProbe::ModuleNotLoaded);
-        assert_eq!(result.board_table, Some(BoardTable::Features(BoardParams::OmenV1NoEc)));
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.paramsUnmeasured"));
+        let result = suggest_with(
+            "8FFF",
+            "OMEN Gaming Laptop 16-am0xxx",
+            EcProbe::ModuleNotLoaded,
+        );
+        assert_eq!(
+            result.board_table,
+            Some(BoardTable::Features(BoardParams::OmenV1NoEc))
+        );
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.paramsUnmeasured"));
     }
 
     #[test]
@@ -597,7 +644,10 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
         let result = suggest("8D2F", "ThinkPad X1 Carbon");
         assert_eq!(result.family, Family::Unknown);
         assert_eq!(result.experimental_board, None);
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.unknownFamily"));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.unknownFamily"));
     }
 
     #[test]
@@ -611,7 +661,10 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
         );
         assert!(!result.board_known);
         assert_eq!(result.experimental_board, None);
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.noDriverSource"));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.noDriverSource"));
     }
 
     #[test]
@@ -631,13 +684,19 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
         let result = decide(
             dmi_for("8D2F", "OMEN Gaming Laptop 16-am0xxx"),
             Some(SOURCE),
-            MaxRpm { cpu: Some(6400), gpu: Some(5800) },
+            MaxRpm {
+                cpu: Some(6400),
+                gpu: Some(5800),
+            },
             RpmSource::Calibrated,
             EcProbe::NotProbed,
         );
         assert_eq!(result.max_rpm().cpu, Some(6400));
         assert_eq!(result.max_rpm().gpu, Some(5800));
-        assert!(result.notes.iter().any(|n| n.key == "installer.auto.rpmCalibrated"));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.key == "installer.auto.rpmCalibrated"));
     }
 
     #[test]

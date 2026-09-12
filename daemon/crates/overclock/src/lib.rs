@@ -318,11 +318,20 @@ impl OverclockModule {
                 // `pending` it is watching for. The poll itself returns in
                 // about a millisecond - see `nvml::POLL_TIMEOUT_MS`.
                 let fault = guard.pending.is_some()
-                    && guard.fault_watch.as_ref().is_some_and(nvml::EventWatch::poll);
-                watchdog_tick(guard.pending.as_ref(), fault, Instant::now())
-                    .map(|reason| (guard.pending.clone().expect("a reason implies a pending"), reason))
+                    && guard
+                        .fault_watch
+                        .as_ref()
+                        .is_some_and(nvml::EventWatch::poll);
+                watchdog_tick(guard.pending.as_ref(), fault, Instant::now()).map(|reason| {
+                    (
+                        guard.pending.clone().expect("a reason implies a pending"),
+                        reason,
+                    )
+                })
             };
-            let Some((pending, reason)) = due else { continue };
+            let Some((pending, reason)) = due else {
+                continue;
+            };
 
             let gpu = pending.gpu.clone();
             match revert(&state, &probe, &store, pending, reason) {
@@ -351,7 +360,12 @@ impl OverclockModule {
             .gpus
             .iter()
             .map(|gpu| {
-                let confirmed = state.config.targets.get(&gpu.id).copied().unwrap_or_default();
+                let confirmed = state
+                    .config
+                    .targets
+                    .get(&gpu.id)
+                    .copied()
+                    .unwrap_or_default();
                 json!({
                     "id": gpu.id,
                     "name": gpu.name,
@@ -459,7 +473,10 @@ impl OverclockModule {
         }
 
         if !gpu.drivable() {
-            return Err(ModuleError::localised(ErrorKind::NotCapable, gpu.detail.clone()));
+            return Err(ModuleError::localised(
+                ErrorKind::NotCapable,
+                gpu.detail.clone(),
+            ));
         }
 
         let from = self.current(&gpu.id);
@@ -518,7 +535,10 @@ impl OverclockModule {
         let Some(pending) = state.pending.take() else {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
-                msg!("overclock.err.nothingPending", "there is nothing waiting to be confirmed"),
+                msg!(
+                    "overclock.err.nothingPending",
+                    "there is nothing waiting to be confirmed"
+                ),
             ));
         };
         state.fault_watch = None;
@@ -545,10 +565,19 @@ impl OverclockModule {
         let Some(pending) = pending else {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
-                msg!("overclock.err.nothingPending", "there is nothing waiting to be confirmed"),
+                msg!(
+                    "overclock.err.nothingPending",
+                    "there is nothing waiting to be confirmed"
+                ),
             ));
         };
-        revert(&self.state, &self.probe, &self.store, pending, RevertReason::Undone)?;
+        revert(
+            &self.state,
+            &self.probe,
+            &self.store,
+            pending,
+            RevertReason::Undone,
+        )?;
         Ok(self.status())
     }
 
@@ -567,7 +596,12 @@ impl OverclockModule {
         let probe = lock(&self.probe).clone();
         let ids: Vec<String> = match gpu_id {
             Some(id) => vec![id],
-            None => probe.gpus.iter().filter(|g| g.drivable()).map(|g| g.id.clone()).collect(),
+            None => probe
+                .gpus
+                .iter()
+                .filter(|g| g.drivable())
+                .map(|g| g.id.clone())
+                .collect(),
         };
 
         let mut failures: Vec<(String, ModuleError)> = Vec::new();
@@ -760,17 +794,23 @@ impl Module for OverclockModule {
             "getState" => Ok(self.status()),
 
             "probe" => {
-                let allow_writes =
-                    params.get("allowWrites").and_then(Value::as_bool).unwrap_or(false);
+                let allow_writes = params
+                    .get("allowWrites")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let fresh = probe::probe(allow_writes);
                 *lock(&self.probe) = fresh;
                 Ok(self.status())
             }
 
             "setConsent" => {
-                let accepted = params.get("accepted").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.accepted must be a boolean".into())
-                })?;
+                let accepted =
+                    params
+                        .get("accepted")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| {
+                            ModuleError::InvalidParams("params.accepted must be a boolean".into())
+                        })?;
                 self.set_consent(accepted)
             }
 
@@ -779,14 +819,20 @@ impl Module for OverclockModule {
             "cancel" => self.cancel(),
 
             "reset" => {
-                let gpu = params.get("gpu").and_then(Value::as_str).map(str::to_string);
+                let gpu = params
+                    .get("gpu")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 self.reset(gpu)
             }
 
             "setRestoreOnStart" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
                 self.set_restore_on_start(enabled)
             }
 
@@ -918,7 +964,10 @@ fn write_target(gpu: &GpuProbe, target: Target) -> Result<(), ModuleError> {
     match gpu.vendor {
         Vendor::Nvidia => write_nvidia(gpu, target),
         // Detected and deliberately not driven; `probe` says why in words.
-        _ => Err(ModuleError::localised(ErrorKind::NotCapable, gpu.detail.clone())),
+        _ => Err(ModuleError::localised(
+            ErrorKind::NotCapable,
+            gpu.detail.clone(),
+        )),
     }
 }
 
@@ -932,10 +981,14 @@ fn write_nvidia(gpu: &GpuProbe, target: Target) -> Result<(), ModuleError> {
     // asked for a clock lock - and the clock lock is the mechanism that
     // works on the machine this was written on.
     if gpu.core_offset.is_some() && differs(nvidia.core_offset(index), target.core_offset_mhz) {
-        nvidia.set_core_offset(index, target.core_offset_mhz).map_err(nvidia_error)?;
+        nvidia
+            .set_core_offset(index, target.core_offset_mhz)
+            .map_err(nvidia_error)?;
     }
     if gpu.mem_offset.is_some() && differs(nvidia.mem_offset(index), target.mem_offset_mhz) {
-        nvidia.set_mem_offset(index, target.mem_offset_mhz).map_err(nvidia_error)?;
+        nvidia
+            .set_mem_offset(index, target.mem_offset_mhz)
+            .map_err(nvidia_error)?;
     }
     if gpu.clock_lock.is_some() {
         match target.core_clock {
@@ -1077,18 +1130,26 @@ fn needs_undoing(applied: Option<Target>) -> bool {
 // --- odds and ends ------------------------------------------------------
 
 fn hold_secs(config: &OverclockConfig) -> u64 {
-    config.hold_secs.unwrap_or(DEFAULT_HOLD_SECS).clamp(MIN_HOLD_SECS, MAX_HOLD_SECS)
+    config
+        .hold_secs
+        .unwrap_or(DEFAULT_HOLD_SECS)
+        .clamp(MIN_HOLD_SECS, MAX_HOLD_SECS)
 }
 
 fn as_mhz(value: &Value, field: &str) -> Result<i32, ModuleError> {
     value
         .as_i64()
         .and_then(|v| i32::try_from(v).ok())
-        .ok_or_else(|| ModuleError::InvalidParams(format!("params.{field} must be a whole number of MHz")))
+        .ok_or_else(|| {
+            ModuleError::InvalidParams(format!("params.{field} must be a whole number of MHz"))
+        })
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn persist(store: &ConfigStore, state: &mut State) {
@@ -1105,7 +1166,9 @@ fn persist(store: &ConfigStore, state: &mut State) {
 /// applied. Recovering the guard keeps the watchdog alive, which is the
 /// thing that puts the card back.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -1187,7 +1250,9 @@ mod tests {
     #[test]
     fn consent_on_its_own_changes_no_clock() {
         let module = OverclockModule::with_store(store("consent-only"));
-        let state = module.call("setConsent", json!({ "accepted": true })).expect("consent");
+        let state = module
+            .call("setConsent", json!({ "accepted": true }))
+            .expect("consent");
         assert_eq!(state["consent"]["accepted"], true);
         assert!(state["pending"].is_null());
         assert!(lock(&module.state).applied.is_empty());
@@ -1216,7 +1281,9 @@ mod tests {
     #[test]
     fn an_unknown_method_is_named_in_the_error() {
         let module = OverclockModule::with_store(store("unknown-method"));
-        assert!(matches!(module.call("overvolt", Value::Null), Err(ModuleError::UnknownMethod(m)) if m == "overvolt"));
+        assert!(
+            matches!(module.call("overvolt", Value::Null), Err(ModuleError::UnknownMethod(m)) if m == "overvolt")
+        );
     }
 
     /// The crash signature: a config that is still armed means the machine
@@ -1226,10 +1293,16 @@ mod tests {
     fn an_armed_config_stops_the_next_boot_restoring_anything() {
         let store = store("armed-boot");
         let config = OverclockConfig {
-            consent: Some(Consent { accepted_at: now_secs(), version: CONSENT_VERSION }),
+            consent: Some(Consent {
+                accepted_at: now_secs(),
+                version: CONSENT_VERSION,
+            }),
             targets: BTreeMap::from([(
                 "nvidia:0".to_string(),
-                Target { core_offset_mhz: 150, ..Target::default() },
+                Target {
+                    core_offset_mhz: 150,
+                    ..Target::default()
+                },
             )]),
             restore_on_start: true,
             armed_gpu: Some("nvidia:0".to_string()),
@@ -1240,8 +1313,14 @@ mod tests {
         let module = OverclockModule::with_store(store);
         let state = module.call("getState", Value::Null).expect("a state");
         assert_eq!(state["unconfirmedAtStart"], true);
-        assert!(lock(&module.state).applied.is_empty(), "nothing may be written on such a boot");
-        assert!(state["note"]["text"].as_str().unwrap().contains("never confirmed"));
+        assert!(
+            lock(&module.state).applied.is_empty(),
+            "nothing may be written on such a boot"
+        );
+        assert!(state["note"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("never confirmed"));
     }
 
     /// ...and the armed flag must not survive that boot, or the machine
@@ -1252,7 +1331,10 @@ mod tests {
         store
             .save(
                 "overclock",
-                &OverclockConfig { armed_gpu: Some("nvidia:0".into()), ..Default::default() },
+                &OverclockConfig {
+                    armed_gpu: Some("nvidia:0".into()),
+                    ..Default::default()
+                },
             )
             .expect("a saved config");
         let module = OverclockModule::with_store(store);
@@ -1262,16 +1344,28 @@ mod tests {
     #[test]
     fn the_hold_is_clamped_to_something_a_person_can_react_within() {
         let module = OverclockModule::with_store(store("hold"));
-        assert_eq!(module.hold_from(&json!({ "holdSecs": 1 })).unwrap(), MIN_HOLD_SECS);
-        assert_eq!(module.hold_from(&json!({ "holdSecs": 99999 })).unwrap(), MAX_HOLD_SECS);
+        assert_eq!(
+            module.hold_from(&json!({ "holdSecs": 1 })).unwrap(),
+            MIN_HOLD_SECS
+        );
+        assert_eq!(
+            module.hold_from(&json!({ "holdSecs": 99999 })).unwrap(),
+            MAX_HOLD_SECS
+        );
         assert_eq!(module.hold_from(&json!({})).unwrap(), DEFAULT_HOLD_SECS);
     }
 
     #[test]
     fn a_request_that_mentions_one_offset_leaves_the_other_alone() {
         let module = OverclockModule::with_store(store("merge"));
-        let current = Target { core_offset_mhz: 30, mem_offset_mhz: 200, core_clock: None };
-        let merged = module.merge(&json!({ "coreOffsetMhz": 60 }), current).unwrap();
+        let current = Target {
+            core_offset_mhz: 30,
+            mem_offset_mhz: 200,
+            core_clock: None,
+        };
+        let merged = module
+            .merge(&json!({ "coreOffsetMhz": 60 }), current)
+            .unwrap();
         assert_eq!(merged.core_offset_mhz, 60);
         assert_eq!(merged.mem_offset_mhz, 200);
     }
@@ -1281,7 +1375,10 @@ mod tests {
     fn a_clock_lock_is_removed_only_when_it_is_named() {
         let module = OverclockModule::with_store(store("lock-merge"));
         let locked = Target {
-            core_clock: Some(ClockLock { min_mhz: 1000, max_mhz: 2000 }),
+            core_clock: Some(ClockLock {
+                min_mhz: 1000,
+                max_mhz: 2000,
+            }),
             ..Target::default()
         };
         assert_eq!(
@@ -1289,7 +1386,10 @@ mod tests {
             locked.core_clock
         );
         assert_eq!(
-            module.merge(&json!({ "clockLock": null }), locked).unwrap().core_clock,
+            module
+                .merge(&json!({ "clockLock": null }), locked)
+                .unwrap()
+                .core_clock,
             None
         );
     }
@@ -1299,7 +1399,10 @@ mod tests {
     /// elevate for, and it is useless as a `failed`.
     #[test]
     fn adding_context_to_an_error_keeps_its_kind() {
-        let e = keep_kind(ModuleError::PermissionDenied("nvidia-smi said no".into()), "stopped");
+        let e = keep_kind(
+            ModuleError::PermissionDenied("nvidia-smi said no".into()),
+            "stopped",
+        );
         assert!(matches!(e, ModuleError::PermissionDenied(_)));
         let message = e.to_string();
         assert!(message.contains("stopped") && message.contains("nvidia-smi said no"));
@@ -1317,7 +1420,10 @@ mod tests {
     fn undoing_a_card_we_never_moved_writes_nothing() {
         assert!(!needs_undoing(None));
         assert!(!needs_undoing(Some(Target::default())));
-        assert!(needs_undoing(Some(Target { core_offset_mhz: 100, ..Target::default() })));
+        assert!(needs_undoing(Some(Target {
+            core_offset_mhz: 100,
+            ..Target::default()
+        })));
     }
 
     /// The knob that is not changing is not written, so asking only for a
@@ -1428,11 +1534,20 @@ mod tests {
             pending,
             RevertReason::FaultReported,
         );
-        assert!(outcome.is_err(), "a card that is not there cannot be written to");
+        assert!(
+            outcome.is_err(),
+            "a card that is not there cannot be written to"
+        );
 
         let state = lock(&module.state);
-        assert!(state.pending.is_none(), "a revert must disarm what it undid");
-        assert!(state.fault_watch.is_none(), "the fault watch outlives nothing");
+        assert!(
+            state.pending.is_none(),
+            "a revert must disarm what it undid"
+        );
+        assert!(
+            state.fault_watch.is_none(),
+            "the fault watch outlives nothing"
+        );
         assert!(state.config.armed_gpu.is_none());
         assert!(
             watchdog_tick(state.pending.as_ref(), true, Instant::now()).is_none(),
@@ -1452,9 +1567,21 @@ mod tests {
         assert_ne!(fault.key, timeout.key, "two reasons, two keys to translate");
         assert_ne!(fault.text, timeout.text);
         assert_eq!(fault.params["gpu"], "nvidia:0");
-        assert!(fault.text.contains("nvidia:0"), "the note must say which card: {}", fault.text);
-        assert!(!fault.text.contains('{'), "every placeholder must be filled: {}", fault.text);
-        assert!(fault.text.contains("fault"), "a fault must read as one: {}", fault.text);
+        assert!(
+            fault.text.contains("nvidia:0"),
+            "the note must say which card: {}",
+            fault.text
+        );
+        assert!(
+            !fault.text.contains('{'),
+            "every placeholder must be filled: {}",
+            fault.text
+        );
+        assert!(
+            fault.text.contains("fault"),
+            "a fault must read as one: {}",
+            fault.text
+        );
     }
 
     /// NVML is the only thing that reports this signal and NVIDIA is the

@@ -370,7 +370,9 @@ impl Ui {
                 let Some(ui) = weak.upgrade() else { return };
                 let mode = ui.fan_cards[index].mode;
                 ui.select_fan(mode);
-                let pwm = mode.needs_speed().then(|| pwm_from_percent(ui.fan_manual_percent.get()));
+                let pwm = mode
+                    .needs_speed()
+                    .then(|| pwm_from_percent(ui.fan_manual_percent.get()));
                 let _ = ui.commands.send(Command::SetFanMode(mode, pwm));
                 ui.after_click();
             });
@@ -386,7 +388,8 @@ impl Ui {
                 if ui.updating_slider.get() {
                     return;
                 }
-                ui.fan_manual_percent.set(scale.value().round().clamp(0.0, 100.0) as u8);
+                ui.fan_manual_percent
+                    .set(scale.value().round().clamp(0.0, 100.0) as u8);
                 ui.schedule_manual_push();
                 ui.stay(LINGER);
             });
@@ -449,7 +452,10 @@ impl Ui {
             cr.set_line_width(1.4 * ICON / icon::VIEWBOX);
             cr.set_line_cap(gtk4::cairo::LineCap::Round);
             cr.set_line_join(gtk4::cairo::LineJoin::Round);
-            cr.translate((f64::from(width) - ICON) / 2.0, (f64::from(height) - ICON) / 2.0);
+            cr.translate(
+                (f64::from(width) - ICON) / 2.0,
+                (f64::from(height) - ICON) / 2.0,
+            );
             icon::draw(cr, mode.icon(), ICON);
         });
 
@@ -459,15 +465,26 @@ impl Ui {
             .css_classes(["bar"])
             .build();
 
-        let content = gtk4::Box::builder().orientation(Orientation::Vertical).spacing(10).build();
+        let content = gtk4::Box::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(10)
+            .build();
         content.append(&glyph);
         content.append(&label);
         content.append(&bar);
 
-        let button =
-            gtk4::Button::builder().child(&content).css_classes(["mode"]).can_focus(false).build();
+        let button = gtk4::Button::builder()
+            .child(&content)
+            .css_classes(["mode"])
+            .can_focus(false)
+            .build();
 
-        FanCard { mode, button, glyph, selected }
+        FanCard {
+            mode,
+            button,
+            glyph,
+            selected,
+        }
     }
 
     fn card(mode: Mode, lang: Lang) -> Card {
@@ -503,15 +520,26 @@ impl Ui {
             .css_classes(["bar"])
             .build();
 
-        let content = gtk4::Box::builder().orientation(Orientation::Vertical).spacing(10).build();
+        let content = gtk4::Box::builder()
+            .orientation(Orientation::Vertical)
+            .spacing(10)
+            .build();
         content.append(&glyph);
         content.append(&label);
         content.append(&bar);
 
-        let button =
-            gtk4::Button::builder().child(&content).css_classes(["mode"]).can_focus(false).build();
+        let button = gtk4::Button::builder()
+            .child(&content)
+            .css_classes(["mode"])
+            .can_focus(false)
+            .build();
 
-        Card { mode, button, glyph, selected }
+        Card {
+            mode,
+            button,
+            glyph,
+            selected,
+        }
     }
 
     /// Puts the window where an OSD belongs: the overlay layer, centred,
@@ -593,7 +621,11 @@ impl Ui {
         }
 
         self.refresh_rows();
-        self.stay(if self.message.is_visible() { LINGER_WITH_MESSAGE } else { LINGER });
+        self.stay(if self.message.is_visible() {
+            LINGER_WITH_MESSAGE
+        } else {
+            LINGER
+        });
     }
 
     /// The mode changed somewhere else - the app's performance page, the
@@ -769,7 +801,8 @@ impl Ui {
         }
         self.fan_description.set_label(mode.description(self.lang));
         let (_, set_speed) = self.fan_caps.get();
-        self.fan_slider_row.set_visible(mode == FanMode::Manual && set_speed);
+        self.fan_slider_row
+            .set_visible(mode == FanMode::Manual && set_speed);
     }
 
     /// Moves the slider without its handler treating it as a drag.
@@ -792,7 +825,9 @@ impl Ui {
             if let Some(ui) = weak.upgrade() {
                 ui.manual_push.replace(None);
                 let pwm = pwm_from_percent(ui.fan_manual_percent.get());
-                let _ = ui.commands.send(Command::SetFanMode(FanMode::Manual, Some(pwm)));
+                let _ = ui
+                    .commands
+                    .send(Command::SetFanMode(FanMode::Manual, Some(pwm)));
             }
         });
         *self.manual_push.borrow_mut() = Some(source);
@@ -822,9 +857,11 @@ impl Ui {
         for card in &self.fan_cards {
             // `manual` and `curve` need a commandable speed; `auto` and
             // `max` go through a different firmware call and always work.
-            card.button.set_visible(!card.mode.needs_speed_control() || set_speed);
+            card.button
+                .set_visible(!card.mode.needs_speed_control() || set_speed);
         }
         let manual_now = self.current_fan.get() == Some(FanMode::Manual);
-        self.fan_slider_row.set_visible(fan_show && set_speed && manual_now);
+        self.fan_slider_row
+            .set_visible(fan_show && set_speed && manual_now);
     }
 }

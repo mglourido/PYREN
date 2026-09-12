@@ -147,16 +147,27 @@ pub fn execute_watched(
         // there is a single place that both records it and announces it.
         // The early returns this replaced each skipped the announcement.
         let done = if failed {
-            result(step, StepStatus::Skipped, msg!("installer.exec.skipped", "skipped after an earlier failure"))
+            result(
+                step,
+                StepStatus::Skipped,
+                msg!("installer.exec.skipped", "skipped after an earlier failure"),
+            )
         } else if step.optional && context.skip_steps.iter().any(|id| id == &step.id) {
-            result(step, StepStatus::Declined, msg!("installer.exec.declined", "not run, at your request"))
+            result(
+                step,
+                StepStatus::Declined,
+                msg!("installer.exec.declined", "not run, at your request"),
+            )
         } else if dry_run {
             let detail = if step.command.is_empty() {
                 // Deliberately the same sentence as the plan step's
                 // `installer.internalStep`: one concept, one name. A client
                 // with no catalog reads this text, so they have to match
                 // here too, not only in the catalog.
-                msg!("installer.exec.internalAction", "carried out by the daemon itself")
+                msg!(
+                    "installer.exec.internalAction",
+                    "carried out by the daemon itself"
+                )
             } else {
                 // A command line, quoted verbatim.
                 Msg::literal(step.command.join(" "))
@@ -188,11 +199,20 @@ pub fn execute_watched(
         }
     }
 
-    ExecutionReport { dry_run, succeeded: !failed, results }
+    ExecutionReport {
+        dry_run,
+        succeeded: !failed,
+        results,
+    }
 }
 
 fn result(step: &Step, status: StepStatus, detail: Msg) -> StepResult {
-    StepResult { id: step.id.clone(), description: step.description.clone(), status, detail }
+    StepResult {
+        id: step.id.clone(),
+        description: step.description.clone(),
+        status,
+        detail,
+    }
 }
 
 fn run_step(step: &Step, env: &Environment, context: &ExecuteContext) -> Result<String, String> {
@@ -259,8 +279,8 @@ fn patch_source(_env: &Environment, context: &ExecuteContext) -> Result<String, 
         .as_ref()
         .map(|(table, name)| (*table, name.as_str()));
 
-    let applied = patch::patch_driver_tree(&dir, context.max_rpm, board)
-        .map_err(|e| e.to_string())?;
+    let applied =
+        patch::patch_driver_tree(&dir, context.max_rpm, board).map_err(|e| e.to_string())?;
 
     Ok(if applied.is_empty() {
         "no source changes requested".to_string()
@@ -366,7 +386,9 @@ fn backup_stock_driver(kernel_release: &str) -> Result<String, String> {
 /// temporary directory.
 fn backup_in(dir: &Path, may_hold_stock: bool) -> Result<Vec<String>, String> {
     let modules = find_modules(dir, "hp-wmi.ko");
-    let already_backed_up = modules.iter().any(|m| m.to_string_lossy().ends_with(".bak"));
+    let already_backed_up = modules
+        .iter()
+        .any(|m| m.to_string_lossy().ends_with(".bak"));
     let holds_stock = may_hold_stock && !already_backed_up;
 
     let mut backed_up = Vec::new();
@@ -443,7 +465,10 @@ fn set_executable(path: &Path) -> Result<(), String> {
 
 fn remove_sources() -> Result<String, String> {
     let mut removed = Vec::new();
-    for dir in [dkms_src_dir(), PathBuf::from(format!("/usr/src/{DKMS_NAME}"))] {
+    for dir in [
+        dkms_src_dir(),
+        PathBuf::from(format!("/usr/src/{DKMS_NAME}")),
+    ] {
         if dir.exists() {
             fs::remove_dir_all(&dir).map_err(|e| format!("removing {}: {e}", dir.display()))?;
             removed.push(dir.display().to_string());
@@ -459,7 +484,9 @@ fn remove_sources() -> Result<String, String> {
 fn remove_hooks() -> Result<String, String> {
     let mut removed = Vec::new();
     for flavour in HOOK_FLAVOURS {
-        let Some((_, path)) = hook_paths(flavour) else { continue };
+        let Some((_, path)) = hook_paths(flavour) else {
+            continue;
+        };
         if path.exists() {
             fs::remove_file(&path).map_err(|e| format!("removing {}: {e}", path.display()))?;
             removed.push(path.display().to_string());
@@ -509,7 +536,9 @@ fn restore_in(dir: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     let mut restored = Vec::new();
     for backup in find_modules(dir, "hp-wmi.ko") {
         let name = backup.to_string_lossy().to_string();
-        let Some(original) = name.strip_suffix(".bak") else { continue };
+        let Some(original) = name.strip_suffix(".bak") else {
+            continue;
+        };
         fs::rename(&backup, original).map_err(|e| format!("restoring {original}: {e}"))?;
         restored.push(original.to_string());
     }
@@ -593,7 +622,10 @@ fn write_modprobe_conf(context: &ExecuteContext) -> Result<String, String> {
 /// rather than breaking the running daemon to save the wait.
 pub fn pin_measured_ceiling(max_rpm: MaxRpm) -> Result<String, String> {
     let mut options = Vec::new();
-    for (name, rpm) in [(patch::CPU_RPM_PARAM, max_rpm.cpu), (patch::GPU_RPM_PARAM, max_rpm.gpu)] {
+    for (name, rpm) in [
+        (patch::CPU_RPM_PARAM, max_rpm.cpu),
+        (patch::GPU_RPM_PARAM, max_rpm.gpu),
+    ] {
         // The driver counts in hundreds of RPM, and its parameters are u8,
         // so a ceiling above 25500 rpm cannot be expressed. No fan in one
         // of these laptops comes close, but silently truncating one would
@@ -601,7 +633,9 @@ pub fn pin_measured_ceiling(max_rpm: MaxRpm) -> Result<String, String> {
         let Some(rpm) = rpm else { continue };
         let hundreds = rpm / 100;
         if hundreds == 0 || hundreds > u8::MAX as u32 {
-            return Err(format!("{rpm} rpm is outside what {name} can hold (100-25500 rpm)"));
+            return Err(format!(
+                "{rpm} rpm is outside what {name} can hold (100-25500 rpm)"
+            ));
         }
         options.push(format!("{name}={hundreds}"));
     }
@@ -726,13 +760,17 @@ fn write_sleep_hook(context: &ExecuteContext) -> Result<String, String> {
         .ok_or_else(|| "could not determine the daemon's own path".to_string())?;
     let ctl = daemon.with_file_name("pyren-ctl");
     if !ctl.exists() {
-        return Err(format!("{} is not there, so the hook would have nothing to call", ctl.display()));
+        return Err(format!(
+            "{} is not there, so the hook would have nothing to call",
+            ctl.display()
+        ));
     }
     let path = Path::new(SLEEP_HOOK_PATH);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
-    fs::write(path, sleep_hook_text(&ctl)).map_err(|e| format!("writing {SLEEP_HOOK_PATH}: {e}"))?;
+    fs::write(path, sleep_hook_text(&ctl))
+        .map_err(|e| format!("writing {SLEEP_HOOK_PATH}: {e}"))?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("making {SLEEP_HOOK_PATH} executable: {e}"))?;
     Ok(format!("wrote {SLEEP_HOOK_PATH}"))
@@ -824,9 +862,18 @@ mod tests {
 
         let (restored, removed) = restore_in(&dir).unwrap();
 
-        assert!(dir.join("hp-wmi.ko.zst").is_file(), "the stock module comes back");
-        assert!(!dir.join("hp-wmi.ko").exists(), "the patched one must not be left behind");
-        assert!(!dir.join("hp-wmi.ko.zst.bak").exists(), "the backup is consumed");
+        assert!(
+            dir.join("hp-wmi.ko.zst").is_file(),
+            "the stock module comes back"
+        );
+        assert!(
+            !dir.join("hp-wmi.ko").exists(),
+            "the patched one must not be left behind"
+        );
+        assert!(
+            !dir.join("hp-wmi.ko.zst.bak").exists(),
+            "the backup is consumed"
+        );
         assert_eq!(restored.len(), 1);
         assert_eq!(removed.len(), 1);
 
@@ -850,8 +897,14 @@ mod tests {
         let backed_up = backup_in(&dir, true).unwrap();
 
         assert!(backed_up.is_empty(), "the stock module is already safe");
-        assert!(!dir.join("hp-wmi.ko.bak").exists(), "and must not be shadowed by a patched one");
-        assert!(!dir.join("hp-wmi.ko").exists(), "ours still goes, to leave depmod one answer");
+        assert!(
+            !dir.join("hp-wmi.ko.bak").exists(),
+            "and must not be shadowed by a patched one"
+        );
+        assert!(
+            !dir.join("hp-wmi.ko").exists(),
+            "ours still goes, to leave depmod one answer"
+        );
         assert_eq!(fs::read(dir.join("hp-wmi.ko.zst.bak")).unwrap(), b"stock");
 
         let _ = fs::remove_dir_all(&dir);
@@ -889,7 +942,10 @@ mod tests {
 
         assert!(backed_up.is_empty());
         assert!(!dir.join("dkms/hp-wmi.ko.zst.bak").exists());
-        assert!(!dir.join("dkms/hp-wmi.ko.zst").exists(), "it is still cleared out of the way");
+        assert!(
+            !dir.join("dkms/hp-wmi.ko.zst").exists(),
+            "it is still cleared out of the way"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -948,7 +1004,10 @@ mod tests {
         assert!(restored.is_empty(), "there was no backup to restore");
         assert_eq!(removed.len(), 1, "but the leftover is ours and must go");
         assert!(!dir.join("hp-wmi.ko").exists());
-        assert!(dir.join("hp-wmi.ko.zst").is_file(), "the stock module stays");
+        assert!(
+            dir.join("hp-wmi.ko.zst").is_file(),
+            "the stock module stays"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1008,10 +1067,17 @@ mod tests {
         };
 
         let report = execute(&plan, &env, &context, true);
-        let result = report.results.iter().find(|r| r.id == "modprobe-remove").unwrap();
+        let result = report
+            .results
+            .iter()
+            .find(|r| r.id == "modprobe-remove")
+            .unwrap();
         assert_eq!(result.status, StepStatus::Declined);
         assert_eq!(result.detail.key, "installer.exec.declined");
-        assert!(!report.results.iter().any(|r| r.status == StepStatus::Skipped));
+        assert!(!report
+            .results
+            .iter()
+            .any(|r| r.status == StepStatus::Skipped));
     }
 
     /// Belt and braces behind `apply`'s own validation: even handed a

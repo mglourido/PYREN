@@ -40,7 +40,11 @@ pub fn socket_path() -> String {
     candidates
         .iter()
         .find(|path| UnixStream::connect(path).is_ok())
-        .or_else(|| candidates.iter().find(|path| std::path::Path::new(path).exists()))
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|path| std::path::Path::new(path).exists())
+        })
         .cloned()
         .unwrap_or_else(|| candidates[0].clone())
 }
@@ -76,7 +80,10 @@ fn connect() -> Result<UnixStream, ClientError> {
 pub enum ClientError {
     /// Nothing is listening, or this user may not open the socket.
     #[error("cannot reach pyren-daemon at {path}: {source}")]
-    Connect { path: String, source: std::io::Error },
+    Connect {
+        path: String,
+        source: std::io::Error,
+    },
     #[error("talking to pyren-daemon: {0}")]
     Io(#[from] std::io::Error),
     #[error("pyren-daemon sent something that is not a response: {0}")]
@@ -141,7 +148,9 @@ pub fn call(module: &str, method: &str, params: Value) -> Result<Value, ClientEr
     let mut response = String::new();
     BufReader::new(stream).read_line(&mut response)?;
     if response.trim().is_empty() {
-        return Err(ClientError::Protocol("the connection closed without an answer".into()));
+        return Err(ClientError::Protocol(
+            "the connection closed without an answer".into(),
+        ));
     }
 
     let parsed: Value =
@@ -154,7 +163,11 @@ pub fn call(module: &str, method: &str, params: Value) -> Result<Value, ClientEr
         let (kind, message) = match error {
             Value::String(message) => (ErrorKind::Failed.as_str().to_string(), message.clone()),
             Value::Object(_) => (
-                error.get("kind").and_then(Value::as_str).unwrap_or("failed").to_string(),
+                error
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed")
+                    .to_string(),
                 error
                     .get("message")
                     .and_then(Value::as_str)

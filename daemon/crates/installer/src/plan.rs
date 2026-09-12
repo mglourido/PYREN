@@ -336,7 +336,12 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
                     "Deregister the DKMS module from the previous install; the kernel hook \
                      rebuilds the module from now on"
                 ),
-                &["dkms", "remove", &format!("{DKMS_NAME}/{DKMS_VERSION}"), "--all"],
+                &[
+                    "dkms",
+                    "remove",
+                    &format!("{DKMS_NAME}/{DKMS_VERSION}"),
+                    "--all",
+                ],
             )
             .optional(),
         ),
@@ -353,7 +358,12 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
                             "installer.step.dkms-remove-old",
                             "Remove the previously registered DKMS module"
                         ),
-                        &["dkms", "remove", &format!("{DKMS_NAME}/{DKMS_VERSION}"), "--all"],
+                        &[
+                            "dkms",
+                            "remove",
+                            &format!("{DKMS_NAME}/{DKMS_VERSION}"),
+                            "--all",
+                        ],
                     )
                     .optional(),
                 );
@@ -377,7 +387,10 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         Strategy::Hooks => {
             steps.push(Step::command(
                 "make",
-                msg!("installer.step.make", "Build the module for the running kernel"),
+                msg!(
+                    "installer.step.make",
+                    "Build the module for the running kernel"
+                ),
                 &["make", "-C", &format!("{dkms_src}/src/hp-wmi-omen")],
             ));
             steps.push(Step::internal(
@@ -394,7 +407,12 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
                 Step::command(
                     "make-clean",
                     msg!("installer.step.make-clean", "Clean the build tree"),
-                    &["make", "-C", &format!("{dkms_src}/src/hp-wmi-omen"), "clean"],
+                    &[
+                        "make",
+                        "-C",
+                        &format!("{dkms_src}/src/hp-wmi-omen"),
+                        "clean",
+                    ],
                 )
                 .optional(),
             );
@@ -409,7 +427,10 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
     steps.push(
         Step::command(
             "modprobe-remove",
-            msg!("installer.step.modprobe-remove", "Unload the current hp-wmi"),
+            msg!(
+                "installer.step.modprobe-remove",
+                "Unload the current hp-wmi"
+            ),
             &["modprobe", "-r", "hp-wmi"],
         )
         .optional(),
@@ -557,7 +578,12 @@ fn plan_restore_driver(env: &Environment) -> Plan {
             Step::command(
                 "dkms-remove",
                 msg!("installer.step.dkms-remove", "Deregister the DKMS module"),
-                &["dkms", "remove", &format!("{DKMS_NAME}/{DKMS_VERSION}"), "--all"],
+                &[
+                    "dkms",
+                    "remove",
+                    &format!("{DKMS_NAME}/{DKMS_VERSION}"),
+                    "--all",
+                ],
             )
             .optional(),
         );
@@ -572,7 +598,10 @@ fn plan_restore_driver(env: &Environment) -> Plan {
     ));
     steps.push(Step::internal(
         "remove-hooks",
-        msg!("installer.step.remove-hooks", "Delete any installed kernel-upgrade hook"),
+        msg!(
+            "installer.step.remove-hooks",
+            "Delete any installed kernel-upgrade hook"
+        ),
     ));
     // Not tidiness: modprobe refuses a module given a parameter it does
     // not have, and the distribution's own hp-wmi has neither of these.
@@ -684,7 +713,10 @@ fn plan_install_service(env: &Environment) -> Plan {
             ),
             Step::command(
                 "enable",
-                msg!("installer.step.enable", "Enable and start the daemon at boot"),
+                msg!(
+                    "installer.step.enable",
+                    "Enable and start the daemon at boot"
+                ),
                 &["systemctl", "enable", "--now", "pyren-daemon.service"],
             ),
         ],
@@ -701,7 +733,10 @@ fn plan_remove_service(_env: &Environment) -> Plan {
         steps: vec![
             Step::command(
                 "disable",
-                msg!("installer.step.disable", "Stop the daemon and remove it from boot"),
+                msg!(
+                    "installer.step.disable",
+                    "Stop the daemon and remove it from boot"
+                ),
                 &["systemctl", "disable", "--now", "pyren-daemon.service"],
             )
             .optional(),
@@ -711,7 +746,10 @@ fn plan_remove_service(_env: &Environment) -> Plan {
             ),
             Step::internal(
                 "remove-sleep-hook",
-                msg!("installer.step.remove-sleep-hook", "Delete the suspend hook"),
+                msg!(
+                    "installer.step.remove-sleep-hook",
+                    "Delete the suspend hook"
+                ),
             )
             .optional(),
             Step::command(
@@ -785,20 +823,32 @@ mod tests {
     /// description carries a catalog key alongside its English text.
     #[test]
     fn steps_and_warnings_are_translatable() {
-        let env = Environment { kernel: KernelInfo { has_upstream_fan_control: true, ..ready_env().kernel }, ..ready_env() };
+        let env = Environment {
+            kernel: KernelInfo {
+                has_upstream_fan_control: true,
+                ..ready_env().kernel
+            },
+            ..ready_env()
+        };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
 
         let stage = plan.steps.iter().find(|s| s.id == "stage-source").unwrap();
         assert_eq!(stage.description.key, "installer.step.stage-source");
         assert!(stage.description.text.contains("dkms.conf"));
 
-        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.boardMissing"
-            && w.params["kernel"] == "6.12.4-arch1-1"));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.boardMissing"
+                && w.params["kernel"] == "6.12.4-arch1-1"));
     }
 
     #[test]
     fn without_dkms_the_plan_builds_and_installs_a_hook() {
-        let env = Environment { has_dkms: false, ..ready_env() };
+        let env = Environment {
+            has_dkms: false,
+            ..ready_env()
+        };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         assert_eq!(plan.strategy, Some(Strategy::Hooks));
         assert!(ids(&plan).contains(&"make"));
@@ -807,7 +857,10 @@ mod tests {
 
     #[test]
     fn hooks_can_be_forced_even_when_dkms_exists() {
-        let options = PlanOptions { prefer_hooks: true, ..PlanOptions::default() };
+        let options = PlanOptions {
+            prefer_hooks: true,
+            ..PlanOptions::default()
+        };
         let plan = plan(&ready_env(), Action::InstallDriver, options);
         assert_eq!(plan.strategy, Some(Strategy::Hooks));
     }
@@ -827,7 +880,10 @@ mod tests {
 
     #[test]
     fn a_machine_where_fan_control_already_works_is_refused() {
-        let env = Environment { fan_control_available: true, ..ready_env() };
+        let env = Environment {
+            fan_control_available: true,
+            ..ready_env()
+        };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         assert!(!plan.is_runnable());
         assert!(plan.blockers.iter().any(|b| b.id == "already-working"));
@@ -847,17 +903,29 @@ mod tests {
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
 
         assert!(plan.is_runnable(), "a rebuild must not need --force");
-        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.alreadyInstalled"));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.alreadyInstalled"));
         assert!(
-            !plan.warnings.iter().any(|w| w.contains("would add nothing")),
+            !plan
+                .warnings
+                .iter()
+                .any(|w| w.contains("would add nothing")),
             "the patched driver is what is doing the work here"
         );
     }
 
     #[test]
     fn that_refusal_can_be_overridden_deliberately() {
-        let env = Environment { fan_control_available: true, ..ready_env() };
-        let options = PlanOptions { force: true, ..PlanOptions::default() };
+        let env = Environment {
+            fan_control_available: true,
+            ..ready_env()
+        };
+        let options = PlanOptions {
+            force: true,
+            ..PlanOptions::default()
+        };
         let plan = plan(&env, Action::InstallDriver, options);
         assert!(plan.is_runnable());
         // ...but the reason it was questionable is still stated.
@@ -892,7 +960,10 @@ mod tests {
             .expect("the board-missing warning");
         assert!(warning.contains("did not recognise this board"));
         assert!(
-            !plan.warnings.iter().any(|w| w.contains("probably unnecessary")),
+            !plan
+                .warnings
+                .iter()
+                .any(|w| w.contains("probably unnecessary")),
             "nothing here should call the patch unnecessary"
         );
     }
@@ -902,17 +973,26 @@ mod tests {
     #[test]
     fn a_machine_with_no_hp_wmi_is_told_the_patch_probably_will_not_help() {
         let env = Environment {
-            kernel: KernelInfo { has_upstream_fan_control: true, ..ready_env().kernel },
+            kernel: KernelInfo {
+                has_upstream_fan_control: true,
+                ..ready_env().kernel
+            },
             hp_wmi_loaded: false,
             ..ready_env()
         };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
-        assert!(plan.warnings.iter().any(|w| w.key == "installer.warn.noHpWmi"));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.noHpWmi"));
     }
 
     #[test]
     fn missing_driver_sources_block_with_no_steps_at_all() {
-        let env = Environment { driver_source: None, ..ready_env() };
+        let env = Environment {
+            driver_source: None,
+            ..ready_env()
+        };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         assert!(!plan.is_runnable());
         assert!(plan.steps.is_empty());
@@ -931,7 +1011,11 @@ mod tests {
         };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         assert!(!plan.is_runnable());
-        let blocker = plan.blockers.iter().find(|b| b.id == "kernel-headers").unwrap();
+        let blocker = plan
+            .blockers
+            .iter()
+            .find(|b| b.id == "kernel-headers")
+            .unwrap();
         assert!(blocker.fix.as_deref().unwrap().contains("linux-kbuild"));
     }
 
@@ -955,12 +1039,18 @@ mod tests {
         let steps = ids(&plan);
         let backup = steps.iter().position(|id| *id == "backup-driver").unwrap();
         let install = steps.iter().position(|id| *id == "dkms-install").unwrap();
-        assert!(backup < install, "the backup must happen before the install");
+        assert!(
+            backup < install,
+            "the backup must happen before the install"
+        );
     }
 
     #[test]
     fn an_existing_dkms_registration_is_removed_first() {
-        let env = Environment { dkms_installed: true, ..ready_env() };
+        let env = Environment {
+            dkms_installed: true,
+            ..ready_env()
+        };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         let steps = ids(&plan);
         assert!(steps.contains(&"dkms-remove-old"));
@@ -976,7 +1066,10 @@ mod tests {
     /// recorded as the distribution's own backup once already.
     #[test]
     fn moving_to_dkms_retires_the_hook_the_last_install_left() {
-        let env = Environment { hook_installed: true, ..ready_env() };
+        let env = Environment {
+            hook_installed: true,
+            ..ready_env()
+        };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         let steps = ids(&plan);
 
@@ -988,14 +1081,26 @@ mod tests {
         );
         // Failing to delete a hook must not abort an otherwise good
         // install: the module is built and loaded either way.
-        assert!(plan.steps.iter().find(|s| s.id == "remove-hooks").unwrap().optional);
+        assert!(
+            plan.steps
+                .iter()
+                .find(|s| s.id == "remove-hooks")
+                .unwrap()
+                .optional
+        );
     }
 
     /// And the same in the other direction.
     #[test]
     fn moving_to_hooks_deregisters_the_dkms_module() {
-        let env = Environment { dkms_installed: true, ..ready_env() };
-        let options = PlanOptions { prefer_hooks: true, ..PlanOptions::default() };
+        let env = Environment {
+            dkms_installed: true,
+            ..ready_env()
+        };
+        let options = PlanOptions {
+            prefer_hooks: true,
+            ..PlanOptions::default()
+        };
         let plan = plan(&env, Action::InstallDriver, options);
         let steps = ids(&plan);
 
@@ -1005,7 +1110,13 @@ mod tests {
             steps.iter().position(|id| *id == "dkms-remove-old")
                 < steps.iter().position(|id| *id == "make")
         );
-        assert!(plan.steps.iter().find(|s| s.id == "dkms-remove-old").unwrap().optional);
+        assert!(
+            plan.steps
+                .iter()
+                .find(|s| s.id == "dkms-remove-old")
+                .unwrap()
+                .optional
+        );
     }
 
     /// A machine with neither leftover gets neither step - the plan says
@@ -1026,9 +1137,15 @@ mod tests {
         let steps = ids(&plan);
 
         assert!(plan.blockers.is_empty());
-        assert_eq!(steps, vec!["write-modprobe-conf", "modprobe-remove", "modprobe"]);
+        assert_eq!(
+            steps,
+            vec!["write-modprobe-conf", "modprobe-remove", "modprobe"]
+        );
         for absent in ["dkms-build", "make", "initramfs", "depmod"] {
-            assert!(!steps.contains(&absent), "{absent} would make this too expensive to run");
+            assert!(
+                !steps.contains(&absent),
+                "{absent} would make this too expensive to run"
+            );
         }
         assert!(plan.needs_root);
     }
@@ -1038,7 +1155,10 @@ mod tests {
     /// that nothing will read.
     #[test]
     fn pinning_is_blocked_when_the_driver_has_no_parameter_for_it() {
-        let env = Environment { driver_accepts_measured_rpm: false, ..ready_env() };
+        let env = Environment {
+            driver_accepts_measured_rpm: false,
+            ..ready_env()
+        };
         let plan = plan(&env, Action::PinFanCeiling, PlanOptions::default());
         assert!(!plan.is_runnable());
         assert_eq!(plan.blockers[0].id, "driver-has-no-parameter");
@@ -1084,9 +1204,16 @@ mod tests {
         let plan = plan(&ready_env(), Action::InstallService, PlanOptions::default());
         let group = pyren_core::socket_group();
 
-        let step = plan.steps.iter().find(|s| s.id == "create-group").expect("group step");
+        let step = plan
+            .steps
+            .iter()
+            .find(|s| s.id == "create-group")
+            .expect("group step");
         assert_eq!(step.command, ["groupadd", "-f", &group]);
-        assert_eq!(plan.steps[0].id, "create-group", "must exist before the daemon starts");
+        assert_eq!(
+            plan.steps[0].id, "create-group",
+            "must exist before the daemon starts"
+        );
         assert!(plan.warnings.iter().any(|w| w.contains("usermod -aG")));
     }
 
@@ -1104,7 +1231,10 @@ mod tests {
 
     #[test]
     fn a_machine_with_no_initramfs_tool_simply_skips_that_step() {
-        let env = Environment { initramfs_tool: None, ..ready_env() };
+        let env = Environment {
+            initramfs_tool: None,
+            ..ready_env()
+        };
         let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
         assert!(!ids(&plan).contains(&"initramfs"));
     }

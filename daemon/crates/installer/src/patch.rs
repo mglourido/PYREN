@@ -42,7 +42,8 @@ const LEGACY_MAX_RPM_DEFINE: &str = "#define OMEN_MAX_RPM";
 /// survives a DKMS rebuild, because it lives in `/etc/modprobe.d` rather
 /// than in the source.
 const PARAM_ANCHOR: &str = "#define OMEN_GPU_MAX_RPM";
-const PARAM_CALL_ANCHOR: &str = "\tret = hp_wmi_setup_fan_settings(priv);\n\tif (ret)\n\t\treturn ret;\n";
+const PARAM_CALL_ANCHOR: &str =
+    "\tret = hp_wmi_setup_fan_settings(priv);\n\tif (ret)\n\t\treturn ret;\n";
 
 /// The module parameters' names, which `/etc/modprobe.d` has to agree with.
 pub const CPU_RPM_PARAM: &str = "cpu_max_rpm_measured";
@@ -289,9 +290,13 @@ pub fn patch_max_rpm(source: &str, max_rpm: MaxRpm) -> Result<(String, Vec<Strin
     // Older driver checkouts have one shared constant instead of two.
     if applied.is_empty() {
         if let Some(rpm) = max_rpm.cpu.or(max_rpm.gpu) {
-            if let Some(updated) = replace_define_value(&patched, LEGACY_MAX_RPM_DEFINE, rpm / 100) {
+            if let Some(updated) = replace_define_value(&patched, LEGACY_MAX_RPM_DEFINE, rpm / 100)
+            {
                 patched = updated;
-                applied.push(format!("{LEGACY_MAX_RPM_DEFINE} = {} ({rpm} rpm)", rpm / 100));
+                applied.push(format!(
+                    "{LEGACY_MAX_RPM_DEFINE} = {} ({rpm} rpm)",
+                    rpm / 100
+                ));
             }
         }
     }
@@ -346,7 +351,9 @@ pub fn add_measured_rpm_params(source: &str) -> Result<(String, Option<String>),
 
     Ok((
         patched,
-        Some(format!("{CPU_RPM_PARAM}/{GPU_RPM_PARAM} module parameters added")),
+        Some(format!(
+            "{CPU_RPM_PARAM}/{GPU_RPM_PARAM} module parameters added"
+        )),
     ))
 }
 
@@ -387,7 +394,9 @@ pub fn add_min_rpm_params(source: &str) -> Result<(String, Option<String>), Patc
 
     Ok((
         patched,
-        Some(format!("{MIN_RPM_TABLE_PARAM}/{MIN_RPM_OVERRIDE_PARAM} module parameters added")),
+        Some(format!(
+            "{MIN_RPM_TABLE_PARAM}/{MIN_RPM_OVERRIDE_PARAM} module parameters added"
+        )),
     ))
 }
 
@@ -398,7 +407,9 @@ pub fn round_rpm_conversions(source: &str) -> Result<(String, Option<String>), P
         return Ok((source.to_string(), None));
     }
     if !source.contains(RPM_CONVERSION_ORIGINAL) {
-        return Err(PatchError::AnchorMissing("the rpm_to_pwm/pwm_to_rpm conversions".to_string()));
+        return Err(PatchError::AnchorMissing(
+            "the rpm_to_pwm/pwm_to_rpm conversions".to_string(),
+        ));
     }
     Ok((
         source.replacen(RPM_CONVERSION_ORIGINAL, RPM_CONVERSION_ROUNDED, 1),
@@ -447,10 +458,14 @@ fn table_body(source: &str, table: BoardTable) -> Result<(usize, usize), PatchEr
         return Err(PatchError::AnchorMissing(array.to_string()));
     };
     let Some(open) = source[array_start..].find('{').map(|o| array_start + o) else {
-        return Err(PatchError::AnchorMissing(format!("opening brace of {array}")));
+        return Err(PatchError::AnchorMissing(format!(
+            "opening brace of {array}"
+        )));
     };
     let Some(close) = find_matching_brace(source, open) else {
-        return Err(PatchError::AnchorMissing(format!("closing brace of {array}")));
+        return Err(PatchError::AnchorMissing(format!(
+            "closing brace of {array}"
+        )));
     };
     Ok((open, close))
 }
@@ -635,8 +650,14 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
 
     #[test]
     fn max_rpm_is_written_in_hundreds_of_rpm() {
-        let (patched, applied) =
-            patch_max_rpm(SOURCE, MaxRpm { cpu: Some(6400), gpu: Some(5800) }).unwrap();
+        let (patched, applied) = patch_max_rpm(
+            SOURCE,
+            MaxRpm {
+                cpu: Some(6400),
+                gpu: Some(5800),
+            },
+        )
+        .unwrap();
         assert!(patched.contains("#define OMEN_CPU_MAX_RPM 64"));
         assert!(patched.contains("#define OMEN_GPU_MAX_RPM 58"));
         assert_eq!(applied.len(), 2);
@@ -644,8 +665,14 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
 
     #[test]
     fn each_fan_can_be_calibrated_on_its_own() {
-        let (patched, applied) =
-            patch_max_rpm(SOURCE, MaxRpm { cpu: Some(7000), gpu: None }).unwrap();
+        let (patched, applied) = patch_max_rpm(
+            SOURCE,
+            MaxRpm {
+                cpu: Some(7000),
+                gpu: None,
+            },
+        )
+        .unwrap();
         assert!(patched.contains("#define OMEN_CPU_MAX_RPM 70"));
         // The GPU fan keeps the driver's own fallback.
         assert!(patched.contains("#define OMEN_GPU_MAX_RPM 58"));
@@ -655,8 +682,14 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
     #[test]
     fn a_driver_with_the_old_single_constant_still_patches() {
         let legacy = "#define OMEN_MAX_RPM 60\n";
-        let (patched, applied) =
-            patch_max_rpm(legacy, MaxRpm { cpu: Some(6400), gpu: None }).unwrap();
+        let (patched, applied) = patch_max_rpm(
+            legacy,
+            MaxRpm {
+                cpu: Some(6400),
+                gpu: None,
+            },
+        )
+        .unwrap();
         assert_eq!(patched, "#define OMEN_MAX_RPM 64\n");
         assert_eq!(applied.len(), 1);
     }
@@ -665,7 +698,14 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
     fn the_legacy_name_does_not_match_the_per_fan_constants() {
         // "#define OMEN_MAX_RPM" is not a prefix of the CPU/GPU names, but
         // a sloppy search could still mangle the wrong line.
-        let (patched, _) = patch_max_rpm(SOURCE, MaxRpm { cpu: Some(6400), gpu: None }).unwrap();
+        let (patched, _) = patch_max_rpm(
+            SOURCE,
+            MaxRpm {
+                cpu: Some(6400),
+                gpu: None,
+            },
+        )
+        .unwrap();
         assert!(patched.contains("#define OMEN_GPU_MAX_RPM 58"));
     }
 
@@ -674,15 +714,28 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
         let source = "#define OMEN_CPU_MAX_RPM_LIMIT 99\n";
         // Only a longer macro is present, so there is nothing to patch and
         // the caller must be told rather than shipping an unpatched driver.
-        assert!(patch_max_rpm(source, MaxRpm { cpu: Some(6000), gpu: None }).is_err());
+        assert!(patch_max_rpm(
+            source,
+            MaxRpm {
+                cpu: Some(6000),
+                gpu: None
+            }
+        )
+        .is_err());
     }
 
     #[test]
     fn a_missing_anchor_is_an_error_rather_than_a_silent_no_op() {
         // If upstream renames the constants, the build must not quietly
         // produce a driver with the wrong fan ceiling.
-        assert!(patch_max_rpm("int main(void) { return 0; }", MaxRpm { cpu: Some(6000), gpu: None })
-            .is_err());
+        assert!(patch_max_rpm(
+            "int main(void) { return 0; }",
+            MaxRpm {
+                cpu: Some(6000),
+                gpu: None
+            }
+        )
+        .is_err());
     }
 
     #[test]
@@ -720,7 +773,9 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
         assert!(!board_in_table(SOURCE, BoardTable::OmenThermalProfile, "8D41").unwrap());
         // Listed in one table says nothing about another: 8C99 has feature
         // data but is not an omen thermal-profile board.
-        assert!(board_in_table(SOURCE, BoardTable::Features(BoardParams::VictusS), "8C99").unwrap());
+        assert!(
+            board_in_table(SOURCE, BoardTable::Features(BoardParams::VictusS), "8C99").unwrap()
+        );
         assert!(!board_in_table(SOURCE, BoardTable::OmenThermalProfile, "8C99").unwrap());
     }
 
@@ -732,13 +787,20 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
 
     #[test]
     fn the_victus_s_sentinel_stays_last() {
-        let patched = inject_board(SOURCE, BoardTable::Features(BoardParams::VictusS), "8D41").unwrap();
-        let table = patched.split("hp_wmi_feature_boards[] __initconst = {").nth(1).unwrap();
+        let patched =
+            inject_board(SOURCE, BoardTable::Features(BoardParams::VictusS), "8D41").unwrap();
+        let table = patched
+            .split("hp_wmi_feature_boards[] __initconst = {")
+            .nth(1)
+            .unwrap();
         let new_entry = table.find("8D41").unwrap();
         let sentinel = table.find("{}").unwrap();
         // A dmi_system_id table is scanned until the empty entry, so a board
         // added after it would never be matched.
-        assert!(new_entry < sentinel, "the board must come before the {{}} sentinel");
+        assert!(
+            new_entry < sentinel,
+            "the board must come before the {{}} sentinel"
+        );
     }
 
     /// The injected entry has to look like the ones already there: this is
@@ -755,7 +817,10 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
             "the entry should open at one tab:\n{patched}"
         );
         // ...and the sentinel keeps its own line and its own indentation.
-        assert!(patched.contains("\t},\n\t{},\n"), "sentinel lost its line:\n{patched}");
+        assert!(
+            patched.contains("\t},\n\t{},\n"),
+            "sentinel lost its line:\n{patched}"
+        );
     }
 
     #[test]
@@ -807,23 +872,46 @@ mod upstream_source_tests {
             return;
         };
 
-        let (patched, change) = add_measured_rpm_params(&source).expect("parameter anchors missing");
-        assert!(change.is_some(), "the pristine source has no parameters yet");
-        assert_eq!(patched.matches("module_param(cpu_max_rpm_measured").count(), 1);
-        assert_eq!(patched.matches("hp_wmi_apply_measured_max_rpm(priv);").count(), 1);
+        let (patched, change) =
+            add_measured_rpm_params(&source).expect("parameter anchors missing");
+        assert!(
+            change.is_some(),
+            "the pristine source has no parameters yet"
+        );
+        assert_eq!(
+            patched.matches("module_param(cpu_max_rpm_measured").count(),
+            1
+        );
+        assert_eq!(
+            patched
+                .matches("hp_wmi_apply_measured_max_rpm(priv);")
+                .count(),
+            1
+        );
 
         // The definition has to come before the call, or it will not
         // compile - and it has to be after the priv struct it takes.
-        let struct_at = patched.find("struct hp_wmi_hwmon_priv {").expect("priv struct");
-        let defined_at = patched.find("static void hp_wmi_apply_measured_max_rpm").unwrap();
-        let called_at = patched.find("\thp_wmi_apply_measured_max_rpm(priv);").unwrap();
+        let struct_at = patched
+            .find("struct hp_wmi_hwmon_priv {")
+            .expect("priv struct");
+        let defined_at = patched
+            .find("static void hp_wmi_apply_measured_max_rpm")
+            .unwrap();
+        let called_at = patched
+            .find("\thp_wmi_apply_measured_max_rpm(priv);")
+            .unwrap();
         assert!(struct_at < defined_at, "the override takes a priv pointer");
         assert!(defined_at < called_at);
 
         // The override must run after the firmware queries, not before:
         // that ordering is the whole reason it exists.
-        let queries_at = patched.find("HPWMI_FAN_SPEED_MAX_GET_QUERY, HPWMI_GM").unwrap();
-        assert!(queries_at < called_at, "a measurement has to outrank the firmware's claim");
+        let queries_at = patched
+            .find("HPWMI_FAN_SPEED_MAX_GET_QUERY, HPWMI_GM")
+            .unwrap();
+        assert!(
+            queries_at < called_at,
+            "a measurement has to outrank the firmware's claim"
+        );
     }
 
     /// Installing twice must not define the same symbol twice. The caller
@@ -874,10 +962,23 @@ mod upstream_source_tests {
         let (patched, change) = add_min_rpm_params(&with_max).expect("floor anchors missing");
 
         assert!(change.is_some());
-        assert_eq!(patched.matches("module_param(min_rpm_override, byte, 0644)").count(), 1);
+        assert_eq!(
+            patched
+                .matches("module_param(min_rpm_override, byte, 0644)")
+                .count(),
+            1
+        );
         assert_eq!(patched.matches("\thp_wmi_record_min_rpm(priv);").count(), 1);
-        assert_eq!(patched.matches("\thp_wmi_apply_measured_max_rpm(priv);").count(), 1);
-        assert!(!patched.contains(MIN_RPM_CLAMP), "the clamp still reads the table directly");
+        assert_eq!(
+            patched
+                .matches("\thp_wmi_apply_measured_max_rpm(priv);")
+                .count(),
+            1
+        );
+        assert!(
+            !patched.contains(MIN_RPM_CLAMP),
+            "the clamp still reads the table directly"
+        );
 
         let helper_at = patched.find("static u8 hp_wmi_min_rpm").unwrap();
         let used_at = patched.find(MIN_RPM_CLAMP_PATCHED).unwrap();
@@ -896,9 +997,19 @@ mod upstream_source_tests {
             return;
         };
 
-        let (_, applied) = patch_max_rpm(&source, MaxRpm { cpu: Some(6000), gpu: Some(5800) })
-            .expect("max-rpm anchors missing");
-        assert_eq!(applied.len(), 2, "expected both per-fan constants: {applied:?}");
+        let (_, applied) = patch_max_rpm(
+            &source,
+            MaxRpm {
+                cpu: Some(6000),
+                gpu: Some(5800),
+            },
+        )
+        .expect("max-rpm anchors missing");
+        assert_eq!(
+            applied.len(),
+            2,
+            "expected both per-fan constants: {applied:?}"
+        );
         for table in [
             BoardTable::OmenThermalProfile,
             BoardTable::OmenForceV0,
@@ -921,13 +1032,23 @@ mod upstream_source_tests {
             return;
         };
 
-        let (patched, _) = patch_max_rpm(&source, MaxRpm { cpu: Some(6400), gpu: None }).unwrap();
+        let (patched, _) = patch_max_rpm(
+            &source,
+            MaxRpm {
+                cpu: Some(6400),
+                gpu: None,
+            },
+        )
+        .unwrap();
         let differing = source
             .lines()
             .zip(patched.lines())
             .filter(|(a, b)| a != b)
             .count();
-        assert_eq!(differing, 1, "patching the cpu ceiling should touch one line only");
+        assert_eq!(
+            differing, 1,
+            "patching the cpu ceiling should touch one line only"
+        );
         assert_eq!(source.lines().count(), patched.lines().count());
     }
 

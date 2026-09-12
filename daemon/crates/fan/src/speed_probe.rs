@@ -220,8 +220,11 @@ impl Run {
     /// movement *against* the command is not evidence of anything, since
     /// the firmware curve is still reacting to temperature underneath.
     pub fn response(&self) -> i64 {
-        let moved =
-            if self.aiming_up { self.best - self.baseline } else { self.baseline - self.best };
+        let moved = if self.aiming_up {
+            self.best - self.baseline
+        } else {
+            self.baseline - self.best
+        };
         moved.max(0)
     }
 
@@ -375,7 +378,11 @@ pub(crate) fn run(
 fn sample(paths: &FanPaths, at_secs: u64) -> Sample {
     let (fan1_rpm, rev1) = parse_hwmon_rpm(read_raw_rpm(paths.fan1_input.as_deref()));
     let (fan2_rpm, rev2) = parse_hwmon_rpm(read_raw_rpm(paths.fan2_input.as_deref()));
-    Sample { at_secs, rpm: fan1_rpm.max(fan2_rpm), is_reverse: rev1 || rev2 }
+    Sample {
+        at_secs,
+        rpm: fan1_rpm.max(fan2_rpm),
+        is_reverse: rev1 || rev2,
+    }
 }
 
 #[cfg(test)]
@@ -385,7 +392,11 @@ mod tests {
     fn feed(run: &mut Run, readings: &[i64]) -> u64 {
         for (i, rpm) in readings.iter().enumerate() {
             let at = i as u64 + 1;
-            run.push(Sample { at_secs: at, rpm: *rpm, is_reverse: false });
+            run.push(Sample {
+                at_secs: at,
+                rpm: *rpm,
+                is_reverse: false,
+            });
             if run.is_done(at) {
                 return at;
             }
@@ -402,8 +413,15 @@ mod tests {
         let probe = run.finish(elapsed);
 
         assert_eq!(probe.verdict, Verdict::Ignored);
-        assert!(probe.response_rpm < MIN_RESPONSE_RPM, "1300 from 1200 is not a response");
-        assert!(probe.detail.contains("auto and max still do"), "{}", probe.detail);
+        assert!(
+            probe.response_rpm < MIN_RESPONSE_RPM,
+            "1300 from 1200 is not a response"
+        );
+        assert!(
+            probe.detail.contains("auto and max still do"),
+            "{}",
+            probe.detail
+        );
     }
 
     /// A machine that obeys says so in the first few seconds, and the run
@@ -440,7 +458,10 @@ mod tests {
         let probe = run.finish(elapsed);
 
         assert_eq!(probe.verdict, Verdict::Ignored);
-        assert_eq!(probe.response_rpm, 0, "a fall cannot answer a request to speed up");
+        assert_eq!(
+            probe.response_rpm, 0,
+            "a fall cannot answer a request to speed up"
+        );
     }
 
     /// A machine whose tachometer says nothing settles nothing, and must not
@@ -459,8 +480,14 @@ mod tests {
     /// The two inconclusive verdicts must never overwrite a stored answer.
     #[test]
     fn only_a_conclusive_verdict_becomes_a_stored_setting() {
-        assert_eq!(Option::<SpeedControl>::from(Verdict::Honoured), Some(SpeedControl::Honoured));
-        assert_eq!(Option::<SpeedControl>::from(Verdict::Ignored), Some(SpeedControl::Ignored));
+        assert_eq!(
+            Option::<SpeedControl>::from(Verdict::Honoured),
+            Some(SpeedControl::Honoured)
+        );
+        assert_eq!(
+            Option::<SpeedControl>::from(Verdict::Ignored),
+            Some(SpeedControl::Ignored)
+        );
         assert_eq!(Option::<SpeedControl>::from(Verdict::NoChannel), None);
         assert_eq!(Option::<SpeedControl>::from(Verdict::NoReading), None);
     }
@@ -478,7 +505,10 @@ mod tests {
     #[test]
     fn a_run_never_ends_before_the_floor_unless_the_fans_answered() {
         let run = Run::new(1200, true, 200, None, 1);
-        assert!(!run.is_done(MIN_SECONDS - 1), "the limit is clamped up to the floor");
+        assert!(
+            !run.is_done(MIN_SECONDS - 1),
+            "the limit is clamped up to the floor"
+        );
         assert!(run.is_done(MIN_SECONDS));
     }
 }

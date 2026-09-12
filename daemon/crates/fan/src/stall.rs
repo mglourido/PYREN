@@ -140,7 +140,11 @@ impl StallWatch {
     }
 
     fn prune(&mut self, now_secs: u64) {
-        while self.faults.front().is_some_and(|&t| now_secs.saturating_sub(t) > WINDOW_SECS) {
+        while self
+            .faults
+            .front()
+            .is_some_and(|&t| now_secs.saturating_sub(t) > WINDOW_SECS)
+        {
             self.faults.pop_front();
         }
     }
@@ -179,7 +183,10 @@ mod tests {
         let mut w = watch();
         assert_eq!(w.observe(0, EXPECTED, 0, true), Tick::Fault { count: 1 });
         assert_eq!(w.observe(60, EXPECTED, 200, true), Tick::Fault { count: 2 });
-        assert_eq!(w.observe(120, EXPECTED, 0, true), Tick::RaiseFloor { faults: 3 });
+        assert_eq!(
+            w.observe(120, EXPECTED, 0, true),
+            Tick::RaiseFloor { faults: 3 }
+        );
         // And the count is cleared, so the next raise needs three fresh ones.
         assert_eq!(w.observe(121, EXPECTED, 0, true), Tick::Fault { count: 1 });
     }
@@ -208,7 +215,10 @@ mod tests {
         w.observe(0, EXPECTED, 0, true);
         w.observe(10, EXPECTED, 0, true);
         // Both are older than the window now.
-        assert_eq!(w.observe(WINDOW_SECS + 20, EXPECTED, 0, true), Tick::Fault { count: 1 });
+        assert_eq!(
+            w.observe(WINDOW_SECS + 20, EXPECTED, 0, true),
+            Tick::Fault { count: 1 }
+        );
     }
 
     /// A burst of stalls right after a raise, while the fans settle at the
@@ -218,7 +228,10 @@ mod tests {
         let mut w = watch();
         w.observe(0, EXPECTED, 0, true);
         w.observe(2, EXPECTED, 0, true);
-        assert_eq!(w.observe(4, EXPECTED, 0, true), Tick::RaiseFloor { faults: 3 });
+        assert_eq!(
+            w.observe(4, EXPECTED, 0, true),
+            Tick::RaiseFloor { faults: 3 }
+        );
         w.note_raised(4);
 
         w.observe(6, EXPECTED, 0, true);

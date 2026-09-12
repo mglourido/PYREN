@@ -192,7 +192,10 @@ impl FrameWriter {
     pub fn new() -> Result<Self, DialectError> {
         let mut state = read_state()?;
         state.resize(STATE_LEN, 0);
-        Ok(Self { state, read_at: std::time::Instant::now() })
+        Ok(Self {
+            state,
+            read_at: std::time::Instant::now(),
+        })
     }
 
     pub fn write(&mut self, colors: &[Rgb]) -> Result<(), DialectError> {
@@ -226,8 +229,8 @@ pub fn platform_info() -> Result<Vec<u8>, DialectError> {
 /// documented and each sends you somewhere different:
 /// `3` unknown command, `4` unknown command type, `5` bad parameters.
 fn payload(reply: &str) -> Result<Vec<u8>, DialectError> {
-    let bytes = acpi::parse_bytes(reply)
-        .ok_or_else(|| DialectError::Refused(reply.trim().to_string()))?;
+    let bytes =
+        acpi::parse_bytes(reply).ok_or_else(|| DialectError::Refused(reply.trim().to_string()))?;
     if bytes.len() < 8 || &bytes[0..4] != b"PASS" {
         return Err(DialectError::Refused(reply.trim().to_string()));
     }
@@ -255,7 +258,11 @@ mod tests {
     #[test]
     fn a_truncated_reply_reports_the_zones_it_reached_and_no_more() {
         // 34 bytes: what an OMEN 16 actually returns, measured.
-        assert_eq!(zones_in(&[0u8; 34]), 3, "zone 3 starts one byte past the end");
+        assert_eq!(
+            zones_in(&[0u8; 34]),
+            3,
+            "zone 3 starts one byte past the end"
+        );
         // A whole buffer, for the machine or the acpi_call that one day
         // hands one over.
         assert_eq!(zones_in(&[0u8; STATE_LEN]), crate::ZONES);
@@ -272,9 +279,17 @@ mod tests {
     /// hardware refuses, so it has to be pinned here.
     #[test]
     fn the_header_carries_the_command_the_reference_drivers_send() {
-        let request = bytes_of(&acpi::wmi_request(COMMAND, COLOR_SET, STATE_LEN, &[0u8; STATE_LEN]));
+        let request = bytes_of(&acpi::wmi_request(
+            COMMAND,
+            COLOR_SET,
+            STATE_LEN,
+            &[0u8; STATE_LEN],
+        ));
         assert_eq!(&request[0..4], b"SECU");
-        assert_eq!(u32::from_le_bytes(request[4..8].try_into().unwrap()), 0x0002_0009);
+        assert_eq!(
+            u32::from_le_bytes(request[4..8].try_into().unwrap()),
+            0x0002_0009
+        );
         assert_eq!(u32::from_le_bytes(request[8..12].try_into().unwrap()), 3);
         assert_eq!(u32::from_le_bytes(request[12..16].try_into().unwrap()), 128);
         assert_eq!(request.len(), 16 + STATE_LEN);
@@ -314,8 +329,16 @@ mod tests {
             }
         }
 
-        for bad in ["", "FAIL", "{0x46, 0x41, 0x49, 0x4c}", "Error: AE_NOT_FOUND"] {
-            assert!(matches!(payload(bad), Err(DialectError::Refused(_))), "{bad:?}");
+        for bad in [
+            "",
+            "FAIL",
+            "{0x46, 0x41, 0x49, 0x4c}",
+            "Error: AE_NOT_FOUND",
+        ] {
+            assert!(
+                matches!(payload(bad), Err(DialectError::Refused(_))),
+                "{bad:?}"
+            );
         }
     }
 }
@@ -373,12 +396,18 @@ mod truncation_tests {
     #[test]
     fn a_reply_that_stops_short_still_yields_the_zones_it_reached() {
         let state = payload(TRUNCATED).expect("PASS with a zero return code");
-        assert_eq!(state.len(), 34, "this is what acpi_call's buffer allows through");
+        assert_eq!(
+            state.len(),
+            34,
+            "this is what acpi_call's buffer allows through"
+        );
 
         let zones: Vec<Rgb> = (0..crate::ZONES)
             .map(|zone| {
                 let at = ZONE_OFFSET + zone * 3;
-                state.get(at..at + 3).map_or(Rgb::BLACK, |c| Rgb::new(c[0], c[1], c[2]))
+                state
+                    .get(at..at + 3)
+                    .map_or(Rgb::BLACK, |c| Rgb::new(c[0], c[1], c[2]))
             })
             .collect();
 

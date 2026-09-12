@@ -348,7 +348,13 @@ pub(crate) struct Restore<'a> {
 
 impl<'a> Restore<'a> {
     pub(crate) fn new(paths: &'a FanPaths, caps: Capabilities, mode: FanMode, pwm: u8) -> Self {
-        Self { paths, caps, mode, pwm, done: false }
+        Self {
+            paths,
+            caps,
+            mode,
+            pwm,
+            done: false,
+        }
     }
 
     /// Restores explicitly, so the outcome can be reported rather than
@@ -413,7 +419,8 @@ pub(crate) fn run(
     if calibration.verdict.worth_storing() && caps.supports(FanMode::Manual) {
         // A driver that reports its floor needs it measured no more; what
         // is worth measuring there is how far below it the fans can go.
-        match control::read_driver_floor(paths).filter(|_| control::floor_override_supported(paths)) {
+        match control::read_driver_floor(paths).filter(|_| control::floor_override_supported(paths))
+        {
             Some(driver_floor) => {
                 calibration.fan_min_rpm = Some(driver_floor);
                 sweep_floor(paths, caps, driver_floor, &mut calibration);
@@ -431,8 +438,17 @@ pub(crate) fn run(
 /// still at it. Never fails the calibration: the ceiling is measured and
 /// worth keeping whatever happens here.
 fn measure_floor(paths: &FanPaths, caps: Capabilities, limit: u64, calibration: &mut Calibration) {
-    let Some(peak) = calibration.fan_max_rpm else { return };
-    if control::apply(paths, caps, FanMode::Manual, crate::curve::MIN_COMMANDED_PWM).is_err() {
+    let Some(peak) = calibration.fan_max_rpm else {
+        return;
+    };
+    if control::apply(
+        paths,
+        caps,
+        FanMode::Manual,
+        crate::curve::MIN_COMMANDED_PWM,
+    )
+    .is_err()
+    {
         return;
     }
 
@@ -451,7 +467,9 @@ fn measure_floor(paths: &FanPaths, caps: Capabilities, limit: u64, calibration: 
     calibration.samples.extend(floor.samples.iter().copied());
     calibration.fan_min_rpm = floor.finish(peak);
     if let Some(min) = calibration.fan_min_rpm {
-        calibration.detail.push_str(&format!("; told the slowest speed, the fans settle at {min} rpm"));
+        calibration.detail.push_str(&format!(
+            "; told the slowest speed, the fans settle at {min} rpm"
+        ));
     }
 }
 
@@ -519,9 +537,12 @@ impl Fans {
 /// Enough to know a coast has arrived; not enough to call a step held.
 pub fn holding(samples: &[Sample], expected: i64, fans: Fans) -> bool {
     samples.len() >= SWEEP_HOLD_SAMPLES
-        && samples[samples.len() - SWEEP_HOLD_SAMPLES..].iter().all(|s| {
-            fans.readings(s).all(|rpm| rpm > 0 && (rpm - expected).abs() <= SWEEP_TOLERANCE_RPM)
-        })
+        && samples[samples.len() - SWEEP_HOLD_SAMPLES..]
+            .iter()
+            .all(|s| {
+                fans.readings(s)
+                    .all(|rpm| rpm > 0 && (rpm - expected).abs() <= SWEEP_TOLERANCE_RPM)
+            })
 }
 
 /// Whether a whole step shows the fans turning at `expected`: arrived and
@@ -540,7 +561,12 @@ pub fn step_held(samples: &[Sample], expected: i64, fans: Fans) -> bool {
 /// clear of [`SWEEP_FINE_BELOW_RPM`], fine below it.
 pub fn next_step(rpm: i64) -> Option<(i64, bool)> {
     let coarse = rpm - SWEEP_COARSE_STEP_RPM >= SWEEP_FINE_BELOW_RPM;
-    let next = rpm - if coarse { SWEEP_COARSE_STEP_RPM } else { SWEEP_FINE_STEP_RPM };
+    let next = rpm
+        - if coarse {
+            SWEEP_COARSE_STEP_RPM
+        } else {
+            SWEEP_FINE_STEP_RPM
+        };
     (next >= SWEEP_LOWEST_RPM).then_some((next, coarse))
 }
 
@@ -559,13 +585,24 @@ impl Drop for OverrideGuard<'_> {
 }
 
 /// Runs the sweep straight after the ceiling. Never fails the calibration.
-fn sweep_floor(paths: &FanPaths, caps: Capabilities, driver_floor: i64, calibration: &mut Calibration) {
-    let fans = Fans { fan1: calibration.fan1_max_rpm.is_some(), fan2: calibration.fan2_max_rpm.is_some() };
+fn sweep_floor(
+    paths: &FanPaths,
+    caps: Capabilities,
+    driver_floor: i64,
+    calibration: &mut Calibration,
+) {
+    let fans = Fans {
+        fan1: calibration.fan1_max_rpm.is_some(),
+        fan2: calibration.fan2_max_rpm.is_some(),
+    };
     if !fans.fan1 && !fans.fan2 {
         return;
     }
     let before = control::read_floor_override(paths).unwrap_or(0);
-    let _guard = OverrideGuard { paths, value: before };
+    let _guard = OverrideGuard {
+        paths,
+        value: before,
+    };
 
     let mut clock = calibration.seconds;
     let mut trace = Vec::new();
@@ -573,7 +610,9 @@ fn sweep_floor(paths: &FanPaths, caps: Capabilities, driver_floor: i64, calibrat
     // its floor, and the floor is set to `rpm`. `settle` ends as soon as
     // the fans arrive; a step is watched whole.
     let mut run = |rpm: i64, secs: u64, settle: bool| -> bool {
-        let Ok(hundreds) = u8::try_from(rpm / 100) else { return false };
+        let Ok(hundreds) = u8::try_from(rpm / 100) else {
+            return false;
+        };
         if control::set_floor_override(paths, hundreds).is_err()
             || control::apply(paths, caps, FanMode::Manual, 1).is_err()
         {
@@ -588,7 +627,11 @@ fn sweep_floor(paths: &FanPaths, caps: Capabilities, driver_floor: i64, calibrat
                 break;
             }
         }
-        let held = if settle { holding(&step, rpm, fans) } else { step_held(&step, rpm, fans) };
+        let held = if settle {
+            holding(&step, rpm, fans)
+        } else {
+            step_held(&step, rpm, fans)
+        };
         trace.extend(step);
         held
     };
@@ -601,7 +644,15 @@ fn sweep_floor(paths: &FanPaths, caps: Capabilities, driver_floor: i64, calibrat
     let mut last_held = None;
     let mut rpm = driver_floor;
     while let Some((next, coarse)) = next_step(rpm) {
-        if run(next, if coarse { SWEEP_COARSE_SECS } else { SWEEP_FINE_SECS }, false) {
+        if run(
+            next,
+            if coarse {
+                SWEEP_COARSE_SECS
+            } else {
+                SWEEP_FINE_SECS
+            },
+            false,
+        ) {
             last_held = Some(next);
             rpm = next;
             continue;
@@ -630,7 +681,12 @@ fn sweep_floor(paths: &FanPaths, caps: Capabilities, driver_floor: i64, calibrat
 fn sample(paths: &FanPaths, at_secs: u64) -> Sample {
     let (fan1_rpm, rev1) = parse_hwmon_rpm(read_raw_rpm(paths.fan1_input.as_deref()));
     let (fan2_rpm, rev2) = parse_hwmon_rpm(read_raw_rpm(paths.fan2_input.as_deref()));
-    Sample { at_secs, fan1_rpm, fan2_rpm, is_reverse: rev1 || rev2 }
+    Sample {
+        at_secs,
+        fan1_rpm,
+        fan2_rpm,
+        is_reverse: rev1 || rev2,
+    }
 }
 
 #[cfg(test)]
@@ -638,14 +694,20 @@ mod tests {
     use super::*;
 
     fn sample_at(at_secs: u64, fan1: i64, fan2: i64) -> Sample {
-        Sample { at_secs, fan1_rpm: fan1, fan2_rpm: fan2, is_reverse: false }
+        Sample {
+            at_secs,
+            fan1_rpm: fan1,
+            fan2_rpm: fan2,
+            is_reverse: false,
+        }
     }
 
     /// The ramp actually measured on board 8D2F (`dev/FINDINGS.md`), one
     /// sample a second rather than every two.
     fn ramp() -> Vec<Sample> {
-        let readings =
-            [2400, 2700, 3000, 3300, 3600, 3900, 3910, 3900, 3915, 3905, 3900, 3910, 3905];
+        let readings = [
+            2400, 2700, 3000, 3300, 3600, 3900, 3910, 3900, 3915, 3905, 3900, 3910, 3905,
+        ];
         readings
             .iter()
             .enumerate()
@@ -684,7 +746,10 @@ mod tests {
         let mut run = Run::new(2093, false, DEFAULT_SECONDS);
         let elapsed = feed(&mut run, &ramp());
 
-        assert!(elapsed < DEFAULT_SECONDS, "should not have run the full {DEFAULT_SECONDS}s");
+        assert!(
+            elapsed < DEFAULT_SECONDS,
+            "should not have run the full {DEFAULT_SECONDS}s"
+        );
         assert!(run.finish(elapsed).settled);
     }
 
@@ -693,14 +758,17 @@ mod tests {
     #[test]
     fn a_plateau_before_the_minimum_duration_is_not_settled() {
         let mut run = Run::new(2000, false, DEFAULT_SECONDS);
-        let mut samples: Vec<Sample> =
-            (1..=8).map(|i| sample_at(i, 3000, 2800)).collect();
+        let mut samples: Vec<Sample> = (1..=8).map(|i| sample_at(i, 3000, 2800)).collect();
         samples.extend((9..=20).map(|i| sample_at(i, 4200, 4000)));
         let elapsed = feed(&mut run, &samples);
         let result = run.finish(elapsed);
 
         assert!(elapsed >= MIN_SECONDS);
-        assert_eq!(result.fan_max_rpm, Some(4200), "the second step must be seen");
+        assert_eq!(
+            result.fan_max_rpm,
+            Some(4200),
+            "the second step must be seen"
+        );
     }
 
     fn feed_floor(run: &mut FloorRun, readings: &[i64]) -> u64 {
@@ -720,10 +788,15 @@ mod tests {
     #[test]
     fn the_floor_is_where_the_fans_come_to_rest() {
         let mut floor = FloorRun::new(DEFAULT_SECONDS);
-        let readings = [4600, 3800, 2900, 2300, 2000, 1800, 1800, 1800, 1800, 1800, 1800, 1800];
+        let readings = [
+            4600, 3800, 2900, 2300, 2000, 1800, 1800, 1800, 1800, 1800, 1800, 1800,
+        ];
         let elapsed = feed_floor(&mut floor, &readings);
 
-        assert!(elapsed < DEFAULT_SECONDS, "a settled floor should end the run");
+        assert!(
+            elapsed < DEFAULT_SECONDS,
+            "a settled floor should end the run"
+        );
         assert_eq!(floor.finish(5300), Some(1800));
     }
 
@@ -731,7 +804,9 @@ mod tests {
     #[test]
     fn an_undershoot_on_the_way_down_is_not_the_floor() {
         let mut floor = FloorRun::new(DEFAULT_SECONDS);
-        let readings = [4000, 2600, 1500, 1700, 1800, 1800, 1800, 1800, 1800, 1800, 1800];
+        let readings = [
+            4000, 2600, 1500, 1700, 1800, 1800, 1800, 1800, 1800, 1800, 1800,
+        ];
         feed_floor(&mut floor, &readings);
 
         assert_eq!(floor.finish(5300), Some(1800));
@@ -757,41 +832,71 @@ mod tests {
         assert_eq!(floor.finish(5300), Some(0));
     }
 
-    const BOTH: Fans = Fans { fan1: true, fan2: true };
+    const BOTH: Fans = Fans {
+        fan1: true,
+        fan2: true,
+    };
 
     fn readings(pairs: &[(i64, i64)]) -> Vec<Sample> {
-        pairs.iter().enumerate().map(|(i, (a, b))| sample_at(i as u64 + 1, *a, *b)).collect()
+        pairs
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| sample_at(i as u64 + 1, *a, *b))
+            .collect()
     }
 
     /// The EC experiment on board 8D2F, step by step: 600 held exactly.
     #[test]
     fn a_speed_read_back_steadily_is_held() {
-        assert!(holding(&readings(&[(1000, 1000), (600, 600), (600, 600), (600, 600)]), 600, BOTH));
+        assert!(holding(
+            &readings(&[(1000, 1000), (600, 600), (600, 600), (600, 600)]),
+            600,
+            BOTH
+        ));
     }
 
     /// ...400 did not: 900 at six seconds, 1400 at ten.
     #[test]
     fn a_fan_hunting_around_a_speed_does_not_hold_it() {
-        assert!(!holding(&readings(&[(900, 800), (1100, 1000), (1400, 1400)]), 400, BOTH));
+        assert!(!holding(
+            &readings(&[(900, 800), (1100, 1000), (1400, 1400)]),
+            400,
+            BOTH
+        ));
     }
 
     /// ...and 200 stalled outright before being kicked back up.
     #[test]
     fn a_stalled_fan_does_not_hold_even_a_slow_speed() {
-        assert!(!holding(&readings(&[(200, 200), (0, 0), (200, 200)]), 200, BOTH));
+        assert!(!holding(
+            &readings(&[(200, 200), (0, 0), (200, 200)]),
+            200,
+            BOTH
+        ));
     }
 
     /// Both fans have to hold it: one stalled fan is a stalled speed.
     #[test]
     fn every_watched_fan_has_to_hold() {
-        assert!(!holding(&readings(&[(600, 0), (600, 0), (600, 0)]), 600, BOTH));
+        assert!(!holding(
+            &readings(&[(600, 0), (600, 0), (600, 0)]),
+            600,
+            BOTH
+        ));
     }
 
     /// A machine with one fan is judged on that fan.
     #[test]
     fn a_missing_fan_is_not_held_against_the_speed() {
-        let one = Fans { fan1: true, fan2: false };
-        assert!(holding(&readings(&[(600, 0), (600, 0), (600, 0)]), 600, one));
+        let one = Fans {
+            fan1: true,
+            fan2: false,
+        };
+        assert!(holding(
+            &readings(&[(600, 0), (600, 0), (600, 0)]),
+            600,
+            one
+        ));
     }
 
     #[test]
@@ -804,28 +909,55 @@ mod tests {
     /// the step still did not hold.
     #[test]
     fn a_kick_anywhere_in_a_step_fails_it() {
-        let step = readings(&[(700, 700), (1600, 1600), (800, 800), (600, 600), (600, 600), (600, 600)]);
+        let step = readings(&[
+            (700, 700),
+            (1600, 1600),
+            (800, 800),
+            (600, 600),
+            (600, 600),
+            (600, 600),
+        ]);
         assert!(holding(&step, 600, BOTH), "the tail alone looks settled");
         assert!(!step_held(&step, 600, BOTH));
     }
 
     #[test]
     fn a_clean_step_down_holds() {
-        let step = readings(&[(850, 850), (700, 700), (700, 700), (700, 700), (700, 700), (700, 700)]);
+        let step = readings(&[
+            (850, 850),
+            (700, 700),
+            (700, 700),
+            (700, 700),
+            (700, 700),
+            (700, 700),
+        ]);
         assert!(step_held(&step, 700, BOTH));
     }
 
     /// Falling on the way to a step is the step arriving, not a kick.
     #[test]
     fn falling_readings_are_not_kicks() {
-        let step = readings(&[(1600, 1600), (1200, 1200), (1000, 1000), (1000, 1000), (1000, 1000)]);
+        let step = readings(&[
+            (1600, 1600),
+            (1200, 1200),
+            (1000, 1000),
+            (1000, 1000),
+            (1000, 1000),
+        ]);
         assert!(step_held(&step, 1000, BOTH));
     }
 
     /// A fan that reads 0 for one second has stalled, whatever it does next.
     #[test]
     fn a_zero_anywhere_in_a_step_fails_it() {
-        let step = readings(&[(600, 600), (0, 600), (500, 600), (600, 600), (600, 600), (600, 600)]);
+        let step = readings(&[
+            (600, 600),
+            (0, 600),
+            (500, 600),
+            (600, 600),
+            (600, 600),
+            (600, 600),
+        ]);
         assert!(!step_held(&step, 600, BOTH));
     }
 
@@ -841,9 +973,18 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                (1600, true), (1400, true), (1200, true), (1000, true),
-                (900, false), (800, false), (700, false), (600, false),
-                (500, false), (400, false), (300, false), (200, false),
+                (1600, true),
+                (1400, true),
+                (1200, true),
+                (1000, true),
+                (900, false),
+                (800, false),
+                (700, false),
+                (600, false),
+                (500, false),
+                (400, false),
+                (300, false),
+                (200, false),
             ]
         );
     }
@@ -853,7 +994,12 @@ mod tests {
     #[test]
     fn fans_that_never_moved_store_nothing() {
         let mut run = Run::new(2100, false, DEFAULT_SECONDS);
-        let elapsed = feed(&mut run, &(1..=30).map(|i| sample_at(i, 2100, 1950)).collect::<Vec<_>>());
+        let elapsed = feed(
+            &mut run,
+            &(1..=30)
+                .map(|i| sample_at(i, 2100, 1950))
+                .collect::<Vec<_>>(),
+        );
         let result = run.finish(elapsed);
 
         assert_eq!(result.verdict, Verdict::DidNotRespond);
@@ -866,7 +1012,12 @@ mod tests {
     #[test]
     fn fans_already_at_max_measure_fine_without_a_rise() {
         let mut run = Run::new(3900, true, DEFAULT_SECONDS);
-        let elapsed = feed(&mut run, &(1..=30).map(|i| sample_at(i, 3900, 3700)).collect::<Vec<_>>());
+        let elapsed = feed(
+            &mut run,
+            &(1..=30)
+                .map(|i| sample_at(i, 3900, 3700))
+                .collect::<Vec<_>>(),
+        );
         let result = run.finish(elapsed);
 
         assert_eq!(result.verdict, Verdict::Measured);
@@ -876,7 +1027,10 @@ mod tests {
     #[test]
     fn a_machine_with_no_tachometer_says_so_rather_than_reporting_zero() {
         let mut run = Run::new(0, false, DEFAULT_SECONDS);
-        let elapsed = feed(&mut run, &(1..=30).map(|i| sample_at(i, 0, 0)).collect::<Vec<_>>());
+        let elapsed = feed(
+            &mut run,
+            &(1..=30).map(|i| sample_at(i, 0, 0)).collect::<Vec<_>>(),
+        );
         let result = run.finish(elapsed);
 
         assert_eq!(result.verdict, Verdict::NoReading);
@@ -919,8 +1073,10 @@ mod tests {
     // not finish normally: putting the fans back.
 
     fn fixture(tag: &str, files: &[&str]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-fan-calibration-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-fan-calibration-{tag}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for f in files {
@@ -944,7 +1100,10 @@ mod tests {
     }
 
     fn enable(dir: &std::path::Path) -> String {
-        std::fs::read_to_string(dir.join("pwm1_enable")).unwrap().trim().to_string()
+        std::fs::read_to_string(dir.join("pwm1_enable"))
+            .unwrap()
+            .trim()
+            .to_string()
     }
 
     #[test]
@@ -954,8 +1113,13 @@ mod tests {
         let caps = Capabilities::detect(&p);
         control::apply(&p, caps, FanMode::Max, 0).unwrap();
 
-        let restore =
-            Restore { paths: &p, caps, mode: FanMode::Auto, pwm: 128, done: false };
+        let restore = Restore {
+            paths: &p,
+            caps,
+            mode: FanMode::Auto,
+            pwm: 128,
+            done: false,
+        };
         let (mode, error) = restore.finish();
 
         assert_eq!((mode, error), ("auto", None));
@@ -974,8 +1138,13 @@ mod tests {
 
         // Manual needs pwm1, which this machine does not have - the 8D2F
         // case, where the driver can still report mode 1.
-        let restore =
-            Restore { paths: &p, caps, mode: FanMode::Manual, pwm: 200, done: false };
+        let restore = Restore {
+            paths: &p,
+            caps,
+            mode: FanMode::Manual,
+            pwm: 200,
+            done: false,
+        };
         let (mode, error) = restore.finish();
 
         assert_eq!(mode, "auto");
@@ -991,8 +1160,18 @@ mod tests {
         let caps = Capabilities::detect(&p);
         control::apply(&p, caps, FanMode::Max, 0).unwrap();
 
-        drop(Restore { paths: &p, caps, mode: FanMode::Auto, pwm: 128, done: false });
+        drop(Restore {
+            paths: &p,
+            caps,
+            mode: FanMode::Auto,
+            pwm: 128,
+            done: false,
+        });
 
-        assert_eq!(enable(&dir), "2", "a dropped run must not leave the fans at max");
+        assert_eq!(
+            enable(&dir),
+            "2",
+            "a dropped run must not leave the fans at max"
+        );
     }
 }

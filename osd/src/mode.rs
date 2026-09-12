@@ -48,7 +48,12 @@ pub enum Lang {
 impl Mode {
     /// In the order the key steps through them, which is the order the app
     /// lists them in - the daemon's `PowerMode::ALL` is the same list.
-    pub const ALL: [Mode; 4] = [Mode::Eco, Mode::Balanced, Mode::Performance, Mode::Unlimited];
+    pub const ALL: [Mode; 4] = [
+        Mode::Eco,
+        Mode::Balanced,
+        Mode::Performance,
+        Mode::Unlimited,
+    ];
 
     /// The name on the wire.
     pub fn id(self) -> &'static str {
@@ -88,14 +93,26 @@ impl Mode {
 
     pub fn description(self, lang: Lang) -> &'static str {
         match (lang, self) {
-            (Lang::En, Mode::Eco) => "Lowest power draw and the quietest fans. Best for battery life.",
+            (Lang::En, Mode::Eco) => {
+                "Lowest power draw and the quietest fans. Best for battery life."
+            }
             (Lang::En, Mode::Balanced) => "The firmware decides. Good default for everyday use.",
             (Lang::En, Mode::Performance) => "Higher power limits and a more aggressive fan curve.",
-            (Lang::En, Mode::Unlimited) => "Unlocks manual power limits and the chassis temperature limit.",
-            (Lang::Es, Mode::Eco) => "El menor consumo y los ventiladores más silenciosos. Ideal para la batería.",
-            (Lang::Es, Mode::Balanced) => "Decide el firmware. Buen valor predeterminado para el día a día.",
-            (Lang::Es, Mode::Performance) => "Límites de potencia más altos y una curva de ventilador más agresiva.",
-            (Lang::Es, Mode::Unlimited) => "Desbloquea los límites de potencia manuales y la temperatura límite del chasis.",
+            (Lang::En, Mode::Unlimited) => {
+                "Unlocks manual power limits and the chassis temperature limit."
+            }
+            (Lang::Es, Mode::Eco) => {
+                "El menor consumo y los ventiladores más silenciosos. Ideal para la batería."
+            }
+            (Lang::Es, Mode::Balanced) => {
+                "Decide el firmware. Buen valor predeterminado para el día a día."
+            }
+            (Lang::Es, Mode::Performance) => {
+                "Límites de potencia más altos y una curva de ventilador más agresiva."
+            }
+            (Lang::Es, Mode::Unlimited) => {
+                "Desbloquea los límites de potencia manuales y la temperatura límite del chasis."
+            }
         }
     }
 }
@@ -157,7 +174,9 @@ impl FanMode {
 
     pub fn description(self, lang: Lang) -> &'static str {
         match (lang, self) {
-            (Lang::En, FanMode::Auto) => "The firmware's own fan curve. Quiet, and the safe default.",
+            (Lang::En, FanMode::Auto) => {
+                "The firmware's own fan curve. Quiet, and the safe default."
+            }
             (Lang::En, FanMode::Max) => "Both fans at full speed, for a heavy load or a hot room.",
             (Lang::En, FanMode::Manual) => "Hold the fans at one fixed speed, set below.",
             (Lang::En, FanMode::Curve) => "Follow the temperature-to-speed curve drawn in the app.",

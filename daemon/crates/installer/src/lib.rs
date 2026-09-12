@@ -55,8 +55,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 pub use autodetect::{Autodetected, ParamsEffect, RpmSource};
-pub use ec::EcProbe;
 pub use detect::Environment;
+pub use ec::EcProbe;
 pub use execute::{execute, pin_measured_ceiling, ExecuteContext, ExecutionReport};
 pub use patch::{BoardParams, BoardTable, MaxRpm};
 pub use plan::{plan, Action, Plan, PlanOptions, Strategy};
@@ -103,11 +103,12 @@ struct ApplyRequest {
     skip_steps: Vec<String>,
 }
 
-
-
 impl From<&PlanRequest> for PlanOptions {
     fn from(request: &PlanRequest) -> Self {
-        Self { prefer_hooks: request.prefer_hooks, force: request.force }
+        Self {
+            prefer_hooks: request.prefer_hooks,
+            force: request.force,
+        }
     }
 }
 
@@ -128,7 +129,10 @@ pub struct InstallerModule {
 
 impl InstallerModule {
     pub fn new() -> Self {
-        Self { driver_changed: None, events: None }
+        Self {
+            driver_changed: None,
+            events: None,
+        }
     }
 
     /// Announce each step as it starts and as it finishes, on `installer.progress`.
@@ -206,20 +210,24 @@ impl Module for InstallerModule {
             }
 
             "plan" => {
-                let request: PlanRequest = serde_json::from_value(params)
-                    .map_err(|e| ModuleError::InvalidParams(format!("invalid plan request: {e}")))?;
+                let request: PlanRequest = serde_json::from_value(params).map_err(|e| {
+                    ModuleError::InvalidParams(format!("invalid plan request: {e}"))
+                })?;
                 let env = Environment::detect();
                 let plan = plan::plan(&env, request.action, PlanOptions::from(&request));
                 serde_json::to_value(plan).map_err(|e| ModuleError::Internal(e.to_string()))
             }
 
             "apply" => {
-                let request: ApplyRequest = serde_json::from_value(params)
-                    .map_err(|e| ModuleError::InvalidParams(format!("invalid apply request: {e}")))?;
+                let request: ApplyRequest = serde_json::from_value(params).map_err(|e| {
+                    ModuleError::InvalidParams(format!("invalid apply request: {e}"))
+                })?;
 
                 let env = Environment::detect();
-                let options =
-                    PlanOptions { prefer_hooks: request.prefer_hooks, force: request.force };
+                let options = PlanOptions {
+                    prefer_hooks: request.prefer_hooks,
+                    force: request.force,
+                };
                 let plan = plan::plan(&env, request.action, options);
 
                 if !plan.is_runnable() {
@@ -276,7 +284,10 @@ impl Module for InstallerModule {
                     }
                     _ => None,
                 };
-                let mut max_rpm = MaxRpm { cpu: request.cpu_max_rpm, gpu: request.gpu_max_rpm };
+                let mut max_rpm = MaxRpm {
+                    cpu: request.cpu_max_rpm,
+                    gpu: request.gpu_max_rpm,
+                };
 
                 if let Some(detected) = &detected {
                     board = board.or_else(|| detected.board());
@@ -295,8 +306,8 @@ impl Module for InstallerModule {
                 let sink = self.events.as_ref().map(|events| {
                     let events = std::sync::Arc::clone(events);
                     move |progress: execute::Progress| {
-                        let mut payload = serde_json::to_value(&progress)
-                            .unwrap_or_else(|_| json!({}));
+                        let mut payload =
+                            serde_json::to_value(&progress).unwrap_or_else(|_| json!({}));
                         // Which run this belongs to, so a window that
                         // opened mid-install does not decorate its own
                         // panel with somebody else's steps.

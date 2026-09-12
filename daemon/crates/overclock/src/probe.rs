@@ -106,8 +106,12 @@ pub fn probe(allow_writes: bool) -> Probe {
     let detail = if gpus.is_empty() {
         msg!("overclock.probe.noGpu", "no GPU was found to ask about")
     } else if supported {
-        let names =
-            gpus.iter().filter(|g| g.drivable()).map(|g| g.name.as_str()).collect::<Vec<_>>().join(", ");
+        let names = gpus
+            .iter()
+            .filter(|g| g.drivable())
+            .map(|g| g.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         msg!("overclock.probe.tunable", { "names" => names }, "tunable: {names}")
     } else {
         msg!(
@@ -116,7 +120,11 @@ pub fn probe(allow_writes: bool) -> Probe {
         )
     };
 
-    Probe { gpus, supported, detail }
+    Probe {
+        gpus,
+        supported,
+        detail,
+    }
 }
 
 fn probe_nvidia(allow_writes: bool) -> Vec<GpuProbe> {
@@ -191,7 +199,11 @@ const LEAD_COOLBITS: &str = "Clock offsets are readable but not settable; the X 
                              Coolbits before the driver will take one.";
 const LEAD_READABLE: &str = "Clock offsets are readable.";
 
-fn describe_nvidia(offsets: OffsetState, clock_lock: Option<Range>, max_core_mhz: Option<i32>) -> Msg {
+fn describe_nvidia(
+    offsets: OffsetState,
+    clock_lock: Option<Range>,
+    max_core_mhz: Option<i32>,
+) -> Msg {
     // Three offset states (unreadable stands alone) times three clock states,
     // as nine catalog keys each holding one whole sentence.
     let (base, lead) = match offsets {
@@ -389,7 +401,10 @@ mod tests {
         let probe = probe(false);
         if probe.gpus.is_empty() {
             assert!(!probe.supported);
-            assert!(!probe.detail.is_empty(), "a machine with nothing must still say so");
+            assert!(
+                !probe.detail.is_empty(),
+                "a machine with nothing must still say so"
+            );
         }
     }
 
@@ -419,8 +434,14 @@ mod tests {
         let m = describe_nvidia(OffsetState::Settable, Some(Range::new(210, 3090)), None);
         assert_eq!(m.key, "overclock.gpu.nvidia.settable.lock");
         assert_eq!(m.params["min"], 210);
-        assert!(m.text.starts_with("Clock offsets can be set. Clocks can be pinned between 210 and 3090 MHz"));
-        assert!(!m.text.contains('{'), "every placeholder must be filled: {}", m.text);
+        assert!(m.text.starts_with(
+            "Clock offsets can be set. Clocks can be pinned between 210 and 3090 MHz"
+        ));
+        assert!(
+            !m.text.contains('{'),
+            "every placeholder must be filled: {}",
+            m.text
+        );
     }
 
     /// When the offsets cannot even be read, the X-display hint is the whole
@@ -428,7 +449,11 @@ mod tests {
     #[test]
     fn an_unreadable_card_passes_its_hint_through_untouched() {
         let hint = msg!("overclock.nvidia.noSocket", { "path" => "/tmp/.X11-unix" }, "no socket in {path}");
-        let m = describe_nvidia(OffsetState::Unreadable(hint.clone()), Some(Range::new(1, 2)), None);
+        let m = describe_nvidia(
+            OffsetState::Unreadable(hint.clone()),
+            Some(Range::new(1, 2)),
+            None,
+        );
         assert_eq!(m, hint);
     }
 }

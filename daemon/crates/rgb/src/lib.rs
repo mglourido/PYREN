@@ -295,9 +295,7 @@ impl RgbModule {
                         lock(&module.state).last_error = Some(e.to_msg());
                     }
                 }
-                (None, _) => log_warn!(
-                    "not restoring the lights: no lighting dialect answered"
-                ),
+                (None, _) => log_warn!("not restoring the lights: no lighting dialect answered"),
             }
         }
 
@@ -414,7 +412,9 @@ impl RgbModule {
     /// callers that should, do.
     fn start_effect(&self, effect: Effect) -> Result<(), ModuleError> {
         let probe = self.current_probe();
-        let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
+        let dialect = self
+            .chosen_dialect(&probe)
+            .ok_or(ModuleError::Unsupported)?;
         let (brightness, fps) = {
             let state = lock(&self.state);
             (state.config.brightness, state.config.fps)
@@ -448,7 +448,9 @@ impl RgbModule {
     /// from exactly there.
     fn power_on(&self) -> Result<(), ModuleError> {
         let probe = self.current_probe();
-        let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
+        let dialect = self
+            .chosen_dialect(&probe)
+            .ok_or(ModuleError::Unsupported)?;
         let (zones, brightness, effect) = {
             let state = lock(&self.state);
             let c = &state.config;
@@ -488,7 +490,9 @@ impl RgbModule {
     /// somebody choosing a different colour, and `powerOn` brings it back.
     fn power_off(&self) -> Result<(), ModuleError> {
         let probe = self.current_probe();
-        let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
+        let dialect = self
+            .chosen_dialect(&probe)
+            .ok_or(ModuleError::Unsupported)?;
         let (zones, brightness) = {
             let state = lock(&self.state);
             (zones_array(&state.config.zones), state.config.brightness)
@@ -736,7 +740,10 @@ impl RgbModule {
     /// The dialect a call would go through: the user's if they pinned one,
     /// otherwise the first that answered.
     fn chosen_dialect(&self, probe: &Probe) -> Option<Dialect> {
-        lock(&self.state).config.dialect.resolve(&probe.lighting.dialects)
+        lock(&self.state)
+            .config
+            .dialect
+            .resolve(&probe.lighting.dialects)
     }
 
     fn set_dialect(&self, choice: Selection) -> ModuleResult {
@@ -842,23 +849,28 @@ impl Module for RgbModule {
 
             "readZones" => {
                 let probe = self.current_probe();
-                let dialect = self.chosen_dialect(&probe).ok_or(ModuleError::Unsupported)?;
+                let dialect = self
+                    .chosen_dialect(&probe)
+                    .ok_or(ModuleError::Unsupported)?;
                 let colors = dialect.read_colors().map_err(dialect_error)?;
                 Ok(json!({ "zones": colors, "dialect": dialect.id() }))
             }
 
             // Pinning one by hand. `auto` puts it back.
             "setDialect" => {
-                let id = params.get("dialect").and_then(Value::as_str).ok_or_else(|| {
-                    ModuleError::localised(
-                        ErrorKind::InvalidParams,
-                        msg!(
-                            "rgb.err.dialectRequired",
-                            "params.dialect is required: 'auto', or one of the ids in \
+                let id = params
+                    .get("dialect")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!(
+                                "rgb.err.dialectRequired",
+                                "params.dialect is required: 'auto', or one of the ids in \
                              getCapabilities"
-                        ),
-                    )
-                })?;
+                            ),
+                        )
+                    })?;
                 let choice = Selection::from_id(id).ok_or_else(|| {
                     ModuleError::localised(
                         ErrorKind::InvalidParams,
@@ -873,9 +885,12 @@ impl Module for RgbModule {
             }
 
             "setRestoreOnStart" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
                 self.set_restore_on_start(enabled)
             }
 
@@ -902,15 +917,24 @@ impl Module for RgbModule {
                 })?;
                 let effect: Effect = serde_json::from_value(effect)
                     .map_err(|e| ModuleError::InvalidParams(format!("invalid effect: {e}")))?;
-                let brightness = params.get("brightness").and_then(Value::as_i64).map(clamp_brightness);
-                let fps = params.get("fps").and_then(Value::as_i64).map(effects::clamp_fps);
+                let brightness = params
+                    .get("brightness")
+                    .and_then(Value::as_i64)
+                    .map(clamp_brightness);
+                let fps = params
+                    .get("fps")
+                    .and_then(Value::as_i64)
+                    .map(effects::clamp_fps);
                 self.set_effect(effect, brightness, fps)
             }
 
             "stopEffect" => self.stop_effect(),
 
             "powerOn" | "powerOff" => {
-                let if_enabled = params.get("ifEnabled").and_then(Value::as_bool).unwrap_or(false);
+                let if_enabled = params
+                    .get("ifEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 self.power(method == "powerOn", if_enabled)
             }
 
@@ -922,16 +946,24 @@ impl Module for RgbModule {
             }
 
             "setPowerAnimation" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
                 self.set_power_animation(enabled)
             }
 
             "setBrightness" => {
-                let brightness = params.get("brightness").and_then(Value::as_i64).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.brightness must be a number, 0-100".into())
-                })?;
+                let brightness = params
+                    .get("brightness")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams(
+                            "params.brightness must be a number, 0-100".into(),
+                        )
+                    })?;
                 self.set_brightness(clamp_brightness(brightness))
             }
 
@@ -1071,8 +1103,11 @@ mod tests {
     use super::*;
 
     fn module() -> RgbModule {
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-rgb-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-rgb-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         RgbModule::with_store(ConfigStore::at(dir))
     }
@@ -1081,13 +1116,20 @@ mod tests {
     fn capabilities_report_both_paths_whether_or_not_either_is_here() {
         // Reads the ACPI interface: no redirection may run under it.
         let _acpi = crate::testenv::real();
-        let reply = module().call("getCapabilities", Value::Null).expect("probing cannot fail");
-        assert!(reply.get("perKey").is_some(), "both paths are reported, not just the driven one");
+        let reply = module()
+            .call("getCapabilities", Value::Null)
+            .expect("probing cannot fail");
+        assert!(
+            reply.get("perKey").is_some(),
+            "both paths are reported, not just the driven one"
+        );
         assert!(reply.get("lighting").is_some());
         assert_eq!(reply["perKey"]["ported"], false);
         // Every dialect is listed even where none of them answered: a UI
         // offering the manual override has to be able to name the choices.
-        let dialects = reply["lighting"]["dialects"].as_array().expect("a list of dialects");
+        let dialects = reply["lighting"]["dialects"]
+            .as_array()
+            .expect("a list of dialects");
         assert_eq!(dialects.len(), dialect::ORDER.len());
     }
 
@@ -1101,19 +1143,27 @@ mod tests {
         for (method, params) in [
             ("setZones", json!({})),
             ("setZones", json!({ "zones": [] })),
-            ("setZones", json!({ "zones": ["#ff0000", "#00ff00", "#0000ff", "#fff", "#000"] })),
+            (
+                "setZones",
+                json!({ "zones": ["#ff0000", "#00ff00", "#0000ff", "#fff", "#000"] }),
+            ),
             ("setZones", json!({ "zones": ["not a colour"] })),
             ("setStatic", json!({})),
             ("setStatic", json!({ "color": "#zzz" })),
             ("setRestoreOnStart", json!({ "enabled": "yes" })),
             ("setEffect", json!({})),
             ("setEffect", json!({ "effect": { "kind": "disco" } })),
-            ("setEffect", json!({ "effect": { "kind": "wave", "colors": ["nope"] } })),
+            (
+                "setEffect",
+                json!({ "effect": { "kind": "wave", "colors": ["nope"] } }),
+            ),
             ("setBrightness", json!({})),
             ("setPowerAnimation", json!({ "enabled": "yes" })),
             ("setBatteryFps", json!({ "fps": "fast" })),
         ] {
-            let error = module.call(method, params.clone()).expect_err("should be refused");
+            let error = module
+                .call(method, params.clone())
+                .expect_err("should be refused");
             assert_eq!(
                 error.kind(),
                 pyren_core::ErrorKind::InvalidParams,
@@ -1162,8 +1212,12 @@ mod tests {
         // Reads the ACPI interface: no redirection may run under it.
         let _acpi = crate::testenv::real();
         let module = module();
-        let fresh = module.call("getCapabilities", Value::Null).expect("probing cannot fail");
-        let status = module.call("getStatus", Value::Null).expect("status cannot fail");
+        let fresh = module
+            .call("getCapabilities", Value::Null)
+            .expect("probing cannot fail");
+        let status = module
+            .call("getStatus", Value::Null)
+            .expect("status cannot fail");
         assert_eq!(status["capabilities"], fresh);
     }
 
@@ -1182,11 +1236,17 @@ mod tests {
         let module = RgbModule::with_store(ConfigStore::at(dir.join("config")));
         std::fs::write(&file, "").unwrap();
         for method in ["powerOff", "powerOn"] {
-            let status = module.call(method, json!({ "ifEnabled": true })).expect("a no-op cannot fail");
+            let status = module
+                .call(method, json!({ "ifEnabled": true }))
+                .expect("a no-op cannot fail");
             assert_eq!(status["dark"], false, "{method}");
             assert_eq!(status["owned"], false, "{method}");
         }
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "", "nothing reached acpi_call");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "",
+            "nothing reached acpi_call"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1207,12 +1267,23 @@ mod tests {
 
         let config = dir.join("config");
         let fresh = RgbModule::with_store(ConfigStore::at(&config));
-        assert_eq!(fresh.status()["restoreOnStart"], true, "on without being asked");
-        assert_eq!(fresh.status()["owned"], false, "a first run leaves the lights alone");
+        assert_eq!(
+            fresh.status()["restoreOnStart"],
+            true,
+            "on without being asked"
+        );
+        assert_eq!(
+            fresh.status()["owned"],
+            false,
+            "a first run leaves the lights alone"
+        );
 
         let store = ConfigStore::at(&config);
         store
-            .save("rgb", &json!({ "zones": ["#c500fc", "#c500fc", "#c500fc", "#c500fc"] }))
+            .save(
+                "rgb",
+                &json!({ "zones": ["#c500fc", "#c500fc", "#c500fc", "#c500fc"] }),
+            )
             .expect("a temp dir is writable");
         let restored = RgbModule::with_store(store);
         let status = restored.status();
@@ -1232,10 +1303,24 @@ mod tests {
         let _acpi = crate::testenv::real();
         let module = module();
         assert_eq!(module.status()["throttled"], Value::Null);
-        module.set_conditions(Conditions { on_battery: true, lid_closed: false });
-        assert_eq!(module.status()["throttled"], "battery", "15 on battery is below the 30 asked for");
-        module.set_conditions(Conditions { on_battery: true, lid_closed: true });
-        assert_eq!(module.status()["throttled"], "lid", "the lid wins: nothing is written");
+        module.set_conditions(Conditions {
+            on_battery: true,
+            lid_closed: false,
+        });
+        assert_eq!(
+            module.status()["throttled"],
+            "battery",
+            "15 on battery is below the 30 asked for"
+        );
+        module.set_conditions(Conditions {
+            on_battery: true,
+            lid_closed: true,
+        });
+        assert_eq!(
+            module.status()["throttled"],
+            "lid",
+            "the lid wins: nothing is written"
+        );
         module.set_conditions(Conditions::default());
         assert_eq!(module.status()["throttled"], Value::Null);
     }
@@ -1249,23 +1334,49 @@ mod tests {
         let module = module();
         let fps = module.status()["fps"].as_u64().unwrap() as u8;
 
-        assert_eq!(module.sweep_rate(), Some(fps), "plugged in, lid up: the rate that was asked for");
+        assert_eq!(
+            module.sweep_rate(),
+            Some(fps),
+            "plugged in, lid up: the rate that was asked for"
+        );
 
-        module.set_conditions(Conditions { on_battery: true, lid_closed: false });
+        module.set_conditions(Conditions {
+            on_battery: true,
+            lid_closed: false,
+        });
         assert_eq!(
             module.sweep_rate(),
             Some(DEFAULT_BATTERY_FPS),
             "on battery it is capped like any other animation"
         );
 
-        module.call("setBatteryFps", json!({ "fps": 0 })).expect("0 is a setting");
-        assert_eq!(module.sweep_rate(), None, "0 on battery means no animation at all");
+        module
+            .call("setBatteryFps", json!({ "fps": 0 }))
+            .expect("0 is a setting");
+        assert_eq!(
+            module.sweep_rate(),
+            None,
+            "0 on battery means no animation at all"
+        );
 
-        module.call("setBatteryFps", json!({ "fps": 60 })).expect("60 is a setting");
-        assert_eq!(module.sweep_rate(), Some(fps), "and a cap above the rate does not raise it");
+        module
+            .call("setBatteryFps", json!({ "fps": 60 }))
+            .expect("60 is a setting");
+        assert_eq!(
+            module.sweep_rate(),
+            Some(fps),
+            "and a cap above the rate does not raise it"
+        );
 
-        module.set_conditions(Conditions { on_battery: false, lid_closed: true });
-        assert_eq!(module.sweep_rate(), None, "a shut lid shows the sweep to nobody");
+        module.set_conditions(Conditions {
+            on_battery: false,
+            lid_closed: true,
+        });
+        assert_eq!(
+            module.sweep_rate(),
+            None,
+            "a shut lid shows the sweep to nobody"
+        );
     }
 
     /// The bug: an effect that had stopped - three failed writes, or a
@@ -1287,11 +1398,17 @@ mod tests {
 
         let module = RgbModule::with_store(store);
         lock_animator(&module.animator).stop();
-        assert!(!lock_animator(&module.animator).is_running(), "set, but not moving");
+        assert!(
+            !lock_animator(&module.animator).is_running(),
+            "set, but not moving"
+        );
 
         let _ = module.call("setBrightness", json!({ "brightness": 40 }));
         let status = module.status();
-        assert_eq!(status["effect"]["kind"], "breathing", "the effect is still the one chosen");
+        assert_eq!(
+            status["effect"]["kind"], "breathing",
+            "the effect is still the one chosen"
+        );
         assert_eq!(status["brightness"], 40, "and the slider moved");
 
         // And it is still in the file, not only in memory: the next boot
@@ -1311,6 +1428,9 @@ mod tests {
         let _acpi = crate::testenv::real();
         let status = module().status();
         assert_eq!(status["owned"], false);
-        assert_eq!(status["restoreOnStart"], true, "lighting comes back by default");
+        assert_eq!(
+            status["restoreOnStart"], true,
+            "lighting comes back by default"
+        );
     }
 }

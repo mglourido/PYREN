@@ -109,7 +109,10 @@ fn default_route_interface(route_table: &str) -> Option<String> {
             continue;
         }
         let metric: u32 = metric.parse().unwrap_or(u32::MAX);
-        if best.as_ref().is_none_or(|(best_metric, _)| metric < *best_metric) {
+        if best
+            .as_ref()
+            .is_none_or(|(best_metric, _)| metric < *best_metric)
+        {
             best = Some((metric, iface.to_string()));
         }
     }
@@ -120,16 +123,30 @@ fn default_route_interface(route_table: &str) -> Option<String> {
 /// `"qdisc cake 8003: root refcnt 2 ..."` -> `"cake"`.
 fn qdisc_kind(show_output: &str) -> Option<String> {
     let mut words = show_output.lines().next()?.split_whitespace();
-    (words.next()? == "qdisc").then(|| words.next()).flatten().map(str::to_string)
+    (words.next()? == "qdisc")
+        .then(|| words.next())
+        .flatten()
+        .map(str::to_string)
 }
 
 fn tc_present() -> bool {
-    Command::new(tc_bin()).arg("-Version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new(tc_bin())
+        .arg("-Version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn read_qdisc(interface: &str) -> Option<String> {
-    let output = Command::new(tc_bin()).args(["qdisc", "show", "dev", interface]).output().ok()?;
-    output.status.success().then(|| qdisc_kind(&String::from_utf8_lossy(&output.stdout))).flatten()
+    let output = Command::new(tc_bin())
+        .args(["qdisc", "show", "dev", interface])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| qdisc_kind(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
 }
 
 /// Why [`enable_smart_queuing`] could not set a qdisc - distinct from
@@ -155,11 +172,18 @@ fn enable_smart_queuing(interface: &str) -> Result<&'static str, QdiscFailure> {
             .output();
         match output {
             Ok(out) if out.status.success() => return Ok(qdisc),
-            Ok(out) => failures.push(format!("{qdisc}: {}", String::from_utf8_lossy(&out.stderr).trim())),
+            Ok(out) => failures.push(format!(
+                "{qdisc}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
             Err(e) => failures.push(format!("{qdisc}: {e}")),
         }
     }
-    if !failures.is_empty() && failures.iter().all(|f| f.contains("Operation not permitted")) {
+    if !failures.is_empty()
+        && failures
+            .iter()
+            .all(|f| f.contains("Operation not permitted"))
+    {
         return Err(QdiscFailure::PermissionDenied);
     }
     Err(QdiscFailure::NotCapable(failures.join("; ")))
@@ -169,7 +193,9 @@ fn enable_smart_queuing(interface: &str) -> Result<&'static str, QdiscFailure> {
 /// would have chosen on its own. "No such file or directory" (nothing to
 /// delete - already the default) is not a failure, it is the goal state.
 fn disable_smart_queuing(interface: &str) {
-    let _ = Command::new(tc_bin()).args(["qdisc", "del", "dev", interface, "root"]).output();
+    let _ = Command::new(tc_bin())
+        .args(["qdisc", "del", "dev", interface, "root"])
+        .output();
 }
 
 pub struct NetworkModule {
@@ -180,7 +206,9 @@ pub struct NetworkModule {
 
 impl NetworkModule {
     pub fn new() -> Self {
-        Self { mode: Mutex::new(NetworkMode::Off) }
+        Self {
+            mode: Mutex::new(NetworkMode::Off),
+        }
     }
 
     fn status(&self) -> Value {
@@ -223,7 +251,10 @@ impl Module for NetworkModule {
                 let raw = params.get("mode").and_then(Value::as_str).ok_or_else(|| {
                     ModuleError::localised(
                         ErrorKind::InvalidParams,
-                        msg!("network.err.modeRequired", "params.mode is required: 'off' or 'auto'"),
+                        msg!(
+                            "network.err.modeRequired",
+                            "params.mode is required: 'off' or 'auto'"
+                        ),
                     )
                 })?;
                 let mode = NetworkMode::parse(raw).ok_or_else(|| {
@@ -233,12 +264,16 @@ impl Module for NetworkModule {
                     )
                 })?;
 
-                let interface = default_route_interface(&read_to_string(&route_path())).ok_or_else(|| {
-                    ModuleError::localised(
-                        ErrorKind::NotCapable,
-                        msg!("network.err.noInterface", "no default-route network interface found"),
-                    )
-                })?;
+                let interface = default_route_interface(&read_to_string(&route_path()))
+                    .ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::NotCapable,
+                            msg!(
+                                "network.err.noInterface",
+                                "no default-route network interface found"
+                            ),
+                        )
+                    })?;
 
                 match mode {
                     NetworkMode::Off => disable_smart_queuing(&interface),
@@ -295,8 +330,11 @@ mod tests {
     impl FakeTc {
         fn new(script: &str) -> Self {
             let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let dir = std::env::temp_dir()
-                .join(format!("pyren-network-test-{}-{:?}", std::process::id(), std::thread::current().id()));
+            let dir = std::env::temp_dir().join(format!(
+                "pyren-network-test-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("tc");
             std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -316,7 +354,10 @@ mod tests {
     #[test]
     fn every_attempt_refused_with_eperm_is_permission_denied() {
         let _fx = FakeTc::new("echo 'RTNETLINK answers: Operation not permitted' >&2; exit 2");
-        assert_eq!(enable_smart_queuing("wlan0"), Err(QdiscFailure::PermissionDenied));
+        assert_eq!(
+            enable_smart_queuing("wlan0"),
+            Err(QdiscFailure::PermissionDenied)
+        );
     }
 
     #[test]
@@ -324,7 +365,10 @@ mod tests {
         let _fx = FakeTc::new("echo 'Error: Specified qdisc kind is unknown.' >&2; exit 2");
         match enable_smart_queuing("wlan0") {
             Err(QdiscFailure::NotCapable(detail)) => {
-                assert!(detail.contains("cake") && detail.contains("fq_codel"), "got: {detail}");
+                assert!(
+                    detail.contains("cake") && detail.contains("fq_codel"),
+                    "got: {detail}"
+                );
             }
             other => panic!("expected NotCapable, got {other:?}"),
         }
@@ -353,12 +397,16 @@ enp3s0\t00000000\t0102A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
 
     #[test]
     fn default_route_picks_the_lowest_metric_gateway_route() {
-        assert_eq!(default_route_interface(ROUTE_TABLE), Some("enp3s0".to_string()));
+        assert_eq!(
+            default_route_interface(ROUTE_TABLE),
+            Some("enp3s0".to_string())
+        );
     }
 
     #[test]
     fn non_default_and_gatewayless_routes_are_ignored() {
-        let table = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
+        let table =
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
                      lo\t0000007F\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n";
         assert_eq!(default_route_interface(table), None);
     }
@@ -402,7 +450,9 @@ enp3s0\t00000000\t0102A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
     #[test]
     fn set_mode_with_an_unknown_name_is_invalid_params() {
         let module = NetworkModule::new();
-        let err = module.call("setMode", json!({ "mode": "custom" })).unwrap_err();
+        let err = module
+            .call("setMode", json!({ "mode": "custom" }))
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidParams);
     }
 

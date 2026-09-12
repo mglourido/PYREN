@@ -91,7 +91,9 @@ pub struct EventBus {
 impl std::fmt::Debug for EventBus {
     /// Hand-written because a listener is a closure and cannot derive it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventBus").field("ring", &self.ring).finish_non_exhaustive()
+        f.debug_struct("EventBus")
+            .field("ring", &self.ring)
+            .finish_non_exhaustive()
     }
 }
 
@@ -153,7 +155,10 @@ impl EventBus {
     /// publishing thread with no ring lock held, so publishing from inside
     /// one would recurse rather than deadlock - still not something to do.
     pub fn subscribe(&self, listener: impl Fn(&str, &Value) + Send + Sync + 'static) {
-        self.listeners.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(listener));
+        self.listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Box::new(listener));
     }
 
     /// Publishes one event and wakes every waiting poll. Returns its
@@ -218,7 +223,11 @@ impl EventBus {
                 // Nothing happened. `seq` still comes back so a client that
                 // polled with a stale `since` catches up rather than asking
                 // for the same nothing forever.
-                return Batch { seq: ring.latest, events: Vec::new(), missed: 0 };
+                return Batch {
+                    seq: ring.latest,
+                    events: Vec::new(),
+                    missed: 0,
+                };
             }
             let (guard, _) = self
                 .published
@@ -229,17 +238,27 @@ impl EventBus {
     }
 
     fn batch(ring: &Ring, since: u64) -> Batch {
-        let events: Vec<Event> =
-            ring.events.iter().filter(|e| e.seq > since).cloned().collect();
+        let events: Vec<Event> = ring
+            .events
+            .iter()
+            .filter(|e| e.seq > since)
+            .cloned()
+            .collect();
         // Everything from `since + 1` up to the oldest we still hold is
         // gone. `oldest` is 0 until the first eviction, which is why this
         // is written as a saturating difference rather than a comparison.
         let missed = ring.oldest.saturating_sub(since);
-        Batch { seq: ring.latest, events, missed }
+        Batch {
+            seq: ring.latest,
+            events,
+            missed,
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Ring> {
-        self.ring.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.ring
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -260,7 +279,11 @@ mod tests {
 
         bus.publish("hotkey.pressed", json!({ "n": 2 }));
         let second = bus.read_since(first.seq, NONE);
-        assert_eq!(second.events.len(), 1, "the one it already had must not come back");
+        assert_eq!(
+            second.events.len(),
+            1,
+            "the one it already had must not come back"
+        );
         assert_eq!(second.events[0].payload["n"], 2);
     }
 
@@ -271,7 +294,10 @@ mod tests {
         let start = bus.latest();
 
         let batch = bus.read_since(start, NONE);
-        assert!(batch.events.is_empty(), "history is not replayed to a client that starts now");
+        assert!(
+            batch.events.is_empty(),
+            "history is not replayed to a client that starts now"
+        );
         assert_eq!(batch.seq, start);
     }
 
@@ -358,8 +384,16 @@ mod tests {
 
         let started = Instant::now();
         let batch = bus.read_since(0, Duration::from_secs(5));
-        assert_eq!(batch.events.len(), 1, "waited {:?} and got nothing", started.elapsed());
-        assert!(started.elapsed() < Duration::from_secs(4), "it waited out the timeout instead");
+        assert_eq!(
+            batch.events.len(),
+            1,
+            "waited {:?} and got nothing",
+            started.elapsed()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "it waited out the timeout instead"
+        );
         assert_eq!(batch.events[0].topic, "hotkey.pressed");
     }
 
@@ -377,7 +411,10 @@ mod tests {
     #[test]
     fn the_wire_shape_carries_the_fields_a_reader_branches_on() {
         let bus = EventBus::new();
-        bus.publish("power.mode", json!({ "mode": "performance", "source": "hotkey" }));
+        bus.publish(
+            "power.mode",
+            json!({ "mode": "performance", "source": "hotkey" }),
+        );
         let json = bus.read_since(0, NONE).to_json();
 
         assert_eq!(json["events"][0]["topic"], "power.mode");

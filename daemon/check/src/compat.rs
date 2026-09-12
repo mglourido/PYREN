@@ -37,8 +37,11 @@ pub struct Section {
 // --- power -------------------------------------------------------------
 
 pub fn power(surface: &PowerSurface) -> Section {
-    let checks =
-        vec![mechanisms_check(surface), envelope_check(surface), turbo_check(surface)];
+    let checks = vec![
+        mechanisms_check(surface),
+        envelope_check(surface),
+        turbo_check(surface),
+    ];
 
     let summary = if surface.mechanisms.is_empty() {
         "No power-mode mechanism answered, so the modes would have nothing to \
@@ -47,7 +50,13 @@ pub fn power(surface: &PowerSurface) -> Section {
     } else {
         format!(
             "Power modes are available through {}.",
-            join(&surface.mechanisms.iter().map(String::as_str).collect::<Vec<_>>())
+            join(
+                &surface
+                    .mechanisms
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+            )
         )
     };
 
@@ -75,10 +84,22 @@ fn mechanisms_check(surface: &PowerSurface) -> Check {
     let detail = match &surface.platform_profile {
         Some(active) if !surface.platform_profile_choices.is_empty() => format!(
             "{} (platform profile {active}, choices: {})",
-            join(&surface.mechanisms.iter().map(String::as_str).collect::<Vec<_>>()),
+            join(
+                &surface
+                    .mechanisms
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+            ),
             surface.platform_profile_choices.join(", ")
         ),
-        _ => join(&surface.mechanisms.iter().map(String::as_str).collect::<Vec<_>>()),
+        _ => join(
+            &surface
+                .mechanisms
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        ),
     };
     Check::new(ID, TITLE, CheckStatus::Pass, detail)
 }
@@ -95,7 +116,16 @@ fn envelope_check(surface: &PowerSurface) -> Check {
             "no RAPL package zone, so PL1/PL2 cannot be read or set",
         );
     }
-    Check::new(ID, TITLE, CheckStatus::Pass, format!("PL1 {}, PL2 {}", watts(surface.limits.pl1_uw), watts(surface.limits.pl2_uw)))
+    Check::new(
+        ID,
+        TITLE,
+        CheckStatus::Pass,
+        format!(
+            "PL1 {}, PL2 {}",
+            watts(surface.limits.pl1_uw),
+            watts(surface.limits.pl2_uw)
+        ),
+    )
 }
 
 fn turbo_check(surface: &PowerSurface) -> Check {
@@ -103,9 +133,19 @@ fn turbo_check(surface: &PowerSurface) -> Check {
     const TITLE: &str = "Turbo / boost switch";
 
     if surface.has_turbo {
-        Check::new(ID, TITLE, CheckStatus::Pass, "exposed, so turbo can be switched per mode")
+        Check::new(
+            ID,
+            TITLE,
+            CheckStatus::Pass,
+            "exposed, so turbo can be switched per mode",
+        )
     } else {
-        Check::new(ID, TITLE, CheckStatus::Warn, "not exposed; modes leave turbo alone")
+        Check::new(
+            ID,
+            TITLE,
+            CheckStatus::Warn,
+            "not exposed; modes leave turbo alone",
+        )
     }
 }
 
@@ -121,8 +161,13 @@ pub fn lighting(probe: &Probe) -> Section {
     // from one where two were never asked.
     checks.extend(probe.lighting.dialects.iter().map(dialect_check));
 
-    let driven: Vec<&str> =
-        probe.lighting.dialects.iter().filter(|d| d.available).map(|d| d.id).collect();
+    let driven: Vec<&str> = probe
+        .lighting
+        .dialects
+        .iter()
+        .filter(|d| d.available)
+        .map(|d| d.id)
+        .collect();
     let summary = match (driven.as_slice(), probe.per_key.present) {
         ([first, ..], _) => format!("The lights answered on '{first}' and can be driven."),
         ([], true) => {
@@ -167,7 +212,10 @@ fn per_key_check(probe: &Probe) -> Check {
             ID,
             TITLE,
             CheckStatus::Warn,
-            format!("{} is attached, but this build does not drive it", probe.per_key.usb_id),
+            format!(
+                "{} is attached, but this build does not drive it",
+                probe.per_key.usb_id
+            ),
         )
         .with_remedy(
             "The per-key path is deliberately unported until the key map's backspace \
@@ -183,7 +231,6 @@ fn per_key_check(probe: &Probe) -> Check {
         )
     }
 }
-
 
 // --- shared ------------------------------------------------------------
 
@@ -203,7 +250,12 @@ mod tests {
     use super::*;
 
     fn status_of(section: &Section, id: &str) -> CheckStatus {
-        section.checks.iter().find(|c| c.id == id).expect("check should exist").status
+        section
+            .checks
+            .iter()
+            .find(|c| c.id == id)
+            .expect("check should exist")
+            .status
     }
 
     /// The distinction the whole lighting section exists for: not being
@@ -215,19 +267,32 @@ mod tests {
         // Skipped for want of an interface: a `Skip`, and the detail must
         // not say the firmware refused anything.
         let not_asked = lighting(&probe_with([("fourZone", false, false)]));
-        assert_eq!(status_of(&not_asked, "lighting-fourZone"), CheckStatus::Skip);
+        assert_eq!(
+            status_of(&not_asked, "lighting-fourZone"),
+            CheckStatus::Skip
+        );
         assert!(!not_asked.checks[1].detail.contains("refused"));
-        assert!(not_asked.checks[1].remedy.is_none(), "there is nothing to do about a skip");
+        assert!(
+            not_asked.checks[1].remedy.is_none(),
+            "there is nothing to do about a skip"
+        );
 
         // Asked, and told no. A fact about *this dialect* - so it carries
         // the remedy that matters, which is to try another.
         let refused = lighting(&probe_with([("fourZone", true, false)]));
         assert_eq!(status_of(&refused, "lighting-fourZone"), CheckStatus::Warn);
-        assert!(refused.checks[1].remedy.is_some(), "a refusal names the other dialects");
+        assert!(
+            refused.checks[1].remedy.is_some(),
+            "a refusal names the other dialects"
+        );
 
         let answered = lighting(&probe_with([("fourZone", true, true)]));
         assert_eq!(status_of(&answered, "lighting-fourZone"), CheckStatus::Pass);
-        assert!(answered.summary.contains("fourZone"), "got: {}", answered.summary);
+        assert!(
+            answered.summary.contains("fourZone"),
+            "got: {}",
+            answered.summary
+        );
     }
 
     /// Every dialect appears whatever the machine has, because *which* one
@@ -243,7 +308,12 @@ mod tests {
         let ids: Vec<&str> = section.checks.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["lighting-per-key", "lighting-kernelZones", "lighting-fourZone", "lighting-lightbar"]
+            [
+                "lighting-per-key",
+                "lighting-kernelZones",
+                "lighting-fourZone",
+                "lighting-lightbar"
+            ]
         );
     }
 
@@ -276,7 +346,10 @@ mod tests {
         });
         assert_eq!(status_of(&section, "power-envelope"), CheckStatus::Pass);
         let detail = &section.checks[1].detail;
-        assert!(detail.contains("45 W") && detail.contains("65 W"), "got: {detail}");
+        assert!(
+            detail.contains("45 W") && detail.contains("65 W"),
+            "got: {detail}"
+        );
         assert!(section.checks[0].detail.contains("balanced"));
     }
 

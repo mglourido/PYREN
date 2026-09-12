@@ -67,8 +67,9 @@ pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
             let path = zone_path(zone);
             let text = std::fs::read_to_string(&path)
                 .map_err(|e| DialectError::Io(format!("{}: {e}", path.display())))?;
-            parse_hex(text.trim())
-                .ok_or_else(|| DialectError::Unreadable(format!("{}: {:?}", path.display(), text.trim())))
+            parse_hex(text.trim()).ok_or_else(|| {
+                DialectError::Unreadable(format!("{}: {:?}", path.display(), text.trim()))
+            })
         })
         .collect()
 }
@@ -78,12 +79,14 @@ pub fn write_colors(colors: &[Rgb]) -> Result<(), DialectError> {
         let path = zone_path(zone);
         // No newline: the kernel attribute parses a bare hex string, and
         // some builds of it are strict about the trailing byte.
-        std::fs::write(&path, format!("{:02X}{:02X}{:02X}", color.r, color.g, color.b)).map_err(
-            |e| match e.kind() {
-                std::io::ErrorKind::PermissionDenied => DialectError::NeedsRoot,
-                _ => DialectError::Io(format!("{}: {e}", path.display())),
-            },
-        )?;
+        std::fs::write(
+            &path,
+            format!("{:02X}{:02X}{:02X}", color.r, color.g, color.b),
+        )
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::PermissionDenied => DialectError::NeedsRoot,
+            _ => DialectError::Io(format!("{}: {e}", path.display())),
+        })?;
     }
     Ok(())
 }
@@ -135,7 +138,12 @@ mod tests {
         unsafe { std::env::set_var("PYREN_RGB_ZONES_DIR", &dir) };
 
         assert!(present());
-        let colors = vec![Rgb::new(255, 0, 0), Rgb::new(0, 255, 0), Rgb::new(0, 0, 255), Rgb::new(1, 2, 3)];
+        let colors = vec![
+            Rgb::new(255, 0, 0),
+            Rgb::new(0, 255, 0),
+            Rgb::new(0, 0, 255),
+            Rgb::new(1, 2, 3),
+        ];
         write_colors(&colors).expect("a temp dir is writable");
         assert_eq!(read_colors().expect("just written"), colors);
 

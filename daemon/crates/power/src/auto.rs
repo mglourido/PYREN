@@ -189,7 +189,10 @@ pub struct Sensors {
 
 impl Sensors {
     pub fn discover() -> Self {
-        Self { cpu: pyren_core::sensors::cpu_temp_path(), gpu: pyren_core::sensors::gpu_temp_path() }
+        Self {
+            cpu: pyren_core::sensors::cpu_temp_path(),
+            gpu: pyren_core::sensors::gpu_temp_path(),
+        }
     }
 
     /// True when this machine can answer the question at all. A supervisor
@@ -219,7 +222,10 @@ fn load_ratio() -> f64 {
     let Ok(loadavg) = fs::read_to_string("/proc/loadavg") else {
         return 0.0;
     };
-    let Some(one_minute) = loadavg.split_whitespace().next().and_then(|v| v.parse::<f64>().ok())
+    let Some(one_minute) = loadavg
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse::<f64>().ok())
     else {
         return 0.0;
     };
@@ -299,9 +305,15 @@ impl AutoConfig {
     /// go; a battery threshold past 100 would hold every unplugged machine
     /// in Eco for good.
     pub fn problem(&self) -> Option<Msg> {
-        let finite = [self.load_low, self.load_high, self.battery_low_percent, self.temp_low_c, self.temp_high_c]
-            .iter()
-            .all(|v| v.is_finite());
+        let finite = [
+            self.load_low,
+            self.load_high,
+            self.battery_low_percent,
+            self.temp_low_c,
+            self.temp_high_c,
+        ]
+        .iter()
+        .all(|v| v.is_finite());
         if !finite || self.load_low < 0.0 || self.load_low >= self.load_high {
             return Some(msg!(
                 "power.err.loadBand",
@@ -331,7 +343,11 @@ impl AutoConfig {
     /// not a supervisor that picks Performance off a battery.
     pub fn preferred(&self, on_battery: bool) -> PowerMode {
         let (floor, ceiling) = range(on_battery);
-        let wanted = if on_battery { self.preferred_on_battery } else { self.preferred_on_mains };
+        let wanted = if on_battery {
+            self.preferred_on_battery
+        } else {
+            self.preferred_on_mains
+        };
         if rank(wanted) < rank(floor) {
             floor
         } else if rank(wanted) > rank(ceiling) {
@@ -396,7 +412,10 @@ impl Why {
             ),
             Why::Idle => msg!("power.autoReason.idle", "idle"),
             Why::BackToPreferred => {
-                msg!("power.autoReason.backToPreferred", "back to the preferred mode")
+                msg!(
+                    "power.autoReason.backToPreferred",
+                    "back to the preferred mode"
+                )
             }
             Why::OutOfRange => msg!(
                 "power.autoReason.outOfRange",
@@ -476,7 +495,11 @@ pub fn refine(
 ) -> Option<(PowerMode, Why)> {
     let (floor, ceiling) = range(on_battery);
     let below = step_down(baseline.mode, floor);
-    let above = if baseline.manual { baseline.mode } else { step_up(baseline.mode, ceiling) };
+    let above = if baseline.manual {
+        baseline.mode
+    } else {
+        step_up(baseline.mode, ceiling)
+    };
 
     // Heat outranks load, and it has to: a machine is hot *because* it is
     // busy, so the two arguments arrive together and the load one would
@@ -487,7 +510,9 @@ pub fn refine(
 
     // A battery this low is its own argument, whatever the CPU is doing.
     if on_battery
-        && inputs.battery_percent.is_some_and(|percent| percent <= config.battery_low_percent)
+        && inputs
+            .battery_percent
+            .is_some_and(|percent| percent <= config.battery_low_percent)
     {
         return Some((lower_of(floor, current), Why::BatteryLow));
     }
@@ -495,7 +520,11 @@ pub fn refine(
     // Only a mode the user did not choose is "out of range": a hand-picked
     // Performance on battery is exactly what rule 4 is careful around.
     if !baseline.manual && (rank(current) < rank(floor) || rank(current) > rank(ceiling)) {
-        let nearest = if rank(current) < rank(floor) { floor } else { ceiling };
+        let nearest = if rank(current) < rank(floor) {
+            floor
+        } else {
+            ceiling
+        };
         return Some((nearest, Why::OutOfRange));
     }
 
@@ -593,9 +622,14 @@ impl AutoSwitcher {
         }
 
         let baseline = self.baseline(config, on_battery);
-        let Some((target, why)) =
-            refine(inputs, config, on_battery, self.heat.is_hot(), baseline, current)
-        else {
+        let Some((target, why)) = refine(
+            inputs,
+            config,
+            on_battery,
+            self.heat.is_hot(),
+            baseline,
+            current,
+        ) else {
             self.pending = None;
             return None;
         };
@@ -633,7 +667,10 @@ impl AutoSwitcher {
         let preferred = config.preferred(on_battery);
         match self.manual {
             Some(mode) if mode != preferred => Baseline { mode, manual: true },
-            _ => Baseline { mode: preferred, manual: false },
+            _ => Baseline {
+                mode: preferred,
+                manual: false,
+            },
         }
     }
 
@@ -677,17 +714,29 @@ mod tests {
     use super::*;
 
     fn config() -> AutoConfig {
-        AutoConfig { enabled: true, samples_to_switch: 3, ..AutoConfig::default() }
+        AutoConfig {
+            enabled: true,
+            samples_to_switch: 3,
+            ..AutoConfig::default()
+        }
     }
 
     /// A comfortable machine: 60 C is well below `temp_low_c`, so the
     /// thermal rule is inert in every test that does not opt into it.
     fn inputs(on_battery: Option<bool>, load_ratio: f64) -> AutoInputs {
-        AutoInputs { on_battery, load_ratio, battery_percent: Some(80.0), temp_c: Some(60.0) }
+        AutoInputs {
+            on_battery,
+            load_ratio,
+            battery_percent: Some(80.0),
+            temp_c: Some(60.0),
+        }
     }
 
     fn at(temp_c: f64, on_battery: bool, load_ratio: f64) -> AutoInputs {
-        AutoInputs { temp_c: Some(temp_c), ..inputs(Some(on_battery), load_ratio) }
+        AutoInputs {
+            temp_c: Some(temp_c),
+            ..inputs(Some(on_battery), load_ratio)
+        }
     }
 
     /// What `refine` points at with the configured preference as the
@@ -699,7 +748,10 @@ mod tests {
         hot: bool,
         current: PowerMode,
     ) -> Option<PowerMode> {
-        let baseline = Baseline { mode: config.preferred(on_battery), manual: false };
+        let baseline = Baseline {
+            mode: config.preferred(on_battery),
+            manual: false,
+        };
         refine(inputs, config, on_battery, hot, baseline, current).map(|(mode, _)| mode)
     }
 
@@ -719,7 +771,11 @@ mod tests {
     /// transition, the way the first tick after startup does.
     fn settled(on_battery: bool) -> AutoSwitcher {
         let mut switcher = AutoSwitcher::default();
-        switcher.observe(inputs(Some(on_battery), 0.5), &config(), PowerMode::Balanced);
+        switcher.observe(
+            inputs(Some(on_battery), 0.5),
+            &config(),
+            PowerMode::Balanced,
+        );
         // Only the power source is being settled, not a half-counted
         // refinement that sample may have started.
         switcher.reset();
@@ -733,13 +789,21 @@ mod tests {
             .observe(inputs(Some(true), 0.5), &config(), PowerMode::Performance)
             .expect("a source change is answered at once");
 
-        assert_eq!(decision.mode, PowerMode::Eco, "Eco is the default home on battery");
+        assert_eq!(
+            decision.mode,
+            PowerMode::Eco,
+            "Eco is the default home on battery"
+        );
         assert!(decision.from_transition);
 
-        let balanced = AutoConfig { preferred_on_battery: PowerMode::Balanced, ..config() };
+        let balanced = AutoConfig {
+            preferred_on_battery: PowerMode::Balanced,
+            ..config()
+        };
         let mut switcher = settled(false);
-        let decision =
-            switcher.observe(inputs(Some(true), 0.5), &balanced, PowerMode::Performance).unwrap();
+        let decision = switcher
+            .observe(inputs(Some(true), 0.5), &balanced, PowerMode::Performance)
+            .unwrap();
         assert_eq!(decision.mode, PowerMode::Balanced);
     }
 
@@ -769,7 +833,9 @@ mod tests {
 
         assert_eq!(switcher.observe(idle, &config(), PowerMode::Balanced), None);
         assert_eq!(switcher.observe(idle, &config(), PowerMode::Balanced), None);
-        let decision = switcher.observe(idle, &config(), PowerMode::Balanced).unwrap();
+        let decision = switcher
+            .observe(idle, &config(), PowerMode::Balanced)
+            .unwrap();
 
         assert_eq!(decision.mode, PowerMode::Eco);
         assert!(!decision.from_transition, "a refinement, not an event");
@@ -782,7 +848,9 @@ mod tests {
         for _ in 0..2 {
             switcher.observe(idle, &config(), PowerMode::Performance);
         }
-        let decision = switcher.observe(idle, &config(), PowerMode::Performance).unwrap();
+        let decision = switcher
+            .observe(idle, &config(), PowerMode::Performance)
+            .unwrap();
 
         assert_eq!(decision.mode, PowerMode::Balanced);
     }
@@ -804,8 +872,14 @@ mod tests {
 
     #[test]
     fn a_low_battery_asks_for_eco_however_busy_the_machine_is() {
-        let flat = AutoInputs { battery_percent: Some(12.0), ..inputs(Some(true), 0.99) };
-        assert_eq!(target(flat, &config(), true, false, PowerMode::Balanced), Some(PowerMode::Eco));
+        let flat = AutoInputs {
+            battery_percent: Some(12.0),
+            ..inputs(Some(true), 0.99)
+        };
+        assert_eq!(
+            target(flat, &config(), true, false, PowerMode::Balanced),
+            Some(PowerMode::Eco)
+        );
     }
 
     /// The rule this exists for: a machine that is busy *and* hot gets the
@@ -816,7 +890,10 @@ mod tests {
     fn heat_outranks_load() {
         let busy_and_hot = at(90.0, false, 0.99);
         let current = PowerMode::Performance;
-        assert_eq!(target(busy_and_hot, &config(), false, true, current), Some(PowerMode::Balanced));
+        assert_eq!(
+            target(busy_and_hot, &config(), false, true, current),
+            Some(PowerMode::Balanced)
+        );
         assert_eq!(
             target(busy_and_hot, &config(), false, false, PowerMode::Balanced),
             Some(PowerMode::Performance),
@@ -831,10 +908,22 @@ mod tests {
     fn the_heat_latch_holds_until_the_machine_has_actually_cooled() {
         let mut latch = HeatLatch::default();
         assert!(!latch.observe(Some(84.0), &config()));
-        assert!(latch.observe(Some(85.0), &config()), "at the threshold, not past it");
-        assert!(latch.observe(Some(80.0), &config()), "still hot inside the dead band");
-        assert!(latch.observe(Some(76.0), &config()), "and at the bottom of it");
-        assert!(!latch.observe(Some(75.0), &config()), "cool again only below temp_low_c");
+        assert!(
+            latch.observe(Some(85.0), &config()),
+            "at the threshold, not past it"
+        );
+        assert!(
+            latch.observe(Some(80.0), &config()),
+            "still hot inside the dead band"
+        );
+        assert!(
+            latch.observe(Some(76.0), &config()),
+            "and at the bottom of it"
+        );
+        assert!(
+            !latch.observe(Some(75.0), &config()),
+            "cool again only below temp_low_c"
+        );
     }
 
     /// A machine with no sensor is not a cold machine - but it is not a hot
@@ -860,9 +949,18 @@ mod tests {
     /// The whole rule is switchable, and off it changes nothing at all.
     #[test]
     fn a_user_who_turned_the_thermal_rule_off_keeps_their_performance_mode() {
-        let cool_headed = AutoConfig { back_off_when_hot: false, ..config() };
+        let cool_headed = AutoConfig {
+            back_off_when_hot: false,
+            ..config()
+        };
         assert_eq!(
-            target(at(95.0, false, 0.99), &cool_headed, false, true, PowerMode::Balanced),
+            target(
+                at(95.0, false, 0.99),
+                &cool_headed,
+                false,
+                true,
+                PowerMode::Balanced
+            ),
             Some(PowerMode::Performance)
         );
     }
@@ -874,14 +972,26 @@ mod tests {
         let mut switcher = settled(false);
         let hot = at(92.0, false, 0.99);
 
-        assert_eq!(switcher.observe(hot, &config(), PowerMode::Performance), None);
-        assert_eq!(switcher.observe(hot, &config(), PowerMode::Performance), None);
-        let decision = switcher.observe(hot, &config(), PowerMode::Performance).unwrap();
+        assert_eq!(
+            switcher.observe(hot, &config(), PowerMode::Performance),
+            None
+        );
+        assert_eq!(
+            switcher.observe(hot, &config(), PowerMode::Performance),
+            None
+        );
+        let decision = switcher
+            .observe(hot, &config(), PowerMode::Performance)
+            .unwrap();
 
         assert_eq!(decision.mode, PowerMode::Balanced);
         assert!(!decision.from_transition);
         assert_eq!(decision.reason.key, "power.autoReason.hot");
-        assert!(decision.reason.to_string().contains("92"), "{}", decision.reason);
+        assert!(
+            decision.reason.to_string().contains("92"),
+            "{}",
+            decision.reason
+        );
     }
 
     /// The latch is updated on every tick, including the ones that return
@@ -892,7 +1002,10 @@ mod tests {
         let mut switcher = settled(false);
         let decision = switcher.observe(at(92.0, true, 0.99), &config(), PowerMode::Performance);
         assert!(decision.is_some_and(|d| d.from_transition));
-        assert!(switcher.is_hot(), "the transition tick still read the sensor");
+        assert!(
+            switcher.is_hot(),
+            "the transition tick still read the sensor"
+        );
     }
 
     /// Taking over by hand is an opinion about the mode, not about the
@@ -913,7 +1026,10 @@ mod tests {
                 for hot in [false, true] {
                     for current in [PowerMode::Eco, PowerMode::Balanced, PowerMode::Performance] {
                         for manual in [false, true] {
-                            let baseline = Baseline { mode: current, manual };
+                            let baseline = Baseline {
+                                mode: current,
+                                manual,
+                            };
                             let decided = refine(
                                 inputs(Some(on_battery), load),
                                 &config(),
@@ -937,7 +1053,10 @@ mod tests {
         let mut switcher = settled(false);
         let idle = inputs(Some(false), 0.0);
         for _ in 0..10 {
-            assert_eq!(switcher.observe(idle, &config(), PowerMode::Unlimited), None);
+            assert_eq!(
+                switcher.observe(idle, &config(), PowerMode::Unlimited),
+                None
+            );
         }
     }
 
@@ -946,8 +1065,9 @@ mod tests {
     #[test]
     fn unplugging_does_move_a_machine_out_of_unlimited() {
         let mut switcher = settled(false);
-        let decision =
-            switcher.observe(inputs(Some(true), 0.5), &config(), PowerMode::Unlimited).unwrap();
+        let decision = switcher
+            .observe(inputs(Some(true), 0.5), &config(), PowerMode::Unlimited)
+            .unwrap();
 
         assert_eq!(decision.mode, PowerMode::Eco);
     }
@@ -955,16 +1075,25 @@ mod tests {
     #[test]
     fn the_dead_band_between_the_thresholds_produces_no_opinion() {
         let middling = inputs(Some(false), 0.5);
-        assert_eq!(target(middling, &config(), false, false, PowerMode::Performance), None);
+        assert_eq!(
+            target(middling, &config(), false, false, PowerMode::Performance),
+            None
+        );
     }
 
     #[test]
     fn a_disabled_system_does_nothing_for_its_own_power_source() {
-        let off = AutoConfig { eco_on_battery: false, ..config() };
+        let off = AutoConfig {
+            eco_on_battery: false,
+            ..config()
+        };
         let mut switcher = settled(false);
 
         // Unplugging with the Eco system off is not answered...
-        assert_eq!(switcher.observe(inputs(Some(true), 0.5), &off, PowerMode::Performance), None);
+        assert_eq!(
+            switcher.observe(inputs(Some(true), 0.5), &off, PowerMode::Performance),
+            None
+        );
         // ...and neither is idling on battery.
         let idle = inputs(Some(true), 0.0);
         for _ in 0..5 {
@@ -984,7 +1113,9 @@ mod tests {
         for _ in 0..2 {
             switcher.observe(busy, &config(), PowerMode::Balanced);
         }
-        let decision = switcher.observe(busy, &config(), PowerMode::Balanced).unwrap();
+        let decision = switcher
+            .observe(busy, &config(), PowerMode::Balanced)
+            .unwrap();
 
         assert_eq!(decision.mode, PowerMode::Performance);
     }
@@ -1001,7 +1132,11 @@ mod tests {
     // --- Preferred modes -------------------------------------------------
 
     fn preferring(battery: PowerMode, mains: PowerMode) -> AutoConfig {
-        AutoConfig { preferred_on_battery: battery, preferred_on_mains: mains, ..config() }
+        AutoConfig {
+            preferred_on_battery: battery,
+            preferred_on_mains: mains,
+            ..config()
+        }
     }
 
     /// Preferring Eco on battery: a busy machine earns Balanced, and gives
@@ -1012,14 +1147,37 @@ mod tests {
         let config = preferring(PowerMode::Eco, PowerMode::Performance);
         let mut switcher = settled(true);
 
-        let up = run(&mut switcher, inputs(Some(true), 0.9), &config, PowerMode::Eco, 5).unwrap();
+        let up = run(
+            &mut switcher,
+            inputs(Some(true), 0.9),
+            &config,
+            PowerMode::Eco,
+            5,
+        )
+        .unwrap();
         assert_eq!(up.mode, PowerMode::Balanced);
         assert_eq!(up.reason.key, "power.autoReason.sustainedLoad");
 
         // 0.55 is above the middle (0.50): still working, so it holds.
-        assert_eq!(run(&mut switcher, inputs(Some(true), 0.55), &config, PowerMode::Balanced, 10), None);
+        assert_eq!(
+            run(
+                &mut switcher,
+                inputs(Some(true), 0.55),
+                &config,
+                PowerMode::Balanced,
+                10
+            ),
+            None
+        );
 
-        let back = run(&mut switcher, inputs(Some(true), 0.45), &config, PowerMode::Balanced, 5).unwrap();
+        let back = run(
+            &mut switcher,
+            inputs(Some(true), 0.45),
+            &config,
+            PowerMode::Balanced,
+            5,
+        )
+        .unwrap();
         assert_eq!(back.mode, PowerMode::Eco);
         assert_eq!(back.reason.key, "power.autoReason.backToPreferred");
     }
@@ -1032,14 +1190,37 @@ mod tests {
         let config = preferring(PowerMode::Balanced, PowerMode::Performance);
         let mut switcher = settled(true);
 
-        let down = run(&mut switcher, inputs(Some(true), 0.1), &config, PowerMode::Balanced, 5).unwrap();
+        let down = run(
+            &mut switcher,
+            inputs(Some(true), 0.1),
+            &config,
+            PowerMode::Balanced,
+            5,
+        )
+        .unwrap();
         assert_eq!(down.mode, PowerMode::Eco);
         assert_eq!(down.reason.key, "power.autoReason.idle");
 
         // 0.45 is below the middle: not enough to call it work.
-        assert_eq!(run(&mut switcher, inputs(Some(true), 0.45), &config, PowerMode::Eco, 10), None);
+        assert_eq!(
+            run(
+                &mut switcher,
+                inputs(Some(true), 0.45),
+                &config,
+                PowerMode::Eco,
+                10
+            ),
+            None
+        );
 
-        let back = run(&mut switcher, inputs(Some(true), 0.55), &config, PowerMode::Eco, 5).unwrap();
+        let back = run(
+            &mut switcher,
+            inputs(Some(true), 0.55),
+            &config,
+            PowerMode::Eco,
+            5,
+        )
+        .unwrap();
         assert_eq!(back.mode, PowerMode::Balanced);
     }
 
@@ -1050,13 +1231,19 @@ mod tests {
         for preferred in [PowerMode::Eco, PowerMode::Balanced] {
             let config = preferring(preferred, PowerMode::Performance);
             for load in [0.35, 0.5, 0.65] {
-                assert_eq!(target(inputs(Some(true), load), &config, true, false, preferred), None);
+                assert_eq!(
+                    target(inputs(Some(true), load), &config, true, false, preferred),
+                    None
+                );
             }
         }
         for preferred in [PowerMode::Balanced, PowerMode::Performance] {
             let config = preferring(PowerMode::Eco, preferred);
             for load in [0.35, 0.5, 0.65] {
-                assert_eq!(target(inputs(Some(false), load), &config, false, false, preferred), None);
+                assert_eq!(
+                    target(inputs(Some(false), load), &config, false, false, preferred),
+                    None
+                );
             }
         }
     }
@@ -1068,16 +1255,41 @@ mod tests {
         let config = preferring(PowerMode::Eco, PowerMode::Balanced);
         let mut switcher = settled(true);
 
-        let plugged = switcher.observe(inputs(Some(false), 0.9), &config, PowerMode::Eco).unwrap();
+        let plugged = switcher
+            .observe(inputs(Some(false), 0.9), &config, PowerMode::Eco)
+            .unwrap();
         assert_eq!(plugged.mode, PowerMode::Balanced);
         assert!(plugged.from_transition);
 
-        let up = run(&mut switcher, inputs(Some(false), 0.9), &config, PowerMode::Balanced, 5).unwrap();
+        let up = run(
+            &mut switcher,
+            inputs(Some(false), 0.9),
+            &config,
+            PowerMode::Balanced,
+            5,
+        )
+        .unwrap();
         assert_eq!(up.mode, PowerMode::Performance);
 
-        let back = run(&mut switcher, inputs(Some(false), 0.0), &config, PowerMode::Performance, 5).unwrap();
+        let back = run(
+            &mut switcher,
+            inputs(Some(false), 0.0),
+            &config,
+            PowerMode::Performance,
+            5,
+        )
+        .unwrap();
         assert_eq!(back.mode, PowerMode::Balanced);
-        assert_eq!(run(&mut switcher, inputs(Some(false), 0.0), &config, PowerMode::Balanced, 10), None);
+        assert_eq!(
+            run(
+                &mut switcher,
+                inputs(Some(false), 0.0),
+                &config,
+                PowerMode::Balanced,
+                10
+            ),
+            None
+        );
     }
 
     /// A hand-edited config cannot make the supervisor pick Performance on
@@ -1092,13 +1304,27 @@ mod tests {
     #[test]
     fn crossed_or_impossible_thresholds_are_reported() {
         assert_eq!(AutoConfig::default().problem(), None);
-        let crossed_load = AutoConfig { load_low: 0.8, load_high: 0.7, ..config() };
+        let crossed_load = AutoConfig {
+            load_low: 0.8,
+            load_high: 0.7,
+            ..config()
+        };
         assert_eq!(crossed_load.problem().unwrap().key, "power.err.loadBand");
-        let crossed_temp = AutoConfig { temp_low_c: 90.0, temp_high_c: 85.0, ..config() };
+        let crossed_temp = AutoConfig {
+            temp_low_c: 90.0,
+            temp_high_c: 85.0,
+            ..config()
+        };
         assert_eq!(crossed_temp.problem().unwrap().key, "power.err.tempBand");
-        let battery = AutoConfig { battery_low_percent: 150.0, ..config() };
+        let battery = AutoConfig {
+            battery_low_percent: 150.0,
+            ..config()
+        };
         assert_eq!(battery.problem().unwrap().key, "power.err.batteryPercent");
-        let nan = AutoConfig { load_high: f64::NAN, ..config() };
+        let nan = AutoConfig {
+            load_high: f64::NAN,
+            ..config()
+        };
         assert!(nan.problem().is_some());
     }
 
@@ -1106,7 +1332,8 @@ mod tests {
     /// and a config written before the fields existed still loads.
     #[test]
     fn the_preferences_round_trip_and_old_configs_get_the_defaults() {
-        let json = serde_json::to_value(preferring(PowerMode::Balanced, PowerMode::Balanced)).unwrap();
+        let json =
+            serde_json::to_value(preferring(PowerMode::Balanced, PowerMode::Balanced)).unwrap();
         assert_eq!(json["preferredOnBattery"], "balanced");
         assert_eq!(json["preferredOnMains"], "balanced");
 
@@ -1120,8 +1347,14 @@ mod tests {
     #[test]
     fn performance_on_battery_that_nobody_chose_is_brought_down() {
         let mut switcher = settled(true);
-        let decision =
-            run(&mut switcher, inputs(Some(true), 0.5), &config(), PowerMode::Performance, 5).unwrap();
+        let decision = run(
+            &mut switcher,
+            inputs(Some(true), 0.5),
+            &config(),
+            PowerMode::Performance,
+            5,
+        )
+        .unwrap();
         assert_eq!(decision.mode, PowerMode::Balanced);
         assert_eq!(decision.reason.key, "power.autoReason.outOfRange");
     }
@@ -1138,7 +1371,13 @@ mod tests {
 
         for load in [0.99, 0.6, 0.4] {
             assert_eq!(
-                run(&mut switcher, inputs(Some(true), load), &config(), PowerMode::Performance, 10),
+                run(
+                    &mut switcher,
+                    inputs(Some(true), load),
+                    &config(),
+                    PowerMode::Performance,
+                    10
+                ),
                 None,
                 "load {load} is no reason to take away what the user asked for"
             );
@@ -1152,26 +1391,63 @@ mod tests {
         let mut switcher = settled(true);
         switcher.adopt(PowerMode::Performance);
 
-        let idle = run(&mut switcher, inputs(Some(true), 0.05), &config(), PowerMode::Performance, 5)
-            .unwrap();
-        assert_eq!(idle.mode, PowerMode::Balanced, "one step, not all the way to Eco");
+        let idle = run(
+            &mut switcher,
+            inputs(Some(true), 0.05),
+            &config(),
+            PowerMode::Performance,
+            5,
+        )
+        .unwrap();
+        assert_eq!(
+            idle.mode,
+            PowerMode::Balanced,
+            "one step, not all the way to Eco"
+        );
 
-        let back = run(&mut switcher, inputs(Some(true), 0.6), &config(), PowerMode::Balanced, 5)
-            .unwrap();
+        let back = run(
+            &mut switcher,
+            inputs(Some(true), 0.6),
+            &config(),
+            PowerMode::Balanced,
+            5,
+        )
+        .unwrap();
         assert_eq!(back.mode, PowerMode::Performance);
         assert_eq!(back.reason.key, "power.autoReason.backToPreferred");
 
-        let hot = run(&mut switcher, at(90.0, true, 0.99), &config(), PowerMode::Performance, 5)
-            .unwrap();
+        let hot = run(
+            &mut switcher,
+            at(90.0, true, 0.99),
+            &config(),
+            PowerMode::Performance,
+            5,
+        )
+        .unwrap();
         assert_eq!(hot.mode, PowerMode::Balanced);
         assert_eq!(hot.reason.key, "power.autoReason.hot");
         // Still latched at 80 C: no climbing back into the same wall.
-        assert_eq!(run(&mut switcher, at(80.0, true, 0.99), &config(), PowerMode::Balanced, 10), None);
+        assert_eq!(
+            run(
+                &mut switcher,
+                at(80.0, true, 0.99),
+                &config(),
+                PowerMode::Balanced,
+                10
+            ),
+            None
+        );
 
-        let flat = AutoInputs { battery_percent: Some(15.0), ..inputs(Some(true), 0.99) };
+        let flat = AutoInputs {
+            battery_percent: Some(15.0),
+            ..inputs(Some(true), 0.99)
+        };
         let low = run(&mut switcher, flat, &config(), PowerMode::Balanced, 5).unwrap();
         assert_eq!(low.mode, PowerMode::Eco);
-        assert_eq!(run(&mut switcher, flat, &config(), PowerMode::Eco, 10), None);
+        assert_eq!(
+            run(&mut switcher, flat, &config(), PowerMode::Eco, 10),
+            None
+        );
     }
 
     /// A hand-picked mode is only ever stepped down from: Eco chosen for a
@@ -1181,10 +1457,19 @@ mod tests {
         let mut switcher = settled(false);
         switcher.adopt(PowerMode::Eco);
         assert_eq!(
-            run(&mut switcher, inputs(Some(false), 0.99), &config(), PowerMode::Eco, 10),
+            run(
+                &mut switcher,
+                inputs(Some(false), 0.99),
+                &config(),
+                PowerMode::Eco,
+                10
+            ),
             None
         );
-        assert_eq!(switcher.manual_baseline(&config(), false), Some(PowerMode::Eco));
+        assert_eq!(
+            switcher.manual_baseline(&config(), false),
+            Some(PowerMode::Eco)
+        );
     }
 
     /// Picking the mode the supervisor would have chosen anyway is agreeing
@@ -1196,7 +1481,14 @@ mod tests {
         switcher.adopt(PowerMode::Eco);
         assert_eq!(switcher.manual_baseline(&config, true), None);
 
-        let up = run(&mut switcher, inputs(Some(true), 0.9), &config, PowerMode::Eco, 5).unwrap();
+        let up = run(
+            &mut switcher,
+            inputs(Some(true), 0.9),
+            &config,
+            PowerMode::Eco,
+            5,
+        )
+        .unwrap();
         assert_eq!(up.mode, PowerMode::Balanced);
     }
 
@@ -1209,12 +1501,25 @@ mod tests {
         switcher.adopt(PowerMode::Performance);
 
         let plugged = switcher.observe(inputs(Some(false), 0.5), &config(), PowerMode::Performance);
-        assert_eq!(plugged, None, "already in Performance, the mains preference");
+        assert_eq!(
+            plugged, None,
+            "already in Performance, the mains preference"
+        );
         assert_eq!(switcher.manual_baseline(&config(), false), None);
 
         switcher.adopt(PowerMode::Performance);
-        let no_eco_system = AutoConfig { eco_on_battery: false, ..config() };
-        assert_eq!(switcher.observe(inputs(Some(true), 0.5), &no_eco_system, PowerMode::Performance), None);
+        let no_eco_system = AutoConfig {
+            eco_on_battery: false,
+            ..config()
+        };
+        assert_eq!(
+            switcher.observe(
+                inputs(Some(true), 0.5),
+                &no_eco_system,
+                PowerMode::Performance
+            ),
+            None
+        );
         assert_eq!(switcher.manual_baseline(&config(), true), None);
     }
 }

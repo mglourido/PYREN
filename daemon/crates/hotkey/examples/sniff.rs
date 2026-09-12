@@ -184,7 +184,11 @@ fn open_all() -> Vec<Device> {
     let mut paths: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("event")))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("event"))
+        })
         .collect();
     paths.sort();
 
@@ -203,7 +207,11 @@ fn open_all() -> Vec<Device> {
 
 fn open_nonblocking(path: &Path) -> Option<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path).ok()
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()
 }
 
 /// `/sys/class/input/eventN/device/name`, the device's own name rather
@@ -301,7 +309,11 @@ fn offset_label(buffer: &[u8], index: usize) -> String {
 }
 
 fn hex(buffer: &[u8]) -> String {
-    buffer.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    buffer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The firmware's own lighting state, polled.
@@ -349,7 +361,11 @@ impl RgbWatch {
             }
         }
 
-        Some(Self { dialect, colors, surfaces })
+        Some(Self {
+            dialect,
+            colors,
+            surfaces,
+        })
     }
 
     /// Prints whatever changed since the last poll.
@@ -383,7 +399,14 @@ impl RgbWatch {
                 .map_or_else(Vec::new, |(_, buffer)| buffer);
 
             if current.is_empty() || current == previous {
-                self.surfaces.push((name, if current.is_empty() { previous } else { current }));
+                self.surfaces.push((
+                    name,
+                    if current.is_empty() {
+                        previous
+                    } else {
+                        current
+                    },
+                ));
                 continue;
             }
 

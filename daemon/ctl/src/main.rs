@@ -312,7 +312,11 @@ fn run(command: &args::Command) -> Run {
 
     match path.as_slice() {
         ["status"] => status(command),
-        ["info"] => show(command, client::call("system", "getInfo", Value::Null)?, print_info),
+        ["info"] => show(
+            command,
+            client::call("system", "getInfo", Value::Null)?,
+            print_info,
+        ),
 
         ["power", "get"] => show(command, power_state()?, print_power),
         ["power", "set", mode] => {
@@ -327,15 +331,31 @@ fn run(command: &args::Command) -> Run {
         ["power", "tune"] => power_tune(command),
         ["power", "os-profile", value] => {
             let enabled = word_switch("os-profile", value)?;
-            show(command, client::call("power", "setApplyToOsProfile", json!({ "enabled": enabled }))?, print_power)
+            show(
+                command,
+                client::call(
+                    "power",
+                    "setApplyToOsProfile",
+                    json!({ "enabled": enabled }),
+                )?,
+                print_power,
+            )
         }
         ["power", "auto", value] => power_auto(command, value),
         ["power", "restore-on-start", value] => {
             let enabled = word_switch("restore-on-start", value)?;
-            show(command, client::call("power", "setRestoreOnStart", json!({ "enabled": enabled }))?, print_power)
+            show(
+                command,
+                client::call("power", "setRestoreOnStart", json!({ "enabled": enabled }))?,
+                print_power,
+            )
         }
 
-        ["fan", "get"] => show(command, client::call("fan", "getStatus", Value::Null)?, print_fan),
+        ["fan", "get"] => show(
+            command,
+            client::call("fan", "getStatus", Value::Null)?,
+            print_fan,
+        ),
         ["fan", "set", mode] => {
             let pwm = command.number("pwm")?;
             let params = match pwm {
@@ -367,26 +387,44 @@ fn run(command: &args::Command) -> Run {
         }
         ["fan", "restore-on-start", value] => {
             let enabled = word_switch("restore-on-start", value)?;
-            show(command, client::call("fan", "setRestoreOnStart", json!({ "enabled": enabled }))?, print_fan)
+            show(
+                command,
+                client::call("fan", "setRestoreOnStart", json!({ "enabled": enabled }))?,
+                print_fan,
+            )
         }
         ["fan", "floor", which] => {
             let keep = match *which {
                 "driver" => true,
                 "pyren" => false,
-                other => return Err(format!("fan floor: expected driver or pyren, got '{other}'").into()),
+                other => {
+                    return Err(
+                        format!("fan floor: expected driver or pyren, got '{other}'").into(),
+                    )
+                }
             };
-            show(command, client::call("fan", "setKeepDriverFloor", json!({ "enabled": keep }))?, print_fan)
+            show(
+                command,
+                client::call("fan", "setKeepDriverFloor", json!({ "enabled": keep }))?,
+                print_fan,
+            )
         }
-        ["fan", "notices", "clear"] => {
-            show(command, client::call("fan", "clearFloorNotices", json!({}))?, print_fan)
-        }
+        ["fan", "notices", "clear"] => show(
+            command,
+            client::call("fan", "clearFloorNotices", json!({}))?,
+            print_fan,
+        ),
         ["fan", "calibrate"] => {
             let seconds = command.number("seconds")?;
             let params = match seconds {
                 Some(seconds) => json!({ "seconds": seconds.round().max(0.0) as u64 }),
                 None => Value::Null,
             };
-            show(command, client::call("fan", "calibrate", params)?, print_calibration)
+            show(
+                command,
+                client::call("fan", "calibrate", params)?,
+                print_calibration,
+            )
         }
         ["fan", "probe-speed"] => {
             let seconds = command.number("seconds")?;
@@ -394,7 +432,11 @@ fn run(command: &args::Command) -> Run {
                 Some(seconds) => json!({ "seconds": seconds.round().max(0.0) as u64 }),
                 None => Value::Null,
             };
-            show(command, client::call("fan", "probeSpeedControl", params)?, print_speed_probe)
+            show(
+                command,
+                client::call("fan", "probeSpeedControl", params)?,
+                print_speed_probe,
+            )
         }
         ["fan", "cleaner"] => show(
             command,
@@ -412,7 +454,11 @@ fn run(command: &args::Command) -> Run {
             if command.options.contains_key("force") {
                 params.insert("force".into(), json!(true));
             }
-            show(command, client::call("fan", "startCleaning", Value::Object(params))?, print_cleaner)
+            show(
+                command,
+                client::call("fan", "startCleaning", Value::Object(params))?,
+                print_cleaner,
+            )
         }
         ["fan", "clean-stop"] => show(
             command,
@@ -428,19 +474,37 @@ fn run(command: &args::Command) -> Run {
             )
         }
 
-        ["rgb", "probe"] => {
-            show(command, client::call("rgb", "getCapabilities", Value::Null)?, print_rgb_probe)
-        }
-        ["rgb", "get"] => show(command, client::call("rgb", "getStatus", Value::Null)?, print_rgb),
-        ["rgb", "read"] => show(command, client::call("rgb", "readZones", Value::Null)?, print_zones),
+        ["rgb", "probe"] => show(
+            command,
+            client::call("rgb", "getCapabilities", Value::Null)?,
+            print_rgb_probe,
+        ),
+        ["rgb", "get"] => show(
+            command,
+            client::call("rgb", "getStatus", Value::Null)?,
+            print_rgb,
+        ),
+        ["rgb", "read"] => show(
+            command,
+            client::call("rgb", "readZones", Value::Null)?,
+            print_zones,
+        ),
         ["rgb", "off"] => show(command, client::call("rgb", "off", Value::Null)?, print_rgb),
         ["rgb", "set", colour] => {
             let mut params = json!({ "color": colour });
             add_brightness(command, &mut params)?;
-            show(command, client::call("rgb", "setStatic", params)?, print_rgb)
+            show(
+                command,
+                client::call("rgb", "setStatic", params)?,
+                print_rgb,
+            )
         }
         ["rgb", "zones", spec] => {
-            let zones: Vec<&str> = spec.split(',').map(str::trim).filter(|z| !z.is_empty()).collect();
+            let zones: Vec<&str> = spec
+                .split(',')
+                .map(str::trim)
+                .filter(|z| !z.is_empty())
+                .collect();
             if zones.is_empty() {
                 return Err(Failure::Usage(
                     "rgb zones takes up to four comma-separated colours, e.g. \
@@ -469,17 +533,24 @@ fn run(command: &args::Command) -> Run {
                 print_rgb,
             )
         }
-        ["rgb", "effects"] => {
-            show(command, client::call("rgb", "listEffects", Value::Null)?, print_effects)
-        }
-        ["rgb", "effect", "stop"] => {
-            show(command, client::call("rgb", "stopEffect", Value::Null)?, print_rgb)
-        }
+        ["rgb", "effects"] => show(
+            command,
+            client::call("rgb", "listEffects", Value::Null)?,
+            print_effects,
+        ),
+        ["rgb", "effect", "stop"] => show(
+            command,
+            client::call("rgb", "stopEffect", Value::Null)?,
+            print_rgb,
+        ),
         ["rgb", "effect", kind] => {
             let mut effect = json!({ "kind": kind });
             if let Some(colors) = command.option("colors") {
-                let colors: Vec<&str> =
-                    colors.split(',').map(str::trim).filter(|c| !c.is_empty()).collect();
+                let colors: Vec<&str> = colors
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .collect();
                 effect["colors"] = json!(colors);
             }
             if let Some(speed) = command.number("speed")? {
@@ -492,7 +563,7 @@ fn run(command: &args::Command) -> Run {
                     other => {
                         return Err(Failure::Usage(format!(
                             "--direction takes ltr or rtl, not '{other}'"
-                        )))
+                        )));
                     }
                 });
             }
@@ -501,18 +572,28 @@ fn run(command: &args::Command) -> Run {
                 params["fps"] = json!(fps.round() as i64);
             }
             add_brightness(command, &mut params)?;
-            show(command, client::call("rgb", "setEffect", params)?, print_rgb)
+            show(
+                command,
+                client::call("rgb", "setEffect", params)?,
+                print_rgb,
+            )
         }
-        ["rgb", "dialect"] => {
-            show(command, client::call("rgb", "getCapabilities", Value::Null)?, print_rgb_probe)
-        }
+        ["rgb", "dialect"] => show(
+            command,
+            client::call("rgb", "getCapabilities", Value::Null)?,
+            print_rgb_probe,
+        ),
         ["rgb", "dialect", id] => show(
             command,
             client::call("rgb", "setDialect", json!({ "dialect": id }))?,
             print_rgb,
         ),
         ["rgb", which @ ("power-on" | "power-off")] => {
-            let method = if *which == "power-on" { "powerOn" } else { "powerOff" };
+            let method = if *which == "power-on" {
+                "powerOn"
+            } else {
+                "powerOff"
+            };
             let if_enabled = command.switch("if-enabled")?.unwrap_or(false);
             show(
                 command,
@@ -524,7 +605,11 @@ fn run(command: &args::Command) -> Run {
             let fps: i64 = value.parse().map_err(|_| {
                 Failure::Usage(format!("rgb battery-fps takes 0-60, not '{value}'"))
             })?;
-            show(command, client::call("rgb", "setBatteryFps", json!({ "fps": fps }))?, print_rgb)
+            show(
+                command,
+                client::call("rgb", "setBatteryFps", json!({ "fps": fps }))?,
+                print_rgb,
+            )
         }
         ["rgb", "power-animation", value] => {
             let enabled = word_switch("power-animation", value)?;
@@ -543,9 +628,11 @@ fn run(command: &args::Command) -> Run {
             )
         }
 
-        ["keymap", "get"] => {
-            show(command, client::call("keymap", "getStatus", Value::Null)?, print_keymap)
-        }
+        ["keymap", "get"] => show(
+            command,
+            client::call("keymap", "getStatus", Value::Null)?,
+            print_keymap,
+        ),
         ["keymap", "map", from, to] => {
             let from = parse_keycode("from", from)?;
             let to = parse_keycode("to", to)?;
@@ -567,7 +654,11 @@ fn run(command: &args::Command) -> Run {
             if let Some(device) = command.option("device") {
                 spec.insert("device".into(), json!(device));
             }
-            show(command, client::call("keymap", "removeMapping", Value::Object(spec))?, print_keymap)
+            show(
+                command,
+                client::call("keymap", "removeMapping", Value::Object(spec))?,
+                print_keymap,
+            )
         }
         ["keymap", value] => {
             let enabled = word_switch("keymap", value)?;
@@ -578,21 +669,33 @@ fn run(command: &args::Command) -> Run {
             )
         }
 
-        ["gpu", "get"] => show(command, client::call("gpu", "getStatus", Value::Null)?, print_gpu),
-        ["gpu", "set", mode] => {
-            show(command, client::call("gpu", "setMode", json!({ "mode": mode }))?, print_gpu)
-        }
+        ["gpu", "get"] => show(
+            command,
+            client::call("gpu", "getStatus", Value::Null)?,
+            print_gpu,
+        ),
+        ["gpu", "set", mode] => show(
+            command,
+            client::call("gpu", "setMode", json!({ "mode": mode }))?,
+            print_gpu,
+        ),
 
-        ["network", "get"] => {
-            show(command, client::call("network", "getStatus", Value::Null)?, print_network)
-        }
-        ["network", "set", mode] => {
-            show(command, client::call("network", "setMode", json!({ "mode": mode }))?, print_network)
-        }
+        ["network", "get"] => show(
+            command,
+            client::call("network", "getStatus", Value::Null)?,
+            print_network,
+        ),
+        ["network", "set", mode] => show(
+            command,
+            client::call("network", "setMode", json!({ "mode": mode }))?,
+            print_network,
+        ),
 
-        ["hotkey", "get"] => {
-            show(command, client::call("hotkey", "getStatus", Value::Null)?, print_hotkey)
-        }
+        ["hotkey", "get"] => show(
+            command,
+            client::call("hotkey", "getStatus", Value::Null)?,
+            print_hotkey,
+        ),
         ["hotkey", "learn"] => hotkey_learn(command),
         ["hotkey", "clear"] => show(
             command,
@@ -619,7 +722,11 @@ fn run(command: &args::Command) -> Run {
             )
         }
 
-        ["oc", "get"] => show(command, client::call("overclock", "getState", Value::Null)?, print_oc),
+        ["oc", "get"] => show(
+            command,
+            client::call("overclock", "getState", Value::Null)?,
+            print_oc,
+        ),
         ["oc", "probe"] => {
             let allow_writes = command.options.contains_key("write");
             show(
@@ -637,24 +744,36 @@ fn run(command: &args::Command) -> Run {
             )
         }
         ["oc", "set"] => oc_set(command),
-        ["oc", "confirm"] => {
-            show(command, client::call("overclock", "confirm", Value::Null)?, print_oc)
-        }
-        ["oc", "cancel"] => {
-            show(command, client::call("overclock", "cancel", Value::Null)?, print_oc)
-        }
+        ["oc", "confirm"] => show(
+            command,
+            client::call("overclock", "confirm", Value::Null)?,
+            print_oc,
+        ),
+        ["oc", "cancel"] => show(
+            command,
+            client::call("overclock", "cancel", Value::Null)?,
+            print_oc,
+        ),
         ["oc", "reset"] => {
             let params = match command.option("gpu") {
                 Some(gpu) => json!({ "gpu": gpu }),
                 None => Value::Null,
             };
-            show(command, client::call("overclock", "reset", params)?, print_oc)
+            show(
+                command,
+                client::call("overclock", "reset", params)?,
+                print_oc,
+            )
         }
         ["oc", "restore-on-start", value] => {
             let enabled = word_switch("restore-on-start", value)?;
             show(
                 command,
-                client::call("overclock", "setRestoreOnStart", json!({ "enabled": enabled }))?,
+                client::call(
+                    "overclock",
+                    "setRestoreOnStart",
+                    json!({ "enabled": enabled }),
+                )?,
                 print_oc,
             )
         }
@@ -662,7 +781,10 @@ fn run(command: &args::Command) -> Run {
         ["events"] => events(command),
 
         [] => Err(Failure::Usage("no command given".into())),
-        other => Err(Failure::Usage(format!("unknown command '{}'", other.join(" ")))),
+        other => Err(Failure::Usage(format!(
+            "unknown command '{}'",
+            other.join(" ")
+        ))),
     }
 }
 
@@ -677,7 +799,10 @@ fn show(command: &args::Command, reply: Value, printer: fn(&Value)) -> Run {
 }
 
 fn print_json(value: &Value) {
-    println!("{}", serde_json::to_string_pretty(value).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).unwrap_or_default()
+    );
 }
 
 fn power_state() -> Result<Value, ClientError> {
@@ -704,7 +829,11 @@ fn power_tune(command: &args::Command) -> Run {
         ));
     }
 
-    show(command, client::call("power", "setTuning", Value::Object(params))?, print_power)
+    show(
+        command,
+        client::call("power", "setTuning", Value::Object(params))?,
+        print_power,
+    )
 }
 
 fn power_auto(command: &args::Command, value: &str) -> Run {
@@ -736,8 +865,14 @@ fn power_auto(command: &args::Command, value: &str) -> Run {
         config["tempLowC"] = json!(low);
     }
     // Two thresholds that have crossed would latch on and never let go.
-    let high = config.get("tempHighC").and_then(Value::as_f64).unwrap_or(f64::MAX);
-    let low = config.get("tempLowC").and_then(Value::as_f64).unwrap_or(f64::MIN);
+    let high = config
+        .get("tempHighC")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::MAX);
+    let low = config
+        .get("tempLowC")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::MIN);
     if low >= high {
         return Err(Failure::Usage(format!(
             "--temp-low ({low}) has to be below --temp-high ({high}): they are the two \
@@ -817,7 +952,11 @@ fn hotkey_learn(command: &args::Command) -> Run {
         return Ok(());
     }
 
-    if reply.get("timedOut").and_then(Value::as_bool).unwrap_or(false) {
+    if reply
+        .get("timedOut")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         // Not an error, and the difference matters: a key that never
         // arrives is what a laptop whose Fn+P is handled entirely inside
         // the embedded controller looks like from here.
@@ -871,11 +1010,21 @@ fn events(command: &args::Command) -> Run {
         if command.json {
             // One JSON object per event, so this pipes into jq line by
             // line rather than producing one document at the end.
-            for event in reply.get("events").and_then(Value::as_array).into_iter().flatten() {
+            for event in reply
+                .get("events")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 println!("{}", serde_json::to_string(event).unwrap_or_default());
             }
         } else {
-            for event in reply.get("events").and_then(Value::as_array).into_iter().flatten() {
+            for event in reply
+                .get("events")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 println!(
                     "{:<16} {}",
                     text(event, "topic"),
@@ -897,7 +1046,11 @@ fn print_hotkey(status: &Value) {
     // not bound, not heard, or switched off - each with its own fix.
     row("state", text(status, "detail"));
 
-    let triggers = status.get("triggers").and_then(Value::as_array).cloned().unwrap_or_default();
+    let triggers = status
+        .get("triggers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     match triggers.first() {
         None => row("key", "none bound (pyren-ctl hotkey learn)"),
         Some(trigger) => {
@@ -939,9 +1092,11 @@ fn text(value: &Value, key: &str) -> String {
         Some(Value::String(s)) => s.clone(),
         // A translatable `Msg` (`{ key, params, text }`) - the CLI shows the
         // English `text` it always carries.
-        Some(Value::Object(o)) if o.contains_key("text") => {
-            o.get("text").and_then(Value::as_str).unwrap_or("-").to_string()
-        }
+        Some(Value::Object(o)) if o.contains_key("text") => o
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("-")
+            .to_string(),
         Some(Value::Null) | None => "-".to_string(),
         Some(other) => other.to_string(),
     }
@@ -976,7 +1131,10 @@ fn print_info(info: &Value) {
         ),
     );
     row("kernel", text(info, "kernel"));
-    row("verdict", format!("{} - {}", text(info, "compatibility"), text(info, "reason")));
+    row(
+        "verdict",
+        format!("{} - {}", text(info, "compatibility"), text(info, "reason")),
+    );
     if let Some(controls) = info.get("controls") {
         row(
             "controls",
@@ -1014,7 +1172,10 @@ fn print_power(state: &Value) {
             .get("available")
             .and_then(Value::as_array)
             .map(|a| {
-                a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             })
             .unwrap_or_default();
         row(
@@ -1060,14 +1221,21 @@ fn print_power(state: &Value) {
                 format!(
                     "on - eco system {} (prefers {}), performance system {} (prefers {})",
                     yes_no(auto.get("ecoOnBattery")),
-                    auto.get("preferredOnBattery").and_then(Value::as_str).unwrap_or("?"),
+                    auto.get("preferredOnBattery")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
                     yes_no(auto.get("performanceOnLoad")),
-                    auto.get("preferredOnMains").and_then(Value::as_str).unwrap_or("?"),
+                    auto.get("preferredOnMains")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
                 )
             },
         );
         if let Some(mode) = state.get("autoManualBaseline").and_then(Value::as_str) {
-            row("follows", format!("{mode} - set by hand, until the power source changes"));
+            row(
+                "follows",
+                format!("{mode} - set by hand, until the power source changes"),
+            );
         }
     }
     if let Some(thermal) = state.get("thermal") {
@@ -1099,11 +1267,19 @@ fn print_power(state: &Value) {
 /// the machine alone", and a table of four identical 100 % rows would be
 /// noise pretending to be information.
 fn print_tuning(tuning: Option<&Value>) {
-    let Some(Value::Object(modes)) = tuning else { return };
+    let Some(Value::Object(modes)) = tuning else {
+        return;
+    };
     let mut tuned = Vec::new();
     for (mode, values) in modes {
-        let pl1 = values.get("pl1Percent").and_then(Value::as_u64).unwrap_or(100);
-        let pl2 = values.get("pl2Percent").and_then(Value::as_u64).unwrap_or(100);
+        let pl1 = values
+            .get("pl1Percent")
+            .and_then(Value::as_u64)
+            .unwrap_or(100);
+        let pl2 = values
+            .get("pl2Percent")
+            .and_then(Value::as_u64)
+            .unwrap_or(100);
         let turbo = values.get("turbo").and_then(Value::as_bool).unwrap_or(true);
         if pl1 != 100 || pl2 != 100 || !turbo {
             tuned.push(format!(
@@ -1113,7 +1289,10 @@ fn print_tuning(tuning: Option<&Value>) {
         }
     }
     if tuned.is_empty() {
-        row("tuning", "none - every mode leaves the envelope where the firmware set it");
+        row(
+            "tuning",
+            "none - every mode leaves the envelope where the firmware set it",
+        );
     } else {
         row("tuning", tuned.join(", "));
     }
@@ -1186,7 +1365,10 @@ fn print_fan(status: &Value) {
             },
         );
         if speed && text(status, "speedControl") == "untested" {
-            row("speed control", "untested - run 'fan probe-speed' to confirm the fans obey");
+            row(
+                "speed control",
+                "untested - run 'fan probe-speed' to confirm the fans obey",
+            );
         }
     }
 
@@ -1217,8 +1399,13 @@ fn print_fan(status: &Value) {
     // that the others survived is how this feature loses someone's work.
     if let Some(profiles) = status.get("profileCurves").and_then(Value::as_object) {
         let active = status.get("activeProfile").and_then(Value::as_str);
-        for (profile, points) in profiles.iter().filter(|(name, _)| Some(name.as_str()) != active) {
-            let Some(points) = points.as_array() else { continue };
+        for (profile, points) in profiles
+            .iter()
+            .filter(|(name, _)| Some(name.as_str()) != active)
+        {
+            let Some(points) = points.as_array() else {
+                continue;
+            };
             if points.is_empty() {
                 continue;
             }
@@ -1263,10 +1450,23 @@ fn print_fan(status: &Value) {
     );
     // The floor, and what it does: below it the firmware has the fans.
     if let Some(rpm) = status.get("fanMinRpm").and_then(Value::as_i64) {
-        let stop_below = status.get("stopBelowPwm").and_then(Value::as_i64).unwrap_or(0);
-        let rpm_of = |key: &str| status.get(key).and_then(Value::as_i64).map_or("-".to_string(), |r| format!("{r}"));
+        let stop_below = status
+            .get("stopBelowPwm")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let rpm_of = |key: &str| {
+            status
+                .get(key)
+                .and_then(Value::as_i64)
+                .map_or("-".to_string(), |r| format!("{r}"))
+        };
         let keep = status.get("keepDriverFloor").and_then(Value::as_bool) != Some(false);
-        let which = match (keep, status.get("floorOverrideSupported").and_then(Value::as_bool)) {
+        let which = match (
+            keep,
+            status
+                .get("floorOverrideSupported")
+                .and_then(Value::as_bool),
+        ) {
             (_, Some(false)) => "the driver's; it cannot be told another",
             (true, _) => "the driver's",
             (false, _) if status.get("pyrenMinRpm").and_then(Value::as_i64).is_none() => {
@@ -1274,7 +1474,10 @@ fn print_fan(status: &Value) {
             }
             (false, _) => "Pyren's",
         };
-        row("slowest", format!("{rpm} rpm ({which}); below pwm {stop_below} the firmware stops them"));
+        row(
+            "slowest",
+            format!("{rpm} rpm ({which}); below pwm {stop_below} the firmware stops them"),
+        );
         row(
             "floors",
             format!(
@@ -1286,12 +1489,26 @@ fn print_fan(status: &Value) {
         );
     }
     if status.get("fansReleased").and_then(Value::as_bool) == Some(true) {
-        row("now", "below the floor - the firmware has the fans".to_string());
+        row(
+            "now",
+            "below the floor - the firmware has the fans".to_string(),
+        );
     }
-    if let Some(stalls) = status.get("recentFanStalls").and_then(Value::as_u64).filter(|&n| n > 0) {
-        row("stalls", format!("{stalls} in the last half hour, not enough to raise the floor yet"));
+    if let Some(stalls) = status
+        .get("recentFanStalls")
+        .and_then(Value::as_u64)
+        .filter(|&n| n > 0)
+    {
+        row(
+            "stalls",
+            format!("{stalls} in the last half hour, not enough to raise the floor yet"),
+        );
     }
-    if let Some(notices) = status.get("floorNotices").and_then(Value::as_array).filter(|n| !n.is_empty()) {
+    if let Some(notices) = status
+        .get("floorNotices")
+        .and_then(Value::as_array)
+        .filter(|n| !n.is_empty())
+    {
         for n in notices {
             let at = |k| n.get(k).and_then(Value::as_i64).unwrap_or(0);
             let ago = n.get("ageSecs").and_then(Value::as_u64).map_or_else(
@@ -1330,18 +1547,33 @@ fn print_cleaner(status: &Value) {
     let flag = |key: &str| status.get(key).and_then(Value::as_bool).unwrap_or(false);
 
     if flag("running") {
-        let left = status.get("secondsRemaining").and_then(Value::as_u64).unwrap_or(0);
-        let total = status.get("secondsTotal").and_then(Value::as_u64).unwrap_or(0);
-        row("cleaning", format!("{left}s left of {total}s - 'fan clean-stop' ends it now"));
+        let left = status
+            .get("secondsRemaining")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let total = status
+            .get("secondsTotal")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        row(
+            "cleaning",
+            format!("{left}s left of {total}s - 'fan clean-stop' ends it now"),
+        );
     } else if flag("transitioning") {
-        row("cleaning", "in progress - the fans are being braked or ramped back");
+        row(
+            "cleaning",
+            "in progress - the fans are being braked or ramped back",
+        );
     } else {
         row("cleaning", "not running");
     }
 
     row(
         "cleaner",
-        match (flag("supported"), status.get("generation").and_then(Value::as_str)) {
+        match (
+            flag("supported"),
+            status.get("generation").and_then(Value::as_str),
+        ) {
             (true, Some(generation)) => format!("available ({generation})"),
             (true, None) => "available".to_string(),
             (false, _) => "not available".to_string(),
@@ -1352,14 +1584,23 @@ fn print_cleaner(status: &Value) {
     // The guard people hit, and the reading it is compared against, on one
     // line - a refusal that names neither is a refusal nobody can act on.
     if let Some(temp) = status.get("cpuTempC").and_then(Value::as_i64) {
-        let limit = status.get("maxStartTempC").and_then(Value::as_i64).unwrap_or(0);
-        row("cpu", format!("{temp} °C (a cycle will not start above {limit} °C)"));
+        let limit = status
+            .get("maxStartTempC")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        row(
+            "cpu",
+            format!("{temp} °C (a cycle will not start above {limit} °C)"),
+        );
     }
     row(
         "settings",
         format!(
             "{}s at {}",
-            status.get("durationSecs").and_then(Value::as_u64).unwrap_or(0),
+            status
+                .get("durationSecs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
             match status.get("configuredSpeed").and_then(Value::as_u64) {
                 Some(speed) => format!("{}00 rpm", speed),
                 None => "the firmware's own speed".to_string(),
@@ -1385,9 +1626,18 @@ fn print_speed_probe(result: &Value) {
             "pwm1 = {} for {}s, {} rpm -> {} rpm ({} rpm of movement), restored to {}",
             result.get("targetPwm").and_then(Value::as_u64).unwrap_or(0),
             result.get("seconds").and_then(Value::as_u64).unwrap_or(0),
-            result.get("baselineRpm").and_then(Value::as_i64).unwrap_or(0),
-            result.get("reachedRpm").and_then(Value::as_i64).unwrap_or(0),
-            result.get("responseRpm").and_then(Value::as_i64).unwrap_or(0),
+            result
+                .get("baselineRpm")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            result
+                .get("reachedRpm")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            result
+                .get("responseRpm")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
             text(result, "restoredMode"),
         ),
     );
@@ -1397,7 +1647,12 @@ fn print_speed_probe(result: &Value) {
     if let Some(samples) = result.get("samples").and_then(Value::as_array) {
         let drawn: Vec<String> = samples
             .iter()
-            .map(|s| s.get("rpm").and_then(Value::as_i64).unwrap_or(0).to_string())
+            .map(|s| {
+                s.get("rpm")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    .to_string()
+            })
             .collect();
         if !drawn.is_empty() {
             row("trace", format!("{} rpm", drawn.join(", ")));
@@ -1413,13 +1668,19 @@ fn print_calibration(result: &Value) {
         Some(rpm) => format!("{rpm} rpm"),
         None => "-".to_string(),
     };
-    row("stored", format!("fan1 {}, fan2 {}", rpm("fan1MaxRpm"), rpm("fan2MaxRpm")));
+    row(
+        "stored",
+        format!("fan1 {}, fan2 {}", rpm("fan1MaxRpm"), rpm("fan2MaxRpm")),
+    );
     row(
         "run",
         format!(
             "{}s from {} rpm, restored to {}",
             result.get("seconds").and_then(Value::as_u64).unwrap_or(0),
-            result.get("baselineRpm").and_then(Value::as_i64).unwrap_or(0),
+            result
+                .get("baselineRpm")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
             text(result, "restoredMode"),
         ),
     );
@@ -1429,7 +1690,11 @@ fn print_calibration(result: &Value) {
 
     // The trace is the evidence for the verdict, so it is worth seeing
     // when a run concludes something surprising.
-    for sample in result.get("samples").and_then(Value::as_array).unwrap_or(&Vec::new()) {
+    for sample in result
+        .get("samples")
+        .and_then(Value::as_array)
+        .unwrap_or(&Vec::new())
+    {
         println!(
             "  +{:>3}s      fan1 {:>5}  fan2 {:>5}{}",
             sample.get("atSecs").and_then(Value::as_u64).unwrap_or(0),
@@ -1447,7 +1712,11 @@ fn print_calibration(result: &Value) {
 fn print_diagnosis(diagnosis: &Value) {
     row("verdict", text(diagnosis, "verdict"));
     println!("  {}", text(diagnosis, "summary"));
-    for check in diagnosis.get("checks").and_then(Value::as_array).unwrap_or(&Vec::new()) {
+    for check in diagnosis
+        .get("checks")
+        .and_then(Value::as_array)
+        .unwrap_or(&Vec::new())
+    {
         println!(
             "  [{:^6}] {:28} {}",
             text(check, "status"),
@@ -1504,7 +1773,10 @@ fn oc_set(command: &args::Command) -> Run {
         println!(
             "  run 'pyren-ctl oc confirm' within {:.0}s to keep this; \
              otherwise the daemon undoes it",
-            pending.get("secondsLeft").and_then(Value::as_f64).unwrap_or(0.0)
+            pending
+                .get("secondsLeft")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
         );
     }
     Ok(())
@@ -1540,7 +1812,10 @@ fn parse_keycode(name: &str, value: &str) -> Result<u16, Failure> {
 
 fn print_oc(state: &Value) {
     let empty = Vec::new();
-    let gpus = state.get("gpus").and_then(Value::as_array).unwrap_or(&empty);
+    let gpus = state
+        .get("gpus")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if gpus.is_empty() {
         row("gpus", "none found");
     }
@@ -1548,12 +1823,24 @@ fn print_oc(state: &Value) {
         // The name first, then the sentence that says what can be done to
         // it, because on a hybrid laptop the two cards answer differently
         // and a single verdict for the machine would be wrong about one.
-        row("gpu", format!("{} ({})", text(gpu, "name"), text(gpu, "id")));
+        row(
+            "gpu",
+            format!("{} ({})", text(gpu, "name"), text(gpu, "id")),
+        );
         row("", text(gpu, "detail"));
         let confirmed = gpu.get("confirmed").cloned().unwrap_or(Value::Null);
-        let core = confirmed.get("coreOffsetMhz").and_then(Value::as_i64).unwrap_or(0);
-        let memory = confirmed.get("memOffsetMhz").and_then(Value::as_i64).unwrap_or(0);
-        row("", format!("kept: core {core:+} MHz, memory {memory:+} MHz"));
+        let core = confirmed
+            .get("coreOffsetMhz")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let memory = confirmed
+            .get("memOffsetMhz")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        row(
+            "",
+            format!("kept: core {core:+} MHz, memory {memory:+} MHz"),
+        );
     }
 
     let consent = state.get("consent").cloned().unwrap_or(Value::Null);
@@ -1569,7 +1856,10 @@ fn print_oc(state: &Value) {
             format!(
                 "{} - undone in {:.0}s unless confirmed",
                 text(pending, "gpu"),
-                pending.get("secondsLeft").and_then(Value::as_f64).unwrap_or(0.0)
+                pending
+                    .get("secondsLeft")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
             ),
         );
     }
@@ -1588,7 +1878,14 @@ fn print_rgb_probe(probe: &Value) {
     // Both paths, always, even when neither is here: which one a machine
     // has is the question this command exists to answer, and a single
     // "no lighting" line answers it for neither.
-    row("lighting", format!("{} - {}", yes_no(lighting.get("present")), text(&lighting, "detail")));
+    row(
+        "lighting",
+        format!(
+            "{} - {}",
+            yes_no(lighting.get("present")),
+            text(&lighting, "detail")
+        ),
+    );
 
     // One line per dialect, because "no lighting" is three different
     // findings with three different next steps, and the manual override
@@ -1609,7 +1906,11 @@ fn print_rgb_probe(probe: &Value) {
     }
     row(
         "per-key",
-        format!("{} - {}", yes_no(per_key.get("present")), text(&per_key, "detail")),
+        format!(
+            "{} - {}",
+            yes_no(per_key.get("present")),
+            text(&per_key, "detail")
+        ),
     );
 }
 
@@ -1618,7 +1919,16 @@ fn print_rgb(status: &Value) {
         print_rgb_probe(caps);
     }
     print_zones(status);
-    row("brightness", format!("{}%", status.get("brightness").and_then(Value::as_i64).unwrap_or(0)));
+    row(
+        "brightness",
+        format!(
+            "{}%",
+            status
+                .get("brightness")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+        ),
+    );
     if let Some(effect) = status.get("effect").filter(|e| !e.is_null()) {
         let running = status.get("effectRunning").and_then(Value::as_bool) == Some(true);
         let dark = status.get("dark").and_then(Value::as_bool) == Some(true);
@@ -1652,7 +1962,10 @@ fn print_rgb(status: &Value) {
     }
     row(
         "dialect",
-        match (status.get("dialect").and_then(Value::as_str), status.get("activeDialect").and_then(Value::as_str)) {
+        match (
+            status.get("dialect").and_then(Value::as_str),
+            status.get("activeDialect").and_then(Value::as_str),
+        ) {
             (Some("auto"), Some(active)) => format!("{active} (chosen automatically)"),
             (Some("auto"), None) => "auto - and nothing answered".to_string(),
             (Some(pinned), _) => format!("{pinned} (pinned by hand)"),
@@ -1664,7 +1977,11 @@ fn print_rgb(status: &Value) {
     }
     row(
         "power anim",
-        if status.get("powerAnimation").and_then(Value::as_bool) == Some(true) { "on" } else { "off" },
+        if status.get("powerAnimation").and_then(Value::as_bool) == Some(true) {
+            "on"
+        } else {
+            "off"
+        },
     );
     row(
         "set by",
@@ -1679,7 +1996,12 @@ fn print_rgb(status: &Value) {
 }
 
 fn print_effects(list: &Value) {
-    for effect in list.get("effects").and_then(Value::as_array).into_iter().flatten() {
+    for effect in list
+        .get("effects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let id = text(effect, "id");
         let defaults = effect.get("defaults").cloned().unwrap_or(Value::Null);
         let colors: Vec<String> = defaults
@@ -1715,23 +2037,48 @@ fn print_gpu(status: &Value) {
     }
     row(
         "mode",
-        status.get("mode").and_then(Value::as_str).unwrap_or("unknown - firmware answered a mode this build does not recognise"),
+        status
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown - firmware answered a mode this build does not recognise"),
     );
 }
 
 fn print_keymap(status: &Value) {
-    row("enabled", status.get("enabled").and_then(Value::as_bool).unwrap_or(false));
-    row("running", status.get("running").and_then(Value::as_bool).unwrap_or(false));
+    row(
+        "enabled",
+        status
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    );
+    row(
+        "running",
+        status
+            .get("running")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    );
     row("detail", text(status, "detail"));
-    let mappings = status.get("mappings").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mappings = status
+        .get("mappings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if mappings.is_empty() {
         row("mappings", "none");
     }
     for mapping in &mappings {
         let from = mapping.get("from").cloned().unwrap_or(Value::Null);
         let device = from.get("device").and_then(Value::as_str);
-        let keycode = from.get("keycode").and_then(Value::as_u64).unwrap_or_default();
-        let to = mapping.get("to").and_then(Value::as_u64).unwrap_or_default();
+        let keycode = from
+            .get("keycode")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let to = mapping
+            .get("to")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
         match device {
             Some(device) => row("map", format!("{keycode} -> {to} (on {device})")),
             None => row("map", format!("{keycode} -> {to}")),
@@ -1748,7 +2095,10 @@ fn print_network(status: &Value) {
     row("mode", text(status, "mode"));
     row(
         "active qdisc",
-        status.get("activeQdisc").and_then(Value::as_str).unwrap_or("unknown"),
+        status
+            .get("activeQdisc")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
     );
 }
 
@@ -1772,7 +2122,14 @@ fn print_zones(value: &Value) {
     // short of zone 3. Said here because three colours under a heading
     // that means four is the kind of thing that gets filed as a bug.
     if read.len() < ZONES {
-        row("", format!("zones {}-{} are past acpi_call's reply cap - set, not readable", read.len() + 1, ZONES));
+        row(
+            "",
+            format!(
+                "zones {}-{} are past acpi_call's reply cap - set, not readable",
+                read.len() + 1,
+                ZONES
+            ),
+        );
     }
 }
 

@@ -66,7 +66,10 @@ const PROFILE_APIS: [BusApi; 2] = [
         name: "org.freedesktop.UPower.PowerProfiles",
         path: "/org/freedesktop/UPower/PowerProfiles",
     },
-    BusApi { name: "net.hadess.PowerProfiles", path: "/net/hadess/PowerProfiles" },
+    BusApi {
+        name: "net.hadess.PowerProfiles",
+        path: "/net/hadess/PowerProfiles",
+    },
 ];
 
 /// One place the power-profiles API may live. The interface is named like
@@ -105,7 +108,9 @@ fn platform_profile_choices_path() -> PathBuf {
 /// Shared with [`crate::limits`], whose turbo knobs live under the same
 /// root: one fake machine, not two that could drift apart.
 pub(crate) fn cpu_root() -> PathBuf {
-    std::env::var_os("PYREN_CPU_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(CPU_ROOT))
+    std::env::var_os("PYREN_CPU_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(CPU_ROOT))
 }
 
 /// An external program, looked up on `PATH` - or, when `PYREN_TOOLS_DIR`
@@ -301,7 +306,11 @@ pub(crate) fn plan(
 /// not a fixed order of preference.
 pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
     let (steps, problems) = plan(&read_state(), mode, os_profile);
-    let mut report = ApplyReport { applied: Vec::new(), failed: problems, expected: Knobs::default() };
+    let mut report = ApplyReport {
+        applied: Vec::new(),
+        failed: problems,
+        expected: Knobs::default(),
+    };
 
     for step in steps {
         match step {
@@ -310,7 +319,9 @@ pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
                 Err(e) => report.failed.push(format!("platform_profile: {e}")),
             },
             Step::PowerProfilesDaemon(profile) => match set_power_profiles(profile) {
-                Ok(()) => report.applied.push(format!("power-profiles-daemon={profile}")),
+                Ok(()) => report
+                    .applied
+                    .push(format!("power-profiles-daemon={profile}")),
                 Err(e) => report.failed.push(format!("power-profiles-daemon: {e}")),
             },
             Step::Tlp(profile) => match set_tlp(profile) {
@@ -325,11 +336,13 @@ pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
                 match write_all_cpus("energy_performance_preference", preference) {
                     Ok(count) => {
                         report.expected.energy_preference = read_energy_preference();
-                        report
-                            .applied
-                            .push(format!("energy_performance_preference={preference} ({count} cpus)"))
+                        report.applied.push(format!(
+                            "energy_performance_preference={preference} ({count} cpus)"
+                        ))
                     }
-                    Err(e) => report.failed.push(format!("energy_performance_preference: {e}")),
+                    Err(e) => report
+                        .failed
+                        .push(format!("energy_performance_preference: {e}")),
                 }
             }
         }
@@ -408,13 +421,24 @@ enum ProfilesEndpoint {
 /// matters more than it looks.
 fn find_power_profiles() -> Option<(ProfilesEndpoint, String)> {
     for api in PROFILE_APIS {
-        match busctl(&["call", api.name, api.path, PROPERTIES, "Get", "ss", api.name, "ActiveProfile"]) {
+        match busctl(&[
+            "call",
+            api.name,
+            api.path,
+            PROPERTIES,
+            "Get",
+            "ss",
+            api.name,
+            "ActiveProfile",
+        ]) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return read_powerprofilesctl().map(|profile| (ProfilesEndpoint::Cli, profile));
             }
             Err(_) => return None,
             Ok(output) if output.status.success() => {
-                if let Some(profile) = parse_variant_string(&String::from_utf8_lossy(&output.stdout)) {
+                if let Some(profile) =
+                    parse_variant_string(&String::from_utf8_lossy(&output.stdout))
+                {
                     return Some((ProfilesEndpoint::Bus(api), profile));
                 }
             }
@@ -433,7 +457,10 @@ const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 /// (checked against systemd 261, which still asks the unit to start),
 /// which is why reads go through `Properties.Get` by hand.
 fn busctl(args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new(tool("busctl")).args(["--system", "--auto-start=no"]).args(args).output()
+    Command::new(tool("busctl"))
+        .args(["--system", "--auto-start=no"])
+        .args(args)
+        .output()
 }
 
 /// `v s "balanced"` - busctl's rendering of a string variant - to `balanced`.
@@ -445,9 +472,17 @@ fn parse_variant_string(output: &str) -> Option<String> {
 fn read_active_profile(endpoint: ProfilesEndpoint) -> Option<String> {
     match endpoint {
         ProfilesEndpoint::Bus(api) => {
-            let output =
-                busctl(&["call", api.name, api.path, PROPERTIES, "Get", "ss", api.name, "ActiveProfile"])
-                    .ok()?;
+            let output = busctl(&[
+                "call",
+                api.name,
+                api.path,
+                PROPERTIES,
+                "Get",
+                "ss",
+                api.name,
+                "ActiveProfile",
+            ])
+            .ok()?;
             if !output.status.success() {
                 return None;
             }
@@ -460,16 +495,30 @@ fn read_active_profile(endpoint: ProfilesEndpoint) -> Option<String> {
 fn request_profile(endpoint: ProfilesEndpoint, profile: &str) -> Result<(), String> {
     let output = match endpoint {
         ProfilesEndpoint::Bus(api) => busctl(&[
-            "call", api.name, api.path, PROPERTIES, "Set", "ssv", api.name, "ActiveProfile", "s", profile,
+            "call",
+            api.name,
+            api.path,
+            PROPERTIES,
+            "Set",
+            "ssv",
+            api.name,
+            "ActiveProfile",
+            "s",
+            profile,
         ]),
-        ProfilesEndpoint::Cli => Command::new(tool("powerprofilesctl")).args(["set", profile]).output(),
+        ProfilesEndpoint::Cli => Command::new(tool("powerprofilesctl"))
+            .args(["set", profile])
+            .output(),
     }
     .map_err(|e| e.to_string())?;
     succeeded(&output)
 }
 
 fn read_powerprofilesctl() -> Option<String> {
-    let output = Command::new(tool("powerprofilesctl")).arg("get").output().ok()?;
+    let output = Command::new(tool("powerprofilesctl"))
+        .arg("get")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -506,7 +555,10 @@ fn parse_tlp_mode(output: &str) -> Option<String> {
 /// nothing, which is exactly the kind of miss the second attempt is for.
 fn set_tlp(profile: &str) -> Result<(), String> {
     set_and_confirm("TLP", profile, read_tlp, || {
-        let output = Command::new(tool("tlp")).arg(profile).output().map_err(|e| e.to_string())?;
+        let output = Command::new(tool("tlp"))
+            .arg(profile)
+            .output()
+            .map_err(|e| e.to_string())?;
         succeeded(&output)
     })
 }
@@ -533,7 +585,10 @@ fn auto_cpufreq_running() -> bool {
 fn set_auto_cpufreq(force: &str) -> Result<(), String> {
     let expected = if force == "reset" { "default" } else { force };
     let read = || {
-        let output = Command::new(tool("auto-cpufreq")).arg("--get-state").output().ok()?;
+        let output = Command::new(tool("auto-cpufreq"))
+            .arg("--get-state")
+            .output()
+            .ok()?;
         if !output.status.success() {
             return None;
         }
@@ -680,13 +735,19 @@ mod tests {
     #[test]
     fn eco_prefers_low_power_when_offered() {
         let available = choices(&["low-power", "balanced", "performance"]);
-        assert_eq!(pick_platform_profile(PowerMode::Eco, &available).unwrap(), "low-power");
+        assert_eq!(
+            pick_platform_profile(PowerMode::Eco, &available).unwrap(),
+            "low-power"
+        );
     }
 
     #[test]
     fn eco_falls_back_to_quiet_on_firmware_that_calls_it_that() {
         let available = choices(&["quiet", "balanced", "performance"]);
-        assert_eq!(pick_platform_profile(PowerMode::Eco, &available).unwrap(), "quiet");
+        assert_eq!(
+            pick_platform_profile(PowerMode::Eco, &available).unwrap(),
+            "quiet"
+        );
     }
 
     #[test]
@@ -700,7 +761,10 @@ mod tests {
 
     #[test]
     fn a_firmware_offering_nothing_usable_yields_none() {
-        assert_eq!(pick_platform_profile(PowerMode::Unlimited, &choices(&["custom"])), None);
+        assert_eq!(
+            pick_platform_profile(PowerMode::Unlimited, &choices(&["custom"])),
+            None
+        );
     }
 
     /// A laptop with both mechanisms, which is the case the split exists
@@ -748,12 +812,18 @@ mod tests {
     /// top would be two things fighting over the same files.
     #[test]
     fn the_cpu_hint_is_only_used_where_there_is_no_daemon_to_delegate_to() {
-        let no_ppd = BackendState { power_profiles_daemon: None, ..full_machine() };
+        let no_ppd = BackendState {
+            power_profiles_daemon: None,
+            ..full_machine()
+        };
         let (steps, _) = plan(&no_ppd, PowerMode::Eco, true);
 
         assert_eq!(
             steps,
-            vec![Step::EnergyPreference("power"), Step::PlatformProfile("low-power".into())]
+            vec![
+                Step::EnergyPreference("power"),
+                Step::PlatformProfile("low-power".into())
+            ]
         );
     }
 
@@ -771,7 +841,10 @@ mod tests {
         assert_eq!(steps, vec![Step::PowerProfilesDaemon("power-saver")]);
 
         let (steps, problems) = plan(&no_firmware, PowerMode::Eco, false);
-        assert!(steps.is_empty() && problems.is_empty(), "nothing to do is not a failure");
+        assert!(
+            steps.is_empty() && problems.is_empty(),
+            "nothing to do is not a failure"
+        );
     }
 
     /// TLP without tlp-pd: no power-profiles API, so TLP is asked in its
@@ -787,7 +860,10 @@ mod tests {
         let (steps, _) = plan(&tlp, PowerMode::Eco, true);
         assert_eq!(
             steps,
-            vec![Step::Tlp("power-saver"), Step::PlatformProfile("low-power".into())]
+            vec![
+                Step::Tlp("power-saver"),
+                Step::PlatformProfile("low-power".into())
+            ]
         );
     }
 
@@ -795,7 +871,10 @@ mod tests {
     /// whole profile twice.
     #[test]
     fn the_profiles_api_wins_over_tlp() {
-        let both = BackendState { tlp: Some("balanced".into()), ..full_machine() };
+        let both = BackendState {
+            tlp: Some("balanced".into()),
+            ..full_machine()
+        };
         let (steps, _) = plan(&both, PowerMode::Performance, true);
         assert!(steps.contains(&Step::PowerProfilesDaemon("performance")));
         assert!(!steps.iter().any(|s| matches!(s, Step::Tlp(_))));
@@ -826,15 +905,27 @@ mod tests {
         let (steps, _) = plan(&alone, PowerMode::Balanced, true);
         assert_eq!(
             steps,
-            vec![Step::AutoCpufreq("reset"), Step::PlatformProfile("balanced".into())]
+            vec![
+                Step::AutoCpufreq("reset"),
+                Step::PlatformProfile("balanced".into())
+            ]
         );
     }
 
     #[test]
     fn tlp_stat_mode_is_read_as_a_profile_or_not_at_all() {
-        assert_eq!(parse_tlp_mode("balanced/BAT\n").as_deref(), Some("balanced"));
-        assert_eq!(parse_tlp_mode("power-saver/SAV (manual)\n").as_deref(), Some("power-saver"));
-        assert_eq!(parse_tlp_mode("performance/AC (default)").as_deref(), Some("performance"));
+        assert_eq!(
+            parse_tlp_mode("balanced/BAT\n").as_deref(),
+            Some("balanced")
+        );
+        assert_eq!(
+            parse_tlp_mode("power-saver/SAV (manual)\n").as_deref(),
+            Some("power-saver")
+        );
+        assert_eq!(
+            parse_tlp_mode("performance/AC (default)").as_deref(),
+            Some("performance")
+        );
         // TLP before 1.8, and a TLP that has not run this boot.
         assert_eq!(parse_tlp_mode("AC\n"), None);
         assert_eq!(parse_tlp_mode("unknown\n"), None);
@@ -843,7 +934,10 @@ mod tests {
 
     #[test]
     fn a_busctl_string_variant_is_unwrapped() {
-        assert_eq!(parse_variant_string("v s \"power-saver\"\n").as_deref(), Some("power-saver"));
+        assert_eq!(
+            parse_variant_string("v s \"power-saver\"\n").as_deref(),
+            Some("power-saver")
+        );
         assert_eq!(parse_variant_string("b true"), None);
         assert_eq!(parse_variant_string("v s \"\""), None);
     }

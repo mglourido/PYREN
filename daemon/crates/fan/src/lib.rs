@@ -34,8 +34,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pyren_config::{ConfigStore, LoadOutcome};
-use pyren_core::{log_info, log_warn};
 use pyren_core::{acpi, msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
+use pyren_core::{log_info, log_warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -291,7 +291,8 @@ impl FanConfig {
         let mut seeded = false;
         for profile in profiles {
             if !self.profile_curves.contains_key(*profile) {
-                self.profile_curves.insert((*profile).to_string(), self.curve.clone());
+                self.profile_curves
+                    .insert((*profile).to_string(), self.curve.clone());
                 seeded = true;
             }
         }
@@ -473,7 +474,9 @@ impl FanModule {
     /// which is every tick but the first after a driver reload - that
     /// resets the parameter, and this is what puts it back.
     fn sync_floor_override(&self, floor: Floor) -> Result<(), control::ControlError> {
-        let Some(want) = floor.override_hundreds else { return Ok(()) };
+        let Some(want) = floor.override_hundreds else {
+            return Ok(());
+        };
         let paths = self.paths();
         if control::read_floor_override(&paths) == Some(want) {
             return Ok(());
@@ -491,7 +494,10 @@ impl FanModule {
     fn effective_caps(&self) -> Capabilities {
         let caps = self.caps();
         let ignored = lock(&self.state).config.speed_control.is_ignored();
-        Capabilities { set_speed: caps.set_speed && !ignored, ..caps }
+        Capabilities {
+            set_speed: caps.set_speed && !ignored,
+            ..caps
+        }
     }
 
     /// Look at the hardware again, because the driver under it changed.
@@ -529,7 +535,10 @@ impl FanModule {
         drop(hardware);
 
         if changed {
-            log_info!("re-read the fan hardware after a driver change: {}", describe(caps).text);
+            log_info!(
+                "re-read the fan hardware after a driver change: {}",
+                describe(caps).text
+            );
         }
         changed
     }
@@ -572,7 +581,11 @@ impl FanModule {
         // rebooted, or something else may have moved the fans since.
         let observed = observed_mode(&paths);
         let restoring = config.restore_mode_on_start && caps.supports(config.mode);
-        let mode = if restoring { config.mode } else { observed.unwrap_or(FanMode::Auto) };
+        let mode = if restoring {
+            config.mode
+        } else {
+            observed.unwrap_or(FanMode::Auto)
+        };
 
         let mut config = config;
         // Adopting a manual mode we did not set means adopting its speed
@@ -632,8 +645,10 @@ impl FanModule {
     /// loading a kernel module at startup to undo something that might not
     /// be ours is exactly the change this project does not make.
     fn recover_interrupted_cycle(&self) {
-        let (_, reversed) =
-            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
+        let (_, reversed) = read_fan_rpm(
+            self.paths().fan1_input.as_deref(),
+            self.paths().fan2_input.as_deref(),
+        );
         if !reversed || !acpi::is_loaded() {
             return;
         }
@@ -648,7 +663,9 @@ impl FanModule {
         let module = self.clone();
         std::thread::spawn(move || {
             lock(&module.state).cleaning = Cleaning::Stopping;
-            let generation = cleaner::probe().generation.unwrap_or(cleaner::Generation::Modern);
+            let generation = cleaner::probe()
+                .generation
+                .unwrap_or(cleaner::Generation::Modern);
             let result = cleaner::emergency_stop(generation);
             if let Err(e) = &result {
                 log_warn!("could not end the interrupted cleaning cycle: {e}");
@@ -712,8 +729,11 @@ impl FanModule {
     pub fn diagnose(&self, allow_writes: bool) -> diagnostics::Diagnosis {
         // A failed probe is not a failed diagnosis: the check reports it as
         // untested and the rest of the report is still worth having.
-        let probe =
-            if allow_writes { self.run_speed_probe(speed_probe::DEFAULT_SECONDS).ok() } else { None };
+        let probe = if allow_writes {
+            self.run_speed_probe(speed_probe::DEFAULT_SECONDS).ok()
+        } else {
+            None
+        };
         diagnostics::diagnose(&self.paths(), allow_writes, probe.as_ref())
     }
 
@@ -768,8 +788,10 @@ impl FanModule {
     fn status(&self) -> Value {
         let cpu_temp_c = self.paths().cpu_temp.as_deref().and_then(read_millideg_c);
         let gpu_temp_c = self.paths().gpu_temp.as_deref().and_then(read_millideg_c);
-        let (fan_rpm, is_reverse) =
-            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
+        let (fan_rpm, is_reverse) = read_fan_rpm(
+            self.paths().fan1_input.as_deref(),
+            self.paths().fan2_input.as_deref(),
+        );
         let state = lock(&self.state);
         let floor = self.floor(&state.config);
 
@@ -966,10 +988,16 @@ impl FanModule {
         if curve.is_empty() {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
-                msg!("fan.err.curveNoPoints", "params.curve must have at least one point"),
+                msg!(
+                    "fan.err.curveNoPoints",
+                    "params.curve must have at least one point"
+                ),
             ));
         }
-        if let Some(bad) = curve.iter().find(|p| !p.temp_c.is_finite() || !p.percent.is_finite()) {
+        if let Some(bad) = curve
+            .iter()
+            .find(|p| !p.temp_c.is_finite() || !p.percent.is_finite())
+        {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
                 msg!(
@@ -1049,7 +1077,10 @@ impl FanModule {
             if state.calibrating {
                 return Err(ModuleError::localised(
                     ErrorKind::Busy,
-                    msg!("fan.err.calibrating", "a calibration run is already in progress"),
+                    msg!(
+                        "fan.err.calibrating",
+                        "a calibration run is already in progress"
+                    ),
                 ));
             }
             if !state.cleaning.is_idle() {
@@ -1129,7 +1160,10 @@ impl FanModule {
             if state.calibrating {
                 return Err(ModuleError::localised(
                     ErrorKind::Busy,
-                    msg!("fan.err.calibrating", "a calibration run is already in progress"),
+                    msg!(
+                        "fan.err.calibrating",
+                        "a calibration run is already in progress"
+                    ),
                 ));
             }
             state.calibrating = true;
@@ -1176,8 +1210,8 @@ impl FanModule {
         }
         drop(state);
 
-        let mut result = serde_json::to_value(&calibration)
-            .map_err(|e| ModuleError::Internal(e.to_string()))?;
+        let mut result =
+            serde_json::to_value(&calibration).map_err(|e| ModuleError::Internal(e.to_string()))?;
         // What became of the measurement beyond this daemon's own config.
         // Reported rather than silently attempted: it is the difference
         // between a number the curve uses and a number the *driver* uses.
@@ -1264,8 +1298,10 @@ impl FanModule {
 
         let state = lock(&self.state);
         let cycle = state.cleaning.cycle();
-        let (_, is_reverse) =
-            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
+        let (_, is_reverse) = read_fan_rpm(
+            self.paths().fan1_input.as_deref(),
+            self.paths().fan2_input.as_deref(),
+        );
 
         json!({
             "supported": probe.supported,
@@ -1375,7 +1411,10 @@ impl FanModule {
         let (duration, speed) = {
             let state = lock(&self.state);
             let secs = seconds.unwrap_or(state.config.cleaner_duration_secs);
-            (Duration::from_secs(secs), speed.or(state.config.cleaner_speed))
+            (
+                Duration::from_secs(secs),
+                speed.or(state.config.cleaner_speed),
+            )
         };
 
         let request = cleaner::Request {
@@ -1496,8 +1535,10 @@ impl FanModule {
         let now_secs = monotonic_secs();
         let cpu_temp_c = self.paths().cpu_temp.as_deref().and_then(read_millideg_c);
         let gpu_temp_c = self.paths().gpu_temp.as_deref().and_then(read_millideg_c);
-        let (rpm, _) =
-            read_fan_rpm(self.paths().fan1_input.as_deref(), self.paths().fan2_input.as_deref());
+        let (rpm, _) = read_fan_rpm(
+            self.paths().fan1_input.as_deref(),
+            self.paths().fan2_input.as_deref(),
+        );
 
         let mut state = lock(&self.state);
         if state.calibrating {
@@ -1538,7 +1579,10 @@ impl FanModule {
                 // whole point of `profile_curves`. Cloned rather than
                 // borrowed: `state` is mutably borrowed for the smoother
                 // above and the error below.
-                let points = state.config.curve_for(state.active_profile.as_deref()).to_vec();
+                let points = state
+                    .config
+                    .curve_for(state.active_profile.as_deref())
+                    .to_vec();
                 match curve::target_pwm(&points, avg, interpolation) {
                     Some(pwm) => Some(pwm),
                     None => {
@@ -1585,7 +1629,8 @@ impl FanModule {
             // faster than asked, never slower than they can hold.
             // Warned once: this runs every tick, and a daemon without the
             // right to write it will not gain one between ticks.
-            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
             if let Err(e) = self.sync_floor_override(floor) {
                 if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     log_warn!("could not set the driver's fan floor: {e}");
@@ -1597,8 +1642,7 @@ impl FanModule {
             // the clamp the fans would have had without the override, so
             // `floor.rpm < driver` is "we lifted it".
             let driver = control::read_driver_floor(&self.paths());
-            let on_pyrens_floor =
-                matches!((floor.rpm, driver), (Some(f), Some(d)) if f < d);
+            let on_pyrens_floor = matches!((floor.rpm, driver), (Some(f), Some(d)) if f < d);
             let expected = state
                 .config
                 .fan_max_rpm
@@ -1629,7 +1673,9 @@ impl FanModule {
             (_, Some(target)) => {
                 let fan_max = state.config.fan_max_rpm;
                 let measured = (rpm > 0).then_some(rpm);
-                state.hysteresis.should_apply(target, measured, fan_max, now_secs)
+                state
+                    .hysteresis
+                    .should_apply(target, measured, fan_max, now_secs)
             }
             (_, None) => false,
         };
@@ -1683,7 +1729,11 @@ impl FanModule {
         // could get here once more. Note the raise so the cooldown holds,
         // and do nothing else.
         let already_capped = reached_driver_floor
-            && state.config.fan_floor_notices.first().is_some_and(|n| n.reached_driver_floor);
+            && state
+                .config
+                .fan_floor_notices
+                .first()
+                .is_some_and(|n| n.reached_driver_floor);
         if already_capped {
             state.stall.note_raised(monotonic_secs());
             return None;
@@ -1776,8 +1826,10 @@ impl Module for FanModule {
                 // Writing is opt-in and off by default: a diagnostic that
                 // silently drives the fans would be a surprising thing for
                 // a "check my hardware" button to do.
-                let allow_writes =
-                    params.get("allowWrites").and_then(Value::as_bool).unwrap_or(false);
+                let allow_writes = params
+                    .get("allowWrites")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 serde_json::to_value(self.diagnose(allow_writes))
                     .map_err(|e| ModuleError::Internal(e.to_string()))
             }
@@ -1813,20 +1865,19 @@ impl Module for FanModule {
                     .map_err(|e| ModuleError::InvalidParams(format!("invalid curve: {e}")))?;
                 let interpolation = match params.get("interpolation") {
                     None | Some(Value::Null) => None,
-                    Some(v) => Some(
-                        serde_json::from_value(v.clone())
-                            .map_err(|e| ModuleError::InvalidParams(format!("invalid interpolation: {e}")))?,
-                    ),
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
+                        ModuleError::InvalidParams(format!("invalid interpolation: {e}"))
+                    })?),
                 };
                 let reference_sensor = match params.get("referenceSensor") {
                     None | Some(Value::Null) => None,
-                    Some(v) => Some(
-                        v.as_str().and_then(ReferenceSensor::parse).ok_or_else(|| {
+                    Some(v) => {
+                        Some(v.as_str().and_then(ReferenceSensor::parse).ok_or_else(|| {
                             ModuleError::InvalidParams(
                                 "params.referenceSensor must be \"cpu\" or \"gpu\"".into(),
                             )
-                        })?,
-                    ),
+                        })?)
+                    }
                 };
                 // Absent edits whichever profile is running; a name edits
                 // that one; "" edits the shared fallback. Anything that is
@@ -1845,16 +1896,22 @@ impl Module for FanModule {
             }
 
             "setRestoreOnStart" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
                 self.set_restore_on_start(enabled)
             }
 
             "setKeepDriverFloor" => {
-                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| {
-                    ModuleError::InvalidParams("params.enabled must be a boolean".into())
-                })?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
                 self.set_keep_driver_floor(enabled)
             }
 
@@ -1890,7 +1947,10 @@ impl Module for FanModule {
             }
 
             "cleanerStatus" => {
-                let refresh = params.get("refresh").and_then(Value::as_bool).unwrap_or(false);
+                let refresh = params
+                    .get("refresh")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 Ok(self.cleaner_status(refresh))
             }
 
@@ -1902,10 +1962,14 @@ impl Module for FanModule {
                     .get("speed")
                     .and_then(Value::as_u64)
                     .map(|v| v.clamp(cleaner::MIN_SPEED as u64, cleaner::MAX_SPEED as u64) as u8);
-                let seconds = params.get("seconds").and_then(Value::as_u64).map(|v| {
-                    v.clamp(cleaner::MIN_DURATION_SECS, cleaner::MAX_DURATION_SECS)
-                });
-                let force = params.get("force").and_then(Value::as_bool).unwrap_or(false);
+                let seconds = params
+                    .get("seconds")
+                    .and_then(Value::as_u64)
+                    .map(|v| v.clamp(cleaner::MIN_DURATION_SECS, cleaner::MAX_DURATION_SECS));
+                let force = params
+                    .get("force")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 self.start_cleaning(speed, seconds, force)
             }
 
@@ -1997,7 +2061,10 @@ fn floor_in_force(
     override_supported: bool,
 ) -> Floor {
     if !override_supported {
-        return Floor { rpm: driver, override_hundreds: None };
+        return Floor {
+            rpm: driver,
+            override_hundreds: None,
+        };
     }
     match (keep_driver, pyren) {
         // Pyren's floor, but only while it is actually lower than the
@@ -2010,12 +2077,18 @@ fn floor_in_force(
             // the daemon stops commanding at.
             override_hundreds: Some(((rpm + 99) / 100).clamp(1, 255) as u8),
         },
-        _ => Floor { rpm: driver, override_hundreds: Some(0) },
+        _ => Floor {
+            rpm: driver,
+            override_hundreds: Some(0),
+        },
     }
 }
 
 /// Keeps the outcome of a control write for `getStatus`, and hands it on.
-fn record_write(state: &mut State, result: Result<(), control::ControlError>) -> Result<(), ModuleError> {
+fn record_write(
+    state: &mut State,
+    result: Result<(), control::ControlError>,
+) -> Result<(), ModuleError> {
     match result {
         Ok(()) => {
             state.last_control_error = None;
@@ -2084,8 +2157,12 @@ fn describe(caps: Capabilities) -> Msg {
 /// driver installer, which is reloading anyway, is where "now" happens.
 fn pin_ceiling(calibration: &calibration::Calibration) -> Result<String, String> {
     let max_rpm = pyren_installer::MaxRpm {
-        cpu: calibration.fan1_max_rpm.and_then(|rpm| u32::try_from(rpm).ok()),
-        gpu: calibration.fan2_max_rpm.and_then(|rpm| u32::try_from(rpm).ok()),
+        cpu: calibration
+            .fan1_max_rpm
+            .and_then(|rpm| u32::try_from(rpm).ok()),
+        gpu: calibration
+            .fan2_max_rpm
+            .and_then(|rpm| u32::try_from(rpm).ok()),
     };
     match pyren_installer::pin_measured_ceiling(max_rpm) {
         Ok(detail) => {
@@ -2364,8 +2441,7 @@ mod tests {
     /// the real one, and a test that saves a setting into the developer's
     /// home is a test that changes their machine.
     fn module(tag: &str) -> FanModule {
-        let root = std::env::temp_dir()
-            .join(format!("pyren-fan-cfg-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("pyren-fan-cfg-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let mut module = FanModule::inspector();
         module.store = ConfigStore::at(root);
@@ -2383,12 +2459,21 @@ mod tests {
         let module = module("rediscover");
         let moved = FanPaths {
             hwmon_dir: Some(PathBuf::from("/sys/devices/platform/hp-wmi/hwmon/hwmon8")),
-            pwm1: Some(PathBuf::from("/sys/devices/platform/hp-wmi/hwmon/hwmon8/pwm1")),
+            pwm1: Some(PathBuf::from(
+                "/sys/devices/platform/hp-wmi/hwmon/hwmon8/pwm1",
+            )),
             ..Default::default()
         };
 
-        assert!(module.adopt(moved.clone()), "a different directory is a change");
-        assert_eq!(module.paths().pwm1, moved.pwm1, "and the new paths are the ones kept");
+        assert!(
+            module.adopt(moved.clone()),
+            "a different directory is a change"
+        );
+        assert_eq!(
+            module.paths().pwm1,
+            moved.pwm1,
+            "and the new paths are the ones kept"
+        );
         assert!(!module.adopt(moved), "the same directory twice is not");
     }
 
@@ -2406,7 +2491,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let bare = FanPaths { hwmon_dir: Some(dir.clone()), ..Default::default() };
+        let bare = FanPaths {
+            hwmon_dir: Some(dir.clone()),
+            ..Default::default()
+        };
         module.adopt(bare);
         assert!(!module.caps().switch_mode, "nothing to drive yet");
 
@@ -2418,7 +2506,10 @@ mod tests {
             pwm1_enable: Some(dir.join("pwm1_enable")),
             ..Default::default()
         };
-        assert!(module.adopt(with_pwm), "the same directory can still be a different driver");
+        assert!(
+            module.adopt(with_pwm),
+            "the same directory can still be a different driver"
+        );
         assert!(module.caps().switch_mode);
 
         let _ = fs::remove_dir_all(&dir);
@@ -2472,7 +2563,10 @@ mod tests {
     /// the IPC uses, which is the one the frontend sends.
     #[test]
     fn the_reference_sensor_is_persisted_as_a_word() {
-        let config = FanConfig { reference_sensor: ReferenceSensor::Gpu, ..FanConfig::default() };
+        let config = FanConfig {
+            reference_sensor: ReferenceSensor::Gpu,
+            ..FanConfig::default()
+        };
         let text = serde_json::to_string(&config).unwrap();
         assert!(text.contains("\"referenceSensor\":\"gpu\""), "{text}");
         let back: FanConfig = serde_json::from_str(&text).unwrap();
@@ -2496,12 +2590,18 @@ mod tests {
         let curve = json!([{ "tempC": 40.0, "percent": 20.0 }]);
 
         let status = module
-            .call("setCurve", json!({ "curve": curve, "referenceSensor": "gpu" }))
+            .call(
+                "setCurve",
+                json!({ "curve": curve, "referenceSensor": "gpu" }),
+            )
             .expect("the curve is legal and so is the sensor");
         assert_eq!(status["referenceSensor"], json!("gpu"));
 
         let error = module
-            .call("setCurve", json!({ "curve": curve, "referenceSensor": "chassis" }))
+            .call(
+                "setCurve",
+                json!({ "curve": curve, "referenceSensor": "chassis" }),
+            )
             .expect_err("there is no chassis sensor");
         assert_eq!(error.kind(), ErrorKind::InvalidParams);
         // ...and the refused call changed nothing.
@@ -2522,7 +2622,10 @@ mod tests {
         assert_eq!(status["supported"], json!(false));
         assert_eq!(status["running"], json!(false));
         assert_eq!(status["acpiCallLoaded"], json!(false));
-        assert!(status["unreachable"].is_object(), "it says why, and the sentence is translatable");
+        assert!(
+            status["unreachable"].is_object(),
+            "it says why, and the sentence is translatable"
+        );
         // Reported even when nothing can be driven: the page shows the
         // limit next to the temperature, so the two arrive together.
         assert_eq!(status["maxStartTempC"], json!(cleaner::MAX_START_TEMP_C));
@@ -2543,13 +2646,19 @@ mod tests {
         let _no_acpi = crate::testenv::without_acpi_call(&dir);
 
         let module = module("start");
-        let error = module.start_cleaning(None, None, false).expect_err("nothing to talk to");
+        let error = module
+            .start_cleaning(None, None, false)
+            .expect_err("nothing to talk to");
         assert_ne!(
             error.kind(),
             ErrorKind::NotCapable,
             "a package to install is not a verdict on the hardware"
         );
-        assert!(error.as_msg().contains("acpi_call"), "the message names the module: {}", error.as_msg());
+        assert!(
+            error.as_msg().contains("acpi_call"),
+            "the message names the module: {}",
+            error.as_msg()
+        );
 
         // A failed start leaves nothing claimed - the next attempt must
         // not be refused as busy by the one that never began.
@@ -2564,7 +2673,10 @@ mod tests {
     #[test]
     fn the_control_loop_stands_off_through_both_transitions() {
         for state in [Cleaning::Starting, Cleaning::Stopping] {
-            assert!(state.holds_the_fans(), "{state:?} must stop the control loop writing");
+            assert!(
+                state.holds_the_fans(),
+                "{state:?} must stop the control loop writing"
+            );
             assert!(state.cycle().is_none(), "{state:?} is not a running cycle");
         }
         assert!(!Cleaning::Idle.holds_the_fans());
@@ -2641,7 +2753,10 @@ mod tests {
             gpu_temp: None,
             driver_params: None,
         };
-        *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
+        *lock_hw(&module.hardware) = Hardware {
+            caps: Capabilities::detect(&paths),
+            paths,
+        };
 
         // Untested is the default, and it offers speed control: most boards
         // that expose pwm1 do honour it.
@@ -2651,12 +2766,17 @@ mod tests {
 
         lock(&module.state).config.speed_control = SpeedControl::Ignored;
 
-        assert!(!module.capabilities().set_speed, "a watched refusal must reach pyren-check too");
+        assert!(
+            !module.capabilities().set_speed,
+            "a watched refusal must reach pyren-check too"
+        );
         assert_eq!(module.status()["speedControl"], json!("ignored"));
         assert_eq!(module.status()["capabilities"]["setSpeed"], json!(false));
         // ...and the modes that need a speed are refused, with a reason that
         // is not "install a driver" - the driver is already there.
-        let err = module.set_mode(FanMode::Curve, None).expect_err("curve must be refused");
+        let err = module
+            .set_mode(FanMode::Curve, None)
+            .expect_err("curve must be refused");
         assert!(format!("{err:?}").contains("speedIgnored"), "got {err:?}");
         // The two that go through a different firmware call still work.
         assert!(module.caps().supports(FanMode::Max));
@@ -2690,16 +2810,24 @@ mod tests {
             gpu_temp: None,
             driver_params: None,
         };
-        *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
+        *lock_hw(&module.hardware) = Hardware {
+            caps: Capabilities::detect(&paths),
+            paths,
+        };
 
         let bus = Arc::new(pyren_core::EventBus::new());
         module.publish_to(Arc::clone(&bus));
 
-        module.set_mode(FanMode::Manual, Some(120)).expect("manual is commandable here");
+        module
+            .set_mode(FanMode::Manual, Some(120))
+            .expect("manual is commandable here");
 
         let batch = bus.read_since(0, Duration::from_millis(0));
-        let mode_events: Vec<_> =
-            batch.events.iter().filter(|e| e.topic == "fan.mode").collect();
+        let mode_events: Vec<_> = batch
+            .events
+            .iter()
+            .filter(|e| e.topic == "fan.mode")
+            .collect();
         assert_eq!(mode_events.len(), 1, "exactly one fan.mode per change");
         assert_eq!(mode_events[0].payload["mode"], "manual");
         assert_eq!(mode_events[0].payload["manualPwm"], 120);
@@ -2712,11 +2840,20 @@ mod tests {
         use crate::speed_probe::Verdict;
         assert_eq!(Option::<SpeedControl>::from(Verdict::NoReading), None);
         assert_eq!(Option::<SpeedControl>::from(Verdict::NoChannel), None);
-        assert_eq!(Option::<SpeedControl>::from(Verdict::Ignored), Some(SpeedControl::Ignored));
+        assert_eq!(
+            Option::<SpeedControl>::from(Verdict::Ignored),
+            Some(SpeedControl::Ignored)
+        );
     }
 
     fn points(pairs: &[(f64, f64)]) -> Vec<CurvePoint> {
-        pairs.iter().map(|(t, p)| CurvePoint { temp_c: *t, percent: *p }).collect()
+        pairs
+            .iter()
+            .map(|(t, p)| CurvePoint {
+                temp_c: *t,
+                percent: *p,
+            })
+            .collect()
     }
 
     /// The point of the whole feature: two profiles, two shapes, and the
@@ -2728,14 +2865,21 @@ mod tests {
         let module = module("per-profile");
 
         module.set_active_profile("eco");
-        module.set_curve(points(&[(40.0, 10.0)]), None, None, None).unwrap();
+        module
+            .set_curve(points(&[(40.0, 10.0)]), None, None, None)
+            .unwrap();
         module.set_active_profile("performance");
-        module.set_curve(points(&[(40.0, 90.0)]), None, None, None).unwrap();
+        module
+            .set_curve(points(&[(40.0, 90.0)]), None, None, None)
+            .unwrap();
 
         // Each was stored where it belongs, not over the other.
         let state = lock(&module.state);
         assert_eq!(state.config.profile_curves["eco"], points(&[(40.0, 10.0)]));
-        assert_eq!(state.config.profile_curves["performance"], points(&[(40.0, 90.0)]));
+        assert_eq!(
+            state.config.profile_curves["performance"],
+            points(&[(40.0, 90.0)])
+        );
         drop(state);
 
         // ...and `curve` in the status is whichever one is in force.
@@ -2753,11 +2897,19 @@ mod tests {
         let _acpi = crate::testenv::real();
         let module = module("implicit-profile");
         module.set_active_profile("balanced");
-        module.set_curve(points(&[(50.0, 42.0)]), None, None, None).unwrap();
+        module
+            .set_curve(points(&[(50.0, 42.0)]), None, None, None)
+            .unwrap();
 
         let state = lock(&module.state);
-        assert_eq!(state.config.profile_curves["balanced"], points(&[(50.0, 42.0)]));
-        assert!(state.config.curve.is_empty(), "the shared fallback is not the one being edited");
+        assert_eq!(
+            state.config.profile_curves["balanced"],
+            points(&[(50.0, 42.0)])
+        );
+        assert!(
+            state.config.curve.is_empty(),
+            "the shared fallback is not the one being edited"
+        );
     }
 
     /// A machine whose power module controls nothing never announces a
@@ -2769,7 +2921,9 @@ mod tests {
         let module = module("no-profile");
         assert_eq!(module.active_profile(), None);
 
-        module.set_curve(points(&[(60.0, 55.0)]), None, None, None).unwrap();
+        module
+            .set_curve(points(&[(60.0, 55.0)]), None, None, None)
+            .unwrap();
         let state = lock(&module.state);
         assert_eq!(state.config.curve, points(&[(60.0, 55.0)]));
         assert!(state.config.profile_curves.is_empty());
@@ -2780,13 +2934,18 @@ mod tests {
     /// every profile starts as a copy of it, then diverges by editing.
     #[test]
     fn the_existing_curve_seeds_every_profile_rather_than_vanishing() {
-        let mut config = FanConfig { curve: points(&[(45.0, 30.0)]), ..FanConfig::default() };
+        let mut config = FanConfig {
+            curve: points(&[(45.0, 30.0)]),
+            ..FanConfig::default()
+        };
         assert!(config.migrate_profile_curves(&["eco", "balanced"]));
         assert_eq!(config.profile_curves["eco"], points(&[(45.0, 30.0)]));
         assert_eq!(config.profile_curves["balanced"], points(&[(45.0, 30.0)]));
 
         // Seeding runs once per profile and never overwrites a real curve.
-        config.profile_curves.insert("eco".into(), points(&[(70.0, 100.0)]));
+        config
+            .profile_curves
+            .insert("eco".into(), points(&[(70.0, 100.0)]));
         assert!(!config.migrate_profile_curves(&["eco", "balanced"]));
         assert_eq!(config.profile_curves["eco"], points(&[(70.0, 100.0)]));
     }
@@ -2795,12 +2954,20 @@ mod tests {
     /// heard of - falls back rather than leaving the fans with no curve.
     #[test]
     fn an_undrawn_or_unknown_profile_falls_back_to_the_shared_curve() {
-        let mut config = FanConfig { curve: points(&[(50.0, 40.0)]), ..FanConfig::default() };
-        config.profile_curves.insert("eco".into(), points(&[(50.0, 10.0)]));
+        let mut config = FanConfig {
+            curve: points(&[(50.0, 40.0)]),
+            ..FanConfig::default()
+        };
+        config
+            .profile_curves
+            .insert("eco".into(), points(&[(50.0, 10.0)]));
 
         assert_eq!(config.curve_for(Some("eco")), points(&[(50.0, 10.0)]));
         assert_eq!(config.curve_for(Some("balanced")), points(&[(50.0, 40.0)]));
-        assert_eq!(config.curve_for(Some("turbo-plus")), points(&[(50.0, 40.0)]));
+        assert_eq!(
+            config.curve_for(Some("turbo-plus")),
+            points(&[(50.0, 40.0)])
+        );
         assert_eq!(config.curve_for(None), points(&[(50.0, 40.0)]));
 
         // An empty stored curve is not a curve of "no fan at all".
@@ -2816,7 +2983,9 @@ mod tests {
         let _acpi = crate::testenv::real();
         let module = module("shared-curve");
         module.set_active_profile("eco");
-        module.set_curve(points(&[(55.0, 65.0)]), None, None, Some("")).unwrap();
+        module
+            .set_curve(points(&[(55.0, 65.0)]), None, None, Some(""))
+            .unwrap();
 
         let state = lock(&module.state);
         assert_eq!(state.config.curve, points(&[(55.0, 65.0)]));
@@ -2855,8 +3024,14 @@ mod tests {
 
         // A single-fan machine: fan2's path is discovered but the file is
         // not there, so only the CPU entry comes back.
-        let one = read_labelled_fans(Some(&dir.join("fan1_input")), Some(&dir.join("fan2_input.missing")));
-        assert_eq!(one, vec![json!({ "key": "cpu", "rpm": 2400, "isReverse": false })]);
+        let one = read_labelled_fans(
+            Some(&dir.join("fan1_input")),
+            Some(&dir.join("fan2_input.missing")),
+        );
+        assert_eq!(
+            one,
+            vec![json!({ "key": "cpu", "rpm": 2400, "isReverse": false })]
+        );
 
         // No hp-wmi hwmon at all: an empty list, never a fake reading.
         assert_eq!(read_labelled_fans(None, None), Vec::<Value>::new());
@@ -2868,10 +3043,16 @@ mod tests {
     /// with the floor board 8D2F measures: 1800 of 5300 rpm.
     fn driven_on_a_fixture(tag: &str, temp_c: i64) -> (FanModule, PathBuf) {
         let module = module(tag);
-        let dir = std::env::temp_dir().join(format!("pyren-fan-release-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pyren-fan-release-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        for (file, value) in [("pwm1", "0"), ("pwm2", "0"), ("pwm1_enable", "2"), ("fan1_input", "0")] {
+        for (file, value) in [
+            ("pwm1", "0"),
+            ("pwm2", "0"),
+            ("pwm1_enable", "2"),
+            ("fan1_input", "0"),
+        ] {
             fs::write(dir.join(file), value).unwrap();
         }
         fs::write(dir.join("temp1_input"), format!("{}", temp_c * 1000)).unwrap();
@@ -2889,7 +3070,10 @@ mod tests {
             driver_params: Some(dir.join("parameters")),
             ..Default::default()
         };
-        *lock_hw(&module.hardware) = Hardware { caps: Capabilities::detect(&paths), paths };
+        *lock_hw(&module.hardware) = Hardware {
+            caps: Capabilities::detect(&paths),
+            paths,
+        };
 
         let mut state = lock(&module.state);
         state.owned = true;
@@ -2902,7 +3086,10 @@ mod tests {
     }
 
     fn read_file(dir: &Path, name: &str) -> String {
-        fs::read_to_string(dir.join(name)).unwrap().trim().to_string()
+        fs::read_to_string(dir.join(name))
+            .unwrap()
+            .trim()
+            .to_string()
     }
 
     /// A curve asking for less than the fans can hold hands them to the
@@ -2916,7 +3103,11 @@ mod tests {
 
         assert_eq!(read_file(&dir, "pwm1_enable"), "2");
         assert_eq!(module.status()["fansReleased"], json!(true));
-        assert_eq!(module.status()["mode"], json!("curve"), "the mode is still the user's");
+        assert_eq!(
+            module.status()["mode"],
+            json!("curve"),
+            "the mode is still the user's"
+        );
     }
 
     /// And takes them back, manual first, once the curve climbs clear.
@@ -2949,25 +3140,43 @@ mod tests {
         module.tick_once().unwrap();
 
         assert_eq!(read_file(&dir, "pwm1_enable"), "1");
-        assert_eq!(read_file(&dir, "pwm1"), curve::MIN_COMMANDED_PWM.to_string());
+        assert_eq!(
+            read_file(&dir, "pwm1"),
+            curve::MIN_COMMANDED_PWM.to_string()
+        );
     }
 
     #[test]
     fn the_drivers_floor_is_the_default() {
         let floor = floor_in_force(Some(1800), Some(700), true, true);
-        assert_eq!(floor, Floor { rpm: Some(1800), override_hundreds: Some(0) });
+        assert_eq!(
+            floor,
+            Floor {
+                rpm: Some(1800),
+                override_hundreds: Some(0)
+            }
+        );
     }
 
     #[test]
     fn pyrens_floor_is_used_when_asked_for_and_measured() {
         let floor = floor_in_force(Some(1800), Some(700), false, true);
-        assert_eq!(floor, Floor { rpm: Some(700), override_hundreds: Some(7) });
+        assert_eq!(
+            floor,
+            Floor {
+                rpm: Some(700),
+                override_hundreds: Some(7)
+            }
+        );
     }
 
     /// Asked for, but never measured: there is no lower floor to use.
     #[test]
     fn an_unmeasured_pyren_floor_falls_back_to_the_drivers() {
-        assert_eq!(floor_in_force(Some(1800), None, false, true).rpm, Some(1800));
+        assert_eq!(
+            floor_in_force(Some(1800), None, false, true).rpm,
+            Some(1800)
+        );
     }
 
     /// A driver that cannot be told another floor enforces its own, and
@@ -2975,13 +3184,22 @@ mod tests {
     #[test]
     fn a_driver_without_the_override_keeps_its_floor_whatever_is_chosen() {
         let floor = floor_in_force(Some(1800), Some(700), false, false);
-        assert_eq!(floor, Floor { rpm: Some(1800), override_hundreds: None });
+        assert_eq!(
+            floor,
+            Floor {
+                rpm: Some(1800),
+                override_hundreds: None
+            }
+        );
     }
 
     /// The clamp is rounded up, never below the speed the daemon commands.
     #[test]
     fn the_override_rounds_up_to_the_next_hundred() {
-        assert_eq!(floor_in_force(Some(1800), Some(750), false, true).override_hundreds, Some(8));
+        assert_eq!(
+            floor_in_force(Some(1800), Some(750), false, true).override_hundreds,
+            Some(8)
+        );
     }
 
     /// With Pyren's floor, a speed the driver's would have handed to the
@@ -3023,12 +3241,20 @@ mod tests {
         let (module, dir) = driven_on_a_fixture("toggle-floor", 50);
         lock(&module.state).config.fan_stable_min_rpm = Some(600);
         module.tick_once().unwrap();
-        assert_eq!(read_file(&dir, "pwm1_enable"), "2", "released under the driver's floor");
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "2",
+            "released under the driver's floor"
+        );
 
         let status = module.set_keep_driver_floor(false).unwrap();
 
         assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "7");
-        assert_eq!(read_file(&dir, "pwm1_enable"), "1", "commanded under Pyren's");
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "1",
+            "commanded under Pyren's"
+        );
         assert_eq!(status["keepDriverFloor"], json!(false));
         assert_eq!(status["pyrenMinRpm"], json!(700));
         assert_eq!(status["driverMinRpm"], json!(1800));
@@ -3080,7 +3306,7 @@ mod tests {
             state.mode = FanMode::Manual;
             state.config.keep_driver_floor = false;
             state.config.fan_stable_min_rpm = Some(600); // Pyren's floor: 700
-            // A commanded speed sitting on that floor: ~34/255 of 5300.
+                                                         // A commanded speed sitting on that floor: ~34/255 of 5300.
             state.config.manual_pwm = 34;
         }
 
@@ -3095,7 +3321,11 @@ mod tests {
         fs::write(dir.join("fan1_input"), "0").unwrap();
         module.tick_once().unwrap();
         module.tick_once().unwrap();
-        assert_eq!(module.status()["recentFanStalls"], json!(2), "counted, not yet acted on");
+        assert_eq!(
+            module.status()["recentFanStalls"],
+            json!(2),
+            "counted, not yet acted on"
+        );
         module.tick_once().unwrap();
 
         let status = module.status();
@@ -3105,8 +3335,16 @@ mod tests {
         assert_eq!(notices[0]["raisedToRpm"], json!(800));
         assert_eq!(notices[0]["stalls"], json!(3));
         assert_eq!(notices[0]["reachedDriverFloor"], json!(false));
-        assert_eq!(status["fanMinRpm"], json!(800), "Pyren's floor moved up with it");
-        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "8", "and the driver was told");
+        assert_eq!(
+            status["fanMinRpm"],
+            json!(800),
+            "Pyren's floor moved up with it"
+        );
+        assert_eq!(
+            read_file(&dir, "parameters/min_rpm_override"),
+            "8",
+            "and the driver was told"
+        );
         assert_eq!(lock(&module.state).config.fan_stable_min_rpm, Some(700));
     }
 
