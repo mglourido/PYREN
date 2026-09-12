@@ -621,16 +621,18 @@
   },
   "diagnostics": {
     "title": "Hardware check",
-    "runCheck": "Run check",
+    "checkPanelTitle": "Compatibility",
+    "runCheck": "Check driver compatibility",
     "running": "Checking...",
     "allowWrites": "Also test that the fan accepts writes",
     "allowWritesHint": "Rewrites the value already set and restores the previous mode, so no fan changes speed. Needs the daemon to be running as root.",
-    "probeSpeed": "Test fan speed control",
-    "probing": "Testing…",
-    "probeSpeedHint": "Holds the fans at a speed they are not at for a few seconds and watches whether they follow. Audible, and it stops as soon as they answer. It is the only way to tell a driver that honours a commanded speed from one that accepts the value and ignores it.",
-    "probeHonoured": "The fans followed the commanded speed, reaching {rpm} rpm. Manual and curve modes work on this machine.",
-    "probeIgnored": "The fans ignored the commanded speed and stayed on the firmware's own curve. Manual and curve modes cannot work here; automatic and maximum still do.",
-    "probeInconclusive": "The test settled nothing — no fan reported a speed to watch. Nothing has been changed.",
+    "viewResult": "Result",
+    "resultDriver": "Driver compatibility result",
+    "checkRgb": "Test keyboard RGB",
+    "checkingRgb": "Testing…",
+    "checkRgbHint": "Asks the keyboard lighting hardware directly rather than trusting the last state shown on the Lighting page. Detects whether any of the known RGB dialects actually answers.",
+    "rgbPresent": "Keyboard RGB hardware answered. Lighting controls should work on this machine.",
+    "rgbAbsent": "No keyboard RGB hardware answered. This machine may have no per-key or zone lighting, or the interface needed to reach it is missing.",
     "verdict": {
       "fullControl": "Fan control works",
       "monitoringOnly": "Monitoring only — fan speed cannot be set",
@@ -697,6 +699,14 @@
         "denied": "permission denied; run as root to test writes",
         "notRestored": "{detail} - WARNING: the original fan mode could not be restored; set it manually or reboot"
       },
+      "pwm-effect": {
+        "title": "Fans follow a commanded speed",
+        "notAttempted": "not attempted; enable writes to spin the fans and test this",
+        "honoured": "pwm1 = {target} moved the fans from {from} to {to} rpm",
+        "ignored": "pwm1 = {target} was accepted and changed nothing: the fans stayed at {rpm} rpm for {seconds}s. The embedded controller keeps them on the firmware's own curve, so manual and curve modes cannot work on this board. Auto and max are a different firmware call and still do",
+        "noReading": "no fan reported a speed during the run, so there was nothing to watch",
+        "noChannel": "no PWM channel to write to"
+      },
       "hwmon-attrs": {
         "title": "hwmon attributes",
         "noNode": "no hwmon node",
@@ -728,7 +738,7 @@
     },
     "remedy": "What to do",
     "neverRun": "The check has not been run yet.",
-    "cliHint": "The same check runs without the app: <code>cargo run -p pyren-check</code> (add <code>--json</code> for a bug report).",
+    "cliHint": "Checks whether this machine's fan driver exposes what PYREN needs to read and set fan speed: the hp-wmi platform driver, its hwmon node, and the pwm channel. Each failing check names exactly what to fix. The same check runs without the app: <code>cargo run -p pyren-check</code> (add <code>--json</code> for a bug report).",
     "wroteToHardware": "This run wrote to the hardware and restored the previous state.",
     "summary": {
       "fullControlTested": "Fan control works: speeds can be read and the PWM channel accepted a write.",

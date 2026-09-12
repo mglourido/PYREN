@@ -17,7 +17,6 @@
   import { admin, type AdminAction, type AdminStatus } from "$lib/api/admin";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
-  import { hardware } from "$lib/stores/hardware.svelte";
   import { onMount } from "svelte";
 
   let diagnosis = $state<FanDiagnosis | null>(null);
@@ -39,31 +38,28 @@
   }
 
   /**
-   * The fan speed-control probe. Moved here from Performance: it is a
-   * verification, and this is the page for those. Whether the driver
-   * *honours* a commanded speed (as opposed to taking the write and
-   * ignoring it) is the one thing only a live probe can answer.
+   * Third check alongside the fan diagnosis and the speed probe: does the
+   * keyboard lighting hardware answer at all, rather than trusting whatever
+   * state the Lighting page last showed.
    */
-  const speedControl = $derived(hardware.fan?.speedControl ?? "untested");
-  let probing = $state(false);
-  let probeResult = $state<{ ok: boolean; text: string } | null>(null);
+  let rgbChecking = $state(false);
+  let rgbResult = $state<{ ok: boolean; text: string } | null>(null);
 
-  async function probeSpeed() {
-    probing = true;
-    probeResult = null;
+  async function checkRgbKeyboard() {
+    rgbChecking = true;
+    rgbResult = null;
     try {
-      const probe = await daemon.probeFanSpeedControl();
-      hardware.observeFan(probe.status);
-      probeResult =
-        probe.verdict === "honoured"
-          ? { ok: true, text: t("diagnostics.probeHonoured", { rpm: probe.reachedRpm }) }
-          : probe.verdict === "ignored"
-            ? { ok: false, text: t("diagnostics.probeIgnored") }
-            : { ok: false, text: t("diagnostics.probeInconclusive") };
+      const probe = await daemon.rgbCapabilities();
+      rgbResult =
+        probe.lighting.present || probe.perKey.present
+          ? { ok: true, text: t("diagnostics.rgbPresent") }
+          : probe.lighting.unreachable
+            ? { ok: false, text: tm(probe.lighting.unreachable) }
+            : { ok: false, text: t("diagnostics.rgbAbsent") };
     } catch (e) {
-      probeResult = { ok: false, text: errorText(e) };
+      rgbResult = { ok: false, text: errorText(e) };
     } finally {
-      probing = false;
+      rgbChecking = false;
     }
   }
 
@@ -266,6 +262,7 @@
 <div class="drivers">
   <h1 class="page-title">{t("diagnostics.title")}</h1>
 
+  <div class="drivers-scroll">
   <!-- Privileges first: a fan check on a machine whose daemon cannot be
        reached only ever reports the same thing twice. -->
   {#if canInspect}
@@ -325,117 +322,124 @@
     </Panel>
   {/if}
 
-  <Panel>
-    <div class="controls">
-      <button class="run" onclick={run} disabled={running}>
-        <Icon name="refresh" size={15} />
-        {running ? t("diagnostics.running") : t("diagnostics.runCheck")}
-      </button>
+  <Panel title={t("diagnostics.checkPanelTitle")}>
+    <div class="check">
+      <div class="controls">
+        <button class="run" onclick={run} disabled={running}>
+          <Icon name="refresh" size={15} />
+          {running ? t("diagnostics.running") : t("diagnostics.runCheck")}
+        </button>
 
-      <label class="writes">
-        <Toggle
-          checked={allowWrites}
-          onchange={(v) => (allowWrites = v)}
-          ariaLabel={t("diagnostics.allowWrites")}
-        />
-        <span>
-          {t("diagnostics.allowWrites")}
-          <InfoTip>{t("diagnostics.allowWritesHint")}</InfoTip>
-        </span>
-      </label>
+        <label class="writes">
+          <Toggle
+            checked={allowWrites}
+            onchange={(v) => (allowWrites = v)}
+            ariaLabel={t("diagnostics.allowWrites")}
+          />
+          <span>
+            {t("diagnostics.allowWrites")}
+            <InfoTip>{t("diagnostics.allowWritesHint")}</InfoTip>
+          </span>
+        </label>
+      </div>
+
+      {#if error}
+        <details class="result warn" open>
+          <summary>{t("diagnostics.resultDriver")}</summary>
+          <p class="notice err">{error}</p>
+        </details>
+      {:else if diagnosis}
+        <details class="result {diagnosis.verdict === 'fullControl' ? '' : 'warn'}" open>
+          <summary>{t("diagnostics.resultDriver")}</summary>
+
+          <!-- The point of the whole page: when control is missing, say what
+               could fix it, rather than silently offering to install anything. -->
+          {#if diagnosis.driverNotice}
+            <p class="notice warn">{tm(diagnosis.driverNotice)}</p>
+          {/if}
+          {#if diagnosis.wroteToHardware}
+            <p class="notice">{t("diagnostics.wroteToHardware")}</p>
+          {/if}
+
+          <ul class="checks">
+            {#each diagnosis.checks as check (check.id)}
+              <li class={check.status}>
+                <Icon name={icons[check.status]} size={15} />
+                <div class="body">
+                  <span class="check-title">{tm(check.title)}</span>
+                  <span class="detail">{tm(check.detail)}</span>
+                  {#if check.remedy}
+                    <span class="remedy">
+                      <strong>{t("diagnostics.remedy")}:</strong>
+                      {tm(check.remedy)}
+                    </span>
+                  {/if}
+                </div>
+              </li>
+            {/each}
+          </ul>
+        </details>
+      {:else if telemetry.demo}
+        <p class="notice">{t("notices.daemonDownBody")}</p>
+      {:else}
+        <p class="notice">{t("diagnostics.neverRun")}</p>
+      {/if}
+
+      <p class="hint">{@html t("diagnostics.cliHint")}</p>
     </div>
 
-    <p class="hint">{@html t("diagnostics.cliHint")}</p>
-
-    {#if error}
-      <p class="notice err">{error}</p>
-    {:else if telemetry.demo && !diagnosis}
-      <p class="notice">{t("notices.daemonDownBody")}</p>
-    {:else if !diagnosis}
-      <p class="notice">{t("diagnostics.neverRun")}</p>
-    {/if}
-  </Panel>
-
-  <!-- The one check that needs the fans to actually move. Offered while the
-       verdict is unknown, and again after a refusal so a driver change can
-       be re-tested. -->
-  {#if hardware.fan && speedControl !== "honoured"}
-    <Panel title={t("diagnostics.probeSpeed")}>
-      <div class="probe">
-        <button class="run" onclick={probeSpeed} disabled={probing}>
+    <hr class="sep" />
+    <div class="check">
+      <div class="controls">
+        <button class="run" onclick={checkRgbKeyboard} disabled={rgbChecking}>
           <Icon name="refresh" size={15} />
-          {probing ? t("diagnostics.probing") : t("diagnostics.probeSpeed")}
+          {rgbChecking ? t("diagnostics.checkingRgb") : t("diagnostics.checkRgb")}
         </button>
-        <span class="hint">{t("diagnostics.probeSpeedHint")}</span>
-      </div>
-      {#if probeResult}
-        <p class="notice {probeResult.ok ? '' : 'warn'}">{probeResult.text}</p>
-      {/if}
-    </Panel>
-  {/if}
-
-  {#if diagnosis}
-    <Panel>
-      <div class="verdict {diagnosis.verdict}">
-        <Icon
-          name={diagnosis.verdict === "fullControl" ? "check" : "warning"}
-          size={22}
-        />
-        <div>
-          <strong>{t(`diagnostics.verdict.${diagnosis.verdict}`)}</strong>
-          <p>{tm(diagnosis.summary)}</p>
-        </div>
       </div>
 
-      <!-- The point of the whole page: when control is missing, say what
-           could fix it, rather than silently offering to install anything. -->
-      {#if diagnosis.driverNotice}
-        <p class="notice warn">{tm(diagnosis.driverNotice)}</p>
+      {#if rgbResult}
+        <details class="result {rgbResult.ok ? '' : 'warn'}" open>
+          <summary>{t("diagnostics.viewResult")}</summary>
+          <p class="notice {rgbResult.ok ? '' : 'warn'}">{rgbResult.text}</p>
+        </details>
       {/if}
-      {#if diagnosis.wroteToHardware}
-        <p class="notice">{t("diagnostics.wroteToHardware")}</p>
-      {/if}
-    </Panel>
 
-    <Panel title={t("diagnostics.checks")}>
-      <ul class="checks">
-        {#each diagnosis.checks as check (check.id)}
-          <li class={check.status}>
-            <Icon name={icons[check.status]} size={15} />
-            <div class="body">
-              <span class="check-title">{tm(check.title)}</span>
-              <span class="detail">{tm(check.detail)}</span>
-              {#if check.remedy}
-                <span class="remedy">
-                  <strong>{t("diagnostics.remedy")}:</strong>
-                  {tm(check.remedy)}
-                </span>
-              {/if}
-            </div>
-          </li>
-        {/each}
-      </ul>
-    </Panel>
-  {/if}
+      <p class="hint">{t("diagnostics.checkRgbHint")}</p>
+    </div>
+  </Panel>
 
   <!-- Last on the page on purpose: everything above answers "do I need
        this?", and on most machines the answer is no. -->
   <DriverWizard />
+  </div>
 </div>
 
 <style>
   .drivers {
     flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 30px 32px;
+    display: flex;
+    flex-direction: column;
+    max-width: 990px;
+  }
+
+  .drivers-scroll {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 24px 30px 44px;
+    padding-right: 6px;
     display: flex;
     flex-direction: column;
     gap: 14px;
-    max-width: 990px;
   }
 
   .page-title {
     font-size: 24px;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 24px 0 14px;
   }
 
   .actions {
@@ -506,27 +510,44 @@
     color: var(--text-dim);
   }
 
-  .probe {
+  .check {
     display: flex;
-    align-items: center;
-    gap: 18px;
-    flex-wrap: wrap;
-  }
-
-  .probe .hint {
-    margin: 0;
-    flex: 1 1 32ch;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
   }
 
   .hint {
-    margin: 14px 0 0;
+    margin: 0;
     color: var(--text-mute);
     font-size: 12px;
     line-height: 1.5;
   }
 
+  .result {
+    width: 100%;
+  }
+
+  .result summary {
+    cursor: pointer;
+    margin-bottom: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ok);
+  }
+
+  .result.warn summary {
+    color: var(--warn);
+  }
+
+  .result .notice {
+    margin: 8px 0 0;
+  }
+
   .sep {
-    margin: 14px 0 0;
+    margin: 16px 0;
     border: none;
     border-top: 1px solid var(--line-soft);
   }
@@ -544,35 +565,6 @@
 
   .notice.warn {
     color: var(--warn);
-  }
-
-  .verdict {
-    display: flex;
-    gap: 14px;
-    align-items: flex-start;
-  }
-
-  .verdict strong {
-    font-size: 16px;
-  }
-
-  .verdict p {
-    margin: 5px 0 0;
-    color: var(--text-dim);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .verdict.fullControl {
-    color: var(--ok);
-  }
-
-  .verdict.monitoringOnly {
-    color: var(--warn);
-  }
-
-  .verdict.unsupported {
-    color: var(--text-mute);
   }
 
   .checks {

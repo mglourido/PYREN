@@ -30,6 +30,7 @@
 <div class="help">
   <h1 class="page-title">{t("help.title")}</h1>
 
+  <div class="help-scroll">
   <Panel title={t("help.about")}>
     <p>{t("help.aboutBody")}</p>
 
@@ -102,21 +103,35 @@
     <p>{t("help.legalBody")}</p>
     <p class="muted">{t("help.license")}: GPL-3.0-or-later</p>
   </Panel>
+  </div>
 </div>
 
 <style>
   .help {
     flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 30px 32px;
+    display: flex;
+    flex-direction: column;
+    max-width: 860px;
+  }
+
+  .help-scroll {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 24px 30px 44px;
+    padding-right: 6px;
     display: flex;
     flex-direction: column;
     gap: 16px;
-    max-width: 860px;
   }
 
   .page-title {
     font-size: 24px;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 24px 0 16px;
   }
 
   p {

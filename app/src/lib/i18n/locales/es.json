@@ -621,16 +621,18 @@
   },
   "diagnostics": {
     "title": "Comprobación de hardware",
-    "runCheck": "Ejecutar comprobación",
+    "checkPanelTitle": "Compatibilidad",
+    "runCheck": "Comprobar compatibilidad con el driver",
     "running": "Comprobando...",
     "allowWrites": "Probar también que el ventilador acepta escrituras",
     "allowWritesHint": "Reescribe el valor que ya estaba puesto y restaura el modo anterior, así que ningún ventilador cambia de velocidad. Requiere que el daemon corra como root.",
-    "probeSpeed": "Probar el control de velocidad",
-    "probing": "Probando…",
-    "probeSpeedHint": "Mantiene los ventiladores unos segundos a una velocidad en la que no están y observa si obedecen. Es audible, y se detiene en cuanto responden. Es la única forma de distinguir un controlador que honra una velocidad ordenada de uno que acepta el valor y lo ignora.",
-    "probeHonoured": "Los ventiladores siguieron la velocidad ordenada y alcanzaron {rpm} rpm. Los modos manual y curva funcionan en esta máquina.",
-    "probeIgnored": "Los ventiladores ignoraron la velocidad ordenada y siguieron la curva del propio firmware. Los modos manual y curva no pueden funcionar aquí; automático y máximo sí.",
-    "probeInconclusive": "La prueba no resolvió nada: ningún ventilador informó una velocidad que observar. No se ha cambiado nada.",
+    "viewResult": "Resultado",
+    "resultDriver": "Resultado de compatibilidad con el driver",
+    "checkRgb": "Probar RGB del teclado",
+    "checkingRgb": "Probando…",
+    "checkRgbHint": "Pregunta directamente al hardware de iluminación del teclado, en lugar de fiarse del último estado mostrado en la página de Iluminación. Detecta si alguno de los dialectos RGB conocidos responde.",
+    "rgbPresent": "El hardware RGB del teclado respondió. Los controles de iluminación deberían funcionar en este equipo.",
+    "rgbAbsent": "Ningún hardware RGB del teclado respondió. Puede que este equipo no tenga iluminación por zonas o por tecla, o que falte la interfaz necesaria para alcanzarla.",
     "verdict": {
       "fullControl": "El control de ventiladores funciona",
       "monitoringOnly": "Solo monitorización — no se puede fijar la velocidad",
@@ -697,6 +699,14 @@
         "denied": "permiso denegado; ejecuta como root para probar las escrituras",
         "notRestored": "{detail} - AVISO: no se pudo restaurar el modo de ventilador original; ponlo manualmente o reinicia"
       },
+      "pwm-effect": {
+        "title": "Los ventiladores obedecen una velocidad ordenada",
+        "notAttempted": "no intentado; activa las escrituras para hacer girar los ventiladores y probarlo",
+        "honoured": "pwm1 = {target} movió los ventiladores de {from} a {to} rpm",
+        "ignored": "pwm1 = {target} se aceptó y no cambió nada: los ventiladores siguieron a {rpm} rpm durante {seconds}s. El controlador embebido los mantiene en la curva del propio firmware, así que los modos manual y curva no pueden funcionar en esta placa. Automático y máximo usan otra llamada del firmware y sí funcionan",
+        "noReading": "ningún ventilador informó una velocidad durante la prueba, así que no había nada que observar",
+        "noChannel": "no hay canal PWM al que escribir"
+      },
       "hwmon-attrs": {
         "title": "Atributos hwmon",
         "noNode": "no hay nodo hwmon",
@@ -728,7 +738,7 @@
     },
     "remedy": "Qué hacer",
     "neverRun": "Todavía no se ha ejecutado la comprobación.",
-    "cliHint": "La misma comprobación se ejecuta sin la app: <code>cargo run -p pyren-check</code> (añade <code>--json</code> para un reporte de fallo).",
+    "cliHint": "Comprueba si el driver de los ventiladores de este equipo expone lo que PYREN necesita para leer y fijar su velocidad: el driver de plataforma hp-wmi, su nodo hwmon y el canal pwm. Cada comprobación que falla indica exactamente qué arreglar. La misma comprobación se ejecuta sin la app: <code>cargo run -p pyren-check</code> (añade <code>--json</code> para un reporte de fallo).",
     "wroteToHardware": "Esta ejecución escribió en el hardware y restauró el estado anterior.",
     "summary": {
       "fullControlTested": "El control de ventiladores funciona: las velocidades se pueden leer y el canal PWM aceptó una escritura.",

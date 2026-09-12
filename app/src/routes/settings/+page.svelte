@@ -258,6 +258,7 @@
 <div class="settings">
   <h1 class="page-title">{t("settings.title")}</h1>
 
+  <div class="settings-scroll">
   <Panel title={t("settings.appearance")}>
     <div class="row">
       <span>{t("settings.theme")}</span>
@@ -818,6 +819,7 @@
       </button>
     </div>
   </Panel>
+  </div>
 </div>
 
 <style>
@@ -891,17 +893,30 @@
 
   .settings {
     flex: 1;
-    overflow-y: auto;
-    padding: 24px 30px 44px;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 30px 32px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
     width: 100%;
     max-width: 990px;
   }
 
+  .settings-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
   .page-title {
     font-size: 24px;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 24px 0 18px;
   }
 
   .row {
