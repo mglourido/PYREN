@@ -11,6 +11,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -18,11 +25,12 @@ jobs:
   daemon:
     name: daemon (test + clippy)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: daemon
@@ -38,13 +46,22 @@ jobs:
         working-directory: daemon
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: daemon
+      - run: cargo fmt --all -- --check
+        working-directory: daemon
 
   app:
     name: app (svelte-check + build)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('app/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
         working-directory: app
       - run: bun run check
@@ -55,6 +72,7 @@ jobs:
   tauri:
     name: tauri shell (cargo check)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       # webkit2gtk and friends are not on the runner image; without them
@@ -74,6 +92,7 @@ jobs:
   osd:
     name: osd (test + clippy)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       # Its own workspace, and the reason for that is this list: the daemon
@@ -82,10 +101,24 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            libgtk-4-dev libgtk4-layer-shell-dev
+            libgtk-4-dev meson ninja-build libwayland-dev wayland-protocols
+      # libgtk4-layer-shell-dev is not packaged for Ubuntu until 25.10
+      # (questing) - ubuntu-latest is 24.04, which has no such package at
+      # all - so the native library is built from source here, pinned to
+      # the same release the project's own install docs tell an Arch user
+      # to `pacman -S`.
+      - run: |
+          git clone --depth 1 --branch v1.3.0 \
+            https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
+          cd /tmp/gtk4-layer-shell
+          meson setup -Dintrospection=false -Dvapi=false -Dexamples=false \
+            -Ddocs=false -Dtests=false build
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: osd
@@ -97,13 +130,19 @@ jobs:
         working-directory: osd
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: osd
+      - run: cargo fmt -p pyren-osd -- --check
+        working-directory: osd
 
   shell:
-    name: shell scripts (syntax)
+    name: shell scripts (syntax + shellcheck)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: sh -n tools/pyren-check.sh
       # power-soak.sh drives real firmware, so CI can only check that it
       # parses - which is still the failure it would otherwise ship.
       - run: sh -n tools/power-soak.sh
+      # severity=warning: skip style/info nits so this catches real bugs
+      # (bad quoting, unset vars) without failing on the script's own style.
+      - run: shellcheck --severity=warning tools/pyren-check.sh tools/power-soak.sh
