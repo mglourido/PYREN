@@ -31,7 +31,16 @@ const GPU_DRIVERS: &[&str] = &["amdgpu", "nouveau", "nvidia", "radeon"];
 /// The fallback is deliberate and the GPU has no equivalent: every machine
 /// has *some* thermal zone 0 and on a laptop it is nearly always the
 /// package, whereas a machine with no GPU hwmon simply has no GPU sensor.
+///
+/// `PYREN_CPU_TEMP_PATH` overrides the search and points this at a fixture
+/// file, the way `PYREN_HWMON_DIR` does for the fan files: whether *some*
+/// thermal zone exists is a property of the machine running the test, not
+/// of the curve logic being tested, so a fan-curve self-test must not
+/// depend on it.
 pub fn cpu_temp_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("PYREN_CPU_TEMP_PATH") {
+        return Some(PathBuf::from(path));
+    }
     hwmon_temp_path(CPU_DRIVERS).or_else(|| {
         let fallback = Path::new(THERMAL_ZONE0);
         fallback.exists().then(|| fallback.to_path_buf())
@@ -42,7 +51,13 @@ pub fn cpu_temp_path() -> Option<PathBuf> {
 /// the common case rather than a fault: an integrated-only machine has
 /// nothing here, and so does one whose card was powered down when the
 /// search ran.
+///
+/// `PYREN_GPU_TEMP_PATH` overrides the search, mirroring
+/// `PYREN_CPU_TEMP_PATH` above.
 pub fn gpu_temp_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("PYREN_GPU_TEMP_PATH") {
+        return Some(PathBuf::from(path));
+    }
     hwmon_temp_path(GPU_DRIVERS)
 }
 
@@ -65,7 +80,12 @@ fn hwmon_temp_path(drivers: &[&str]) -> Option<PathBuf> {
 
 /// sysfs temperature files report millidegrees C.
 pub fn read_millideg_c(path: &Path) -> Option<i64> {
-    fs::read_to_string(path).ok()?.trim().parse::<i64>().ok().map(|v| v / 1000)
+    fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .map(|v| v / 1000)
 }
 
 /// The hottest of the CPU and GPU right now, in whole degrees.
@@ -145,5 +165,22 @@ mod tests {
     #[test]
     fn no_sensors_at_all_is_not_a_temperature() {
         assert_eq!(hottest_c(None, None), None);
+    }
+
+    /// `PYREN_CPU_TEMP_PATH` and `PYREN_GPU_TEMP_PATH` are process-global,
+    /// so one test covers both rather than each running under its own,
+    /// possibly concurrent, `set_var`/`remove_var` pair.
+    #[test]
+    fn temp_paths_follow_their_env_overrides() {
+        let dir = temp_dir("override");
+        let cpu = write(&dir, "cpu_temp", "40000");
+        let gpu = write(&dir, "gpu_temp", "55000");
+        std::env::set_var("PYREN_CPU_TEMP_PATH", &cpu);
+        std::env::set_var("PYREN_GPU_TEMP_PATH", &gpu);
+        assert_eq!(cpu_temp_path(), Some(cpu));
+        assert_eq!(gpu_temp_path(), Some(gpu));
+        std::env::remove_var("PYREN_CPU_TEMP_PATH");
+        std::env::remove_var("PYREN_GPU_TEMP_PATH");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

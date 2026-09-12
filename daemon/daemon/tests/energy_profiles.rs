@@ -72,11 +72,13 @@ impl Machine {
     /// whether curve and manual are offered at all.
     fn with_fan_files(tag: &str, fan_files: &[&str]) -> Self {
         let guard = machine_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let root =
-            std::env::temp_dir().join(format!("pyren-energy-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("pyren-energy-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
-        let machine = Self { root, _guard: guard };
+        let machine = Self {
+            root,
+            _guard: guard,
+        };
 
         // --- the power half ---
         machine.write("acpi/platform_profile", "balanced");
@@ -91,8 +93,16 @@ impl Machine {
         for file in fan_files {
             // `pwm1_enable` starts at 2, the firmware's own curve, which is
             // what a machine nobody has touched is in.
-            machine.write(&format!("hwmon/{file}"), if *file == "pwm1_enable" { "2" } else { "0" });
+            machine.write(
+                &format!("hwmon/{file}"),
+                if *file == "pwm1_enable" { "2" } else { "0" },
+            );
         }
+        // A fixed 45 C: whether *some* CPU thermal zone exists on the
+        // machine running this test is not what the curve tests are about,
+        // so `PYREN_CPU_TEMP_PATH` (see `apply_env`) points the fan module
+        // at this instead of a real sensor.
+        machine.write("cpu_temp", "45000");
 
         machine.apply_env();
         machine
@@ -105,7 +115,9 @@ impl Machine {
     }
 
     fn read(&self, name: &str) -> Option<String> {
-        std::fs::read_to_string(self.root.join(name)).ok().map(|v| v.trim().to_string())
+        std::fs::read_to_string(self.root.join(name))
+            .ok()
+            .map(|v| v.trim().to_string())
     }
 
     fn write_limits(&self, limits: Limits) {
@@ -141,17 +153,24 @@ impl Machine {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(self.root.join("bin/busctl"), std::fs::Permissions::from_mode(0o755))
-                .expect("runnable");
+            std::fs::set_permissions(
+                self.root.join("bin/busctl"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .expect("runnable");
         }
     }
 
     fn apply_env(&self) {
-        std::env::set_var("PYREN_PLATFORM_PROFILE", self.root.join("acpi/platform_profile"));
+        std::env::set_var(
+            "PYREN_PLATFORM_PROFILE",
+            self.root.join("acpi/platform_profile"),
+        );
         std::env::set_var("PYREN_CPU_ROOT", self.root.join("cpu"));
         std::env::set_var("PYREN_POWERCAP", self.root.join("powercap"));
         std::env::set_var("PYREN_TOOLS_DIR", self.root.join("bin"));
         std::env::set_var("PYREN_HWMON_DIR", self.root.join("hwmon"));
+        std::env::set_var("PYREN_CPU_TEMP_PATH", self.root.join("cpu_temp"));
     }
 
     fn store(&self, name: &str) -> ConfigStore {
@@ -175,10 +194,16 @@ impl Machine {
     /// The package limits, in microwatts, as the kernel would report them.
     fn limits(&self) -> Limits {
         let read = |c: u8| {
-            self.read(&format!("powercap/intel-rapl:0/constraint_{c}_power_limit_uw"))
-                .and_then(|v| v.parse().ok())
+            self.read(&format!(
+                "powercap/intel-rapl:0/constraint_{c}_power_limit_uw"
+            ))
+            .and_then(|v| v.parse().ok())
         };
-        Limits { pl1_uw: read(0), pl2_uw: read(1), pl4_uw: read(2) }
+        Limits {
+            pl1_uw: read(0),
+            pl2_uw: read(1),
+            pl4_uw: read(2),
+        }
     }
 
     /// `intel_pstate/no_turbo` is inverted: 1 means turbo is *off*.
@@ -204,6 +229,7 @@ impl Drop for Machine {
             "PYREN_POWERCAP",
             "PYREN_TOOLS_DIR",
             "PYREN_HWMON_DIR",
+            "PYREN_CPU_TEMP_PATH",
         ] {
             std::env::remove_var(name);
         }
@@ -211,7 +237,11 @@ impl Drop for Machine {
 }
 
 fn stock() -> Limits {
-    Limits { pl1_uw: Some(STOCK_PL1), pl2_uw: Some(STOCK_PL2), pl4_uw: Some(STOCK_PL4) }
+    Limits {
+        pl1_uw: Some(STOCK_PL1),
+        pl2_uw: Some(STOCK_PL2),
+        pl4_uw: Some(STOCK_PL4),
+    }
 }
 
 fn mode_name(mode: PowerMode) -> &'static str {
@@ -233,7 +263,9 @@ fn set_mode(power: &PowerModule, mode: PowerMode) {
 fn tune(power: &PowerModule, mode: PowerMode, params: Value) {
     let mut params = params;
     params["mode"] = json!(mode_name(mode));
-    power.call("setTuning", params).unwrap_or_else(|e| panic!("setTuning {mode:?}: {e:?}"));
+    power
+        .call("setTuning", params)
+        .unwrap_or_else(|e| panic!("setTuning {mode:?}: {e:?}"));
 }
 
 /// Percentages are what is stored, so a request in watts comes back
@@ -262,9 +294,17 @@ fn performance_and_unlimited_carry_their_own_envelopes_onto_the_hardware() {
     let power = machine.power();
 
     // Performance: measured on this machine, well under stock.
-    tune(&power, PowerMode::Performance, json!({ "pl1W": 45.0, "pl2W": 60.0 }));
+    tune(
+        &power,
+        PowerMode::Performance,
+        json!({ "pl1W": 45.0, "pl2W": 60.0 }),
+    );
     // Unlimited: what the name says. Left at the firmware's own.
-    tune(&power, PowerMode::Unlimited, json!({ "pl1W": 77.0, "pl2W": 77.0 }));
+    tune(
+        &power,
+        PowerMode::Unlimited,
+        json!({ "pl1W": 77.0, "pl2W": 77.0 }),
+    );
 
     set_mode(&power, PowerMode::Performance);
     assert_eq!(
@@ -273,10 +313,18 @@ fn performance_and_unlimited_carry_their_own_envelopes_onto_the_hardware() {
         "Performance's sustained limit reached the hardware"
     );
     assert_eq!(machine.limits().pl2_uw, Some(as_stored(60.0, STOCK_PL2)));
-    assert_eq!(machine.limits().pl4_uw, Some(STOCK_PL4), "PL4 is never scaled by a profile");
+    assert_eq!(
+        machine.limits().pl4_uw,
+        Some(STOCK_PL4),
+        "PL4 is never scaled by a profile"
+    );
 
     set_mode(&power, PowerMode::Unlimited);
-    assert_eq!(machine.limits(), stock(), "Unlimited gives the whole envelope back");
+    assert_eq!(
+        machine.limits(),
+        stock(),
+        "Unlimited gives the whole envelope back"
+    );
 
     // ...and back again, because a one-way test would not catch a mode
     // that only applies its envelope the first time it is entered.
@@ -297,13 +345,22 @@ fn turning_turbo_off_for_one_mode_leaves_every_other_mode_boosting() {
 
     set_mode(&power, PowerMode::Performance);
     assert!(!machine.turbo(), "Performance was told not to boost");
-    assert_eq!(machine.read("cpu/intel_pstate/no_turbo").as_deref(), Some("1"));
+    assert_eq!(
+        machine.read("cpu/intel_pstate/no_turbo").as_deref(),
+        Some("1")
+    );
 
     set_mode(&power, PowerMode::Unlimited);
-    assert!(machine.turbo(), "Unlimited never gave up turbo, so entering it restores boost");
+    assert!(
+        machine.turbo(),
+        "Unlimited never gave up turbo, so entering it restores boost"
+    );
 
     set_mode(&power, PowerMode::Eco);
-    assert!(machine.turbo(), "and neither did Eco - no mode ships an opinion about it");
+    assert!(
+        machine.turbo(),
+        "and neither did Eco - no mode ships an opinion about it"
+    );
 }
 
 /// The ceiling, from the outside. Nothing a profile does may raise a
@@ -315,10 +372,18 @@ fn no_mode_can_be_tuned_above_the_firmwares_own_ceiling() {
     let machine = Machine::new("ceiling");
     let power = machine.power();
 
-    tune(&power, PowerMode::Unlimited, json!({ "pl1W": 250.0, "pl2W": 250.0 }));
+    tune(
+        &power,
+        PowerMode::Unlimited,
+        json!({ "pl1W": 250.0, "pl2W": 250.0 }),
+    );
     set_mode(&power, PowerMode::Unlimited);
 
-    assert_eq!(machine.limits(), stock(), "asking for 250 W got the machine's own 77 W");
+    assert_eq!(
+        machine.limits(),
+        stock(),
+        "asking for 250 W got the machine's own 77 W"
+    );
     assert!(
         machine.limits().pl1_uw.unwrap() <= STOCK_PL1,
         "the whole point: never above what the firmware shipped"
@@ -337,8 +402,14 @@ fn an_absurdly_low_limit_is_floored_not_obeyed() {
     set_mode(&power, PowerMode::Performance);
 
     let applied = machine.limits().pl1_uw.expect("something was applied");
-    assert!(applied >= 5 * W, "floored at something survivable, got {applied} uW");
-    assert!(applied < 10 * W, "but still recognisably the low limit that was asked for");
+    assert!(
+        applied >= 5 * W,
+        "floored at something survivable, got {applied} uW"
+    );
+    assert!(
+        applied < 10 * W,
+        "but still recognisably the low limit that was asked for"
+    );
 }
 
 /// Each mode's envelope is its own. Tuning Performance must not quietly
@@ -349,7 +420,11 @@ fn tuning_one_mode_does_not_touch_what_the_other_three_apply() {
     let machine = Machine::new("isolation");
     let power = machine.power();
 
-    tune(&power, PowerMode::Performance, json!({ "pl1W": 40.0, "turbo": false }));
+    tune(
+        &power,
+        PowerMode::Performance,
+        json!({ "pl1W": 40.0, "turbo": false }),
+    );
 
     for untouched in [PowerMode::Eco, PowerMode::Balanced, PowerMode::Unlimited] {
         set_mode(&power, untouched);
@@ -358,7 +433,10 @@ fn tuning_one_mode_does_not_touch_what_the_other_three_apply() {
             stock(),
             "{untouched:?} was never tuned, so it applies the machine's own envelope"
         );
-        assert!(machine.turbo(), "{untouched:?} was never told to give up turbo");
+        assert!(
+            machine.turbo(),
+            "{untouched:?} was never told to give up turbo"
+        );
     }
 
     set_mode(&power, PowerMode::Performance);
@@ -394,8 +472,14 @@ fn editing_the_envelope_of_the_current_mode_applies_it_immediately() {
 fn a_tuned_envelope_survives_a_daemon_restart() {
     let machine = Machine::new("envelope-restart");
     let first = machine.power();
-    tune(&first, PowerMode::Performance, json!({ "pl1W": 45.0, "turbo": false }));
-    first.call("setRestoreOnStart", json!({ "enabled": true })).expect("restore on");
+    tune(
+        &first,
+        PowerMode::Performance,
+        json!({ "pl1W": 45.0, "turbo": false }),
+    );
+    first
+        .call("setRestoreOnStart", json!({ "enabled": true }))
+        .expect("restore on");
     set_mode(&first, PowerMode::Performance);
 
     let applied = machine.limits();
@@ -408,8 +492,15 @@ fn a_tuned_envelope_survives_a_daemon_restart() {
     let restarted = machine.power();
 
     assert_eq!(restarted.mode(), PowerMode::Performance);
-    assert_eq!(machine.limits(), applied, "the same watts, to the microwatt");
-    assert!(!machine.turbo(), "turbo is part of the profile and came back with it");
+    assert_eq!(
+        machine.limits(),
+        applied,
+        "the same watts, to the microwatt"
+    );
+    assert!(
+        !machine.turbo(),
+        "turbo is part of the profile and came back with it"
+    );
 }
 
 /// A machine with no powercap at all - the envelope is simply not one of
@@ -426,7 +517,10 @@ fn a_machine_with_no_powercap_refuses_to_pretend_it_has_an_envelope() {
 
     // The rest of the profile still works.
     set_mode(&power, PowerMode::Unlimited);
-    assert_eq!(machine.read("acpi/platform_profile").as_deref(), Some("performance"));
+    assert_eq!(
+        machine.read("acpi/platform_profile").as_deref(),
+        Some("performance")
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -456,10 +550,19 @@ fn auto_hands_the_fans_back_to_the_firmware() {
 
     // Away from auto first, so returning to it is a real change.
     fan.call("setMode", json!({ "mode": "max" })).expect("max");
-    assert_eq!(machine.fan_enable().as_deref(), Some("0"), "max is pwm1_enable=0");
+    assert_eq!(
+        machine.fan_enable().as_deref(),
+        Some("0"),
+        "max is pwm1_enable=0"
+    );
 
-    fan.call("setMode", json!({ "mode": "auto" })).expect("auto");
-    assert_eq!(machine.fan_enable().as_deref(), Some("2"), "auto is the firmware's curve");
+    fan.call("setMode", json!({ "mode": "auto" }))
+        .expect("auto");
+    assert_eq!(
+        machine.fan_enable().as_deref(),
+        Some("2"),
+        "auto is the firmware's curve"
+    );
 
     let status = fan.call("getStatus", Value::Null).expect("status");
     assert_eq!(status["mode"], json!("auto"));
@@ -468,11 +571,11 @@ fn auto_hands_the_fans_back_to_the_firmware() {
 /// Curve mode, end to end: the stored curve, this machine's temperature,
 /// and the PWM that actually got written.
 ///
-/// The temperature is whatever the machine running the test happens to
-/// be at - there is no override for the CPU sensor - so the expected PWM
-/// is computed from that same reading through the module's own public
-/// `curve::target_pwm` rather than hard-coded. That keeps the assertion
-/// exact without pretending to control the thermometer.
+/// The temperature comes from the fixed `PYREN_CPU_TEMP_PATH` fixture (see
+/// `with_fan_files`), and the expected PWM is computed from that same
+/// reading through the module's own public `curve::target_pwm` rather than
+/// hard-coded - so the assertion is exact without duplicating the curve's
+/// own math here.
 #[test]
 fn curve_mode_writes_the_pwm_the_curve_asks_for_at_this_temperature() {
     let machine = Machine::new("fan-curve");
@@ -486,14 +589,25 @@ fn curve_mode_writes_the_pwm_the_curve_asks_for_at_this_temperature() {
         { "tempC": 70, "percent": 75 },
         { "tempC": 90, "percent": 100 },
     ]);
-    fan.call("setCurve", json!({ "curve": curve, "interpolation": "smooth" })).expect("setCurve");
-    fan.call("setMode", json!({ "mode": "curve" })).expect("curve");
+    fan.call(
+        "setCurve",
+        json!({ "curve": curve, "interpolation": "smooth" }),
+    )
+    .expect("setCurve");
+    fan.call("setMode", json!({ "mode": "curve" }))
+        .expect("curve");
 
     let status = fan.call("getStatus", Value::Null).expect("status");
     assert_eq!(status["mode"], json!("curve"));
-    assert_eq!(machine.fan_enable().as_deref(), Some("1"), "a curve drives pwm1, so manual mode");
+    assert_eq!(
+        machine.fan_enable().as_deref(),
+        Some("1"),
+        "a curve drives pwm1, so manual mode"
+    );
 
-    let temp = status["cpuTempC"].as_f64().expect("this machine has a CPU sensor");
+    let temp = status["cpuTempC"]
+        .as_f64()
+        .expect("this machine has a CPU sensor");
     let points: Vec<pyren_fan::CurvePoint> = serde_json::from_value(curve).expect("points");
     let wanted = pyren_fan::curve::target_pwm(&points, temp, pyren_fan::Interpolation::Smooth)
         .expect("the curve covers this temperature");
@@ -518,7 +632,8 @@ fn a_flat_curve_pins_the_pwm_whatever_the_temperature_is() {
         json!({ "curve": [{ "tempC": 0, "percent": 60 }, { "tempC": 110, "percent": 60 }] }),
     )
     .expect("setCurve");
-    fan.call("setMode", json!({ "mode": "curve" })).expect("curve");
+    fan.call("setMode", json!({ "mode": "curve" }))
+        .expect("curve");
 
     assert_eq!(
         machine.fan_pwm(),
@@ -535,13 +650,15 @@ fn editing_the_curve_while_it_is_running_moves_the_fans_at_once() {
     let machine = Machine::new("fan-curve-live");
     let fan = machine.fan();
 
-    let flat = |percent: u64| {
-        json!({ "curve": [{ "tempC": 0, "percent": percent }, { "tempC": 110, "percent": percent }] })
-    };
+    let flat = |percent: u64| json!({ "curve": [{ "tempC": 0, "percent": percent }, { "tempC": 110, "percent": percent }] });
 
     fan.call("setCurve", flat(40)).expect("setCurve");
-    fan.call("setMode", json!({ "mode": "curve" })).expect("curve");
-    assert_eq!(machine.fan_pwm(), Some(pyren_fan::curve::percent_to_pwm(40.0)));
+    fan.call("setMode", json!({ "mode": "curve" }))
+        .expect("curve");
+    assert_eq!(
+        machine.fan_pwm(),
+        Some(pyren_fan::curve::percent_to_pwm(40.0))
+    );
 
     fan.call("setCurve", flat(80)).expect("a second curve");
     assert_eq!(
@@ -560,12 +677,22 @@ fn manual_writes_the_speed_it_was_given_and_then_gives_the_fans_back() {
     let machine = Machine::new("fan-manual");
     let fan = machine.fan();
 
-    fan.call("setMode", json!({ "mode": "manual", "pwm": 96 })).expect("manual");
+    fan.call("setMode", json!({ "mode": "manual", "pwm": 96 }))
+        .expect("manual");
     assert_eq!(machine.fan_enable().as_deref(), Some("1"));
-    assert_eq!(machine.fan_pwm(), Some(96), "the speed asked for is the speed written");
+    assert_eq!(
+        machine.fan_pwm(),
+        Some(96),
+        "the speed asked for is the speed written"
+    );
 
-    fan.call("setMode", json!({ "mode": "auto" })).expect("back to auto");
-    assert_eq!(machine.fan_enable().as_deref(), Some("2"), "the firmware has the fans again");
+    fan.call("setMode", json!({ "mode": "auto" }))
+        .expect("back to auto");
+    assert_eq!(
+        machine.fan_enable().as_deref(),
+        Some("2"),
+        "the firmware has the fans again"
+    );
 }
 
 /// Manual without a speed is a request that cannot be honoured, and
@@ -576,7 +703,11 @@ fn manual_without_a_speed_is_refused_rather_than_guessed_at() {
     let fan = machine.fan();
 
     assert!(fan.call("setMode", json!({ "mode": "manual" })).is_err());
-    assert_eq!(machine.fan_enable().as_deref(), Some("2"), "and nothing was written");
+    assert_eq!(
+        machine.fan_enable().as_deref(),
+        Some("2"),
+        "and nothing was written"
+    );
 }
 
 /// Board 8D2F: `pwm1_enable` without `pwm1`. Max and auto are real
@@ -592,14 +723,19 @@ fn a_machine_that_cannot_set_a_speed_still_switches_between_auto_and_max() {
     assert_eq!(status["capabilities"]["switchMode"], json!(true));
     assert_eq!(status["capabilities"]["setSpeed"], json!(false));
 
-    fan.call("setMode", json!({ "mode": "max" })).expect("max is a name, not a speed");
+    fan.call("setMode", json!({ "mode": "max" }))
+        .expect("max is a name, not a speed");
     assert_eq!(machine.fan_enable().as_deref(), Some("0"));
-    fan.call("setMode", json!({ "mode": "auto" })).expect("and so is auto");
+    fan.call("setMode", json!({ "mode": "auto" }))
+        .expect("and so is auto");
     assert_eq!(machine.fan_enable().as_deref(), Some("2"));
 
     for refused in ["manual", "curve"] {
         let attempt = fan.call("setMode", json!({ "mode": refused, "pwm": 128 }));
-        assert!(attempt.is_err(), "{refused} needs pwm1, which this machine does not have");
+        assert!(
+            attempt.is_err(),
+            "{refused} needs pwm1, which this machine does not have"
+        );
     }
     assert_eq!(
         machine.fan_enable().as_deref(),
@@ -637,14 +773,23 @@ fn changing_the_power_mode_never_writes_to_the_fans() {
     let fan = machine.fan();
 
     // Put the fans somewhere deliberate and remember exactly where.
-    fan.call("setMode", json!({ "mode": "manual", "pwm": 120 })).expect("manual");
+    fan.call("setMode", json!({ "mode": "manual", "pwm": 120 }))
+        .expect("manual");
     let enable_before = machine.fan_enable();
     let pwm_before = machine.fan_pwm();
 
-    tune(&power, PowerMode::Performance, json!({ "pl1W": 40.0, "turbo": false }));
+    tune(
+        &power,
+        PowerMode::Performance,
+        json!({ "pl1W": 40.0, "turbo": false }),
+    );
     for mode in PowerMode::ALL {
         set_mode(&power, *mode);
-        assert_eq!(machine.fan_enable(), enable_before, "{mode:?} moved pwm1_enable");
+        assert_eq!(
+            machine.fan_enable(),
+            enable_before,
+            "{mode:?} moved pwm1_enable"
+        );
         assert_eq!(machine.fan_pwm(), pwm_before, "{mode:?} moved pwm1");
     }
 
@@ -672,8 +817,13 @@ fn changing_the_fan_mode_never_writes_to_the_power_envelope() {
             fan.call("setCurve", json!({ "curve": [{ "tempC": 0, "percent": 50 }, { "tempC": 110, "percent": 50 }] }))
                 .expect("a curve");
         }
-        fan.call("setMode", json!({ "mode": mode })).unwrap_or_else(|e| panic!("{mode}: {e:?}"));
-        assert_eq!(machine.limits(), envelope, "fan {mode} changed the package limits");
+        fan.call("setMode", json!({ "mode": mode }))
+            .unwrap_or_else(|e| panic!("{mode}: {e:?}"));
+        assert_eq!(
+            machine.limits(),
+            envelope,
+            "fan {mode} changed the package limits"
+        );
         assert_eq!(machine.turbo(), turbo, "fan {mode} changed the turbo knob");
     }
 }
@@ -698,7 +848,11 @@ fn an_overclock_request_does_not_reach_the_cpus_power_limits() {
     let refused = overclock.call("apply", json!({ "coreOffsetMhz": 150 }));
     assert!(refused.is_err(), "an unconsented apply must be refused");
 
-    assert_eq!(machine.limits(), envelope, "and the CPU's envelope is not the GPU module's to move");
+    assert_eq!(
+        machine.limits(),
+        envelope,
+        "and the CPU's envelope is not the GPU module's to move"
+    );
     assert!(machine.turbo());
     assert_eq!(
         machine.read("acpi/platform_profile").as_deref(),
@@ -718,16 +872,21 @@ fn cycling_the_power_modes_leaves_the_overclock_consent_alone() {
     let fan = machine.fan();
     let overclock = machine.overclock();
 
-    overclock.call("setConsent", json!({ "accepted": true })).expect("consent");
+    overclock
+        .call("setConsent", json!({ "accepted": true }))
+        .expect("consent");
     let consented = |state: &Value| state["consent"]["accepted"] == json!(true);
-    assert!(consented(&overclock.call("getState", Value::Null).expect("state")));
+    assert!(consented(
+        &overclock.call("getState", Value::Null).expect("state")
+    ));
 
     for _ in 0..3 {
         for mode in PowerMode::ALL {
             set_mode(&power, *mode);
         }
         fan.call("setMode", json!({ "mode": "max" })).expect("max");
-        fan.call("setMode", json!({ "mode": "auto" })).expect("auto");
+        fan.call("setMode", json!({ "mode": "auto" }))
+            .expect("auto");
     }
 
     assert!(
@@ -747,8 +906,11 @@ fn the_three_modules_write_three_separate_config_files() {
     let overclock = machine.overclock();
 
     tune(&power, PowerMode::Performance, json!({ "pl1W": 45.0 }));
-    fan.call("setRestoreOnStart", json!({ "enabled": true })).expect("fan setting");
-    overclock.call("setConsent", json!({ "accepted": true })).expect("overclock setting");
+    fan.call("setRestoreOnStart", json!({ "enabled": true }))
+        .expect("fan setting");
+    overclock
+        .call("setConsent", json!({ "accepted": true }))
+        .expect("overclock setting");
 
     let paths = [
         power.config_path(),
