@@ -31,6 +31,7 @@
 //! module, it deserves the reviewable plan the installer page will show,
 //! and it does not belong behind a single button.
 
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -415,30 +416,33 @@ pub fn grant(action: &str) -> Result<Value, String> {
     Ok(json!({ "applied": true, "cancelled": false, "detail": stderr }))
 }
 
+/// Whether handing `path` to `pkexec` is safe: owned by root, and not
+/// writable by anyone else.
+///
+/// `pkexec` runs whatever file it is given as root once the user
+/// authenticates - it does not care who put the file there. Without this
+/// check, a `PATH` entry or `$PYREN_DAEMON` pointing at a directory the
+/// invoking user (or another local user) can write to would turn "type
+/// your password" into "run this as root instead of pyren-daemon".
+fn is_root_owned_and_not_writable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    meta.uid() == 0 && meta.mode() & 0o022 == 0
+}
+
 /// Where the daemon binary is, since installing the service means running
-/// it. `PYREN_DAEMON` wins, then `PATH`, then the usual prefixes, then the
-/// development build sitting beside this app's own target directory.
+/// it. The usual install prefixes win, then the development build sitting
+/// beside this app's own target directory, then `PATH` and `PYREN_DAEMON`
+/// as a last resort for unusual setups - each candidate only counts if it
+/// is root-owned and not group/other-writable.
 ///
 /// Returns `None` rather than a guess: a wrong path here would be handed to
 /// `pkexec`, and "we could not find it" is a far better thing to show than
-/// a root prompt for something that will fail.
+/// a root prompt for something that will fail - or, worse, one for
+/// something an unprivileged local user planted.
 fn daemon_binary() -> Option<String> {
     const BINARY: &str = "pyren-daemon";
-
-    if let Ok(path) = std::env::var("PYREN_DAEMON") {
-        if Path::new(&path).is_file() {
-            return Some(path);
-        }
-    }
-
-    if let Ok(path) = std::env::var("PATH") {
-        if let Some(found) = std::env::split_paths(&path)
-            .map(|dir| dir.join(BINARY))
-            .find(|candidate| candidate.is_file())
-        {
-            return Some(found.to_string_lossy().into_owned());
-        }
-    }
 
     let mut candidates = vec![
         std::path::PathBuf::from("/usr/bin").join(BINARY),
@@ -453,10 +457,31 @@ fn daemon_binary() -> Option<String> {
             candidates.push(repo.join("daemon/target").join(profile).join(BINARY));
         }
     }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .map(|found| found.to_string_lossy().into_owned())
+
+    if let Some(found) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+        return Some(found.to_string_lossy().into_owned());
+    }
+
+    // Fallback for a machine installed somewhere these prefixes miss.
+    // Still gated on ownership, so this widens *where* we look, not *what*
+    // we are willing to run as root.
+    if let Ok(path) = std::env::var("PATH") {
+        if let Some(found) = std::env::split_paths(&path)
+            .map(|dir| dir.join(BINARY))
+            .find(|candidate| candidate.is_file() && is_root_owned_and_not_writable(candidate))
+        {
+            return Some(found.to_string_lossy().into_owned());
+        }
+    }
+
+    if let Ok(path) = std::env::var("PYREN_DAEMON") {
+        let candidate = Path::new(&path);
+        if candidate.is_file() && is_root_owned_and_not_writable(candidate) {
+            return Some(path);
+        }
+    }
+
+    None
 }
 
 fn systemctl_says(query: &str, expected: &str) -> bool {
