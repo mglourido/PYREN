@@ -4,7 +4,7 @@ A Tauri-based clone of HP's OMEN Gaming Hub for Linux, built as a
 privileged daemon (Rust) plus an unprivileged desktop app (Tauri +
 SvelteKit), The project aims to be modular to facilitate the import of external source code and to reduce the security issues that granting privileges can cause.
 
-<img width="1920" height="1200" alt="imagen" src="https://github.com/user-attachments/assets/22d1495f-7070-434b-8a20-6dd607354bd8" />
+<img width="1920" height="1200" alt="imagen" src="https://github.com/user-attachments/assets/6f9aefe2-21ab-4d20-83cc-079c6021516c" />
 
 To create this application, the codebase was derived from the [`omen-fan-control`](https://github.com/arfelious/omen-fan-control) repositories; specifically, the patched **Linux driver**, its Python-based installer (v2.0), and the reverse ventilation logic, while [`omen-rgb-linux`](https://github.com/arfelious/omen-rgb-linux.git) was used to create the RGB control system.
 
