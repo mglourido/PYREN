@@ -93,21 +93,54 @@ pub fn read_state() -> Result<Vec<u8>, DialectError> {
     payload(&reply)
 }
 
+/// How many zones a reply this long actually carries.
+///
+/// **A full four never arrive through `acpi_call`.** Its result buffer is
+/// 256 characters and it prints each byte as `0x00, ` - six characters -
+/// so a reply is capped at 42 bytes however much the firmware sent. Eight
+/// of those are the `PASS` header [`payload`] strips, leaving 34, and
+/// zone 3 lives at bytes 34..37. It is one byte past the end, on every
+/// machine, for good.
+///
+/// Measured on an OMEN 16 across three runs: `COLOR_GET` came back 34
+/// bytes each time, and a `lightbar` read - which keeps its header - came
+/// back 42, which is the cap itself.
+///
+/// Writing is unaffected: [`send`] patches all four zone slots into the
+/// buffer it sends, and only the read is short. So zone 3 can be set and
+/// cannot be read back, which is an awkward thing to be true but is what
+/// is true.
+pub fn zones_in(state: &[u8]) -> usize {
+    (state.len().saturating_sub(ZONE_OFFSET) / 3).min(crate::ZONES)
+}
+
+/// The zones this dialect can actually read - **not always four**.
+///
+/// Short by design rather than padded: the previous version filled the
+/// zones the reply did not reach with [`Rgb::BLACK`], which made a
+/// truncated read indistinguishable from a keyboard whose last zone is
+/// genuinely off. Every `rgb.readZones` on the test laptop reported zone
+/// 4 as `#000000`, and the hardware had nothing to do with it. A caller
+/// that gets three colours knows it got three; one that got four black
+/// ones was told a fact that was not checked.
+///
+/// See [`zones_in`] for why the number is three on an `acpi_call` machine.
 pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
     let state = read_state()?;
-    // Not reaching the first zone is a reply that says nothing about the
-    // lights, and that *is* a failure. Reaching some of them is a
-    // truncated reply, which is the normal case through `acpi_call`.
-    if state.len() < ZONE_OFFSET + 3 {
+    // Not reaching the first zone is a reply that says nothing at all
+    // about the lights, and that *is* a failure.
+    let reached = zones_in(&state);
+    if reached == 0 {
         return Err(DialectError::Unreadable(format!(
             "the reply is {} bytes and the first zone starts at {ZONE_OFFSET}",
             state.len()
         )));
     }
-    Ok((0..crate::ZONES)
+    Ok((0..reached)
         .map(|zone| {
             let at = ZONE_OFFSET + zone * 3;
-            state.get(at..at + 3).map_or(Rgb::BLACK, |c| Rgb::new(c[0], c[1], c[2]))
+            let c = &state[at..at + 3];
+            Rgb::new(c[0], c[1], c[2])
         })
         .collect())
 }
@@ -212,6 +245,26 @@ mod tests {
     fn bytes_of(request: &str) -> Vec<u8> {
         assert!(request.starts_with('b'), "acpi_call buffers start with b");
         acpi::parse_bytes(request).expect("the request must be plain hex")
+    }
+
+    /// The bug this fixes: `acpi_call` caps a reply at 42 bytes, of which
+    /// `payload` strips 8, and zone 3 starts at byte 34 of what is left.
+    /// The old reader padded what it could not reach with black, so every
+    /// read on the test laptop reported a fourth zone that was switched
+    /// off - and no such reading had been taken.
+    #[test]
+    fn a_truncated_reply_reports_the_zones_it_reached_and_no_more() {
+        // 34 bytes: what an OMEN 16 actually returns, measured.
+        assert_eq!(zones_in(&[0u8; 34]), 3, "zone 3 starts one byte past the end");
+        // A whole buffer, for the machine or the acpi_call that one day
+        // hands one over.
+        assert_eq!(zones_in(&[0u8; STATE_LEN]), crate::ZONES);
+        // Past four zones the extra bytes are somebody else's fields.
+        assert_eq!(zones_in(&[0u8; STATE_LEN * 2]), crate::ZONES);
+        // Short of the first zone there is nothing to report at all, which
+        // `read_colors` turns into a failure rather than an empty answer.
+        assert_eq!(zones_in(&[0u8; ZONE_OFFSET]), 0);
+        assert_eq!(zones_in(&[]), 0);
     }
 
     /// The header is what no test on hardware could isolate: a wrong

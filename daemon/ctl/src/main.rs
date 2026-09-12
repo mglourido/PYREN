@@ -105,7 +105,8 @@ LIGHTS
   rgb probe                    which ways of talking to the lights this
                                machine answers, and where none do, why
   rgb get                      the probe plus what this daemon last set
-  rgb read                     ask the firmware what the four zones are
+  rgb read                     ask the firmware what the zones are - three
+                               of them where acpi_call truncates the reply
   rgb set <colour>             all four zones, e.g. rgb set '#ff9900'
   rgb zones <c,c,c,c>          one colour per zone
   rgb off
@@ -1751,14 +1752,27 @@ fn print_network(status: &Value) {
     );
 }
 
+/// The keyboard has four zones. Named here only to explain a short
+/// answer, which is why it is a number in `pyren-ctl` rather than a
+/// dependency on the rgb crate for one constant.
+const ZONES: usize = 4;
+
 fn print_zones(value: &Value) {
-    let zones = value
+    let read: Vec<&str> = value
         .get("zones")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    if !zones.is_empty() {
-        row("zones", zones);
+    if read.is_empty() {
+        return;
+    }
+    row("zones", read.join(" "));
+    // A short answer is not a fault and not a dark zone - it is
+    // `acpi_call` capping the reply at 42 bytes, which stops one byte
+    // short of zone 3. Said here because three colours under a heading
+    // that means four is the kind of thing that gets filed as a bug.
+    if read.len() < ZONES {
+        row("", format!("zones {}-{} are past acpi_call's reply cap - set, not readable", read.len() + 1, ZONES));
     }
 }
 

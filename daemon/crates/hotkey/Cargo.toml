@@ -12,3 +12,10 @@ serde_json = "1"
 # For the kernel's own input interface: struct input_event's timeval, the
 # O_NONBLOCK open and poll(2). No evdev crate - this is all of it.
 libc = "0.2"
+
+# `--example sniff` only. It reads the firmware's own lighting state while
+# it watches the keyboard, which is the only way to tell a key that dims
+# the backlight from one that switches it off - and the daemon must know
+# which before it can stop writing frames nobody can see.
+[dev-dependencies]
+pyren-rgb = { path = "../rgb" }

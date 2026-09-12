@@ -71,11 +71,19 @@ use crate::ZONES;
 /// [`acpi::WMI_METHOD`], because all three dialects and the fan cleaner
 /// call the same one.
 ///
-const PAYLOAD_LEN: usize = 128;
-const COMMAND_WRITE: u32 = 0x0002_0009;
-const COMMAND_READ: u32 = 0x0002_0008;
-const TYPE_WRITE: u32 = 0x0b;
-const TYPE_READ: u32 = 0x04;
+pub const PAYLOAD_LEN: usize = 128;
+pub const COMMAND_WRITE: u32 = 0x0002_0009;
+pub const COMMAND_READ: u32 = 0x0002_0008;
+pub const TYPE_WRITE: u32 = 0x0b;
+/// `HPWMI_GET_LIGHTBAR_COLORS`, upstream's alone - see the module header
+/// on what is and is not corroborated.
+pub const TYPE_READ: u32 = 0x04;
+
+/// Where the brightness percentage sits in the payload. The one field
+/// this dialect has that the other two do not, which makes it the only
+/// place the firmware's *own* brightness could be legible - see
+/// `raw_read`.
+pub const BRIGHTNESS_OFFSET: usize = 3;
 
 /// The success sentinel, `PASS`, as the firmware returns it.
 const PASS: &[u8; 4] = b"PASS";
@@ -183,6 +191,22 @@ pub fn write_colors(colors: &[Rgb], brightness: u8) -> Result<(), DialectError> 
     } else {
         Err(DialectError::Refused(reply.trim().to_string()))
     }
+}
+
+/// One zone read, returned whole.
+///
+/// [`read_colors`] throws away all but three bytes of this. The rest is
+/// the only candidate this project has for reading the firmware's own
+/// brightness - the level the laptop's backlight key moves without
+/// telling the kernel anything - so it is reachable on its own.
+pub fn raw_read(zone: usize) -> Result<Vec<u8>, DialectError> {
+    let mut payload = [0u8; PAYLOAD_LEN];
+    payload[0] = zone as u8;
+    let reply = acpi::wmi_call(COMMAND_READ, TYPE_READ, &payload, PAYLOAD_LEN, PAYLOAD_LEN)?;
+    if !is_success(&reply) {
+        return Err(DialectError::Refused(reply.trim().to_string()));
+    }
+    acpi::parse_bytes(&reply).ok_or(DialectError::Unreadable(reply))
 }
 
 /// Reads the four zones back out of the firmware, one call per zone.

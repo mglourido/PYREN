@@ -1450,7 +1450,7 @@ hp-wmi hwmon reports `[]`.
 | `rgb.setZones` | `{ "zones": [c, c, c, c], "brightness"?: 0-100 }` | the status object | ✅ implemented, needs root, **never run against a light strip** |
 | `rgb.setStatic` | `{ "color": c, "brightness"?: 0-100 }` | the status object | ✅ implemented, needs root, ditto |
 | `rgb.off` | none | the status object | ✅ implemented, needs root, ditto |
-| `rgb.readZones` | none | `{ "zones": [c, c, c, c] }` | ✅ implemented, needs root, ditto |
+| `rgb.readZones` | none | `{ "zones": [c, …] }` — the zones that could be read, **not always four**; see "`acpi_call` truncates the reply" | ✅ implemented, needs root, ditto |
 | `rgb.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
 | `rgb.setDialect` | `{ "dialect": "auto" \| id }` | the status object | ✅ implemented |
 | `rgb.listEffects` | none | `{ effects: [{ id, usesColors, defaults }], maxColors, speed, fps }` | ✅ implemented, read-only |
@@ -1672,13 +1672,28 @@ the keyboard's real colours and drives them. So a client must never present
 `fourZone` ahead of `lightbar` for exactly this reason.
 
 **`acpi_call` truncates the reply.** It renders a buffer answer as the text
-`{0x50, 0x41, …}` into a fixed result buffer of a few hundred bytes, so a
-128-byte answer arrives as its first ~34. Zones 0-2 fit; zone 3 starts at
-byte 34 and does not, so `readZones` reports it black however it was set.
-The colour written to it is real. A short reply is read for what it
-contains rather than failed outright — failing would send auto-selection to
-the dialect that answers `PASS` and does nothing. `kernelZones` has no such
-limit, which is the argument for preferring it.
+`{0x50, 0x41, …}` into a 256-character result buffer, and each byte costs
+six characters (`0x00, `), so **no reply exceeds 42 bytes** however much
+the firmware sent. Measured on the OMEN 16 this runs on: a `lightbar` read
+comes back 42 bytes, the cap itself, and a `fourZone` `COLOR_GET` comes
+back 34 — the same 42 with the 8-byte `PASS` header stripped.
+
+Zones 0-2 fit in those 34 bytes; zone 3 starts at byte 34 and does not, on
+every machine, permanently. The colour *written* to zone 3 is real —
+`COLOR_SET` patches all four slots into the buffer it sends, and only the
+read is short.
+
+So `readZones` returns **the zones it actually read, which is three on a
+`fourZone` machine**, rather than four with the last one invented. It used
+to pad the gap with black, which made a truncated read look exactly like a
+keyboard whose fourth zone was switched off; every read on the test laptop
+reported `#000000` there and no such reading had been taken. A client must
+size itself from the array it is given.
+
+A short reply is still read for what it contains rather than failed
+outright — failing would send auto-selection to the dialect that answers
+`PASS` and does nothing. `kernelZones` has no such limit, which is the
+argument for preferring it.
 
 ### A missing `acpi_call` is `failed`, not `notCapable`
 
