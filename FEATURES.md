@@ -1,7 +1,9 @@
 # Hardware-related features
 
-- **Automatic switching** between Eco and Balanced performance modes
+- **Automatic switching**, per power source, between a configurable preferred mode and a refined mode under load/idle/heat/low-battery (`preferredOnBattery`: Eco or Balanced; `preferredOnMains`: Balanced or Performance), with a manual-override baseline, dead-band return, and an Advanced Settings panel for the tuning
 - **Manual power profile control** (Eco, Balanced, Performance, Unlimited)
+- **OS power manager support** beyond power-profiles-daemon: speaks TLP (1.8+ direct or via tlp-pd) and auto-cpufreq too, all through non-activating D-Bus/CLI calls so reading state or running `pyren-check` never starts a power manager the user didn't choose
+- **External change detection** — the daemon watches firmware profile, EPP, turbo and package limits once a second and notices when something outside pyren (Fn+P, a desktop's battery menu, another power manager) moves them, with no arbiter needed
 - **GPU overclocking** (memory frequency, core clock; ability to set a minimum for both)
 - **Power tuning** for the Performance and Unlimited profiles
 - **Fan control modes**:
@@ -13,7 +15,7 @@
 - **Per-fan RPM readout** — under the single fan speed sent to the controller, Performance control can list each fan's own tachometer (CPU fan, GPU fan) so the user sees where every reading comes from; on by default, toggled in Settings, and hidden on single-fan machines
 - **Automatic minimum-speed correction** — the daemon watches for the fans stalling near that minimum and nudges it up on its own, with an entry in the app's notification history
 - **Fan cleaning mode** (fans spin in reverse to help clear out dust)
-- **Keyboard RGB control**
+- **Keyboard RGB control**, with a lighting-effects engine (breathing, spectrum, rainbowWave, wave, fade), power-on/off colour sweeps, brightness (paused, not faked, at zero), and effects/brightness throttled by battery and lid state; up to 15 saved lighting configurations, stored in their own config file
 - **Graphics switching** (toggle between "Integrated only" [iGPU only], "Hybrid" [switches between iGPU and dGPU], and "Discrete" [dGPU only])
 - **Key remapper** (create macros, reassign keys)
 - **Network booster** (currently only "Disable" and "Automatic"; per-process control isn't properly supported yet)
@@ -34,3 +36,4 @@
 - **Temperature units**: Celsius or Fahrenheit
 - **Language manager** (`i18next`)
 - **Boot options**
+- **UI themes**: Dark, Light, Dracula, Tokyo Night, Zero Two, Doki: Essex, Cobalt2, Ayu
