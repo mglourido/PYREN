@@ -10,6 +10,7 @@
 //! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the new status |
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `fan.setKeepDriverFloor` | `{ "enabled": bool }` | the new status |
+//! | `fan.setThermalSafetyChecker` | `{ "enabled": bool }` | the new status |
 //! | `fan.clearFloorNotices` | none | the new status |
 //! | `fan.calibrate` | `{ "seconds"?: 10-120 }` | what full speed measured, see [`calibration`] |
 //! | `fan.cleanerStatus` | `{ "refresh"?: bool }` | what the fan cleaner can do here, see [`cleaner`] |
@@ -46,6 +47,7 @@ pub mod cleaner;
 mod control;
 pub mod curve;
 pub mod diagnostics;
+pub mod safety;
 pub mod speed_probe;
 pub mod stall;
 
@@ -61,6 +63,34 @@ const HWMON_ROOT: &str = "/sys/devices/platform/hp-wmi/hwmon";
 /// two seconds; nothing here is cheaper for being slower, and a curve that
 /// reacts a tick late is a curve the user can hear lagging.
 const TICK: Duration = Duration::from_secs(2);
+
+/// Bounds on `ma_window`. Fifteen samples is half a minute of smoothing;
+/// a larger window from a hand-edited file would have the curve answer a
+/// load that started minutes ago.
+pub const MIN_MA_WINDOW: usize = 1;
+pub const MAX_MA_WINDOW: usize = 15;
+
+/// Highest rpm a stored measurement may claim. No laptop fan turns this
+/// fast, and the products the curve arithmetic takes of these values must
+/// stay far from overflowing.
+pub const MAX_PLAUSIBLE_RPM: i64 = 10_000;
+
+/// How often the "hot" thresholds are re-read from their owner. They are a
+/// setting, not a sensor: half a minute behind a change is fine.
+const HEAT_REFRESH_SECS: u64 = 30;
+
+/// A pass this many ticks after the last one means the machine was asleep
+/// or stalled, and what was last written can no longer be trusted.
+const LATE_TICKS: u32 = 3;
+
+/// Consecutive panicking passes after which the loop stops driving the fans.
+const PANICS_BEFORE_STANDING_DOWN: u32 = 3;
+
+/// Where the fan module learns what "hot" means: the power supervisor's
+/// "hot at" and "cooled below" settings, as `(hot_c, cool_c)`. Handed over
+/// by the daemon binary, the one place allowed to know both modules - see
+/// [`FanModule::set_heat_source`]. `None` from it keeps the defaults.
+pub type HeatSource = Box<dyn Fn() -> Option<(f64, f64)> + Send + Sync>;
 
 /// Sysfs paths discovered for this machine. Any of these can be `None` if
 /// the patched hp-wmi driver isn't installed, or if no supported CPU temp
@@ -233,6 +263,14 @@ pub struct FanConfig {
     /// default - uses whatever the firmware has configured for itself,
     /// which is the number the vendor's own tool would send.
     pub cleaner_speed: Option<u8>,
+    /// The thermal safety checker. When the machine is hot - by the power
+    /// supervisor's own "hot at" setting - and the fans do not speed up to
+    /// meet it, they are handed to the firmware; if the firmware does not
+    /// speed them up either, they run at full speed until the machine has
+    /// cooled, and then whatever was in force is put back. On by default:
+    /// turning it off is choosing to trust a setting over the temperature.
+    /// See [`safety::ThermalChecker`].
+    pub thermal_safety_checker: bool,
 }
 
 impl Default for FanConfig {
@@ -256,11 +294,69 @@ impl Default for FanConfig {
             restore_mode_on_start: false,
             cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
             cleaner_speed: None,
+            thermal_safety_checker: true,
         }
     }
 }
 
 impl FanConfig {
+    /// Brings a config read from disk inside the bounds a request would be
+    /// held to, and says what it changed.
+    ///
+    /// A file is edited by hand, written by an older build, or damaged, and
+    /// it reaches the fans by the same road as the app - so it gets the same
+    /// checks. Curves are repaired rather than dropped where that is
+    /// possible (see [`curve::repair`]): a curve somebody tuned before the
+    /// "full speed by 85 C" rule existed should come back as that curve with
+    /// its top end raised, not vanish.
+    pub fn sanitise(&mut self) -> Vec<String> {
+        let mut changed = Vec::new();
+
+        let window = self.ma_window.clamp(MIN_MA_WINDOW, MAX_MA_WINDOW);
+        if window != self.ma_window {
+            changed.push(format!("maWindow {} -> {window}", self.ma_window));
+            self.ma_window = window;
+        }
+
+        for (name, value) in [
+            ("fanMaxRpm", &mut self.fan_max_rpm),
+            ("fan1MaxRpm", &mut self.fan1_max_rpm),
+            ("fan2MaxRpm", &mut self.fan2_max_rpm),
+            ("fanMinRpm", &mut self.fan_min_rpm),
+            ("fanStableMinRpm", &mut self.fan_stable_min_rpm),
+        ] {
+            if let Some(rpm) = value.filter(|rpm| !(0..=MAX_PLAUSIBLE_RPM).contains(rpm)) {
+                changed.push(format!("{name} {rpm} is not a plausible speed; forgotten"));
+                *value = None;
+            }
+        }
+
+        let interpolation = self.interpolation;
+        let mut check = |name: &str, points: &mut Vec<CurvePoint>| -> bool {
+            if points.is_empty() || curve::validate(points, interpolation).is_ok() {
+                return true;
+            }
+            match curve::repair(points, interpolation) {
+                Some(repaired) => {
+                    changed.push(format!("the {name} curve was repaired to a safe shape"));
+                    *points = repaired;
+                    true
+                }
+                None => {
+                    changed.push(format!("the {name} curve could not be repaired; dropped"));
+                    false
+                }
+            }
+        };
+        if !check("shared", &mut self.curve) {
+            self.curve.clear();
+        }
+        self.profile_curves
+            .retain(|profile, points| check(&format!("'{profile}'"), points));
+
+        changed
+    }
+
     /// The curve that should be driving the fans, given the profile the
     /// machine is in.
     ///
@@ -387,9 +483,59 @@ struct State {
     last_target_pwm: Option<u8>,
     last_control_error: Option<Msg>,
     last_save_error: Option<String>,
+    /// The thermal guards - see [`safety`]. In memory only: every one of
+    /// them is about the machine right now.
+    sensor_watch: safety::SensorWatch,
+    critical: safety::CriticalLatch,
+    checker: safety::ThermalChecker,
+    zero_rpm: safety::ZeroRpmWatch,
+    /// A real speed was commanded and the fans sat at 0 rpm, so the
+    /// firmware was given them. Cleared by the next mode or curve the user
+    /// sets - that is somebody deciding to try again.
+    stalled: bool,
+    /// The mode a guard is holding the hardware in, and when it was last
+    /// written. `None` while the user's setting has the fans. The setting
+    /// itself (`mode`, `config`) is never changed by a guard, which is what
+    /// makes "put back exactly what was there" possible.
+    safety_hold: Option<(FanMode, u64)>,
+    /// What "hot" means for the checker, and when it was last asked.
+    heat: safety::HeatThresholds,
+    heat_read_at: Option<u64>,
+    /// The daemon is on its way out and has handed the fans back; nothing
+    /// may take them again in the moments before the process ends.
+    exiting: bool,
 }
 
 impl State {
+    fn new(config: FanConfig, mode: FanMode, owned: bool) -> Self {
+        Self {
+            smoother: curve::TempSmoother::new(config.ma_window),
+            config,
+            mode,
+            active_profile: None,
+            owned,
+            hysteresis: curve::Hysteresis::new(),
+            released: false,
+            stall: stall::StallWatch::default(),
+            calibrating: false,
+            cleaning: Cleaning::Idle,
+            cleaner_probe: None,
+            last_cleaner_error: None,
+            last_target_pwm: None,
+            last_control_error: None,
+            last_save_error: None,
+            sensor_watch: safety::SensorWatch::default(),
+            critical: safety::CriticalLatch::default(),
+            checker: safety::ThermalChecker::default(),
+            zero_rpm: safety::ZeroRpmWatch::default(),
+            stalled: false,
+            safety_hold: None,
+            heat: safety::HeatThresholds::default(),
+            heat_read_at: None,
+            exiting: false,
+        }
+    }
+
     /// Forget what was last written, so the next tick applies whatever it
     /// decides unconditionally - including handing the fans to the
     /// firmware again, which the hardware may no longer be in.
@@ -399,6 +545,25 @@ impl State {
         // The last measured speed is about to stop meaning anything; the
         // fault trail ages out by time and stays.
         self.stall.idle();
+        self.zero_rpm.reset();
+    }
+}
+
+/// The fans, claimed for a measurement or a write check that must not have
+/// the control loop writing underneath it. Dropping it gives them back -
+/// on every path out, a panic included, which is why it is a guard: a
+/// `calibrating` flag left set by a panic stopped the curve for good.
+struct FanClaim {
+    state: Arc<Mutex<State>>,
+}
+
+impl Drop for FanClaim {
+    fn drop(&mut self) {
+        let mut state = lock(&self.state);
+        state.calibrating = false;
+        // The fans were moved out from under the hysteresis, so what it
+        // last wrote says nothing about where they are now.
+        state.forget_writes();
     }
 }
 
@@ -440,6 +605,7 @@ pub struct FanModule {
     store: ConfigStore,
     state: Arc<Mutex<State>>,
     announcer: Announcer,
+    heat_source: Arc<std::sync::OnceLock<HeatSource>>,
 }
 
 impl FanModule {
@@ -575,7 +741,10 @@ impl FanModule {
                 );
             }
         }
-        let config = loaded.value;
+        let mut config = loaded.value;
+        for change in config.sanitise() {
+            log_warn!("fan config: {change}");
+        }
 
         // Believe the hardware over the file: the machine may have been
         // rebooted, or something else may have moved the fans since.
@@ -587,7 +756,6 @@ impl FanModule {
             observed.unwrap_or(FanMode::Auto)
         };
 
-        let mut config = config;
         // Adopting a manual mode we did not set means adopting its speed
         // too, or the app would show a number nobody chose.
         if !restoring && mode == FanMode::Manual {
@@ -596,29 +764,14 @@ impl FanModule {
             }
         }
 
-        let state = Arc::new(Mutex::new(State {
-            smoother: curve::TempSmoother::new(config.ma_window),
-            config,
-            mode,
-            active_profile: None,
-            owned: restoring,
-            hysteresis: curve::Hysteresis::new(),
-            released: false,
-            stall: stall::StallWatch::default(),
-            calibrating: false,
-            cleaning: Cleaning::Idle,
-            cleaner_probe: None,
-            last_cleaner_error: None,
-            last_target_pwm: None,
-            last_control_error: None,
-            last_save_error: None,
-        }));
+        let state = Arc::new(Mutex::new(State::new(config, mode, restoring)));
 
         let module = Self {
             hardware: Arc::new(Mutex::new(Hardware { paths, caps })),
             store,
             state,
             announcer: Announcer::default(),
+            heat_source: Arc::default(),
         };
         module.recover_interrupted_cycle();
         if caps.switch_mode {
@@ -685,27 +838,13 @@ impl FanModule {
         let caps = Capabilities::detect(&paths);
         let config = FanConfig::default();
 
+        let mode = observed_mode(&paths).unwrap_or(FanMode::Auto);
         Self {
-            state: Arc::new(Mutex::new(State {
-                smoother: curve::TempSmoother::new(config.ma_window),
-                mode: observed_mode(&paths).unwrap_or(FanMode::Auto),
-                config,
-                active_profile: None,
-                owned: false,
-                hysteresis: curve::Hysteresis::new(),
-                released: false,
-                stall: stall::StallWatch::default(),
-                calibrating: false,
-                cleaning: Cleaning::Idle,
-                cleaner_probe: None,
-                last_cleaner_error: None,
-                last_target_pwm: None,
-                last_control_error: None,
-                last_save_error: None,
-            })),
+            state: Arc::new(Mutex::new(State::new(config, mode, false))),
             store: ConfigStore::system(),
             hardware: Arc::new(Mutex::new(Hardware { paths, caps })),
             announcer: Announcer::default(),
+            heat_source: Arc::default(),
         }
     }
 
@@ -716,6 +855,160 @@ impl FanModule {
     /// than panicking - the binary is the only caller and calls it once.
     pub fn publish_to(&self, events: Arc<pyren_core::EventBus>) {
         let _ = self.announcer.0.set(events);
+    }
+
+    /// Tells the module where the "hot" thresholds live. Called once, from
+    /// the binary; without it the checker uses [`safety::HeatThresholds`]'
+    /// defaults, which are the power supervisor's defaults too.
+    pub fn set_heat_source(&self, source: HeatSource) {
+        let _ = self.heat_source.set(source);
+    }
+
+    /// The daemon is stopping: give the fans back to the firmware.
+    ///
+    /// Called from the termination handler, which ends the process straight
+    /// after - no destructor runs, so without this a curve's last low speed,
+    /// a calibration sweep's near-stall floor, or a cleaning cycle's reverse
+    /// spin would stay on the hardware, held there by the driver's own
+    /// keep-alive, with nothing left to change it. In the order that makes
+    /// each step safe: reverse spin ended first (auto on reversed blades is
+    /// not auto), then the mode, then the driver's floor put back to its
+    /// own table's.
+    pub fn on_exit(&self) {
+        let paths = self.paths();
+        let caps = self.caps();
+        let running = {
+            let mut state = lock(&self.state);
+            state.exiting = true;
+            match &state.cleaning {
+                Cleaning::Running(cycle) => Some(Some(cycle.generation)),
+                Cleaning::Starting | Cleaning::Stopping => Some(None),
+                Cleaning::Idle => None,
+            }
+        };
+
+        let (_, reversed) = read_fan_rpm(paths.fan1_input.as_deref(), paths.fan2_input.as_deref());
+        if (running.is_some() || reversed) && acpi::is_loaded() {
+            let generation = running.flatten().unwrap_or_else(|| {
+                cleaner::probe()
+                    .generation
+                    .unwrap_or(cleaner::Generation::Modern)
+            });
+            if let Err(e) = cleaner::emergency_stop(generation) {
+                log_warn!("on exit: could not end the fan-cleaning cycle: {e}");
+            }
+        }
+        if caps.switch_mode {
+            match control::apply(&paths, caps, FanMode::Auto, 0) {
+                Ok(()) => log_info!("on exit: fans handed back to the firmware"),
+                Err(e) => log_warn!("on exit: could not hand the fans back to the firmware: {e}"),
+            }
+        }
+        if control::floor_override_supported(&paths) {
+            if let Err(e) = control::set_floor_override(&paths, 0) {
+                log_warn!("on exit: could not put the driver's fan floor back: {e}");
+            }
+        }
+    }
+
+    /// Claims the fans for something that drives them directly. Refused
+    /// while anything else has them.
+    fn claim_fans(&self) -> Result<FanClaim, ModuleError> {
+        let mut state = lock(&self.state);
+        if state.calibrating {
+            return Err(ModuleError::localised(
+                ErrorKind::Busy,
+                msg!(
+                    "fan.err.calibrating",
+                    "a calibration run is already in progress"
+                ),
+            ));
+        }
+        if !state.cleaning.is_idle() {
+            return Err(ModuleError::localised(
+                ErrorKind::Busy,
+                msg!(
+                    "fan.err.cleaningHoldsFans",
+                    "a fan-cleaning cycle has the fans; wait for it to finish"
+                ),
+            ));
+        }
+        state.calibrating = true;
+        Ok(FanClaim {
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    /// The question a measurement asks before it starts and at every sample
+    /// while it holds the fans: is the machine still cool enough for the
+    /// fans to be somewhere other than where it needs them? No reading at
+    /// all is a no as well - there would be nothing to stop it.
+    fn measurement_abort(&self) -> impl Fn() -> Option<control::ControlError> {
+        let paths = self.paths();
+        move || {
+            let cpu = paths.cpu_temp.as_deref().and_then(read_millideg_c);
+            let gpu = paths.gpu_temp.as_deref().and_then(read_millideg_c);
+            match safety::hottest_c(cpu, gpu) {
+                None => Some(control::ControlError::NoTemperature),
+                Some(temp) if temp > safety::MEASUREMENT_MAX_C => Some(
+                    control::ControlError::TooHot(temp as i64, safety::MEASUREMENT_MAX_C as i64),
+                ),
+                Some(_) => None,
+            }
+        }
+    }
+
+    /// A measurement was stopped by the heat: the fans had been held away
+    /// from where the machine needed them, so the safety sequence starts at
+    /// once, whether or not the checker setting is on - firmware first, full
+    /// speed if that does not answer, and the user's setting back once the
+    /// machine is [`safety::MEASUREMENT_COOL_MARGIN_C`] under the limit.
+    fn trip_after_measurement(&self, what: &str, error: &control::ControlError) {
+        if !matches!(error, control::ControlError::TooHot(_, _)) {
+            return;
+        }
+        let paths = self.paths();
+        let rpm = fan_rpm_reading(&paths);
+        let transition = lock(&self.state).checker.trip(
+            monotonic_secs(),
+            rpm,
+            safety::MEASUREMENT_MAX_C - safety::MEASUREMENT_COOL_MARGIN_C,
+        );
+        log_warn!("{what} stopped: {error}; the thermal safety sequence has the fans");
+        self.announcer.publish(
+            "fan.safety",
+            json!({
+                "guard": "checker",
+                "state": transition.as_str(),
+                "reason": "measurementAborted",
+            }),
+        );
+        let _ = self.tick_once();
+    }
+
+    /// The "hot" / "cooled" pair, re-read from its owner at most every
+    /// [`HEAT_REFRESH_SECS`]. Asked outside the state lock: the source reads
+    /// a file.
+    fn heat_thresholds(&self, now_secs: u64) -> safety::HeatThresholds {
+        {
+            let state = lock(&self.state);
+            if state
+                .heat_read_at
+                .is_some_and(|at| now_secs.saturating_sub(at) < HEAT_REFRESH_SECS)
+            {
+                return state.heat;
+            }
+        }
+        let heat = self
+            .heat_source
+            .get()
+            .and_then(|source| source())
+            .map(|(hot_c, cool_c)| safety::HeatThresholds::sanitised(hot_c, cool_c))
+            .unwrap_or_default();
+        let mut state = lock(&self.state);
+        state.heat = heat;
+        state.heat_read_at = Some(now_secs);
+        heat
     }
 
     /// Runs the fan-control self-test against this machine.
@@ -734,7 +1027,17 @@ impl FanModule {
         } else {
             None
         };
-        diagnostics::diagnose(&self.paths(), allow_writes, probe.as_ref())
+        // The write check puts pwm1 somewhere and back, so it needs the
+        // fans the way a measurement does. Busy - a calibration, a cycle -
+        // means it is reported as not attempted rather than run underneath.
+        let claim = if allow_writes {
+            self.claim_fans().ok()
+        } else {
+            None
+        };
+        let diagnosis = diagnostics::diagnose(&self.paths(), claim.is_some(), probe.as_ref());
+        drop(claim);
+        diagnosis
     }
 
     /// What this machine accepts, with a measured refusal taken into
@@ -811,6 +1114,19 @@ impl FanModule {
                 })
             })
             .collect();
+
+        // Built apart: one more nested object and the status literal
+        // outgrows `json!`'s recursion limit.
+        let safety_status = json!({
+            "checker": state.checker.phase_name(),
+            "critical": state.critical.is_active(),
+            "sensorFailed": state.sensor_watch.failed(),
+            "stalled": state.stalled,
+            "holding": state.safety_hold.map(|(mode, _)| mode.as_str()),
+            "hotC": state.heat.hot_c,
+            "coolC": state.heat.cool_c,
+            "criticalC": safety::CRITICAL_C,
+        });
 
         json!({
             "driverInstalled": self.paths().hwmon_dir.is_some(),
@@ -900,6 +1216,12 @@ impl FanModule {
             // before a floor is actually raised.
             "recentFanStalls": state.stall.recent_faults(),
             "calibrating": state.calibrating,
+            "thermalSafetyChecker": state.config.thermal_safety_checker,
+            // What the thermal guards are doing right now. `holding` is the
+            // mode a guard has put the hardware in over the user's setting,
+            // null while the setting has the fans; `mode` above is always the
+            // setting.
+            "safety": safety_status,
             // Enough for a caller that only wants to know the fans are not
             // its to command; `cleanerStatus` is the detail.
             "cleaning": state.cleaning.holds_the_fans(),
@@ -948,6 +1270,9 @@ impl FanModule {
             state.config.mode = mode;
             state.mode = mode;
             state.owned = true;
+            // Somebody chose again: a stall that handed the fans to the
+            // firmware is worth one more try.
+            state.stalled = false;
             // A mode change must land now, whatever the last write was.
             state.forget_writes();
             state.smoother = curve::TempSmoother::new(state.config.ma_window);
@@ -985,26 +1310,11 @@ impl FanModule {
         reference_sensor: Option<ReferenceSensor>,
         profile: Option<&str>,
     ) -> ModuleResult {
-        if curve.is_empty() {
+        let checked_as = interpolation.unwrap_or(lock(&self.state).config.interpolation);
+        if let Err(problem) = curve::validate(&curve, checked_as) {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
-                msg!(
-                    "fan.err.curveNoPoints",
-                    "params.curve must have at least one point"
-                ),
-            ));
-        }
-        if let Some(bad) = curve
-            .iter()
-            .find(|p| !p.temp_c.is_finite() || !p.percent.is_finite())
-        {
-            return Err(ModuleError::localised(
-                ErrorKind::InvalidParams,
-                msg!(
-                    "fan.err.curvePointNotFinite",
-                    { "temp" => bad.temp_c, "percent" => bad.percent },
-                    "curve point ({temp}, {percent}) is not a finite number"
-                ),
+                curve_problem(problem),
             ));
         }
 
@@ -1039,6 +1349,7 @@ impl FanModule {
                     state.smoother = curve::TempSmoother::new(state.config.ma_window);
                 }
             }
+            state.stalled = false;
             // The shape changed under the current target; re-evaluate.
             state.forget_writes();
         }
@@ -1072,42 +1383,25 @@ impl FanModule {
     /// back the trace. Shared with [`Self::diagnose`], which asks the same
     /// question as one check among many.
     fn run_speed_probe(&self, seconds: u64) -> Result<SpeedProbe, ModuleError> {
-        {
-            let mut state = lock(&self.state);
-            if state.calibrating {
-                return Err(ModuleError::localised(
-                    ErrorKind::Busy,
-                    msg!(
-                        "fan.err.calibrating",
-                        "a calibration run is already in progress"
-                    ),
-                ));
-            }
-            if !state.cleaning.is_idle() {
-                return Err(ModuleError::localised(
-                    ErrorKind::Busy,
-                    msg!(
-                        "fan.err.cleaningHoldsFans",
-                        "a fan-cleaning cycle has the fans; wait for it to finish"
-                    ),
-                ));
-            }
-            state.calibrating = true;
+        let abort = self.measurement_abort();
+        // Refused before anything is claimed or moved: too hot to start is
+        // not a measurement that went wrong.
+        if let Some(e) = abort() {
+            return Err(control_error(e));
         }
+        let claim = self.claim_fans()?;
 
         let fan_max_rpm = lock(&self.state).config.fan_max_rpm;
-        let outcome = speed_probe::run(&self.paths(), self.caps(), fan_max_rpm, seconds);
+        let outcome = speed_probe::run(&self.paths(), self.caps(), fan_max_rpm, seconds, &abort);
+        drop(claim);
 
         let mut state = lock(&self.state);
-        state.calibrating = false;
-        // The fans were moved out from under the hysteresis, so what it
-        // last wrote says nothing about where they are now.
-        state.forget_writes();
-
         let probe = match outcome {
             Ok(probe) => probe,
             Err(e) => {
                 state.last_control_error = Some(e.to_msg());
+                drop(state);
+                self.trip_after_measurement("the speed probe", &e);
                 return Err(control_error(e));
             }
         };
@@ -1155,32 +1449,22 @@ impl FanModule {
             ));
         }
 
-        {
-            let mut state = lock(&self.state);
-            if state.calibrating {
-                return Err(ModuleError::localised(
-                    ErrorKind::Busy,
-                    msg!(
-                        "fan.err.calibrating",
-                        "a calibration run is already in progress"
-                    ),
-                ));
-            }
-            state.calibrating = true;
+        let abort = self.measurement_abort();
+        if let Some(e) = abort() {
+            return Err(control_error(e));
         }
+        let claim = self.claim_fans()?;
 
-        let outcome = calibration::run(&self.paths(), self.caps(), seconds);
+        let outcome = calibration::run(&self.paths(), self.caps(), seconds, &abort);
+        drop(claim);
 
         let mut state = lock(&self.state);
-        state.calibrating = false;
-        // The fans were moved out from under the hysteresis, so what it
-        // last wrote says nothing about where they are now.
-        state.forget_writes();
-
         let calibration = match outcome {
             Ok(calibration) => calibration,
             Err(e) => {
                 state.last_control_error = Some(e.to_msg());
+                drop(state);
+                self.trip_after_measurement("calibration", &e);
                 return Err(control_error(e));
             }
         };
@@ -1237,6 +1521,17 @@ impl FanModule {
     fn set_keep_driver_floor(&self, keep: bool) -> ModuleResult {
         let floor = {
             let mut state = lock(&self.state);
+            // A calibration sweep is stepping the same parameter, and its
+            // guard would put its own value back over this one.
+            if state.calibrating {
+                return Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!(
+                        "fan.err.calibrating",
+                        "a calibration run is already in progress"
+                    ),
+                ));
+            }
             state.config.keep_driver_floor = keep;
             persist(&self.store, &mut state);
             // The threshold for handing the fans over has moved.
@@ -1258,6 +1553,18 @@ impl FanModule {
         }
         persist(&self.store, &mut state);
         drop(state);
+        Ok(self.status())
+    }
+
+    /// Turns the thermal safety checker on or off. Off lets go of anything
+    /// it was holding on the next tick - taken now rather than then.
+    fn set_thermal_safety_checker(&self, enabled: bool) -> ModuleResult {
+        {
+            let mut state = lock(&self.state);
+            state.config.thermal_safety_checker = enabled;
+            persist(&self.store, &mut state);
+        }
+        let _ = self.tick_once();
         Ok(self.status())
     }
 
@@ -1402,10 +1709,21 @@ impl FanModule {
         // `force` exists because none of the capability decoding in
         // `cleaner` has been confirmed against real firmware: a machine
         // that has the feature and answers a query this build reads wrongly
-        // would otherwise have no way to try it. It skips the refusal, not
-        // the temperature guard.
+        // would otherwise have no way to try it. It skips the refusal and
+        // the need for a sensor, not the temperature guard itself.
         if !probe.supported && !force {
             return Err(cleaner::CleanerError::NotCapable);
+        }
+        // The hotter of the two parts: reversing the fans takes the cooling
+        // off both, and a card at 75 C is as good a reason to wait as a CPU.
+        let paths = self.paths();
+        let temp_c = safety::hottest_c(
+            paths.cpu_temp.as_deref().and_then(read_millideg_c),
+            paths.gpu_temp.as_deref().and_then(read_millideg_c),
+        )
+        .map(|t| t as i64);
+        if temp_c.is_none() && !force {
+            return Err(cleaner::CleanerError::NoTemperature);
         }
 
         let (duration, speed) = {
@@ -1420,7 +1738,7 @@ impl FanModule {
         let request = cleaner::Request {
             speed,
             duration,
-            temp_c: self.paths().cpu_temp.as_deref().and_then(read_millideg_c),
+            temp_c,
         };
 
         let fan1 = self.paths().fan1_input.clone();
@@ -1513,11 +1831,22 @@ impl FanModule {
     /// The second of the three places the timeout is enforced (see the
     /// [`cleaner`] module docs). Called from every status read and every
     /// control tick, so a cycle outlives its watchdog by a tick at most.
+    ///
+    /// Also where a cycle is ended early by the heat: it runs with the
+    /// cooling effectively off, and [`safety::CLEANER_ABORT_C`] on either
+    /// part ends it now rather than at its countdown.
     fn stop_if_expired(&self) {
+        let paths = self.paths();
+        let hottest = safety::hottest_c(
+            paths.cpu_temp.as_deref().and_then(read_millideg_c),
+            paths.gpu_temp.as_deref().and_then(read_millideg_c),
+        )
+        .map(|t| t as i64);
+        let too_hot = hottest.filter(|t| *t > safety::CLEANER_ABORT_C);
         let generation = {
             let mut state = lock(&self.state);
             match state.cleaning.cycle() {
-                Some(cycle) if cycle.expired() => {
+                Some(cycle) if cycle.expired() || too_hot.is_some() => {
                     let generation = cycle.generation;
                     state.cleaning = Cleaning::Stopping;
                     generation
@@ -1525,37 +1854,235 @@ impl FanModule {
                 _ => return,
             }
         };
+        if let Some(temp) = too_hot {
+            log_warn!(
+                "{temp} °C during a fan-cleaning cycle; ending it now (the limit is {} °C)",
+                safety::CLEANER_ABORT_C
+            );
+        }
         let result = cleaner::stop(generation);
         self.finish_cycle(result);
+        if let Some(temp) = too_hot {
+            lock(&self.state).last_cleaner_error = Some(msg!(
+                "fan.cleaner.err.endedHot",
+                { "temp" => temp, "limit" => safety::CLEANER_ABORT_C },
+                "the cycle was ended early: {temp} °C is over the {limit} °C limit"
+            ));
+            self.announcer.publish(
+                "fan.safety",
+                json!({ "guard": "cleaner", "state": "stopped", "tempC": temp }),
+            );
+        }
     }
 
     /// One pass of the control loop. Also used by `setMode`/`setCurve` so a
     /// call takes effect immediately rather than up to [`TICK`] later.
+    ///
+    /// Events are collected during the pass and published after the state
+    /// lock is gone, so a listener that reaches back into this module cannot
+    /// deadlock against it.
     fn tick_once(&self) -> Result<(), ModuleError> {
+        let mut events = Vec::new();
+        let outcome = self.tick(&mut events);
+        for (topic, payload) in events {
+            self.announcer.publish(topic, payload);
+        }
+        outcome
+    }
+
+    fn tick(&self, events: &mut Vec<(&'static str, Value)>) -> Result<(), ModuleError> {
         let now_secs = monotonic_secs();
-        let cpu_temp_c = self.paths().cpu_temp.as_deref().and_then(read_millideg_c);
-        let gpu_temp_c = self.paths().gpu_temp.as_deref().and_then(read_millideg_c);
-        let (rpm, _) = read_fan_rpm(
-            self.paths().fan1_input.as_deref(),
-            self.paths().fan2_input.as_deref(),
-        );
+        let paths = self.paths();
+        let cpu_temp_c = paths.cpu_temp.as_deref().and_then(read_millideg_c);
+        let gpu_temp_c = paths.gpu_temp.as_deref().and_then(read_millideg_c);
+        let rpm_reading = fan_rpm_reading(&paths);
+        let rpm = rpm_reading.unwrap_or(0);
+        let heat = self.heat_thresholds(now_secs);
 
         let mut state = lock(&self.state);
+        if state.exiting {
+            // The fans were handed back on the way out. See `on_exit`.
+            return Ok(());
+        }
         if state.calibrating {
             // Somebody else is driving, on purpose. See `State::calibrating`.
+            // A measurement watches the temperature itself and stops.
             return Ok(());
         }
         if state.cleaning.holds_the_fans() {
             // A cleaning cycle owns the fans, and it is not driving them
             // through `pwm1` at all - writing a speed here would fight the
-            // firmware override mid-cycle. See `Cleaning`.
+            // firmware override mid-cycle. See `Cleaning`. The cycle's own
+            // heat limit is enforced in `stop_if_expired`.
             return Ok(());
         }
+        let mode = state.mode;
+
+        // --- the guards ----------------------------------------------------
+        //
+        // Before `owned`: a manual speed this daemon found at startup, and
+        // did not set, is exactly as able to cook the machine as one it did.
+
+        let hottest = safety::hottest_c(cpu_temp_c, gpu_temp_c);
+        let was_critical = state.critical.is_active();
+        let critical_now = state.critical.observe(hottest);
+        if critical_now != was_critical {
+            if critical_now {
+                log_warn!(
+                    "{} °C: at or over {} °C, fans to full speed until under {} °C",
+                    hottest.unwrap_or_default(),
+                    safety::CRITICAL_C,
+                    safety::CRITICAL_CLEAR_C
+                );
+            } else {
+                log_info!(
+                    "cooled under {} °C; the critical override let go",
+                    safety::CRITICAL_CLEAR_C
+                );
+            }
+            events.push((
+                "fan.safety",
+                json!({ "guard": "critical", "active": critical_now, "tempC": hottest }),
+            ));
+        }
+        // Only where a speed is being commanded. In auto the firmware is
+        // already answering the heat, and in max there is nothing to add.
+        let critical = critical_now && mode.needs_pwm();
+
+        // A curve is blind without its own sensor. A manual speed does not
+        // read one, but a low one leans on the critical override above, and
+        // that is blind without *any* reading - so a slow manual speed with
+        // no usable temperature gets the same fallback.
+        let watched = match mode {
+            FanMode::Curve => Some(
+                reference_temp(cpu_temp_c, gpu_temp_c, state.config.reference_sensor)
+                    .map(|(temp, _)| temp),
+            ),
+            FanMode::Manual if state.config.manual_pwm < safety::MANUAL_BLIND_BELOW_PWM => {
+                Some(hottest.map(|temp| temp as i64))
+            }
+            _ => None,
+        };
+        let sensor_failed = if let Some(reading) = watched {
+            let was = state.sensor_watch.failed();
+            let failed = state.sensor_watch.observe(reading, now_secs, rpm > 0);
+            if failed != was {
+                if failed {
+                    log_warn!(
+                        "the fan {} lost its temperature readings; \
+                         fans to full speed until they return",
+                        mode.as_str()
+                    );
+                } else {
+                    log_info!("the fan {}'s temperature readings are back", mode.as_str());
+                }
+                events.push(("fan.safety", json!({ "guard": "sensor", "active": failed })));
+            }
+            failed
+        } else {
+            state.sensor_watch.reset();
+            false
+        };
+
+        // Fans already commanded to full, and turning, have nothing to
+        // rise to - which must not be read as not answering.
+        let commanded_full = rpm > 0
+            && (mode == FanMode::Max
+                || (mode.needs_pwm()
+                    && !state.released
+                    && state
+                        .hysteresis
+                        .last_written()
+                        .is_some_and(|pwm| pwm >= safety::NEAR_FULL_PWM)));
+        let evidence = safety::Evidence {
+            now_secs,
+            hottest_c: hottest,
+            rpm: rpm_reading,
+            fan_max_rpm: state.config.fan_max_rpm,
+            commanded_full,
+        };
+        let enabled = state.config.thermal_safety_checker;
+        let transition = state.checker.observe(evidence, heat, enabled);
+        if transition != safety::Transition::None {
+            match transition {
+                safety::Transition::Watching => log_info!(
+                    "{} °C is hot; watching whether the fans answer",
+                    hottest.unwrap_or_default()
+                ),
+                safety::Transition::HandedToFirmware => log_warn!(
+                    "the fans did not speed up for the heat in {} s; handing them to the firmware",
+                    safety::ANSWER_SECS
+                ),
+                safety::Transition::ForcedMax => log_warn!(
+                    "the firmware did not speed the fans up either; full speed until the machine cools"
+                ),
+                safety::Transition::Restored => {
+                    log_info!("the machine cooled; the fan setting in force has the fans again")
+                }
+                safety::Transition::None => {}
+            }
+            events.push((
+                "fan.safety",
+                json!({
+                    "guard": "checker",
+                    "state": transition.as_str(),
+                    "tempC": hottest,
+                    "rpm": rpm_reading,
+                }),
+            ));
+        }
+
+        // Most urgent first. A stall hands over to the firmware, and if the
+        // firmware does not answer the heat that follows, the checker above
+        // outranks it.
+        let hold = if critical || sensor_failed {
+            Some(FanMode::Max)
+        } else if let Some(mode) = state.checker.command() {
+            Some(mode)
+        } else if state.stalled && mode.needs_pwm() {
+            Some(FanMode::Auto)
+        } else {
+            None
+        };
+
+        if let Some(forced) = hold {
+            // Written straight away, not through the hysteresis, and
+            // re-asserted on the same interval as any other setting.
+            let due = match state.safety_hold {
+                Some((held, at)) => {
+                    held != forced || now_secs.saturating_sub(at) >= curve::REASSERT_SECS
+                }
+                None => true,
+            };
+            if !due {
+                return Ok(());
+            }
+            state.hysteresis.reset();
+            state.released = false;
+            let result = control::apply(&paths, self.caps(), forced, 0);
+            // Only a write that landed counts as held; one that failed is
+            // tried again next tick rather than a minute from now.
+            if result.is_ok() {
+                state.safety_hold = Some((forced, now_secs));
+            }
+            return record_write(&mut state, result);
+        }
+        if state.safety_hold.take().is_some() {
+            // The guard let go: what was in force goes back now, exactly.
+            state.forget_writes();
+            if !state.owned {
+                // A mode this daemon adopted rather than set is put back as
+                // it was found, once, and then left alone again.
+                let pwm = state.config.manual_pwm;
+                let result = control::apply(&paths, self.caps(), mode, pwm);
+                return record_write(&mut state, result);
+            }
+        }
+
         if !state.owned {
             // Watching, not driving. See `State::owned`.
             return Ok(());
         }
-        let mode = state.mode;
 
         let target = match mode {
             // The firmware owns the fans in this mode; re-asserting it
@@ -1566,7 +2093,12 @@ impl FanModule {
             FanMode::Manual => Some(state.config.manual_pwm),
             FanMode::Curve => {
                 let sensor = state.config.reference_sensor;
-                let Some((temp_c, _used)) = reference_temp(cpu_temp_c, gpu_temp_c, sensor) else {
+                let Some((temp_c, _used)) = reference_temp(cpu_temp_c, gpu_temp_c, sensor)
+                    .filter(|(temp, _)| safety::plausible_c(*temp))
+                else {
+                    // Held for the few ticks the sensor watch gives a
+                    // renumbered hwmon to come back; after that it takes
+                    // the fans to full speed above.
                     state.last_control_error = Some(msg!(
                         "fan.err.noCpuTemp",
                         "no CPU temperature sensor, so a curve cannot be followed"
@@ -1586,9 +2118,17 @@ impl FanModule {
                 match curve::target_pwm(&points, avg, interpolation) {
                     Some(pwm) => Some(pwm),
                     None => {
+                        // Nothing to follow: the firmware, not whatever
+                        // speed happened to be written last.
                         state.last_control_error =
                             Some(msg!("fan.err.curveEmpty", "the curve has no points"));
-                        return Ok(());
+                        if state.released {
+                            return Ok(());
+                        }
+                        state.released = true;
+                        state.hysteresis.reset();
+                        let result = control::apply(&paths, self.caps(), FanMode::Auto, 0);
+                        return record_write(&mut state, result);
                     }
                 }
             }
@@ -1597,10 +2137,6 @@ impl FanModule {
         if mode == FanMode::Curve {
             state.last_target_pwm = target;
         }
-
-        // Published after the state lock is dropped, so a listener that
-        // reaches back into this module cannot deadlock against it.
-        let mut floor_event: Option<Value> = None;
 
         // A speed below the floor is one the fans cannot hold, so they go
         // to the firmware, which stops them when the machine is cool. Once:
@@ -1616,6 +2152,7 @@ impl FanModule {
             if release {
                 state.released = true;
                 state.hysteresis.reset();
+                state.zero_rpm.reset();
                 let result = control::apply(&self.paths(), self.caps(), FanMode::Auto, 0);
                 return record_write(&mut state, result);
             }
@@ -1623,6 +2160,30 @@ impl FanModule {
                 state.released = false;
                 state.hysteresis.reset();
             }
+
+            // A real speed commanded and nothing turning: whatever is wrong,
+            // the firmware is likelier to cool the machine than a setpoint
+            // the fans are not following.
+            if state.zero_rpm.observe(now_secs, Some(target), rpm_reading) {
+                state.stalled = true;
+                state.zero_rpm.reset();
+                state.hysteresis.reset();
+                log_warn!(
+                    "the fans read 0 rpm for {} s with pwm {target} commanded; \
+                     handing them to the firmware",
+                    safety::STALL_SECS
+                );
+                events.push((
+                    "fan.fault",
+                    json!({ "kind": "stalled", "pwm": target, "seconds": safety::STALL_SECS }),
+                ));
+                let result = control::apply(&paths, self.caps(), FanMode::Auto, 0);
+                if result.is_ok() {
+                    state.safety_hold = Some((FanMode::Auto, now_secs));
+                }
+                return record_write(&mut state, result);
+            }
+
             // A speed is about to be commanded, so the driver has to be
             // clamping at the same floor this just decided against. Failing
             // leaves it at its own, higher one: the fans run a little
@@ -1661,11 +2222,17 @@ impl FanModule {
                     if let stall::Tick::RaiseFloor { faults } =
                         state.stall.observe(now_secs, expected, rpm, steady)
                     {
-                        floor_event = self.raise_floor_after_stalls(&mut state, faults, driver);
+                        if let Some(payload) =
+                            self.raise_floor_after_stalls(&mut state, faults, driver)
+                        {
+                            events.push(("fan.floorRaised", payload));
+                        }
                     }
                 }
                 _ => state.stall.idle(),
             }
+        } else {
+            state.zero_rpm.reset();
         }
 
         let should = match (mode, target) {
@@ -1680,8 +2247,6 @@ impl FanModule {
             (_, None) => false,
         };
         if !should {
-            drop(state);
-            self.publish_floor_event(floor_event);
             return Ok(());
         }
 
@@ -1690,16 +2255,7 @@ impl FanModule {
         // Recorded even when the write failed, so a machine that cannot be
         // written to is retried once a minute rather than every tick.
         state.hysteresis.applied(pwm, now_secs);
-        let outcome = record_write(&mut state, result);
-        drop(state);
-        self.publish_floor_event(floor_event);
-        outcome
-    }
-
-    fn publish_floor_event(&self, event: Option<Value>) {
-        if let Some(payload) = event {
-            self.announcer.publish("fan.floorRaised", payload);
-        }
+        record_write(&mut state, result)
     }
 
     /// The stall watch has seen the fans give out at Pyren's floor enough
@@ -1789,17 +2345,72 @@ impl FanModule {
         let worker = self.clone();
 
         std::thread::spawn(move || {
+            // Wall clock on purpose: the monotonic clock stops across a
+            // suspend, and a resume is exactly the gap worth noticing.
+            let mut last_pass = std::time::SystemTime::now();
+            let mut panics = 0u32;
             loop {
-                // The third enforcement point for a cycle's timeout, so
-                // that a cleaner left running by a lost watchdog is ended
-                // by the loop that is running anyway.
-                worker.stop_if_expired();
-                // A transient sysfs failure must not take the loop down;
-                // the error is already recorded in the state for getStatus.
-                let _ = worker.tick_once();
+                let now = std::time::SystemTime::now();
+                let late = now
+                    .duration_since(last_pass)
+                    .map_or(true, |gap| gap > TICK * LATE_TICKS);
+                last_pass = now;
+
+                let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if late {
+                        // Back from a suspend, or the machine stalled: the
+                        // firmware may have reset the fans in the meantime,
+                        // and the hysteresis would otherwise sit on its last
+                        // write for up to a minute.
+                        lock(&worker.state).forget_writes();
+                    }
+                    // The third enforcement point for a cycle's timeout, so
+                    // that a cleaner left running by a lost watchdog is ended
+                    // by the loop that is running anyway.
+                    worker.stop_if_expired();
+                    // A transient sysfs failure must not take the loop down;
+                    // the error is already recorded in the state for getStatus.
+                    let _ = worker.tick_once();
+                }));
+                match pass {
+                    Ok(()) => panics = 0,
+                    Err(_) => {
+                        panics += 1;
+                        worker.after_panic(panics);
+                    }
+                }
                 std::thread::sleep(TICK);
             }
         });
+    }
+
+    /// A pass of the control loop panicked. The fans go to the firmware -
+    /// the one owner that does not depend on this code being right - and
+    /// the loop carries on. A panic that keeps coming back stops this
+    /// daemon driving the fans at all rather than flapping them between
+    /// the firmware and a setting every two seconds.
+    fn after_panic(&self, in_a_row: u32) {
+        log_warn!(
+            "the fan control loop panicked ({in_a_row} in a row); fans handed to the firmware"
+        );
+        let paths = self.paths();
+        let caps = self.caps();
+        if caps.switch_mode {
+            if let Err(e) = control::apply(&paths, caps, FanMode::Auto, 0) {
+                log_warn!("could not hand the fans to the firmware after a panic: {e}");
+            }
+        }
+        let mut state = lock(&self.state);
+        state.forget_writes();
+        state.safety_hold = None;
+        if in_a_row >= PANICS_BEFORE_STANDING_DOWN {
+            state.owned = false;
+            state.last_control_error = Some(msg!(
+                "fan.err.loopPanicked",
+                "the fan control loop kept failing, so the fans were left to the firmware; \
+                 set a fan mode to try again"
+            ));
+        }
     }
 }
 
@@ -1915,6 +2526,16 @@ impl Module for FanModule {
                 self.set_keep_driver_floor(enabled)
             }
 
+            "setThermalSafetyChecker" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
+                self.set_thermal_safety_checker(enabled)
+            }
+
             "clearFloorNotices" => {
                 let mut state = lock(&self.state);
                 state.config.fan_floor_notices.clear();
@@ -2019,6 +2640,11 @@ fn control_error(e: control::ControlError) -> ModuleError {
         control::ControlError::Unsupported(_, _) => ErrorKind::NotCapable,
         control::ControlError::PermissionDenied(_, _) => ErrorKind::PermissionDenied,
         control::ControlError::Io(_, _) => ErrorKind::Io,
+        // Like the cleaner's: a reasonable request, a machine in no state
+        // for it right now.
+        control::ControlError::TooHot(_, _) | control::ControlError::NoTemperature => {
+            ErrorKind::Failed
+        }
     };
     ModuleError::localised(kind, e.to_msg())
 }
@@ -2117,10 +2743,60 @@ fn cleaner_error(e: cleaner::CleanerError) -> ModuleError {
         E::Busy => ErrorKind::Busy,
         // Not `invalidParams`: the caller asked for something reasonable
         // and the machine is in no state for it *right now*.
-        E::TooHot(_) => ErrorKind::Failed,
+        E::TooHot(_) | E::NoTemperature => ErrorKind::Failed,
         E::Refused(_) => ErrorKind::Failed,
     };
     ModuleError::localised(kind, e.to_msg())
+}
+
+/// Why a curve was refused, as a sentence.
+fn curve_problem(problem: curve::CurveProblem) -> Msg {
+    use curve::CurveProblem as P;
+    match problem {
+        P::PointCount(count) => msg!(
+            "fan.err.curvePointCount",
+            { "count" => count, "min" => curve::MIN_CURVE_POINTS, "max" => curve::MAX_CURVE_POINTS },
+            "a curve needs {min} to {max} points; this one has {count}"
+        ),
+        P::NotFinite { temp_c, percent } => msg!(
+            "fan.err.curvePointNotFinite",
+            { "temp" => temp_c, "percent" => percent },
+            "curve point ({temp}, {percent}) is not a finite number"
+        ),
+        P::TempOutOfRange(temp) => msg!(
+            "fan.err.curveTempRange",
+            { "temp" => temp, "max" => curve::MAX_CURVE_TEMP_C },
+            "a curve point at {temp} °C is outside 0-{max} °C"
+        ),
+        P::PercentOutOfRange(percent) => msg!(
+            "fan.err.curvePercentRange",
+            { "percent" => percent },
+            "a curve point at {percent} % is outside 0-100 %"
+        ),
+        P::Decreasing(temp) => msg!(
+            "fan.err.curveDecreasing",
+            { "temp" => temp },
+            "the curve slows the fans down as the temperature rises, at {temp} °C"
+        ),
+        P::NotFullWhenHot(percent) => msg!(
+            "fan.err.curveNotFullWhenHot",
+            { "percent" => percent.round(), "temp" => curve::FULL_SPEED_BY_C },
+            "the curve asks for {percent} % at {temp} °C; it has to reach 100 % by then"
+        ),
+    }
+}
+
+/// The faster fan's speed, or `None` when neither tachometer could be read
+/// - which a guard must never take for a fan standing still.
+fn fan_rpm_reading(paths: &FanPaths) -> Option<i64> {
+    let fan1 = read_raw_rpm(paths.fan1_input.as_deref());
+    let fan2 = read_raw_rpm(paths.fan2_input.as_deref());
+    if fan1.is_none() && fan2.is_none() {
+        return None;
+    }
+    let (rpm1, _) = parse_hwmon_rpm(fan1);
+    let (rpm2, _) = parse_hwmon_rpm(fan2);
+    Some(rpm1.max(rpm2))
 }
 
 /// Human-readable version of what the driver offers, for an error the user
@@ -2587,7 +3263,10 @@ mod tests {
         // Reads the ACPI interface: no redirection may run under it.
         let _acpi = crate::testenv::real();
         let module = module("sensor");
-        let curve = json!([{ "tempC": 40.0, "percent": 20.0 }]);
+        let curve = json!([
+            { "tempC": 40.0, "percent": 20.0 },
+            { "tempC": 85.0, "percent": 100.0 },
+        ]);
 
         let status = module
             .call(
@@ -2846,9 +3525,13 @@ mod tests {
         );
     }
 
+    /// A curve whose distinguishing point is `pairs`, finished with the
+    /// full-speed point every curve has to have (see `curve::validate`), so
+    /// the shapes these tests tell apart are all ones the module accepts.
     fn points(pairs: &[(f64, f64)]) -> Vec<CurvePoint> {
         pairs
             .iter()
+            .chain(&[(curve::FULL_SPEED_BY_C, 100.0)])
             .map(|(t, p)| CurvePoint {
                 temp_c: *t,
                 percent: *p,
@@ -3423,5 +4106,260 @@ mod tests {
 
         module.call("clearFloorNotices", json!({})).unwrap();
         assert_eq!(module.status()["floorNotices"].as_array().unwrap().len(), 0);
+    }
+
+    fn set_temp(dir: &Path, temp_c: &str) {
+        fs::write(dir.join("temp1_input"), temp_c).unwrap();
+    }
+
+    fn in_manual(module: &FanModule, pwm: u8) {
+        let mut state = lock(&module.state);
+        state.mode = FanMode::Manual;
+        state.config.manual_pwm = pwm;
+    }
+
+    /// No manual speed and no curve has a say at 90 C: full speed, held
+    /// through the band, and the user's own speed back once it is cool.
+    #[test]
+    fn a_critical_temperature_overrides_a_manual_speed_until_well_cooled() {
+        let (module, dir) = driven_on_a_fixture("critical", 95);
+        in_manual(&module, 200);
+
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "0", "full speed");
+        assert_eq!(module.status()["safety"]["holding"], json!("max"));
+        assert_eq!(
+            module.status()["mode"],
+            json!("manual"),
+            "the setting is untouched"
+        );
+
+        set_temp(&dir, "85000");
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "0", "still inside the band");
+
+        set_temp(&dir, "70000");
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        assert_eq!(read_file(&dir, "pwm1"), "200", "exactly what was there");
+        assert_eq!(module.status()["safety"]["holding"], json!(null));
+    }
+
+    /// The case the startup hand-over used to be for: a manual speed this
+    /// daemon found rather than set is guarded just the same, and put back
+    /// as found.
+    #[test]
+    fn an_adopted_manual_speed_is_guarded_and_put_back_as_found() {
+        let (module, dir) = driven_on_a_fixture("adopted", 95);
+        in_manual(&module, 90);
+        lock(&module.state).owned = false;
+
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "0");
+
+        set_temp(&dir, "60000");
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        assert_eq!(read_file(&dir, "pwm1"), "90");
+
+        // ...and then left alone again, as an adopted mode always was.
+        fs::write(dir.join("pwm1"), "33").unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1"), "33");
+    }
+
+    /// A curve that cannot read its sensor does not keep its last speed:
+    /// three ticks, then full speed, then the curve again once it reads.
+    #[test]
+    fn a_curve_whose_sensor_fails_goes_to_full_speed_and_comes_back() {
+        let (module, dir) = driven_on_a_fixture("sensor-fail", 60);
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1", "following the curve");
+
+        set_temp(&dir, "garbage");
+        module.tick_once().unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "1",
+            "a renumbering gets a moment"
+        );
+        set_temp(&dir, "255000");
+        module.tick_once().unwrap();
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "0",
+            "third bad reading: full speed"
+        );
+        assert_eq!(module.status()["safety"]["sensorFailed"], json!(true));
+
+        set_temp(&dir, "61000");
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+    }
+
+    /// A slow manual speed with no temperature to read is blind to the
+    /// critical override, so it gets the curve's fallback; a fast one does
+    /// not need it.
+    #[test]
+    fn a_slow_manual_speed_with_no_readings_goes_to_full_speed_and_comes_back() {
+        let (module, dir) = driven_on_a_fixture("manual-blind", 50);
+        in_manual(&module, 100);
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+
+        set_temp(&dir, "garbage");
+        module.tick_once().unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        set_temp(&dir, "0");
+        module.tick_once().unwrap();
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "0",
+            "third blind tick: full speed"
+        );
+        assert_eq!(module.status()["safety"]["sensorFailed"], json!(true));
+
+        set_temp(&dir, "52000");
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        assert_eq!(read_file(&dir, "pwm1"), "100");
+
+        let (fast, fast_dir) = driven_on_a_fixture("manual-fast", 50);
+        in_manual(&fast, 200);
+        set_temp(&fast_dir, "garbage");
+        for _ in 0..4 {
+            fast.tick_once().unwrap();
+        }
+        assert_eq!(
+            read_file(&fast_dir, "pwm1_enable"),
+            "1",
+            "a fast speed is left alone"
+        );
+        assert_eq!(read_file(&fast_dir, "pwm1"), "200");
+    }
+
+    /// A measurement stopped by the heat starts the safety sequence at its
+    /// firmware step, whatever the checker setting says.
+    #[test]
+    fn an_aborted_measurement_hands_the_fans_to_the_firmware() {
+        let (module, dir) = driven_on_a_fixture("tripped", 70);
+        in_manual(&module, 200);
+        module
+            .call("setThermalSafetyChecker", json!({ "enabled": false }))
+            .unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+
+        module.trip_after_measurement("a test", &control::ControlError::TooHot(70, 60));
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2");
+        assert_eq!(module.status()["safety"]["checker"], json!("firmware"));
+
+        set_temp(&dir, "50000");
+        module.tick_once().unwrap();
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "1",
+            "cooled: the setting is back"
+        );
+        assert_eq!(read_file(&dir, "pwm1"), "200");
+    }
+
+    #[test]
+    fn a_measurement_refuses_to_start_on_a_warm_machine() {
+        let (module, dir) = driven_on_a_fixture("warm-probe", 61);
+        let error = module.run_speed_probe(8).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Failed);
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2", "nothing was moved");
+        assert!(!lock(&module.state).calibrating, "nothing was claimed");
+    }
+
+    #[test]
+    fn the_checker_setting_is_on_by_default_and_persisted() {
+        let _acpi = crate::testenv::real();
+        let module = module("checker-setting");
+        assert_eq!(module.status()["thermalSafetyChecker"], json!(true));
+        let status = module
+            .call("setThermalSafetyChecker", json!({ "enabled": false }))
+            .unwrap();
+        assert_eq!(status["thermalSafetyChecker"], json!(false));
+        let stored = module.store.load::<FanConfig>("fan").value;
+        assert!(!stored.thermal_safety_checker);
+        let old: FanConfig = serde_json::from_str("{}").unwrap();
+        assert!(old.thermal_safety_checker, "a file from before it existed");
+    }
+
+    #[test]
+    fn an_unsafe_curve_is_refused_over_the_socket() {
+        let _acpi = crate::testenv::real();
+        let module = module("unsafe-curve");
+        let error = module
+            .call(
+                "setCurve",
+                json!({ "curve": [{ "tempC": 40.0, "percent": 5.0 }, { "tempC": 100.0, "percent": 5.0 }] }),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidParams);
+    }
+
+    #[test]
+    fn a_stored_config_is_brought_inside_the_bounds() {
+        let mut config = FanConfig {
+            ma_window: 500,
+            fan_max_rpm: Some(99_999),
+            fan_min_rpm: Some(-5),
+            curve: vec![
+                CurvePoint {
+                    temp_c: 40.0,
+                    percent: 10.0,
+                },
+                CurvePoint {
+                    temp_c: 100.0,
+                    percent: 30.0,
+                },
+            ],
+            ..Default::default()
+        };
+        config.profile_curves.insert(
+            "eco".into(),
+            vec![CurvePoint {
+                temp_c: f64::NAN,
+                percent: 1.0,
+            }],
+        );
+        let changes = config.sanitise();
+
+        assert_eq!(config.ma_window, MAX_MA_WINDOW);
+        assert_eq!(config.fan_max_rpm, None);
+        assert_eq!(config.fan_min_rpm, None);
+        assert_eq!(curve::validate(&config.curve, config.interpolation), Ok(()));
+        assert_eq!(
+            config.curve[0],
+            CurvePoint {
+                temp_c: 40.0,
+                percent: 10.0
+            }
+        );
+        assert!(!config.profile_curves.contains_key("eco"));
+        assert_eq!(changes.len(), 5, "{changes:?}");
+    }
+
+    /// The daemon's way out: firmware control, the driver's own floor, and
+    /// nothing written after it however the loop is timed.
+    #[test]
+    fn on_exit_hands_the_fans_back_and_stays_out() {
+        let _acpi = crate::testenv::real();
+        let (module, dir) = driven_on_a_fixture("exit", 60);
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        fs::write(dir.join("parameters/min_rpm_override"), "7").unwrap();
+
+        module.on_exit();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2");
+        assert_eq!(read_file(&dir, "parameters/min_rpm_override"), "0");
+
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2");
     }
 }

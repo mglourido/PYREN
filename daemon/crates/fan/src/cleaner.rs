@@ -132,6 +132,10 @@ pub enum CleanerError {
     /// Too hot to remove the cooling.
     #[error("{0} °C is too hot to reverse the fans (the limit is {MAX_START_TEMP_C} °C)")]
     TooHot(i64),
+    /// No temperature could be read, so there is no telling whether it is
+    /// safe to remove the cooling. `force` is the way past this one.
+    #[error("no temperature sensor could be read, so it is not safe to reverse the fans")]
+    NoTemperature,
 }
 
 impl CleanerError {
@@ -157,6 +161,10 @@ impl CleanerError {
                 "fan.cleaner.err.tooHot",
                 { "temp" => temp, "limit" => MAX_START_TEMP_C },
                 "{temp} °C is too hot to reverse the fans (the limit is {limit} °C)"
+            ),
+            Self::NoTemperature => msg!(
+                "fan.cleaner.err.noTemperature",
+                "no temperature sensor could be read, so it is not safe to reverse the fans"
             ),
         }
     }

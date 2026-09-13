@@ -590,7 +590,11 @@ fn check_fan_mode(caps: Capabilities, mode: FanMode) -> Check {
     } else {
         // The same missing-file `caps.switch_mode`/`caps.set_speed` split
         // `control::apply` reports as `ControlError::Unsupported`.
-        let missing = if caps.switch_mode { "pwm1" } else { "pwm1_enable" };
+        let missing = if caps.switch_mode {
+            "pwm1"
+        } else {
+            "pwm1_enable"
+        };
         Check::new(
             id,
             title,

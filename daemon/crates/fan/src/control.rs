@@ -109,6 +109,13 @@ pub enum ControlError {
     PermissionDenied(String, String),
     #[error("writing {0}: {1}")]
     Io(String, String),
+    /// A measurement that holds the fans away from where the machine
+    /// needs them was stopped, or refused, because of the heat.
+    #[error("{0} °C is too hot to hold the fans for a measurement (the limit is {1} °C)")]
+    TooHot(i64, i64),
+    /// ...or because there was no temperature to watch while it ran.
+    #[error("no temperature sensor could be read, so the fans cannot be held for a measurement")]
+    NoTemperature,
 }
 
 impl ControlError {
@@ -131,6 +138,15 @@ impl ControlError {
                 "fan.control.io",
                 { "path" => path.clone(), "error" => error.clone() },
                 "writing {path}: {error}"
+            ),
+            Self::TooHot(temp, limit) => msg!(
+                "fan.control.tooHot",
+                { "temp" => *temp, "limit" => *limit },
+                "{temp} °C is too hot to hold the fans for a measurement (the limit is {limit} °C)"
+            ),
+            Self::NoTemperature => msg!(
+                "fan.control.noTemperature",
+                "no temperature sensor could be read, so the fans cannot be held for a measurement"
             ),
         }
     }

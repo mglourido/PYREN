@@ -78,6 +78,11 @@ fn hwmon_temp_path(drivers: &[&str]) -> Option<PathBuf> {
     None
 }
 
+/// The hottest a reading can be and still be a temperature, in whole
+/// degrees. No laptop part survives above it, so a value past it is a
+/// garbage register or a driver reporting an error code, not heat.
+pub const MAX_PLAUSIBLE_C: i64 = 125;
+
 /// sysfs temperature files report millidegrees C.
 pub fn read_millideg_c(path: &Path) -> Option<i64> {
     fs::read_to_string(path)
@@ -94,13 +99,14 @@ pub fn read_millideg_c(path: &Path) -> Option<i64> {
 /// caller asking this wants to know is whether the machine is in thermal
 /// trouble, and a card at 90 C is trouble whatever the package says. A
 /// sensor reading 0 is a part that is powered down, not a cold one, so it
-/// is left out of the comparison instead of dragging it down.
+/// is left out of the comparison instead of dragging it down, and so is one
+/// above [`MAX_PLAUSIBLE_C`], which would otherwise *be* the answer.
 pub fn hottest_c(cpu: Option<&Path>, gpu: Option<&Path>) -> Option<f64> {
     let readings = [cpu, gpu]
         .into_iter()
         .flatten()
         .filter_map(read_millideg_c)
-        .filter(|t| *t > 0);
+        .filter(|t| *t > 0 && *t <= MAX_PLAUSIBLE_C);
     readings.max().map(|t| t as f64)
 }
 
@@ -159,6 +165,16 @@ mod tests {
         let gpu = write(&dir, "gpu", "0");
         assert_eq!(hottest_c(Some(&cpu), Some(&gpu)), Some(72.0));
         assert_eq!(hottest_c(None, Some(&gpu)), None, "asleep is not 0 C");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_garbage_register_is_not_the_hottest_part() {
+        let dir = temp_dir("garbage-hot");
+        let cpu = write(&dir, "cpu", "255000");
+        let gpu = write(&dir, "gpu", "64000");
+        assert_eq!(hottest_c(Some(&cpu), Some(&gpu)), Some(64.0));
+        assert_eq!(hottest_c(Some(&cpu), None), None);
         let _ = fs::remove_dir_all(&dir);
     }
 

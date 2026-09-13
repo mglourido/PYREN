@@ -387,6 +387,12 @@ impl Drop for Restore<'_> {
     }
 }
 
+/// Asked once per sample while a measurement holds the fans: `Some` ends
+/// the run at once - the [`Restore`] guard puts the fans back on the way
+/// out - and becomes the run's error. The caller decides what counts;
+/// today that is the machine getting too hot to be measuring anything.
+pub(crate) type Abort<'a> = &'a dyn Fn() -> Option<control::ControlError>;
+
 /// Runs a calibration against the hardware. Blocks for up to `seconds`.
 ///
 /// The caller is responsible for keeping the control loop off the fans
@@ -395,7 +401,11 @@ pub(crate) fn run(
     paths: &FanPaths,
     caps: Capabilities,
     seconds: u64,
+    abort: Abort,
 ) -> Result<Calibration, control::ControlError> {
+    if let Some(e) = abort() {
+        return Err(e);
+    }
     let limit = seconds.clamp(MIN_SECONDS, MAX_SECONDS);
     let before_mode = observed_mode(paths).unwrap_or(FanMode::Auto);
     let before_pwm = control::read_pwm(paths).unwrap_or(crate::curve::MIN_COMMANDED_PWM);
@@ -408,6 +418,9 @@ pub(crate) fn run(
     let started = Instant::now();
     let elapsed = loop {
         sleep(SAMPLE_INTERVAL);
+        if let Some(e) = abort() {
+            return Err(e);
+        }
         let elapsed = started.elapsed().as_secs();
         measurement.push(sample(paths, elapsed));
         if measurement.is_done(elapsed) {
@@ -423,9 +436,15 @@ pub(crate) fn run(
         {
             Some(driver_floor) => {
                 calibration.fan_min_rpm = Some(driver_floor);
-                sweep_floor(paths, caps, driver_floor, &mut calibration);
+                sweep_floor(paths, caps, driver_floor, &mut calibration, abort);
             }
-            None => measure_floor(paths, caps, limit, &mut calibration),
+            None => measure_floor(paths, caps, limit, &mut calibration, abort),
+        }
+        // The floor steps are the part that holds the fans near stall, so
+        // they are where an abort is most likely to land. Asked again here
+        // because both steps swallow their own failures.
+        if let Some(e) = abort() {
+            return Err(e);
         }
     }
     let (restored_mode, restore_error) = restore.finish();
@@ -437,7 +456,13 @@ pub(crate) fn run(
 /// Runs a [`FloorRun`] straight after the ceiling, while the fans are
 /// still at it. Never fails the calibration: the ceiling is measured and
 /// worth keeping whatever happens here.
-fn measure_floor(paths: &FanPaths, caps: Capabilities, limit: u64, calibration: &mut Calibration) {
+fn measure_floor(
+    paths: &FanPaths,
+    caps: Capabilities,
+    limit: u64,
+    calibration: &mut Calibration,
+    abort: Abort,
+) {
     let Some(peak) = calibration.fan_max_rpm else {
         return;
     };
@@ -457,6 +482,9 @@ fn measure_floor(paths: &FanPaths, caps: Capabilities, limit: u64, calibration: 
     let started = Instant::now();
     loop {
         sleep(SAMPLE_INTERVAL);
+        if abort().is_some() {
+            return;
+        }
         let elapsed = started.elapsed().as_secs();
         floor.push(sample(paths, offset + elapsed));
         if floor.is_done(elapsed) {
@@ -590,6 +618,7 @@ fn sweep_floor(
     caps: Capabilities,
     driver_floor: i64,
     calibration: &mut Calibration,
+    abort: Abort,
 ) {
     let fans = Fans {
         fan1: calibration.fan1_max_rpm.is_some(),
@@ -610,6 +639,9 @@ fn sweep_floor(
     // its floor, and the floor is set to `rpm`. `settle` ends as soon as
     // the fans arrive; a step is watched whole.
     let mut run = |rpm: i64, secs: u64, settle: bool| -> bool {
+        if abort().is_some() {
+            return false;
+        }
         let Ok(hundreds) = u8::try_from(rpm / 100) else {
             return false;
         };
@@ -621,6 +653,9 @@ fn sweep_floor(
         let mut step = Vec::new();
         for _ in 0..secs {
             sleep(SAMPLE_INTERVAL);
+            if abort().is_some() {
+                return false;
+            }
             clock += 1;
             step.push(sample(paths, clock));
             if settle && holding(&step, rpm, fans) {

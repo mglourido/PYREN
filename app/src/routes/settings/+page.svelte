@@ -525,6 +525,20 @@
       </div>
       <div class="row">
         <span>
+          {t("settings.thermalSafetyChecker")}
+          <small class="hint-inline"><RichText text={t("settings.thermalSafetyCheckerHint", {
+              hot: `${toUnit(fan.safety?.hotC ?? 85)} ${fahrenheit ? "°F" : "°C"}`,
+              cool: `${toUnit(fan.safety?.coolC ?? 75)} ${fahrenheit ? "°F" : "°C"}`,
+            })} /></small>
+        </span>
+        <Toggle
+          checked={fan.thermalSafetyChecker}
+          onchange={(v) => void hardware.setThermalSafetyChecker(v)}
+          ariaLabel={t("settings.thermalSafetyChecker")}
+        />
+      </div>
+      <div class="row">
+        <span>
           {t("settings.perFanRpm")}
           <small class="hint-inline"><RichText text={t("settings.perFanRpmHint")} /></small>
         </span>

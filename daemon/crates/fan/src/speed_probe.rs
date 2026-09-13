@@ -338,6 +338,7 @@ pub(crate) fn run(
     caps: Capabilities,
     fan_max_rpm: Option<i64>,
     seconds: u64,
+    abort: crate::calibration::Abort,
 ) -> Result<SpeedProbe, control::ControlError> {
     if !caps.supports(FanMode::Manual) {
         return Ok(inconclusive(
@@ -346,6 +347,9 @@ pub(crate) fn run(
         ));
     }
 
+    if let Some(e) = abort() {
+        return Err(e);
+    }
     let limit = seconds.clamp(MIN_SECONDS, MAX_SECONDS);
     let before_mode = observed_mode(paths).unwrap_or(FanMode::Auto);
     let before_pwm = control::read_pwm(paths).unwrap_or(crate::curve::MIN_COMMANDED_PWM);
@@ -361,6 +365,10 @@ pub(crate) fn run(
     let started = Instant::now();
     let elapsed = loop {
         sleep(SAMPLE_INTERVAL);
+        // The `restore` guard puts the fans back on the way out.
+        if let Some(e) = abort() {
+            return Err(e);
+        }
         let elapsed = started.elapsed().as_secs();
         measurement.push(sample(paths, elapsed));
         if measurement.is_done(elapsed) {

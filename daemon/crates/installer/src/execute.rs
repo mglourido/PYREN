@@ -689,6 +689,14 @@ fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
     // here to *state the requirement*, so that hardening this unit (a
     // `User=`, a `CapabilityBoundingSet`) does not silently take the
     // reading away with no clue as to why.
+    //
+    // ExecStopPost hands the fans back to the firmware (`pwm1_enable = 2`)
+    // however the daemon ended. A clean stop already does this itself; the
+    // line is for the ways it cannot - a crash, SIGKILL, an OOM kill - which
+    // would otherwise leave the last curve speed on the fans, kept there by
+    // the driver's keep-alive. `$$` is systemd's escape for a literal `$`,
+    // and the trailing `true` keeps a machine with no such file from
+    // reporting the stop as failed.
     let unit = format!(
         "[Unit]\n\
          Description=Pyren hardware daemon\n\
@@ -702,6 +710,7 @@ fn write_service_unit(context: &ExecuteContext) -> Result<String, String> {
          RuntimeDirectory=pyren\n\
          RuntimeDirectoryMode=0755\n\
          AmbientCapabilities=CAP_PERFMON\n\
+         ExecStopPost=/bin/sh -c 'for f in /sys/devices/platform/hp-wmi/hwmon/hwmon*/pwm1_enable; do [ -w \"$$f\" ] && echo 2 > \"$$f\"; done; true'\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          \n\
