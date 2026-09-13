@@ -44,8 +44,10 @@
 //!   19..128 zero
 //! ```
 //!
-//! The firmware answers with the four bytes `PASS` on success. Anything
-//! else - including an `acpi_call` error string - is a refusal.
+//! The firmware answers `PASS` and a zero return code on success, read by
+//! [`crate::reply`] like every other WMI dialect's reply. Anything else -
+//! a non-zero code, `PASS` somewhere other than the start, an `acpi_call`
+//! error string - is a refusal.
 //!
 //! ## What is not known
 //!
@@ -84,9 +86,6 @@ pub const TYPE_READ: u32 = 0x04;
 /// place the firmware's *own* brightness could be legible - see
 /// `raw_read`.
 pub const BRIGHTNESS_OFFSET: usize = 3;
-
-/// The success sentinel, `PASS`, as the firmware returns it.
-const PASS: &[u8; 4] = b"PASS";
 
 /// Brightness is a percentage in this protocol, not a 0-255 level.
 pub fn clamp_brightness(value: i64) -> u8 {
@@ -135,20 +134,16 @@ pub fn read_request(zone: usize) -> String {
     acpi::wmi_request(COMMAND_READ, TYPE_READ, PAYLOAD_LEN, &payload)
 }
 
-/// Whether a reply means the firmware did the thing.
+/// Whether a reply means the firmware did the thing: `PASS` at the start
+/// and a zero return code, in any of the shapes `acpi_call` renders a
+/// buffer in.
 ///
-/// The four shapes are the ones `acpi_call` actually produces for a buffer
-/// return, and upstream accepts all of them: a bare hex blob, a
-/// `{0x50, 0x41, ...}` list, and the same list without spaces.
+/// Upstream accepts the letters anywhere in the reply. That is how this
+/// dialect used to "answer" on four-zone machines whose firmware said
+/// *unknown operation* - so the code is read now, the same way
+/// [`crate::fourzone`] reads it.
 pub fn is_success(response: &str) -> bool {
-    let upper = response.to_ascii_uppercase();
-    if upper.contains("50415353") || upper.contains("PASS") {
-        return true;
-    }
-    match parse_bytes(response) {
-        Some(bytes) => bytes.starts_with(PASS),
-        None => false,
-    }
+    parse_bytes(response).is_some_and(|bytes| crate::reply::checked(&bytes).is_ok())
 }
 
 /// The bytes behind an `acpi_call` reply.
@@ -161,18 +156,12 @@ pub fn is_success(response: &str) -> bool {
 /// through the lightbar.
 pub use acpi::parse_bytes;
 
-/// The RGB triple in a single-zone read reply: four bytes past `PASS`,
-/// then three bytes of colour.
+/// The RGB triple in a single-zone read reply: the first three data bytes
+/// after the `PASS` header, and only when that header says it worked.
 pub fn zone_color(reply: &[u8]) -> Option<Rgb> {
-    let at = find(reply, PASS)? + 8;
-    let triple = reply.get(at..at + 3)?;
+    let data = crate::reply::checked(reply).ok()?;
+    let triple = data.get(0..3)?;
     Some(Rgb::new(triple[0], triple[1], triple[2]))
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
 }
 
 // --- the hardware ------------------------------------------------------
@@ -192,11 +181,7 @@ pub fn write_colors(colors: &[Rgb], brightness: u8) -> Result<(), DialectError> 
         PAYLOAD_LEN,
         PAYLOAD_LEN,
     )?;
-    if is_success(&reply) {
-        Ok(())
-    } else {
-        Err(DialectError::Refused(reply.trim().to_string()))
-    }
+    crate::reply::payload(&reply).map(|_| ())
 }
 
 /// One zone read, returned whole.
@@ -209,9 +194,7 @@ pub fn raw_read(zone: usize) -> Result<Vec<u8>, DialectError> {
     let mut payload = [0u8; PAYLOAD_LEN];
     payload[0] = zone as u8;
     let reply = acpi::wmi_call(COMMAND_READ, TYPE_READ, &payload, PAYLOAD_LEN, PAYLOAD_LEN)?;
-    if !is_success(&reply) {
-        return Err(DialectError::Refused(reply.trim().to_string()));
-    }
+    crate::reply::payload(&reply)?;
     acpi::parse_bytes(&reply).ok_or(DialectError::Unreadable(reply))
 }
 
@@ -228,9 +211,7 @@ pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
         let mut payload = [0u8; PAYLOAD_LEN];
         payload[0] = zone as u8;
         let reply = acpi::wmi_call(COMMAND_READ, TYPE_READ, &payload, PAYLOAD_LEN, PAYLOAD_LEN)?;
-        if !is_success(&reply) {
-            return Err(DialectError::Refused(reply.trim().to_string()));
-        }
+        crate::reply::payload(&reply)?;
         let bytes =
             acpi::parse_bytes(&reply).ok_or_else(|| DialectError::Unreadable(reply.clone()))?;
         colors.push(zone_color(&bytes).ok_or(DialectError::Unreadable(reply))?);
@@ -240,6 +221,18 @@ pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
 
 pub fn hp_wmi_present() -> bool {
     std::path::Path::new("/sys/devices/platform/hp-wmi").exists()
+}
+
+/// Whether the firmware says HP made this machine. `hp-wmi` binding is not
+/// proof on its own - the driver is matched by WMI GUID - and every buffer
+/// the WMI dialects send is an HP one.
+pub fn is_hp() -> bool {
+    std::fs::read_to_string("/sys/class/dmi/id/sys_vendor").is_ok_and(|v| vendor_is_hp(&v))
+}
+
+fn vendor_is_hp(vendor: &str) -> bool {
+    let vendor = vendor.trim();
+    vendor == "HP" || vendor.starts_with("HP ") || vendor.starts_with("Hewlett")
 }
 
 #[cfg(test)]
@@ -327,14 +320,33 @@ mod tests {
 
     #[test]
     fn every_shape_of_pass_the_firmware_can_answer_in_is_a_success() {
-        assert!(is_success("0x50415353"));
-        assert!(is_success("{0x50, 0x41, 0x53, 0x53}"));
-        assert!(is_success("{0x50,0x41,0x53,0x53}"));
-        assert!(is_success("PASS"));
+        assert!(is_success("0x5041535300000000"));
+        assert!(is_success(
+            "{0x50, 0x41, 0x53, 0x53, 0x00, 0x00, 0x00, 0x00}"
+        ));
+        assert!(is_success("{0x50,0x41,0x53,0x53,0x00,0x00,0x00,0x00}"));
 
         assert!(!is_success(""));
+        assert!(!is_success("PASS"), "the letters are not a reply frame");
+        assert!(
+            !is_success("0x50415353"),
+            "no return code is not a zero one"
+        );
         assert!(!is_success("Error: AE_NOT_FOUND"));
         assert!(!is_success("{0x46, 0x41, 0x49, 0x4c}"), "FAIL is not PASS");
+        assert!(
+            !is_success("{0x50, 0x41, 0x53, 0x53, 0x04, 0x00, 0x00, 0x00}"),
+            "unknown operation is a refusal, whatever it starts with"
+        );
+    }
+
+    #[test]
+    fn only_hp_is_hp() {
+        assert!(vendor_is_hp("HP\n"));
+        assert!(vendor_is_hp("Hewlett-Packard"));
+        assert!(!vendor_is_hp("LENOVO"));
+        assert!(!vendor_is_hp("CHPC Inc"));
+        assert!(!vendor_is_hp(""));
     }
 
     /// Finding 2 of the review, as a test. `lstrip("b0x")` removes every
@@ -372,10 +384,18 @@ mod tests {
     }
 
     #[test]
-    fn a_zone_colour_is_the_three_bytes_four_past_pass() {
-        let mut reply = b"\x00\x00PASS\x00\x00\x00\x00".to_vec();
+    fn a_zone_colour_is_the_three_bytes_after_the_header() {
+        let mut reply = b"PASS\x00\x00\x00\x00".to_vec();
         reply.extend_from_slice(&[0x11, 0x22, 0x33]);
         assert_eq!(zone_color(&reply), Some(Rgb::new(0x11, 0x22, 0x33)));
+
+        let mut shifted = b"\x00\x00".to_vec();
+        shifted.extend_from_slice(&reply);
+        assert_eq!(zone_color(&shifted), None, "PASS must be at the start");
+
+        let mut refused = b"PASS\x04\x00\x00\x00".to_vec();
+        refused.extend_from_slice(&[0x11, 0x22, 0x33]);
+        assert_eq!(zone_color(&refused), None, "a return code is not a colour");
 
         assert_eq!(
             zone_color(b"PASS"),

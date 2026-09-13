@@ -18,10 +18,31 @@
 //! files scales the colours in software instead, and so does this: see
 //! [`crate::scale`].
 
+//!
+//! ## Guards
+//!
+//! - The directory is looked up **once per write**, so a driver reload in
+//!   the middle of a frame cannot split one write across two directories.
+//! - The platform device has to belong to one of the two drivers above
+//!   (its `driver` link, or the module being loaded where there is no
+//!   link). Something else publishing an `rgb_zones` group is not written.
+//! - A write reads all four zones first, writes only the ones that change,
+//!   and puts back the ones it already wrote if a later one fails - so a
+//!   failure does not leave the keyboard half in the old colours.
+
 use std::path::{Path, PathBuf};
+
+use pyren_core::{acpi, msg};
 
 use crate::color::Rgb;
 use crate::dialect::DialectError;
+
+/// The drivers allowed to own the zone files, as their `driver` link and as
+/// their `/sys/module` entry.
+const DRIVERS: [(&str, &str); 2] = [
+    ("hp-wmi", "hp_wmi"),
+    ("omen-rgb-keyboard", "omen_rgb_keyboard"),
+];
 
 /// Where the kernel might publish them, best-known first. Both entries are
 /// the same interface under a different platform-device name - see the
@@ -39,7 +60,7 @@ const ZONES_DIRS: [&str; 2] = [
 /// the caller is then about to fail, and a failure that names a path reads
 /// better than one that cannot say where it looked.
 pub fn dir() -> PathBuf {
-    if let Ok(from_env) = std::env::var("PYREN_RGB_ZONES_DIR") {
+    if let Some(from_env) = acpi::test_override("PYREN_RGB_ZONES_DIR") {
         return PathBuf::from(from_env);
     }
     ZONES_DIRS
@@ -49,22 +70,90 @@ pub fn dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(ZONES_DIRS[0]))
 }
 
-fn zone_path(zone: usize) -> PathBuf {
-    dir().join(format!("zone{zone:02}"))
+fn zone_path(dir: &Path, zone: usize) -> PathBuf {
+    dir.join(format!("zone{zone:02}"))
 }
 
 /// Whether the files are there at all. A cheap `stat`, no reads.
 pub fn present() -> bool {
-    Path::new(&zone_path(0)).exists()
+    zone_path(&dir(), 0).exists()
+}
+
+/// The directory to read and write, checked. See the module docs.
+fn checked_dir() -> Result<PathBuf, DialectError> {
+    // A fixture has no platform device to check.
+    if let Some(from_env) = acpi::test_override("PYREN_RGB_ZONES_DIR") {
+        return Ok(PathBuf::from(from_env));
+    }
+    let dir = dir();
+    if !zone_path(&dir, 0).exists() {
+        return Err(DialectError::Io(format!(
+            "{}: no zone files",
+            dir.display()
+        )));
+    }
+    verify_driver(&dir)?;
+    Ok(dir)
+}
+
+fn verify_driver(dir: &Path) -> Result<(), DialectError> {
+    let device = dir.parent().unwrap_or(dir);
+    let owner = match std::fs::read_link(device.join("driver")) {
+        Ok(link) => link
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        // No driver bound to the device: the module that registered it has
+        // to be one of ours, and loaded.
+        Err(_) => match DRIVERS
+            .iter()
+            .find(|(_, module)| Path::new("/sys/module").join(module).exists())
+        {
+            Some((name, _)) => return driver_matches_device(device, name),
+            None => String::new(),
+        },
+    };
+    if DRIVERS.iter().any(|(name, _)| *name == owner) {
+        Ok(())
+    } else {
+        Err(unexpected_driver(device, &owner))
+    }
+}
+
+/// With no `driver` link, the device directory's own name has to be the
+/// loaded module's.
+fn driver_matches_device(device: &Path, module_name: &str) -> Result<(), DialectError> {
+    let name = device
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if name == module_name {
+        Ok(())
+    } else {
+        Err(unexpected_driver(device, ""))
+    }
+}
+
+fn unexpected_driver(device: &Path, owner: &str) -> DialectError {
+    DialectError::Unsafe(msg!(
+        "rgb.dialect.kernelZones.driver",
+        { "path" => device.display().to_string(), "driver" => owner.to_string() },
+        "{path} does not belong to hp-wmi or omen-rgb-keyboard (driver: '{driver}'), so its \
+         zone files were not written"
+    ))
 }
 
 /// Reads the four zones. This is the probe as well as the read: a colour
 /// that comes back is proof the interface works, and reading changes
 /// nothing.
 pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
+    read_zones(&checked_dir()?)
+}
+
+fn read_zones(dir: &Path) -> Result<Vec<Rgb>, DialectError> {
     (0..crate::ZONES)
         .map(|zone| {
-            let path = zone_path(zone);
+            let path = zone_path(dir, zone);
             let text = std::fs::read_to_string(&path)
                 .map_err(|e| DialectError::Io(format!("{}: {e}", path.display())))?;
             parse_hex(text.trim()).ok_or_else(|| {
@@ -74,19 +163,66 @@ pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
         .collect()
 }
 
+fn write_zone(dir: &Path, zone: usize, color: Rgb) -> Result<(), DialectError> {
+    let path = zone_path(dir, zone);
+    // No newline: the kernel attribute parses a bare hex string, and some
+    // builds of it are strict about the trailing byte.
+    std::fs::write(
+        &path,
+        format!("{:02X}{:02X}{:02X}", color.r, color.g, color.b),
+    )
+    .map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => DialectError::NeedsRoot,
+        _ => DialectError::Io(format!("{}: {e}", path.display())),
+    })
+}
+
+/// Reads first, writes what changed, and on a failure puts back what it
+/// had already written. See the module docs.
 pub fn write_colors(colors: &[Rgb]) -> Result<(), DialectError> {
-    for (zone, color) in colors.iter().take(crate::ZONES).enumerate() {
-        let path = zone_path(zone);
-        // No newline: the kernel attribute parses a bare hex string, and
-        // some builds of it are strict about the trailing byte.
-        std::fs::write(
-            &path,
-            format!("{:02X}{:02X}{:02X}", color.r, color.g, color.b),
-        )
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::PermissionDenied => DialectError::NeedsRoot,
-            _ => DialectError::Io(format!("{}: {e}", path.display())),
-        })?;
+    let dir = checked_dir()?;
+    let before = read_zones(&dir)?;
+    let mut written = Vec::new();
+    for (zone, (&color, &old)) in colors.iter().zip(&before).enumerate() {
+        if color == old {
+            continue;
+        }
+        if let Err(e) = write_zone(&dir, zone, color) {
+            let restored = written
+                .iter()
+                .all(|&z: &usize| write_zone(&dir, z, before[z]).is_ok());
+            return Err(match e {
+                DialectError::Io(detail) => DialectError::Io(format!(
+                    "{detail}; {}",
+                    if restored {
+                        "the zones before it were put back"
+                    } else {
+                        "the zones before it could not all be put back"
+                    }
+                )),
+                other => other,
+            });
+        }
+        written.push(zone);
+    }
+    Ok(())
+}
+
+/// What an animation writes a frame with: only the zones whose colour
+/// differs from what `written` says the file holds. A zone that fails is
+/// forgotten, so the next frame writes it again.
+pub fn write_changed(
+    colors: &[Rgb],
+    written: &mut [Option<Rgb>; crate::ZONES],
+) -> Result<(), DialectError> {
+    let dir = checked_dir()?;
+    for (zone, &color) in colors.iter().take(crate::ZONES).enumerate() {
+        if written[zone] == Some(color) {
+            continue;
+        }
+        written[zone] = None;
+        write_zone(&dir, zone, color)?;
+        written[zone] = Some(color);
     }
     Ok(())
 }
@@ -127,15 +263,8 @@ mod tests {
     fn a_round_trip_through_the_sysfs_files() {
         let dir = std::env::temp_dir().join(format!("pyren-zones-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("a temp dir is writable");
-        for zone in 0..crate::ZONES {
-            std::fs::write(dir.join(format!("zone{zone:02}")), "000000").unwrap();
-        }
-
-        // Not `set_var`: the tests in this crate share a process, and a
-        // scoped guard is not a thing std offers. This test is the only
-        // one that touches the variable.
-        unsafe { std::env::set_var("PYREN_RGB_ZONES_DIR", &dir) };
+        crate::testenv::zone_files(&dir);
+        let _env = crate::testenv::fixture(&dir.join("no-acpi-call"), &dir);
 
         assert!(present());
         let colors = vec![
@@ -147,7 +276,43 @@ mod tests {
         write_colors(&colors).expect("a temp dir is writable");
         assert_eq!(read_colors().expect("just written"), colors);
 
-        unsafe { std::env::remove_var("PYREN_RGB_ZONES_DIR") };
+        // A frame writes only the zones that changed.
+        let mut cache = [Some(colors[0]), Some(colors[1]), None, Some(colors[3])];
+        std::fs::write(dir.join("zone00"), "ABCDEF").unwrap();
+        let mut frame = colors.clone();
+        frame[2] = Rgb::new(7, 7, 7);
+        write_changed(&frame, &mut cache).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zone00")).unwrap(),
+            "ABCDEF",
+            "zone 0 was cached as unchanged and not rewritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zone02")).unwrap(),
+            "070707"
+        );
+
+        // A write that fails part-way puts the earlier zones back.
+        write_colors(&colors).unwrap();
+        let locked = dir.join("zone02");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Root writes through a read-only mode, so there is nothing to test.
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(&locked)
+            .is_err()
+        {
+            let target = vec![Rgb::new(9, 9, 9); crate::ZONES];
+            assert!(write_colors(&target).is_err());
+            assert_eq!(
+                read_colors().unwrap(),
+                colors,
+                "zones 0 and 1 went back to what they were"
+            );
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -65,7 +65,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use pyren_rgb::{Dialect, Rgb, Selection};
+use pyren_rgb::{Dialect, Policy, Rgb, Selection};
 
 const EV_SYN: u16 = 0x00;
 const EV_REL: u16 = 0x02;
@@ -327,7 +327,7 @@ impl RgbWatch {
     fn start() -> Option<Self> {
         let probes: Vec<_> = [Dialect::KernelZones, Dialect::FourZone, Dialect::Lightbar]
             .into_iter()
-            .map(Dialect::probe)
+            .map(|d| d.probe(Policy::default()))
             .collect();
         for probe in &probes {
             let verdict = match (probe.available, probe.asked) {

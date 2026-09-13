@@ -7,11 +7,11 @@
 //! with that; a daemon with a control loop does not.
 //!
 //! So every use of the file in this process goes through [`call`], which
-//! holds [`GATE`] across the write/read pair. This lives in `core` rather
-//! than in a module because more than one module needs it: the RGB
-//! lightbar drives the light strip through it, and the fan cleaner drives
-//! reverse spin through it. Two modules serialising against two different
-//! mutexes would be two modules not serialising at all.
+//! hands the write/read pair to one worker thread that does them one at a
+//! time. This lives in `core` rather than in a module because more than one
+//! module needs it: the RGB lightbar drives the light strip through it, and
+//! the fan cleaner drives reverse spin through it. Two modules serialising
+//! against two different locks would be two modules not serialising at all.
 //!
 //! The two also speak the *same* dialect over it - HP's `SECU` buffer
 //! protocol - so [`wmi_request`] builds the argument and [`parse_bytes`]
@@ -19,14 +19,31 @@
 //! needed them, and a second copy of a hex parser is a second copy of its
 //! bugs.
 //!
-//! The lock is per *process*, which is the scope that is ours to control.
-//! Another program on the machine using `acpi_call` at the same moment is
-//! outside it, and nothing short of the kernel could fix that.
+//! Other programs are covered as far as they cooperate: each pair is also
+//! taken under an advisory `flock(2)` on [`LOCK_PATH`], and
+//! `tools/pyren-check.sh` takes the same one. A program that ignores the
+//! lock is still outside it, and nothing short of the kernel could fix
+//! that - which is why the four-zone writer also checks the shape of what
+//! it read before sending anything back (see `pyren_rgb::fourzone`).
+//!
+//! ## Guards
+//!
+//! - **A deadline.** A call that has not come back within [`CALL_TIMEOUT`]
+//!   is reported as failed, and while it is still stuck in the kernel no
+//!   further call is sent: a firmware that hangs on one request is not
+//!   handed a queue of them.
+//! - **No late writes.** A request whose caller has already given up is
+//!   dropped rather than sent.
+//! - **A minimum gap** of [`MIN_GAP`] between calls, so no caller - an
+//!   animation, say - can hammer the firmware.
 
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// The interface, when the kernel module is loaded.
 pub const CALL_PATH: &str = "/proc/acpi/call";
@@ -60,8 +77,30 @@ pub fn missing_hint() -> &'static str {
     }
 }
 
-/// Serialises the write/read pair. See the module docs.
-static GATE: Mutex<()> = Mutex::new(());
+/// The advisory lock every write/read pair is taken under, shared with
+/// `tools/pyren-check.sh`. `/run/lock` is the FHS place for it and is
+/// writable on every systemd distribution.
+pub const LOCK_PATH: &str = "/run/lock/pyren-acpi-call.lock";
+
+/// The longest one call may take. A healthy call is a few milliseconds.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The shortest time between the end of one call and the start of the next.
+pub const MIN_GAP: Duration = Duration::from_millis(8);
+
+/// Set while a call has outlived its deadline and is still inside the
+/// kernel. See the module docs.
+static STUCK: AtomicBool = AtomicBool::new(false);
+
+/// The worker's inbox. Replaced if the worker ever goes away.
+static WORKER: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
+
+struct Job {
+    path: String,
+    request: String,
+    deadline: Instant,
+    reply: mpsc::Sender<Result<String, AcpiError>>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcpiError {
@@ -107,11 +146,44 @@ impl AcpiError {
 /// which is how the request framing is exercised in a test on a machine
 /// with no `acpi_call` - including in CI.
 pub fn call_path() -> String {
-    std::env::var("PYREN_ACPI_CALL").unwrap_or_else(|_| CALL_PATH.to_string())
+    test_override("PYREN_ACPI_CALL").unwrap_or_else(|| CALL_PATH.to_string())
 }
 
-fn is_redirected() -> bool {
-    std::env::var_os("PYREN_ACPI_CALL").is_some()
+/// A `PYREN_*` variable that points hardware access at a fixture.
+///
+/// Honoured for an unprivileged process - a test, the parity check - and
+/// **ignored for root** unless `PYREN_TEST_OVERRIDES=1` is set as well. A
+/// root daemon that inherited a stray `PYREN_ACPI_CALL` would otherwise
+/// truncate whatever file it names, and one with a stray
+/// `PYREN_RGB_ZONES_DIR` would write colours into it.
+pub fn test_override(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok()?;
+    if !is_root() || std::env::var("PYREN_TEST_OVERRIDES").is_ok_and(|v| v == "1") {
+        return Some(value);
+    }
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        crate::log_warn!(
+            "ignoring {name} and the other PYREN_* test overrides: this process is root \
+             (set PYREN_TEST_OVERRIDES=1 as well if that is really meant)"
+        );
+    }
+    None
+}
+
+fn is_root() -> bool {
+    // SAFETY: geteuid(2) cannot fail and touches no memory.
+    unsafe { libc::geteuid() == 0 }
+}
+
+/// The lock file for `path`: [`LOCK_PATH`] for the real interface, and a
+/// sibling of a redirected one, so a test never touches `/run/lock`.
+fn lock_path_for(path: &str) -> String {
+    if path == CALL_PATH {
+        LOCK_PATH.to_string()
+    } else {
+        format!("{path}.lock")
+    }
 }
 
 /// Whether the interface is there *now*. Never loads anything: probing is
@@ -125,13 +197,28 @@ pub fn is_loaded() -> bool {
 ///
 /// Told apart from "not installed at all" because they have different
 /// remedies, and a message offering the wrong one costs an evening.
+///
+/// Remembered for [`MODINFO_TTL`]: it is reached from status reads that a
+/// UI polls, and each answer is a process start.
 pub fn is_module_installed() -> bool {
-    std::process::Command::new("modinfo")
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, answer)) = *cache {
+        if at.elapsed() < MODINFO_TTL {
+            return answer;
+        }
+    }
+    let answer = std::process::Command::new("modinfo")
         .args(["-n", "acpi_call"])
         .output()
         .map(|out| out.status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    *cache = Some((Instant::now(), answer));
+    answer
 }
+
+/// How long [`is_module_installed`] trusts its last answer.
+pub const MODINFO_TTL: Duration = Duration::from_secs(5);
 
 /// Loads `acpi_call` if it is installed and we are root.
 ///
@@ -159,32 +246,160 @@ pub fn ensure_loaded() -> Result<(), AcpiError> {
 
 /// One ACPI call: write `<method> <args>`, then read the reply.
 ///
-/// Holds [`GATE`] across both halves, which is the whole reason this
-/// function exists rather than each caller opening the file itself.
+/// Both halves run on the one worker thread, under the shared file lock,
+/// which is the whole reason this function exists rather than each caller
+/// opening the file itself. See the module docs for the guards.
 pub fn call(method: &str, args: &str) -> Result<String, AcpiError> {
-    let path = call_path();
-    let request = format!("{method} {args}");
+    call_at(&call_path(), method, args, CALL_TIMEOUT)
+}
 
-    let _guard = GATE.lock().unwrap_or_else(|e| e.into_inner());
+fn call_at(path: &str, method: &str, args: &str, timeout: Duration) -> Result<String, AcpiError> {
+    if STUCK.load(Ordering::SeqCst) {
+        return Err(AcpiError::Io(
+            "an earlier firmware call has not come back yet, so no new one was sent".into(),
+        ));
+    }
+    let (reply, answer) = mpsc::channel();
+    let job = Job {
+        path: path.to_string(),
+        request: format!("{method} {args}"),
+        deadline: Instant::now() + timeout,
+        reply,
+    };
+    submit(job)?;
+    match answer.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            STUCK.store(true, Ordering::SeqCst);
+            Err(AcpiError::Io(format!(
+                "the firmware call did not finish within {} ms",
+                timeout.as_millis()
+            )))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(AcpiError::Io("the firmware call worker went away".into()))
+        }
+    }
+}
+
+/// Hands a job to the worker, starting one if there is none.
+fn submit(job: Job) -> Result<(), AcpiError> {
+    let mut worker = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+    let job = match worker.as_ref() {
+        Some(sender) => match sender.send(job) {
+            Ok(()) => return Ok(()),
+            // The worker died (a panic); its job comes back to be re-sent.
+            Err(mpsc::SendError(job)) => job,
+        },
+        None => job,
+    };
+    let (sender, inbox) = mpsc::channel::<Job>();
+    std::thread::Builder::new()
+        .name("pyren-acpi-call".into())
+        .spawn(move || work(inbox))
+        .map_err(|e| AcpiError::Io(format!("could not start the firmware call worker: {e}")))?;
+    sender
+        .send(job)
+        .map_err(|_| AcpiError::Io("the firmware call worker went away".into()))?;
+    *worker = Some(sender);
+    Ok(())
+}
+
+fn work(inbox: mpsc::Receiver<Job>) {
+    let mut last_done: Option<Instant> = None;
+    for job in inbox {
+        if let Some(done) = last_done {
+            let ready = done + MIN_GAP;
+            let now = Instant::now();
+            if ready > now {
+                std::thread::sleep(ready - now);
+            }
+        }
+        // The caller has already been told this failed; sending it now
+        // would be a write nobody is waiting for.
+        if Instant::now() >= job.deadline {
+            let _ = job.reply.send(Err(AcpiError::Io(
+                "the firmware call was dropped: its caller had stopped waiting".into(),
+            )));
+            continue;
+        }
+        let result = exchange(&job.path, &job.request, job.deadline);
+        last_done = Some(Instant::now());
+        STUCK.store(false, Ordering::SeqCst);
+        let _ = job.reply.send(result);
+    }
+}
+
+/// The write/read pair itself, under the cross-process lock.
+fn exchange(path: &str, request: &str, deadline: Instant) -> Result<String, AcpiError> {
+    let _lock = FileLock::acquire(&lock_path_for(path), deadline)?;
+    let redirected = path != CALL_PATH;
 
     let mut file = fs::OpenOptions::new()
         .write(true)
         // procfs ignores truncation; a redirect target is a real file and
         // would otherwise keep the tail of a longer previous request.
-        .truncate(is_redirected())
-        .create(is_redirected())
-        .open(&path)
+        .truncate(redirected)
+        .create(redirected)
+        .open(path)
         .map_err(map_open_error)?;
     file.write_all(request.as_bytes())
         .map_err(|e| map_io_error(&e))?;
     drop(file);
 
-    let response = read_reply(&path)?;
+    let response = read_reply(path)?;
     // acpi_call terminates its reply with a NUL, which `trim` does not
     // remove and `str::parse` chokes on.
     Ok(response
         .trim_matches(|c: char| c == '\0' || c.is_whitespace())
         .to_string())
+}
+
+/// An advisory `flock(2)`, released on drop.
+///
+/// Best effort where the lock file cannot be opened at all - an
+/// unprivileged run with no `/run/lock` - because the in-process worker
+/// still serialises this daemon's own calls. A lock that *exists* and is
+/// held past the deadline is a refusal: somebody else is mid-call.
+struct FileLock(Option<fs::File>);
+
+impl FileLock {
+    fn acquire(path: &str, deadline: Instant) -> Result<Self, AcpiError> {
+        use std::os::fd::AsRawFd;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .or_else(|_| fs::File::open(path));
+        let Ok(file) = file else {
+            return Ok(Self(None));
+        };
+        loop {
+            // SAFETY: a valid, open descriptor owned by `file`.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self(Some(file)));
+            }
+            if Instant::now() >= deadline {
+                return Err(AcpiError::Io(format!(
+                    "another program is using the firmware interface (lock {path} is held)"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        if let Some(file) = &self.0 {
+            // SAFETY: as above. Closing the file would release it too; this
+            // just does not wait for the drop order to get there.
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
 }
 
 /// How big a first read to ask for. Comfortably past `acpi_call`'s own
@@ -478,6 +693,46 @@ mod tests {
             Some(previous) => std::env::set_var("PYREN_ACPI_CALL", previous),
             None => std::env::remove_var("PYREN_ACPI_CALL"),
         }
+
+        // A call that hangs. Opening a FIFO for writing blocks until
+        // somebody opens it for reading, which is as close to a firmware
+        // that never answers as a test can get.
+        let fifo = dir.join("stuck");
+        let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let fifo_path = fifo.to_str().unwrap().to_string();
+        let started = Instant::now();
+        let hung = call_at(&fifo_path, "\\_SB", "0", Duration::from_millis(200));
+        assert!(
+            matches!(&hung, Err(AcpiError::Io(e)) if e.contains("did not finish")),
+            "a hung call is reported, not waited on forever: {hung:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let refused = call_at(&fifo_path, "\\_SB", "0", Duration::from_millis(200));
+        assert!(
+            matches!(&refused, Err(AcpiError::Io(e)) if e.contains("has not come back")),
+            "nothing more is sent while one call is stuck: {refused:?}"
+        );
+
+        // Let the stuck call through: read its request, then answer it.
+        let request = std::fs::read_to_string(&fifo).unwrap();
+        assert_eq!(request, "\\_SB 0");
+        std::fs::write(&fifo, "PASS").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while STUCK.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!STUCK.load(Ordering::SeqCst), "the worker recovers");
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A test's redirected interface never takes the machine's real lock,
+    /// and the real interface always does.
+    #[test]
+    fn a_lock_file_sits_next_to_a_redirected_interface() {
+        assert_eq!(lock_path_for(CALL_PATH), LOCK_PATH);
+        assert_eq!(lock_path_for("/tmp/x/call"), "/tmp/x/call.lock");
     }
 }

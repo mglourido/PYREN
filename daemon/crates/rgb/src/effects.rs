@@ -361,6 +361,7 @@ pub fn play<S: Sink>(
     if brightness == 0 {
         return jump(sink, 0, duration, frames);
     }
+    let fps = sink.max_fps().map_or(fps, |cap| fps.min(cap));
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps.clamp(FPS_MIN, FPS_MAX)));
     let start = Instant::now();
     let mut next = start;
@@ -405,7 +406,17 @@ pub fn jump<S: Sink>(
 /// [`crate::dialect::Dialect::write_colors`].
 pub trait Sink: Send + 'static {
     fn show(&mut self, colors: &[Rgb], brightness: u8) -> Result<(), DialectError>;
+
+    /// The most frames a second this sink should be sent, below whatever
+    /// the effect asked for. `None` is no limit of its own.
+    fn max_fps(&self) -> Option<u8> {
+        None
+    }
 }
+
+/// How long [`Animator::stop`] waits for the effect thread. Past a frame
+/// stuck in the firmware (`acpi::CALL_TIMEOUT`, 5 s), with room to spare.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(7);
 
 /// How often a paused animation looks to see whether it may carry on.
 const PAUSED_POLL: Duration = Duration::from_millis(250);
@@ -477,7 +488,10 @@ impl Animator {
     {
         self.stop();
         let effect = effect.normalised();
-        let fps = fps.clamp(FPS_MIN, FPS_MAX);
+        let fps = sink
+            .max_fps()
+            .map_or(fps, |cap| fps.min(cap))
+            .clamp(FPS_MIN, FPS_MAX);
         let throttle = Arc::clone(&self.throttle);
         let (stop, stopped) = mpsc::channel::<()>();
         let level = Arc::new(AtomicU8::new(brightness.min(100)));
@@ -589,10 +603,26 @@ impl Animator {
     /// Stops the animation and waits for its thread, so that when this
     /// returns no frame of it can still land on top of whatever is written
     /// next.
+    ///
+    /// Waits at most [`STOP_TIMEOUT`]. A thread still inside a firmware call
+    /// past that is let go rather than waited on forever - which would hang
+    /// every lighting call and the daemon's shutdown behind it. It has been
+    /// told to stop, and the call it is in cannot outlive its own deadline.
     pub fn stop(&mut self) {
         if let Some(running) = self.running.take() {
             let _ = running.stop.send(());
-            let _ = running.handle.join();
+            let deadline = Instant::now() + STOP_TIMEOUT;
+            while !running.handle.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if running.handle.is_finished() {
+                let _ = running.handle.join();
+            } else {
+                pyren_core::log_warn!(
+                    "the lighting effect thread did not stop within {} s; leaving it",
+                    STOP_TIMEOUT.as_secs()
+                );
+            }
         }
     }
 

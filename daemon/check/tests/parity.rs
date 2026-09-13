@@ -57,6 +57,9 @@ fn run(program: &str, args: &[&str], hwmon: &Path) -> Run {
         // fixture and neither of which CI reproduces.
         .env("PYREN_ACPI_CALL", hwmon.join("acpi-call"))
         .env("PYREN_RGB_ZONES_DIR", hwmon.join("rgb_zones"))
+        // A root process ignores the two above without this (see
+        // `pyren_core::acpi::test_override`), and CI containers run as root.
+        .env("PYREN_TEST_OVERRIDES", "1")
         .output()
         .unwrap_or_else(|e| panic!("running {program}: {e}"));
 

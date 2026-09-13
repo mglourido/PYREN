@@ -20,6 +20,7 @@
 //! | `rgb.powerOff` | `{ "ifEnabled"?: bool }` | the new status, after the sweep out |
 //! | `rgb.setPowerAnimation` | `{ "enabled": bool }` | the new status |
 //! | `rgb.setBatteryFps` | `{ "fps": 0-60 }` | the new status; 0 pauses effects on battery |
+//! | `rgb.setAllowTruncatedFourZone` | `{ "enabled": bool }` | the new status, after a fresh probe |
 //!
 //! An effect `e` is `{ "kind", "colors"?, "speed"?: 1-10, "direction"? }`;
 //! see [`effects`]. `setZones`, `setStatic` and `off` stop a running effect.
@@ -51,12 +52,13 @@
 //! ## Confirmed against the hardware (2026-09-04)
 //!
 //! On the one OMEN this has run on, the firmware speaks the [`fourzone`]
-//! dialect: `rgb.readZones` reads back what the reply reaches and a write is visible on
-//! the keyboard. Two caveats, both in `dev/FINDINGS.md`: the [`lightbar`]
-//! dialect this project ported *first* answers `PASS` and does nothing
-//! here, and `acpi_call` truncates the reply so `fourZone`'s read reports
-//! the fourth zone black (the colour written to it is real). The dialect
-//! without either problem is [`kernel_zones`], which needs the out-of-tree
+//! dialect: `rgb.readZones` reads back what the reply reaches. Two caveats,
+//! both in `dev/FINDINGS.md`: the [`lightbar`] dialect this project ported
+//! *first* answers `PASS` and does nothing here, and `acpi_call` truncates
+//! the reply to 34 of its 128 bytes. A write sends the whole buffer back,
+//! so a truncated read is **no longer written through** - that meant zeros
+//! in 94 bytes nobody has identified; see [`fourzone`]. The dialect without
+//! either problem is [`kernel_zones`], which needs the out-of-tree
 //! `omen-rgb-keyboard` module. `rgb.getCapabilities` says in words which
 //! dialects this machine answered.
 
@@ -75,9 +77,10 @@ pub mod fourzone;
 pub mod kernel_zones;
 pub mod lightbar;
 pub mod probe;
+pub mod reply;
 
 pub use color::Rgb;
-pub use dialect::{Dialect, DialectError, Selection};
+pub use dialect::{Dialect, DialectError, Policy, Selection};
 pub use effects::{Animator, Effect, EffectKind, Transition};
 pub use probe::Probe;
 
@@ -144,6 +147,12 @@ pub struct RgbConfig {
     /// there. Each frame is an EC transaction, and the cost scales with
     /// the rate (`dev/FINDINGS.md` §"Lighting effects").
     pub battery_fps: u8,
+    /// Write four-zone colours through a reply `acpi_call` cut short to its
+    /// layout's known truncated length, sending the bytes it cut off as
+    /// zero. On by default: it is the only way the OMEN 16 this project
+    /// runs on gets its colours without a kernel module. Off, only a whole
+    /// buffer is ever written back. See `fourzone::Layout::truncated_len`.
+    pub allow_truncated_four_zone: bool,
 }
 
 impl Default for RgbConfig {
@@ -157,12 +166,16 @@ impl Default for RgbConfig {
             fps: effects::FPS_DEFAULT,
             power_animation: false,
             battery_fps: DEFAULT_BATTERY_FPS,
+            allow_truncated_four_zone: true,
         }
     }
 }
 
 /// Half the default rate: still smooth on four zones, half the cost.
 pub const DEFAULT_BATTERY_FPS: u8 = 15;
+
+/// How long [`RgbModule::on_exit`] may hold up the daemon's exit.
+pub const EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// What the machine is doing that bears on an animation. Told by the
 /// daemon, which watches the charger and the lid - the power module owns
@@ -206,7 +219,19 @@ pub struct RgbModule {
     /// Never locked while holding `state`: a failing animation takes the
     /// state lock from its own thread, and `stop` waits for that thread.
     animator: Arc<Mutex<Animator>>,
+    /// The one writer. Held across stop → write or sweep → start by every
+    /// path that touches the lights, so two socket connections, the
+    /// suspend hook and the SIGTERM handler cannot interleave frames - and
+    /// an effect cannot be left running after a write that cleared it.
+    ///
+    /// Taken first, before `animator` and `state`. The effect thread never
+    /// takes it, so stopping the animation while holding it cannot hang.
+    hw: Arc<Mutex<()>>,
 }
+
+/// The guard [`RgbModule::hw`] hands out; the `*_locked` methods take one
+/// as proof it is held.
+type Hw<'a> = std::sync::MutexGuard<'a, ()>;
 
 impl RgbModule {
     pub fn new() -> Self {
@@ -214,8 +239,6 @@ impl RgbModule {
     }
 
     pub fn with_store(store: ConfigStore) -> Self {
-        let probe = probe::probe();
-
         let loaded = store.load::<RgbConfig>("rgb");
         match &loaded.outcome {
             LoadOutcome::Loaded => {
@@ -246,6 +269,12 @@ impl RgbModule {
         config.fps = config.fps.clamp(effects::FPS_MIN, effects::FPS_MAX);
         config.battery_fps = config.battery_fps.min(effects::FPS_MAX);
         config.effect = config.effect.map(Effect::normalised);
+        let probe = probe::probe_with(
+            config.dialect.pinned(),
+            Policy {
+                allow_truncated_four_zone: config.allow_truncated_four_zone,
+            },
+        );
 
         // `Loaded`, not merely "the flag is on": the default config is
         // four black zones, and restoring that on a first run would put
@@ -265,6 +294,7 @@ impl RgbModule {
                 last_save_error: None,
             })),
             animator: Arc::new(Mutex::new(Animator::new())),
+            hw: Arc::new(Mutex::new(())),
         };
 
         if restoring {
@@ -273,33 +303,42 @@ impl RgbModule {
             let effect = state.config.effect.clone();
             let animate = state.config.power_animation;
             drop(state);
+            // Through a dialect that answered its probe, pinned or not:
+            // `resolve` gives nothing for one that did not.
             let chosen = module.chosen_dialect(&module.current_probe());
+            let hw = module.hw();
             match (chosen, effect) {
                 // Blocks startup for the length of the sweep, a second
                 // and a bit. Worth it: the alternative is the socket
                 // answering while the lights are still coming up, and a
                 // `setZones` in that second landing under the sweep.
                 (Some(_), _) if animate => {
-                    if let Err(e) = module.power_on() {
+                    if let Err(e) = module.power_on_locked(&hw) {
                         log_warn!("could not bring the lights up: {e}");
                     }
                 }
                 (Some(_), Some(effect)) => {
-                    if let Err(e) = module.start_effect(effect) {
+                    if let Err(e) = module.start_effect_locked(&hw, effect) {
                         log_warn!("could not restore the lighting effect: {e}");
                     }
                 }
                 (Some(dialect), None) => {
-                    if let Err(e) = dialect.write_colors(&zones, brightness) {
+                    if let Err(e) = dialect.write_colors(&zones, brightness, module.policy()) {
                         log_warn!("could not restore the lights: {e}");
                         lock(&module.state).last_error = Some(e.to_msg());
                     }
                 }
                 (None, _) => log_warn!("not restoring the lights: no lighting dialect answered"),
             }
+            drop(hw);
         }
 
         module
+    }
+
+    /// Takes the writer lock. See [`RgbModule::hw`].
+    fn hw(&self) -> Hw<'_> {
+        self.hw.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// What lighting this machine has, re-asked only if something about
@@ -318,17 +357,28 @@ impl RgbModule {
     }
 
     fn current_probe(&self) -> Probe {
+        let (pinned, policy) = (self.pinned(), self.policy());
         let mut cached = lock_probe(&self.probe);
         if probe::interfaces() != cached.lighting.interfaces() {
-            *cached = probe::probe();
+            *cached = probe::probe_with(pinned, policy);
         }
         cached.clone()
+    }
+
+    fn pinned(&self) -> Option<Dialect> {
+        lock(&self.state).config.dialect.pinned()
+    }
+
+    fn policy(&self) -> Policy {
+        Policy {
+            allow_truncated_four_zone: lock(&self.state).config.allow_truncated_four_zone,
+        }
     }
 
     /// A fresh probe, always, replacing the cached one. What
     /// `rgb.getCapabilities` is.
     fn reprobe(&self) -> Probe {
-        let fresh = probe::probe();
+        let fresh = probe::probe_with(self.pinned(), self.policy());
         *lock_probe(&self.probe) = fresh.clone();
         fresh
     }
@@ -341,6 +391,15 @@ impl RgbModule {
         // reentrant: resolving the dialect before the guard rather than
         // under it is the difference between a status read and a hang.
         let active = self.chosen_dialect(&probe);
+        // How the active dialect writes, where it has more than one way.
+        let write_mode = active.and_then(|d| {
+            probe
+                .lighting
+                .dialects
+                .iter()
+                .find(|p| p.id == d.id())
+                .and_then(|p| p.write_mode)
+        });
         let animating = lock_animator(&self.animator).is_running();
         let state = lock(&self.state);
         json!({
@@ -359,15 +418,23 @@ impl RgbModule {
             // the reason in `error`.
             "effect": state.config.effect,
             "effectRunning": animating,
+            // What was asked for, and what an effect actually gets once
+            // the dialect's cap, the battery and the lid have had a say.
             "fps": state.config.fps,
+            "effectiveFps": effective_fps(&state, active),
             "powerAnimation": state.config.power_animation,
+            "allowTruncatedFourZone": state.config.allow_truncated_four_zone,
+            // "full", "truncated" (four-zone writes through a cut-short
+            // reply), or null where the active dialect has only one way.
+            "writeMode": write_mode,
             // Put out by `powerOff` and not yet back.
             "dark": state.dark,
             "batteryFps": state.config.battery_fps,
             // Why an effect is running slower than `fps`, or not at all:
             // "brightness" (nothing drawn at 0 %), "lid" (paused),
-            // "battery" (capped or paused), or null.
-            "throttled": throttle_reason(&state),
+            // "battery" (capped or paused), "dialect" (capped by what the
+            // active dialect is sent), or null.
+            "throttled": throttle_reason(&state, active),
             // What is reported is what we wrote, and only if we wrote it.
             // Reading the hardware back is `rgb.readZones`, which is a
             // separate call because it is four ACPI round trips.
@@ -379,6 +446,18 @@ impl RgbModule {
     }
 
     fn apply(&self, zones: Vec<Rgb>, brightness: u8) -> ModuleResult {
+        let hw = self.hw();
+        self.apply_locked(&hw, zones, brightness)?;
+        drop(hw);
+        Ok(self.status())
+    }
+
+    fn apply_locked(
+        &self,
+        _hw: &Hw<'_>,
+        zones: Vec<Rgb>,
+        brightness: u8,
+    ) -> Result<(), ModuleError> {
         // A fresh probe rather than the startup one: the interesting case
         // is exactly the machine where `acpi_call` has just been installed
         // - or where the user has just pinned a different dialect.
@@ -389,7 +468,7 @@ impl RgbModule {
         // Before the write, or the effect's next frame lands on top of it.
         lock_animator(&self.animator).stop();
 
-        match dialect.write_colors(&zones, brightness) {
+        match dialect.write_colors(&zones, brightness, self.policy()) {
             Ok(()) => {
                 let mut state = lock(&self.state);
                 state.config.zones = zones;
@@ -405,12 +484,12 @@ impl RgbModule {
                 return Err(dialect_error(e));
             }
         }
-        Ok(self.status())
+        Ok(())
     }
 
     /// Starts `effect` on the chosen dialect. Does not persist it; the
     /// callers that should, do.
-    fn start_effect(&self, effect: Effect) -> Result<(), ModuleError> {
+    fn start_effect_locked(&self, _hw: &Hw<'_>, effect: Effect) -> Result<(), ModuleError> {
         let probe = self.current_probe();
         let dialect = self
             .chosen_dialect(&probe)
@@ -424,7 +503,7 @@ impl RgbModule {
         // Stopped before the sink is made: making the four-zone one is a
         // read, and a frame of the old effect must not be what it reads.
         animator.stop();
-        let sink = dialect.frames().map_err(|e| {
+        let sink = dialect.frames(self.policy()).map_err(|e| {
             lock(&self.state).last_error = Some(e.to_msg());
             dialect_error(e)
         })?;
@@ -446,7 +525,7 @@ impl RgbModule {
     /// Sweeps the lights in, from black to what the config says - the
     /// static zones, or the first frame of the effect, which then starts
     /// from exactly there.
-    fn power_on(&self) -> Result<(), ModuleError> {
+    fn power_on_locked(&self, hw: &Hw<'_>) -> Result<(), ModuleError> {
         let probe = self.current_probe();
         let dialect = self
             .chosen_dialect(&probe)
@@ -462,7 +541,7 @@ impl RgbModule {
             Some(e) => effects::frame(e, 0.0),
             None => zones_array(&zones),
         };
-        let mut sink = dialect.frames().map_err(|e| self.failed(e))?;
+        let mut sink = dialect.frames(self.policy()).map_err(|e| self.failed(e))?;
         let sweep = |k: f64, _: f64| Transition::PowerOn.apply(&target, k);
         match self.sweep_rate() {
             Some(fps) => effects::play(&mut sink, brightness, fps, Transition::DURATION, sweep),
@@ -472,7 +551,7 @@ impl RgbModule {
         drop(sink);
 
         match effect {
-            Some(e) => self.start_effect(e)?,
+            Some(e) => self.start_effect_locked(hw, e)?,
             None => {
                 let mut state = lock(&self.state);
                 state.owned = true;
@@ -488,7 +567,7 @@ impl RgbModule {
     ///
     /// The effect stays in the config: this is the lights going off, not
     /// somebody choosing a different colour, and `powerOn` brings it back.
-    fn power_off(&self) -> Result<(), ModuleError> {
+    fn power_off_locked(&self, _hw: &Hw<'_>) -> Result<(), ModuleError> {
         let probe = self.current_probe();
         let dialect = self
             .chosen_dialect(&probe)
@@ -505,7 +584,7 @@ impl RgbModule {
             running
         };
 
-        let mut sink = dialect.frames().map_err(|e| self.failed(e))?;
+        let mut sink = dialect.frames(self.policy()).map_err(|e| self.failed(e))?;
         let sweep = |k: f64, t: f64| {
             let base = match &running {
                 Some((effect, into)) => effects::frame(effect, into + t),
@@ -542,10 +621,37 @@ impl RgbModule {
     ///   or restarted: the static zones, so the keyboard is not left on
     ///   whichever frame the thread was killed in.
     /// - Otherwise nothing, like before there was a handler at all.
+    ///
+    /// Bounded by [`EXIT_TIMEOUT`]: the work runs on its own thread, and a
+    /// firmware that does not answer is left behind rather than holding the
+    /// daemon's exit - and the fans' hand-back after it - hostage.
     pub fn on_exit(&self, machine_stopping: bool) {
+        let module = self.clone();
+        let (done, finished) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("pyren-rgb-exit".into())
+            .spawn(move || {
+                module.exit_now(machine_stopping);
+                let _ = done.send(());
+            });
+        match spawned {
+            Ok(_) => {
+                if finished.recv_timeout(EXIT_TIMEOUT).is_err() {
+                    log_warn!(
+                        "the lights did not settle within {} s of shutdown; leaving them",
+                        EXIT_TIMEOUT.as_secs()
+                    );
+                }
+            }
+            Err(e) => log_warn!("could not tidy the lights on exit: {e}"),
+        }
+    }
+
+    fn exit_now(&self, machine_stopping: bool) {
+        let hw = self.hw();
         let animate = lock(&self.state).config.power_animation;
         if machine_stopping && animate {
-            if let Err(e) = self.power_off() {
+            if let Err(e) = self.power_off_locked(&hw) {
                 log_warn!("could not play the power-off sweep: {e}");
             }
             return;
@@ -561,7 +667,7 @@ impl RgbModule {
             (state.config.zones.clone(), state.config.brightness)
         };
         if let Some(dialect) = self.chosen_dialect(&self.current_probe()) {
-            if let Err(e) = dialect.write_colors(&zones, brightness) {
+            if let Err(e) = dialect.write_colors(&zones, brightness, self.policy()) {
                 log_warn!("could not put the static colours back: {e}");
             }
         }
@@ -579,11 +685,13 @@ impl RgbModule {
                 return Ok(self.status());
             }
         }
+        let hw = self.hw();
         if on {
-            self.power_on()?;
+            self.power_on_locked(&hw)?;
         } else {
-            self.power_off()?;
+            self.power_off_locked(&hw)?;
         }
+        drop(hw);
         Ok(self.status())
     }
 
@@ -659,6 +767,31 @@ impl RgbModule {
         Ok(self.status())
     }
 
+    /// The truncated four-zone setting. Re-probes, because whether
+    /// `fourZone` is available depends on it, and restarts a running effect
+    /// so its writer follows the new setting from the next frame.
+    fn set_allow_truncated_four_zone(&self, enabled: bool) -> ModuleResult {
+        let hw = self.hw();
+        let effect = {
+            let mut state = lock(&self.state);
+            state.config.allow_truncated_four_zone = enabled;
+            persist(&self.store, &mut state);
+            state.config.effect.clone()
+        };
+        self.reprobe();
+        let running = lock_animator(&self.animator).is_running();
+        if let (true, Some(effect)) = (running, effect) {
+            // Whatever the outcome, the setting is saved: a restart that
+            // fails here is the setting doing its job, and leaves the reason
+            // in `error`.
+            if self.start_effect_locked(&hw, effect).is_err() {
+                lock_animator(&self.animator).stop();
+            }
+        }
+        drop(hw);
+        Ok(self.status())
+    }
+
     fn set_power_animation(&self, enabled: bool) -> ModuleResult {
         let mut state = lock(&self.state);
         state.config.power_animation = enabled;
@@ -669,6 +802,7 @@ impl RgbModule {
 
     fn set_effect(&self, effect: Effect, brightness: Option<u8>, fps: Option<u8>) -> ModuleResult {
         let effect = effect.normalised();
+        let hw = self.hw();
         {
             let mut state = lock(&self.state);
             if let Some(b) = brightness {
@@ -678,11 +812,12 @@ impl RgbModule {
                 state.config.fps = f;
             }
         }
-        self.start_effect(effect.clone())?;
+        self.start_effect_locked(&hw, effect.clone())?;
         let mut state = lock(&self.state);
         state.config.effect = Some(effect);
         persist(&self.store, &mut state);
         drop(state);
+        drop(hw);
         Ok(self.status())
     }
 
@@ -709,12 +844,15 @@ impl RgbModule {
     /// has gone away answers with that error rather than quietly becoming
     /// a static keyboard.
     fn set_brightness(&self, brightness: u8) -> ModuleResult {
+        let hw = self.hw();
         let (effect, zones) = {
             let state = lock(&self.state);
             (state.config.effect.clone(), state.config.zones.clone())
         };
         let Some(effect) = effect else {
-            return self.apply(zones, brightness);
+            self.apply_locked(&hw, zones, brightness)?;
+            drop(hw);
+            return Ok(self.status());
         };
 
         let animator = lock_animator(&self.animator);
@@ -732,8 +870,9 @@ impl RgbModule {
             persist(&self.store, &mut state);
         }
         if !moving {
-            self.start_effect(effect)?;
+            self.start_effect_locked(&hw, effect)?;
         }
+        drop(hw);
         Ok(self.status())
     }
 
@@ -852,7 +991,11 @@ impl Module for RgbModule {
                 let dialect = self
                     .chosen_dialect(&probe)
                     .ok_or(ModuleError::Unsupported)?;
+                // Under the writer lock: an effect's next frame must not
+                // land between this read's write and read halves.
+                let hw = self.hw();
                 let colors = dialect.read_colors().map_err(dialect_error)?;
+                drop(hw);
                 Ok(json!({ "zones": colors, "dialect": dialect.id() }))
             }
 
@@ -955,6 +1098,16 @@ impl Module for RgbModule {
                 self.set_power_animation(enabled)
             }
 
+            "setAllowTruncatedFourZone" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
+                self.set_allow_truncated_four_zone(enabled)
+            }
+
             "setBrightness" => {
                 let brightness = params
                     .get("brightness")
@@ -991,6 +1144,10 @@ fn dialect_error(e: DialectError) -> ModuleError {
         // worth trying another before believing it about the hardware.
         DialectError::Refused(_) | DialectError::ReturnCode(_) => ErrorKind::NotCapable,
         DialectError::Unreadable(_) => ErrorKind::Failed,
+        // Refused on this side, not the firmware's: a truncated buffer, an
+        // unknown shape, a device owned by an unexpected driver. Often
+        // fixable (another dialect, a kernel module), so not `notCapable`.
+        DialectError::Unsafe(_) => ErrorKind::Failed,
     };
     ModuleError::localised(kind, e.to_msg())
 }
@@ -1009,7 +1166,7 @@ fn lock(state: &Arc<Mutex<State>>) -> std::sync::MutexGuard<'_, State> {
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn throttle_reason(state: &State) -> Option<&'static str> {
+fn throttle_reason(state: &State, active: Option<Dialect>) -> Option<&'static str> {
     // First, because it outranks both: at zero nothing is drawn at all,
     // whatever the lid and the charger are doing.
     if state.config.brightness == 0 {
@@ -1018,9 +1175,32 @@ fn throttle_reason(state: &State) -> Option<&'static str> {
         Some("lid")
     } else if state.conditions.on_battery && state.config.battery_fps < state.config.fps {
         Some("battery")
+    } else if active.is_some_and(|d| d.max_fps() < state.config.fps) {
+        Some("dialect")
     } else {
         None
     }
+}
+
+/// The frames a second an effect actually gets: the rate asked for, under
+/// the active dialect's cap and the battery setting, and none at all with
+/// the lid shut or the brightness at zero. Mirrors what [`Animator`] does
+/// with the same numbers.
+fn effective_fps(state: &State, active: Option<Dialect>) -> u8 {
+    if state.config.brightness == 0 || state.conditions.lid_closed {
+        return 0;
+    }
+    let mut fps = state.config.fps;
+    if let Some(dialect) = active {
+        fps = fps.min(dialect.max_fps());
+    }
+    if state.conditions.on_battery {
+        if state.config.battery_fps == 0 {
+            return 0;
+        }
+        fps = fps.min(state.config.battery_fps);
+    }
+    fps
 }
 
 fn zones_array(zones: &[Rgb]) -> [Rgb; ZONES] {
@@ -1056,20 +1236,34 @@ pub(crate) mod testenv {
 
     static LOCK: Mutex<()> = Mutex::new(());
 
-    /// Holds the lock, and puts the variable back the way it was.
+    /// Holds the lock, and puts the variables back the way they were.
     pub(crate) struct AcpiEnv {
         // A test that panicked while holding the lock has already failed;
         // the next one still needs the redirection to work.
         _guard: MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
-        redirected: bool,
+        /// Each variable this guard set, with what it held before.
+        restore: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl AcpiEnv {
+        fn set(&mut self, name: &'static str, value: &Path) {
+            self.restore.push((name, std::env::var_os(name)));
+            std::env::set_var(name, value);
+        }
     }
 
     /// Points `acpi_call` at `path` for as long as the guard lives.
     pub(crate) fn redirect(path: &Path) -> AcpiEnv {
         let mut env = real();
-        std::env::set_var("PYREN_ACPI_CALL", path);
-        env.redirected = true;
+        env.set("PYREN_ACPI_CALL", path);
+        env
+    }
+
+    /// Points `acpi_call` at `acpi` and the kernel's zone files at `zones`:
+    /// a whole machine of fixtures, for a test that drives the module.
+    pub(crate) fn fixture(acpi: &Path, zones: &Path) -> AcpiEnv {
+        let mut env = redirect(acpi);
+        env.set("PYREN_RGB_ZONES_DIR", zones);
         env
     }
 
@@ -1080,19 +1274,25 @@ pub(crate) mod testenv {
         let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         AcpiEnv {
             _guard: guard,
-            previous: std::env::var_os("PYREN_ACPI_CALL"),
-            redirected: false,
+            restore: Vec::new(),
+        }
+    }
+
+    /// A directory of four zone files, all black.
+    pub(crate) fn zone_files(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("a temp dir is writable");
+        for zone in 0..crate::ZONES {
+            std::fs::write(dir.join(format!("zone{zone:02}")), "000000").unwrap();
         }
     }
 
     impl Drop for AcpiEnv {
         fn drop(&mut self) {
-            if !self.redirected {
-                return;
-            }
-            match self.previous.take() {
-                Some(previous) => std::env::set_var("PYREN_ACPI_CALL", previous),
-                None => std::env::remove_var("PYREN_ACPI_CALL"),
+            for (name, previous) in self.restore.drain(..).rev() {
+                match previous {
+                    Some(previous) => std::env::set_var(name, previous),
+                    None => std::env::remove_var(name),
+                }
             }
         }
     }
@@ -1302,7 +1502,13 @@ mod tests {
     fn the_status_says_why_an_effect_is_held_back() {
         let _acpi = crate::testenv::real();
         let module = module();
-        assert_eq!(module.status()["throttled"], Value::Null);
+        // Null, or "dialect" on a machine whose lights answer an
+        // unprivileged read and cap the default rate.
+        let unthrottled = module.status()["throttled"].clone();
+        assert!(
+            unthrottled.is_null() || unthrottled == "dialect",
+            "{unthrottled}"
+        );
         module.set_conditions(Conditions {
             on_battery: true,
             lid_closed: false,
@@ -1322,7 +1528,121 @@ mod tests {
             "the lid wins: nothing is written"
         );
         module.set_conditions(Conditions::default());
-        assert_eq!(module.status()["throttled"], Value::Null);
+        assert_eq!(module.status()["throttled"], unthrottled);
+    }
+
+    /// Every path that touches the lights waits for the writer lock: while
+    /// something holds it, none of them writes a byte.
+    #[test]
+    fn every_hardware_path_waits_for_the_writer_lock() {
+        let dir = std::env::temp_dir().join(format!("pyren-rgb-hw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let zones = dir.join("rgb_zones");
+        crate::testenv::zone_files(&zones);
+        let _env = crate::testenv::fixture(&dir.join("no-acpi-call/call"), &zones);
+        let module = RgbModule::with_store(ConfigStore::at(dir.join("config")));
+        assert_eq!(module.status()["activeDialect"], "kernelZones");
+
+        let zone0 = || std::fs::read_to_string(zones.join("zone00")).unwrap();
+        for (method, params) in [
+            ("setZones", json!({ "zones": ["#112233"] })),
+            ("setStatic", json!({ "color": "#445566" })),
+            ("powerOff", json!({})),
+            ("powerOn", json!({})),
+            ("readZones", json!({})),
+            ("setEffect", json!({ "effect": { "kind": "spectrum" } })),
+            ("setBrightness", json!({ "brightness": 50 })),
+            ("setAllowTruncatedFourZone", json!({ "enabled": false })),
+            ("off", json!({})),
+        ] {
+            let before = zone0();
+            let held = module.hw();
+            let worker = {
+                let module = module.clone();
+                std::thread::spawn(move || module.call(method, params))
+            };
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            assert!(
+                !worker.is_finished(),
+                "{method} ran while the writer lock was held"
+            );
+            // A running effect's own frames are not a hardware path of a
+            // call: they are the thread the call would stop.
+            if !module.status()["effectRunning"].as_bool().unwrap() {
+                assert_eq!(
+                    zone0(),
+                    before,
+                    "{method} wrote while the writer lock was held"
+                );
+            }
+            drop(held);
+            worker
+                .join()
+                .unwrap()
+                .unwrap_or_else(|e| panic!("{method}: {e}"));
+        }
+        drop(module);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The setting is saved, reported, and refuses a non-boolean.
+    #[test]
+    fn the_truncated_four_zone_setting_is_on_by_default_and_saved() {
+        let dir = std::env::temp_dir().join(format!("pyren-rgb-trunc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _acpi = crate::testenv::redirect(&dir.join("no-acpi-call/call"));
+        let module = RgbModule::with_store(ConfigStore::at(&dir));
+        assert_eq!(module.status()["allowTruncatedFourZone"], true);
+
+        let err = module
+            .call("setAllowTruncatedFourZone", json!({ "enabled": "no" }))
+            .unwrap_err();
+        assert_eq!(err.kind(), pyren_core::ErrorKind::InvalidParams);
+
+        let status = module
+            .call("setAllowTruncatedFourZone", json!({ "enabled": false }))
+            .expect("a setting");
+        assert_eq!(status["allowTruncatedFourZone"], false);
+        let stored = ConfigStore::at(&dir).load::<RgbConfig>("rgb").value;
+        assert!(!stored.allow_truncated_four_zone);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What an effect actually gets, reported beside what was asked.
+    #[test]
+    fn the_effective_frame_rate_follows_the_dialect_battery_and_lid() {
+        let _acpi = crate::testenv::real();
+        let module = module();
+        let state = lock(&module.state);
+        let mut copy = State {
+            config: state.config.clone(),
+            conditions: Conditions::default(),
+            owned: false,
+            dark: false,
+            last_error: None,
+            last_save_error: None,
+        };
+        drop(state);
+        copy.config.fps = 30;
+        assert_eq!(effective_fps(&copy, None), 30);
+        assert_eq!(
+            effective_fps(&copy, Some(Dialect::FourZone)),
+            dialect::MAX_FPS_WMI
+        );
+        assert_eq!(
+            effective_fps(&copy, Some(Dialect::KernelZones)),
+            dialect::MAX_FPS_KERNEL_ZONES
+        );
+        copy.conditions.on_battery = true;
+        copy.config.battery_fps = 10;
+        assert_eq!(effective_fps(&copy, Some(Dialect::FourZone)), 10);
+        copy.config.battery_fps = 0;
+        assert_eq!(effective_fps(&copy, Some(Dialect::FourZone)), 0);
+        copy.conditions = Conditions {
+            on_battery: false,
+            lid_closed: true,
+        };
+        assert_eq!(effective_fps(&copy, None), 0);
     }
 
     /// A sweep is the most expensive second the lights have, and it lands

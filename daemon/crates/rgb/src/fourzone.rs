@@ -17,7 +17,8 @@
 //!              3         FOURZONE_COLOR_SET   in 128, out 128
 //!
 //! the 128-byte state buffer
-//!   0..25    unknown, and preserved - see below
+//!   0        unknown, and preserved
+//!   1..25    zero on every machine seen, and checked
 //!   25..28   zone 0 R,G,B
 //!   28..31   zone 1
 //!   31..34   zone 2
@@ -25,34 +26,53 @@
 //!   37..128  unknown, and preserved
 //! ```
 //!
-//! ## A write is a read, then a write
+//! ## Layouts are data
 //!
-//! Both reference drivers do a `COLOR_GET` first and patch twelve bytes of
-//! what comes back, and this does the same. The buffer holds fields
-//! nobody has identified - the comment in the 2023 patch is literally
-//! *"Zones start at offset 25. Wonder what's in the rest of the buffer?"* -
-//! so sending a freshly zeroed one would be writing zero to every setting
-//! nobody has named yet. Read, patch, write back.
+//! That table is one [`Layout`], and everything that reads or writes the
+//! buffer goes through a layout: how long the buffer is, where each zone
+//! sits, and which bytes are known to be zero. A machine with a longer
+//! buffer or more zones is supported by adding a layout to [`LAYOUTS`] -
+//! the length check, the shape check and the patching all follow from it,
+//! so a new layout gets every guard below without anyone re-writing them.
+//! A layout is never guessed: a reply that matches none is refused.
 //!
-//! ## `acpi_call` cuts the reply short, and that is survivable
+//! ## A write is a read, then a write - and only a *whole* read
 //!
-//! `acpi_call` renders a buffer reply as the text `{0x50, 0x41, …}` into a
-//! fixed result buffer of a few hundred bytes, so a 128-byte answer comes
-//! back as roughly the first **34** bytes and no more. That is enough for
-//! three of the four zones and not the fourth.
+//! Both reference drivers do a `COLOR_GET` first and patch the colour
+//! bytes into what comes back, and this does the same. The buffer holds
+//! fields nobody has identified - the comment in the 2023 patch is
+//! literally *"Zones start at offset 25. Wonder what's in the rest of the
+//! buffer?"* - so what is sent back must be exactly what was read, with
+//! only the colours changed.
 //!
-//! Failing the whole read over it would be wrong twice: the dialect
-//! plainly works - the bytes that do arrive are this keyboard's actual
-//! colours - and refusing here makes auto-selection fall through to a
-//! dialect that answers `PASS` and does nothing. So a short reply is read
-//! for what it contains, and the zones past the end come back black.
+//! **That is only fully possible when the whole buffer was read.**
+//! `acpi_call` renders a buffer reply as `{0x50, 0x41, …}` into a fixed
+//! result buffer, so a 128-byte answer arrives as 34 bytes. So there are
+//! exactly two lengths a write can start from, and every other one is
+//! refused ([`DialectError::Unsafe`]):
 //!
-//! A write pads the unseen tail with zeros, which is the one place this
-//! module writes a byte nobody has seen. It is bounded: everything visible
-//! before the colours is zero apart from `state[0]`, so the tail being
-//! zeros as well is the reading the evidence supports. The way out of
-//! guessing entirely is the `kernelZones` dialect, which has no such
-//! limit - see [`crate::kernel_zones`].
+//! - [`Layout::state_len`], the whole buffer: the strict path, always
+//!   allowed. Every byte sent back is a byte that was read.
+//! - [`Layout::truncated_len`], the length `acpi_call` is known to cut this
+//!   layout's reply to: allowed only while the user setting
+//!   `allowTruncatedFourZone` is on (it is by default - it is how the OMEN
+//!   16 this project runs on gets its colours). The bytes past the cut
+//!   **cannot** be known, and go out as zero; see [`Layout::truncated_len`].
+//!
+//! Both paths still need the known-zero bytes that *were* read to be zero,
+//! still patch only the colour bytes, and still run under every other
+//! guard: the one writer lock, the shared `acpi_call` lock, the call
+//! deadline and the frame-rate caps.
+//!
+//! The shape check is also what catches a reply that is not ours. The
+//! `acpi_call` file is global, and a program that ignores the shared lock
+//! can have its answer read by us; that answer does not look like this
+//! buffer, and so it is never written back to the firmware as lighting
+//! state.
+//!
+//! On a machine where `acpi_call` truncates, reads still work - they are
+//! harmless - and the way to drive the lights is the `kernelZones`
+//! dialect, which has no such limit: see [`crate::kernel_zones`].
 //!
 //! ## Brightness is not in here
 //!
@@ -63,10 +83,13 @@
 //! dialect rather than working on one and silently doing nothing on
 //! another.
 
-use pyren_core::acpi;
+use std::ops::Range;
+
+use pyren_core::{acpi, msg};
 
 use crate::color::Rgb;
 use crate::dialect::DialectError;
+use crate::reply;
 
 /// `HPWMI_FOURZONE` - the lighting command.
 pub const COMMAND: u32 = 0x0002_0009;
@@ -81,90 +104,272 @@ pub const COLOR_SET: u32 = 3;
 /// four-zone colours do.
 pub const PLATFORM_INFO: u32 = 1;
 
-/// The state buffer both command types take and return.
+/// The state buffer both command types take and return, on
+/// [`HP_FOURZONE_128`].
 pub const STATE_LEN: usize = 128;
 
 /// Where zone 0's red byte lives in that buffer.
 pub const ZONE_OFFSET: usize = 25;
 
-/// Reads the 128-byte state buffer.
-pub fn read_state() -> Result<Vec<u8>, DialectError> {
-    let reply = acpi::wmi_call(COMMAND, COLOR_GET, &[0u8; STATE_LEN], STATE_LEN, STATE_LEN)?;
-    payload(&reply)
+/// One firmware's four-zone buffer, described rather than hard-coded.
+/// See the module docs.
+#[derive(Debug)]
+pub struct Layout {
+    /// A name for errors and logs.
+    pub id: &'static str,
+    pub command: u32,
+    pub get: u32,
+    pub set: u32,
+    /// The whole buffer. A read of exactly this many data bytes can always
+    /// be written back.
+    pub state_len: usize,
+    /// The one shorter length a read of this layout is known to arrive at,
+    /// where `acpi_call` cuts it, and that a write may start from when the
+    /// user allows it. `None` for a layout never seen truncated.
+    ///
+    /// **What that costs is not hidden:** the firmware is sent
+    /// `state_len` bytes and only `truncated_len` of them were read, so the
+    /// rest go out as zero. On [`HP_FOURZONE_128`] every byte that *can* be
+    /// seen before the colours is zero apart from byte 0, which is the
+    /// best evidence there is that zero is what the tail holds - but it is
+    /// evidence, not a reading. Declare this only for a length measured on
+    /// real hardware.
+    pub truncated_len: Option<usize>,
+    /// Where each zone's red byte is; green and blue follow it.
+    pub zones: &'static [usize],
+    /// Bytes that are zero in every valid read. A read where they are not
+    /// is not this layout, and is never written back.
+    pub zero: &'static [Range<usize>],
 }
 
-/// How many zones a reply this long actually carries.
+/// The layout both reference drivers use. See the table in the module docs.
+// One known-zero range, deliberately a slice of ranges: a layout may have
+// several.
+#[allow(clippy::single_range_in_vec_init)]
+pub const HP_FOURZONE_128: Layout = Layout {
+    id: "hp-fourzone-128",
+    command: COMMAND,
+    get: COLOR_GET,
+    set: COLOR_SET,
+    state_len: STATE_LEN,
+    // Measured on an OMEN 16, three runs: 42 bytes of reply, less the
+    // 8-byte PASS header.
+    truncated_len: Some(34),
+    zones: &[25, 28, 31, 34],
+    zero: &[1..25],
+};
+
+/// Every layout this build knows, tried in order. Add one here and it is
+/// probed, validated and written with the same guards.
+pub const LAYOUTS: &[Layout] = &[HP_FOURZONE_128];
+
+impl Layout {
+    /// How many zones a reply this long actually carries.
+    pub fn zones_in(&self, len: usize) -> usize {
+        self.zones.iter().take_while(|&&at| at + 3 <= len).count()
+    }
+
+    /// The first known-zero byte that is not zero, among the bytes present.
+    fn misshapen(&self, state: &[u8]) -> Option<(usize, u8)> {
+        self.zero
+            .iter()
+            .flat_map(|range| range.start.min(state.len())..range.end.min(state.len()))
+            .find(|&at| state[at] != 0)
+            .map(|at| (at, state[at]))
+    }
+
+    /// Whether `state` may be patched and sent back, and how: the whole
+    /// buffer, or - with `allow_truncated` - exactly [`Layout::truncated_len`]
+    /// of it. Either way in this layout's shape. The one gate every write
+    /// goes through.
+    pub fn check_writable(
+        &self,
+        state: &[u8],
+        allow_truncated: bool,
+    ) -> Result<WriteMode, DialectError> {
+        let mode = if state.len() == self.state_len {
+            WriteMode::Full
+        } else if Some(state.len()) == self.truncated_len {
+            if !allow_truncated {
+                return Err(DialectError::Unsafe(msg!(
+                    "rgb.dialect.fourZone.truncatedOff",
+                    { "got" => state.len(), "need" => self.state_len, "layout" => self.id },
+                    "the firmware's reply was cut short to {got} of {need} bytes ({layout}), \
+                     and writing through a cut-short reply is turned off, so nothing was written"
+                )));
+            }
+            WriteMode::Truncated
+        } else {
+            return Err(DialectError::Unsafe(msg!(
+                "rgb.dialect.fourZone.length",
+                { "got" => state.len(), "need" => self.state_len, "layout" => self.id },
+                "the firmware's reply was {got} bytes, a length the {layout} layout does not \
+                 know (it needs {need}), so nothing was written"
+            )));
+        };
+        self.check_shape(state)?;
+        Ok(mode)
+    }
+
+    fn check_shape(&self, state: &[u8]) -> Result<(), DialectError> {
+        match self.misshapen(state) {
+            None => Ok(()),
+            Some((at, value)) => Err(DialectError::Unsafe(msg!(
+                "rgb.dialect.fourZone.shape",
+                { "layout" => self.id, "at" => at, "value" => value },
+                "the firmware's reply does not have the {layout} layout's shape (byte {at} is \
+                 {value} where it should be 0), so nothing was written"
+            ))),
+        }
+    }
+
+    /// The zones present in `state`, in order.
+    pub fn colors(&self, state: &[u8]) -> Vec<Rgb> {
+        self.zones[..self.zones_in(state.len())]
+            .iter()
+            .map(|&at| Rgb::new(state[at], state[at + 1], state[at + 2]))
+            .collect()
+    }
+
+    /// Writes `colors` into their zones. Past this layout's zones they are
+    /// dropped; short of them the rest keep what was read.
+    fn patch(&self, state: &mut [u8], colors: &[Rgb]) {
+        for (&at, color) in self.zones.iter().zip(colors) {
+            if at + 3 <= state.len() {
+                state[at] = color.r;
+                state[at + 1] = color.g;
+                state[at + 2] = color.b;
+            }
+        }
+    }
+
+    fn read(&self) -> Result<Vec<u8>, DialectError> {
+        let reply = acpi::wmi_call(
+            self.command,
+            self.get,
+            &vec![0u8; self.state_len],
+            self.state_len,
+            self.state_len,
+        )?;
+        reply::payload(&reply)
+    }
+
+    /// Checks, patches and sends. `state` is what was read, and is checked
+    /// again here anyway, because this is the last line before the firmware.
+    /// A truncated `state` is extended to `state_len` with zeros in a copy
+    /// (see [`Layout::truncated_len`]), so the colours past the cut - zone 3
+    /// on the OMEN 16 - are still written.
+    fn send(
+        &self,
+        state: &[u8],
+        colors: &[Rgb],
+        allow_truncated: bool,
+    ) -> Result<(), DialectError> {
+        self.check_writable(state, allow_truncated)?;
+        let mut buffer = state.to_vec();
+        buffer.resize(self.state_len, 0);
+        self.patch(&mut buffer, colors);
+        let reply = acpi::wmi_call(
+            self.command,
+            self.set,
+            &buffer,
+            self.state_len,
+            self.state_len,
+        )?;
+        reply::payload(&reply).map(|_| ())
+    }
+}
+
+/// How a write went out. Reported by the probe and the status, so a UI can
+/// say when writes are running on a cut-short read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode {
+    /// Every byte sent back was read.
+    Full,
+    /// Read at [`Layout::truncated_len`]; the tail went out as zero.
+    Truncated,
+}
+
+impl WriteMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Truncated => "truncated",
+        }
+    }
+}
+
+/// Reads the state buffer in the first layout's size. What diagnostics
+/// dump; nothing that writes uses it.
+pub fn read_state() -> Result<Vec<u8>, DialectError> {
+    LAYOUTS[0].read()
+}
+
+/// How many zones a reply this long carries, on [`HP_FOURZONE_128`].
 ///
 /// **A full four never arrive through `acpi_call`.** Its result buffer is
 /// 256 characters and it prints each byte as `0x00, ` - six characters -
 /// so a reply is capped at 42 bytes however much the firmware sent. Eight
-/// of those are the `PASS` header [`payload`] strips, leaving 34, and
-/// zone 3 lives at bytes 34..37. It is one byte past the end, on every
-/// machine, for good.
-///
-/// Measured on an OMEN 16 across three runs: `COLOR_GET` came back 34
-/// bytes each time, and a `lightbar` read - which keeps its header - came
-/// back 42, which is the cap itself.
-///
-/// Writing is unaffected: [`send`] patches all four zone slots into the
-/// buffer it sends, and only the read is short. So zone 3 can be set and
-/// cannot be read back, which is an awkward thing to be true but is what
-/// is true.
+/// of those are the `PASS` header, leaving 34, and zone 3 lives at bytes
+/// 34..37. Measured on an OMEN 16 across three runs.
 pub fn zones_in(state: &[u8]) -> usize {
-    (state.len().saturating_sub(ZONE_OFFSET) / 3).min(crate::ZONES)
+    HP_FOURZONE_128.zones_in(state.len())
 }
 
 /// The zones this dialect can actually read - **not always four**.
 ///
-/// Short by design rather than padded: the previous version filled the
-/// zones the reply did not reach with [`Rgb::BLACK`], which made a
-/// truncated read indistinguishable from a keyboard whose last zone is
-/// genuinely off. Every `rgb.readZones` on the test laptop reported zone
-/// 4 as `#000000`, and the hardware had nothing to do with it. A caller
-/// that gets three colours knows it got three; one that got four black
-/// ones was told a fact that was not checked.
-///
-/// See [`zones_in`] for why the number is three on an `acpi_call` machine.
+/// Short by design rather than padded: a truncated read reports the zones
+/// it reached, so it is never mistaken for a keyboard whose last zone is
+/// off. The reply must still have a known layout's shape.
 pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
-    let state = read_state()?;
-    // Not reaching the first zone is a reply that says nothing at all
-    // about the lights, and that *is* a failure.
-    let reached = zones_in(&state);
-    if reached == 0 {
-        return Err(DialectError::Unreadable(format!(
-            "the reply is {} bytes and the first zone starts at {ZONE_OFFSET}",
-            state.len()
-        )));
+    let mut last = None;
+    for layout in LAYOUTS {
+        let state = layout.read()?;
+        if layout.zones_in(state.len()) == 0 {
+            last = Some(DialectError::Unreadable(format!(
+                "the reply is {} bytes and the {} layout's first zone starts at {}",
+                state.len(),
+                layout.id,
+                layout.zones[0]
+            )));
+            continue;
+        }
+        match layout.check_shape(&state) {
+            Ok(()) => return Ok(layout.colors(&state)),
+            Err(e) => last = Some(e),
+        }
     }
-    Ok((0..reached)
-        .map(|zone| {
-            let at = ZONE_OFFSET + zone * 3;
-            let c = &state[at..at + 3];
-            Rgb::new(c[0], c[1], c[2])
-        })
-        .collect())
+    Err(last.unwrap_or_else(|| DialectError::Unreadable("no four-zone layout is known".into())))
 }
 
-pub fn write_colors(colors: &[Rgb]) -> Result<(), DialectError> {
-    // The read half of read-modify-write. Everything outside the twelve
-    // colour bytes is somebody else's setting - so what is read is kept,
-    // and only what `acpi_call` truncated away is padded with zeros.
-    let mut state = read_state()?;
-    state.resize(STATE_LEN, 0);
-    send(&mut state, colors)
+/// A buffer a write may start from, the layout it matched and how it may
+/// be written - or why there is none. What every write starts from, and
+/// what the probe asks: this dialect is only available where it can be
+/// written under the current setting.
+pub fn writable_state(
+    allow_truncated: bool,
+) -> Result<(&'static Layout, Vec<u8>, WriteMode), DialectError> {
+    let mut last = None;
+    for layout in LAYOUTS {
+        let state = layout.read()?;
+        match layout.check_writable(&state, allow_truncated) {
+            Ok(mode) => return Ok((layout, state, mode)),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| DialectError::Unreadable("no four-zone layout is known".into())))
 }
 
-/// Patches the colours into `state` and sends it.
-fn send(state: &mut [u8], colors: &[Rgb]) -> Result<(), DialectError> {
-    for (zone, color) in colors.iter().take(crate::ZONES).enumerate() {
-        let at = ZONE_OFFSET + zone * 3;
-        state[at] = color.r;
-        state[at + 1] = color.g;
-        state[at + 2] = color.b;
-    }
+/// The probe: the colours from a read that a write could follow, and how
+/// that write would go out.
+pub fn probe_colors(allow_truncated: bool) -> Result<(Vec<Rgb>, WriteMode), DialectError> {
+    let (layout, state, mode) = writable_state(allow_truncated)?;
+    Ok((layout.colors(&state), mode))
+}
 
-    let reply = acpi::wmi_call(COMMAND, COLOR_SET, state, STATE_LEN, STATE_LEN)?;
-    payload(&reply).map(|_| ())
+pub fn write_colors(colors: &[Rgb], allow_truncated: bool) -> Result<(), DialectError> {
+    let (layout, state, _) = writable_state(allow_truncated)?;
+    layout.send(&state, colors, allow_truncated)
 }
 
 /// How long an animation trusts the buffer it read before reading it again.
@@ -180,32 +385,35 @@ const REFRESH: std::time::Duration = std::time::Duration::from_secs(10);
 ///
 /// [`write_colors`] reads before every write, and the read is 80 % of the
 /// cost - 2.3 ms against 0.7 ms for the set (`dev/FINDINGS.md`, "Lighting
-/// effects"). At 30 frames a second that is the difference between 8 % and
-/// 2 % of the time spent in the firmware, so an animation keeps the buffer
-/// and only patches the colours into it.
+/// effects"). So an animation keeps the buffer and only patches the colours
+/// into it - a buffer that passed the same checks a single write does, and
+/// passes them again at every refresh.
 pub struct FrameWriter {
+    layout: &'static Layout,
     state: Vec<u8>,
+    allow_truncated: bool,
     read_at: std::time::Instant,
 }
 
 impl FrameWriter {
-    pub fn new() -> Result<Self, DialectError> {
-        let mut state = read_state()?;
-        state.resize(STATE_LEN, 0);
+    pub fn new(allow_truncated: bool) -> Result<Self, DialectError> {
+        let (layout, state, _) = writable_state(allow_truncated)?;
         Ok(Self {
+            layout,
             state,
+            allow_truncated,
             read_at: std::time::Instant::now(),
         })
     }
 
     pub fn write(&mut self, colors: &[Rgb]) -> Result<(), DialectError> {
         if self.read_at.elapsed() >= REFRESH {
-            let mut state = read_state()?;
-            state.resize(STATE_LEN, 0);
+            let state = self.layout.read()?;
+            self.layout.check_writable(&state, self.allow_truncated)?;
             self.state = state;
             self.read_at = std::time::Instant::now();
         }
-        send(&mut self.state, colors)
+        self.layout.send(&self.state, colors, self.allow_truncated)
     }
 }
 
@@ -217,28 +425,7 @@ impl FrameWriter {
 /// "it has one, and this is not a four-zone keyboard".
 pub fn platform_info() -> Result<Vec<u8>, DialectError> {
     let reply = acpi::wmi_call(COMMAND, PLATFORM_INFO, &[0u8; 4], 4, STATE_LEN)?;
-    payload(&reply)
-}
-
-/// The data behind a reply, once the firmware has said it worked.
-///
-/// The frame is the kernel's `struct bios_return`: four bytes of signature
-/// echo - `PASS` when it worked - then a little-endian return code, then
-/// the data. A non-zero return code with a `PASS` in front of it is still
-/// a refusal, and is reported with the code, because the codes are
-/// documented and each sends you somewhere different:
-/// `3` unknown command, `4` unknown command type, `5` bad parameters.
-fn payload(reply: &str) -> Result<Vec<u8>, DialectError> {
-    let bytes =
-        acpi::parse_bytes(reply).ok_or_else(|| DialectError::Refused(reply.trim().to_string()))?;
-    if bytes.len() < 8 || &bytes[0..4] != b"PASS" {
-        return Err(DialectError::Refused(reply.trim().to_string()));
-    }
-    let code = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    if code != 0 {
-        return Err(DialectError::ReturnCode(code));
-    }
-    Ok(bytes[8..].to_vec())
+    reply::payload(&reply)
 }
 
 #[cfg(test)]
@@ -250,11 +437,18 @@ mod tests {
         acpi::parse_bytes(request).expect("the request must be plain hex")
     }
 
-    /// The bug this fixes: `acpi_call` caps a reply at 42 bytes, of which
-    /// `payload` strips 8, and zone 3 starts at byte 34 of what is left.
-    /// The old reader padded what it could not reach with black, so every
-    /// read on the test laptop reported a fourth zone that was switched
-    /// off - and no such reading had been taken.
+    /// A whole buffer in the shape of the 128-byte layout, zones lit.
+    fn whole() -> Vec<u8> {
+        let mut state = vec![0u8; STATE_LEN];
+        state[0] = 0x03;
+        for (i, at) in [25usize, 28, 31, 34].into_iter().enumerate() {
+            state[at..at + 3].copy_from_slice(&[i as u8 + 1, 0x40, 0x80]);
+        }
+        // The tail is unknown, not zero: it must survive a patch as read.
+        state[100] = 0xaa;
+        state
+    }
+
     #[test]
     fn a_truncated_reply_reports_the_zones_it_reached_and_no_more() {
         // 34 bytes: what an OMEN 16 actually returns, measured.
@@ -263,20 +457,126 @@ mod tests {
             3,
             "zone 3 starts one byte past the end"
         );
-        // A whole buffer, for the machine or the acpi_call that one day
-        // hands one over.
         assert_eq!(zones_in(&[0u8; STATE_LEN]), crate::ZONES);
-        // Past four zones the extra bytes are somebody else's fields.
         assert_eq!(zones_in(&[0u8; STATE_LEN * 2]), crate::ZONES);
-        // Short of the first zone there is nothing to report at all, which
-        // `read_colors` turns into a failure rather than an empty answer.
         assert_eq!(zones_in(&[0u8; ZONE_OFFSET]), 0);
         assert_eq!(zones_in(&[]), 0);
     }
 
-    /// The header is what no test on hardware could isolate: a wrong
-    /// command id is refused exactly the same way a machine without the
-    /// hardware refuses, so it has to be pinned here.
+    /// The guard this module exists for: nothing short of the whole buffer
+    /// is ever sent back, and nothing is padded.
+    #[test]
+    fn only_a_whole_buffer_in_the_right_shape_may_be_written() {
+        let layout = &HP_FOURZONE_128;
+        for allow in [true, false] {
+            assert_eq!(
+                layout.check_writable(&whole(), allow).unwrap(),
+                WriteMode::Full
+            );
+
+            for wrong in [33usize, 35, 127, 129, 0] {
+                let mut state = whole();
+                state.resize(wrong, 0);
+                match layout.check_writable(&state, allow) {
+                    Err(DialectError::Unsafe(m)) => {
+                        assert_eq!(m.key, "rgb.dialect.fourZone.length", "{wrong} bytes")
+                    }
+                    other => panic!("{wrong} bytes must be refused, got {other:?}"),
+                }
+            }
+
+            let mut foreign = whole();
+            foreign[5] = 0x50; // somebody else's reply, or a firmware we have not seen
+            match layout.check_writable(&foreign, allow) {
+                Err(DialectError::Unsafe(m)) => assert_eq!(m.key, "rgb.dialect.fourZone.shape"),
+                other => panic!("expected a shape refusal, got {other:?}"),
+            }
+        }
+    }
+
+    /// The opt-in: the one declared truncated length, and only while it is
+    /// allowed - and never past the shape check.
+    #[test]
+    fn a_truncated_read_is_written_only_while_allowed() {
+        let layout = &HP_FOURZONE_128;
+        let mut cut = whole();
+        cut.truncate(34);
+        assert_eq!(
+            layout.check_writable(&cut, true).unwrap(),
+            WriteMode::Truncated
+        );
+        match layout.check_writable(&cut, false) {
+            Err(DialectError::Unsafe(m)) => assert_eq!(m.key, "rgb.dialect.fourZone.truncatedOff"),
+            other => panic!("expected a refusal with the setting off, got {other:?}"),
+        }
+        cut[3] = 1;
+        assert!(
+            matches!(
+                layout.check_writable(&cut, true),
+                Err(DialectError::Unsafe(_))
+            ),
+            "the setting does not waive the shape check"
+        );
+    }
+
+    /// Patching changes the colour bytes and nothing else.
+    #[test]
+    fn a_patch_touches_only_the_colour_bytes() {
+        let layout = &HP_FOURZONE_128;
+        let before = whole();
+        let mut after = before.clone();
+        let colors = [Rgb::new(9, 8, 7); 4];
+        layout.patch(&mut after, &colors);
+        for (at, (old, new)) in before.iter().zip(&after).enumerate() {
+            let in_zone = layout.zones.iter().any(|&z| (z..z + 3).contains(&at));
+            if !in_zone {
+                assert_eq!(old, new, "byte {at} is not a colour and must not change");
+            }
+        }
+        assert_eq!(layout.colors(&after), colors.to_vec());
+
+        // Fewer colours than zones: the rest keep what was read.
+        let mut partial = before.clone();
+        layout.patch(&mut partial, &[Rgb::new(1, 1, 1)]);
+        assert_eq!(&partial[28..37], &before[28..37]);
+    }
+
+    /// Every declared layout has to be internally consistent, or a new one
+    /// could put a colour on top of a byte it also declares zero.
+    #[test]
+    fn every_layout_is_self_consistent() {
+        for layout in LAYOUTS {
+            assert!(!layout.zones.is_empty(), "{}", layout.id);
+            assert!(layout.zones.len() >= crate::ZONES, "{}", layout.id);
+            for &at in layout.zones {
+                assert!(at + 3 <= layout.state_len, "{}: zone at {at}", layout.id);
+                for range in layout.zero {
+                    assert!(
+                        at + 3 <= range.start || at >= range.end,
+                        "{}: zone at {at} overlaps a known-zero range",
+                        layout.id
+                    );
+                }
+            }
+            for pair in layout.zones.windows(2) {
+                assert!(pair[1] >= pair[0] + 3, "{}: zones overlap", layout.id);
+            }
+            for range in layout.zero {
+                assert!(range.end <= layout.state_len, "{}", layout.id);
+            }
+            if let Some(cut) = layout.truncated_len {
+                assert!(cut < layout.state_len, "{}: a cut is shorter", layout.id);
+                let first = layout.zones[0];
+                assert!(
+                    first + 3 <= cut,
+                    "{}: a cut reaching no zone is no read",
+                    layout.id
+                );
+            }
+        }
+    }
+
+    /// The header is what no test on hardware could isolate.
     #[test]
     fn the_header_carries_the_command_the_reference_drivers_send() {
         let request = bytes_of(&acpi::wmi_request(
@@ -295,8 +595,6 @@ mod tests {
         assert_eq!(request.len(), 16 + STATE_LEN);
     }
 
-    /// 128 bytes back means method 3. Method 1 - what a write expecting
-    /// nothing would use - is a different request to the firmware.
     #[test]
     fn a_state_sized_answer_asks_for_method_three() {
         assert_eq!(acpi::method_for_outsize(STATE_LEN), 3);
@@ -306,40 +604,8 @@ mod tests {
 
     #[test]
     fn the_four_zones_land_where_both_reference_drivers_read_them() {
-        for (zone, expected) in [(0usize, 25usize), (1, 28), (2, 31), (3, 34)] {
-            assert_eq!(ZONE_OFFSET + zone * 3, expected);
-        }
-    }
-
-    /// `PASS` and a zero return code, or it did not work. The three codes
-    /// below are the documented ones and each has to survive as a code
-    /// rather than becoming a generic refusal.
-    #[test]
-    fn a_pass_with_a_return_code_is_still_a_refusal() {
-        let ok = "{0x50, 0x41, 0x53, 0x53, 0x00, 0x00, 0x00, 0x00, 0xff, 0x99, 0x00}";
-        assert_eq!(payload(ok).unwrap(), vec![0xff, 0x99, 0x00]);
-
-        for (code, hex) in [(3u32, "03"), (4, "04"), (5, "05")] {
-            let reply = format!("0x5041535{}{}000000", "3", hex);
-            let _ = reply; // shape below is the one acpi_call actually emits
-            let bad = format!("{{0x50, 0x41, 0x53, 0x53, 0x{hex}, 0x00, 0x00, 0x00}}");
-            match payload(&bad) {
-                Err(DialectError::ReturnCode(got)) => assert_eq!(got, code),
-                other => panic!("expected return code {code}, got {other:?}"),
-            }
-        }
-
-        for bad in [
-            "",
-            "FAIL",
-            "{0x46, 0x41, 0x49, 0x4c}",
-            "Error: AE_NOT_FOUND",
-        ] {
-            assert!(
-                matches!(payload(bad), Err(DialectError::Refused(_))),
-                "{bad:?}"
-            );
-        }
+        assert_eq!(HP_FOURZONE_128.zones, &[25, 28, 31, 34]);
+        assert_eq!(HP_FOURZONE_128.zones[0], ZONE_OFFSET);
     }
 }
 
@@ -348,11 +614,6 @@ mod wire_tests {
     use super::*;
 
     /// What actually goes down the wire for a read, byte for byte.
-    ///
-    /// Written after a machine whose firmware answers this exact request
-    /// from a shell - `PASS`, return code 0, 128 bytes of state - handed
-    /// this daemon an empty reply for what was meant to be the same call.
-    /// If those two ever diverge again, the divergence is here.
     #[test]
     fn a_read_puts_exactly_this_on_the_wire() {
         let dir = std::env::temp_dir().join(format!("pyren-wire-{}", std::process::id()));
@@ -376,6 +637,135 @@ mod wire_tests {
         );
         assert_eq!(written, expected);
     }
+
+    /// A plain file echoes the request back, which is no reply at all: a
+    /// write must stop at the read and send nothing.
+    #[test]
+    fn a_write_after_a_bad_read_sends_nothing() {
+        let dir = std::env::temp_dir().join(format!("pyren-wire-set-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir is writable");
+        let path = dir.join("call");
+
+        let written = {
+            let _acpi = crate::testenv::redirect(&path);
+            assert!(write_colors(&[Rgb::new(255, 0, 0); 4], true).is_err());
+            std::fs::read_to_string(&path).expect("the read was written")
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            written.contains("b5345435509000200020000"),
+            "only the GET went out"
+        );
+        assert!(
+            !written.contains("b5345435509000200030000"),
+            "no SET went out"
+        );
+    }
+
+    /// A fake firmware: a FIFO the test answers, recording each request.
+    /// Every call is one request followed by one reply.
+    fn fake_firmware(
+        replies: Vec<String>,
+    ) -> (std::path::PathBuf, std::thread::JoinHandle<Vec<String>>) {
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-fake-fw-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("call");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let served = fifo.clone();
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for reply in replies {
+                requests.push(std::fs::read_to_string(&served).unwrap());
+                std::fs::write(&served, reply).unwrap();
+            }
+            requests
+        });
+        (fifo, handle)
+    }
+
+    fn pass_with(data: &[u8]) -> String {
+        let mut bytes = b"PASS\0\0\0\0".to_vec();
+        bytes.extend_from_slice(data);
+        let hex: Vec<String> = bytes.iter().map(|b| format!("0x{b:02x}")).collect();
+        format!("{{{}}}", hex.join(", "))
+    }
+
+    fn truncated_state() -> Vec<u8> {
+        let mut state = vec![0u8; 34];
+        state[0] = 3;
+        state[25..34].copy_from_slice(&[0x0f, 0x84, 0xfa, 0x71, 0x0f, 0xfa, 0xf9, 0x35, 0x0f]);
+        state
+    }
+
+    /// Setting on, the reply the OMEN 16 gives: the SET goes out, with
+    /// the read bytes kept, the colours patched - zone 3 included - and
+    /// the unread tail zero.
+    #[test]
+    fn with_the_setting_on_a_truncated_read_is_written() {
+        let (fifo, fw) = fake_firmware(vec![pass_with(&truncated_state()), pass_with(&[])]);
+        let red = Rgb::new(0xff, 0, 0);
+        write_at(&fifo, &[red; 4], true).expect("allowed");
+        let requests = fw.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        let set = acpi::parse_bytes(requests[1].rsplit(' ').next().unwrap()).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(set[8..12].try_into().unwrap()),
+            COLOR_SET
+        );
+        let body = &set[16..];
+        assert_eq!(body.len(), STATE_LEN);
+        assert_eq!(body[0], 3, "a byte that was read goes back as read");
+        for at in [25usize, 28, 31, 34] {
+            assert_eq!(&body[at..at + 3], &[0xff, 0, 0], "zone at {at}");
+        }
+        assert!(
+            body[37..].iter().all(|&b| b == 0),
+            "the unread tail is zero"
+        );
+    }
+
+    /// Setting off: the read happens, the write does not.
+    #[test]
+    fn with_the_setting_off_a_truncated_read_is_refused() {
+        let (fifo, fw) = fake_firmware(vec![pass_with(&truncated_state())]);
+        let refused = write_at(&fifo, &[Rgb::BLACK; 4], false);
+        assert!(
+            matches!(refused, Err(DialectError::Unsafe(_))),
+            "{refused:?}"
+        );
+        assert_eq!(fw.join().unwrap().len(), 1, "only the GET went out");
+    }
+
+    /// Any other length, whatever the setting.
+    #[test]
+    fn a_read_of_any_other_length_is_refused_either_way() {
+        for allow in [true, false] {
+            let mut state = truncated_state();
+            state.push(0);
+            let (fifo, fw) = fake_firmware(vec![pass_with(&state)]);
+            assert!(matches!(
+                write_at(&fifo, &[Rgb::BLACK; 4], allow),
+                Err(DialectError::Unsafe(_))
+            ));
+            assert_eq!(fw.join().unwrap().len(), 1, "only the GET went out");
+        }
+    }
+
+    /// [`write_colors`] against an explicit interface path.
+    fn write_at(path: &std::path::Path, colors: &[Rgb], allow: bool) -> Result<(), DialectError> {
+        let _acpi = crate::testenv::redirect(path);
+        write_colors(colors, allow)
+    }
 }
 
 #[cfg(test)]
@@ -390,39 +780,49 @@ mod truncation_tests {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
         0x00, 0x0f, 0x84, 0xfa, 0x71, 0x0f, 0xfa, 0xf9, 0x35, 0x0f,";
 
-    /// Reading three zones out of a cut-short reply beats failing on all
-    /// four: failing sends auto-selection to a dialect that answers `PASS`
-    /// and leaves the lights exactly as they were.
+    /// Reading three zones out of a cut-short reply is still fine: a read
+    /// changes nothing.
     #[test]
     fn a_reply_that_stops_short_still_yields_the_zones_it_reached() {
-        let state = payload(TRUNCATED).expect("PASS with a zero return code");
-        assert_eq!(
-            state.len(),
-            34,
-            "this is what acpi_call's buffer allows through"
+        let state = reply::payload(TRUNCATED).expect("PASS with a zero return code");
+        assert_eq!(state.len(), 34);
+        let layout = &HP_FOURZONE_128;
+        assert!(
+            layout.check_shape(&state).is_ok(),
+            "the bytes present have the shape"
         );
-
-        let zones: Vec<Rgb> = (0..crate::ZONES)
-            .map(|zone| {
-                let at = ZONE_OFFSET + zone * 3;
-                state
-                    .get(at..at + 3)
-                    .map_or(Rgb::BLACK, |c| Rgb::new(c[0], c[1], c[2]))
-            })
-            .collect();
-
-        assert_eq!(zones[0], Rgb::new(0x0f, 0x84, 0xfa));
-        assert_eq!(zones[1], Rgb::new(0x71, 0x0f, 0xfa));
-        assert_eq!(zones[2], Rgb::new(0xf9, 0x35, 0x0f));
-        assert_eq!(zones[3], Rgb::BLACK, "past the end of what arrived");
+        assert_eq!(
+            layout.colors(&state),
+            vec![
+                Rgb::new(0x0f, 0x84, 0xfa),
+                Rgb::new(0x71, 0x0f, 0xfa),
+                Rgb::new(0xf9, 0x35, 0x0f),
+            ]
+        );
     }
 
-    /// A reply that does not even reach the first zone says nothing about
-    /// the lights, and must not be read as four black zones.
+    /// And writing through it follows the setting: the real reply is the
+    /// declared truncated length, in the layout's shape.
+    #[test]
+    fn the_same_reply_is_written_back_only_while_allowed() {
+        let state = reply::payload(TRUNCATED).unwrap();
+        assert_eq!(
+            HP_FOURZONE_128.check_writable(&state, true).unwrap(),
+            WriteMode::Truncated
+        );
+        match HP_FOURZONE_128.check_writable(&state, false) {
+            Err(DialectError::Unsafe(m)) => {
+                assert_eq!(m.key, "rgb.dialect.fourZone.truncatedOff");
+                assert!(m.text.contains("34"), "{}", m.text);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
     #[test]
     fn a_reply_that_reaches_no_zone_at_all_is_a_failure() {
         let stub = "{0x50, 0x41, 0x53, 0x53, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00}";
-        let state = payload(stub).expect("PASS");
-        assert!(state.len() < ZONE_OFFSET + 3);
+        let state = reply::payload(stub).expect("PASS");
+        assert_eq!(HP_FOURZONE_128.zones_in(state.len()), 0);
     }
 }

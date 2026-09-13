@@ -28,6 +28,14 @@ POWERCAP="/sys/class/powercap"
 # fixtures, the way PYREN_HWMON_DIR does for the fan ones. Same names as
 # the Rust version, so the parity test can drive both.
 ACPI_CALL="${PYREN_ACPI_CALL:-/proc/acpi/call}"
+# The advisory lock the daemon takes around every write/read pair on
+# acpi_call (pyren_core::acpi::LOCK_PATH). A redirected interface gets a
+# sibling lock file, as it does on the Rust side.
+if [ -n "${PYREN_ACPI_CALL:-}" ]; then
+	ACPI_LOCK="$ACPI_CALL.lock"
+else
+	ACPI_LOCK="/run/lock/pyren-acpi-call.lock"
+fi
 USB_DEVICES="${PYREN_USB_DEVICES:-/sys/bus/usb/devices}"
 ALLOW_WRITES=0
 AS_JSON=0
@@ -114,21 +122,30 @@ microwatts() {
 	fi
 }
 
-# Whether an acpi_call reply is the firmware's "PASS". Mirrors
-# pyren_rgb::lightbar::is_success: the four bytes may come back as one hex
-# blob, as a {0x50, 0x41, ...} list, or as the letters themselves.
+# Whether an acpi_call reply is the firmware's "PASS" with a zero return
+# code. Mirrors pyren_rgb::reply::checked: "PASS" at the very start, then
+# four zero bytes - a PASS anywhere else, or one followed by a code, is a
+# refusal.
 is_acpi_pass() {
 	[ -n "$1" ] || return 1
-	upper="$(printf '%s' "$1" | tr 'a-f' 'A-F')"
-	case "$upper" in
-	*50415353* | *PASS*) return 0 ;;
-	esac
-	# {0x50, 0x41, 0x53, 0x53} -> 50415353
-	packed="$(printf '%s' "$upper" | tr -d '{}, \t' | sed 's/0X//g')"
-	case "$packed" in
-	50415353*) return 0 ;;
+	case "$(acpi_hex "$1")" in
+	5041535300000000*) return 0 ;;
 	esac
 	return 1
+}
+
+# One write/read pair on acpi_call, under the same lock the daemon takes.
+# Without flock, or without a lock file this run may open, it goes ahead
+# unlocked - the same best effort as the daemon.
+acpi_call_ask() {
+	(
+		if command -v flock >/dev/null 2>&1 &&
+			{ [ -w "$ACPI_LOCK" ] || { [ ! -e "$ACPI_LOCK" ] && [ -w "$(dirname "$ACPI_LOCK")" ]; }; }; then
+			exec 9>>"$ACPI_LOCK"
+			flock -w 5 9 || exit 1
+		fi
+		printf '%s' "$1" >"$ACPI_CALL" && tr -d '\000' <"$ACPI_CALL"
+	)
 }
 
 # An acpi_call reply as one lowercase hex string. Mirrors
@@ -497,12 +514,7 @@ if [ -e "$ACPI_CALL" ]; then
 	# Modern ("CleanCreek"): byte 8 of the data past the 8-byte reply
 	# header is the capability bitmask - bit 0 the CPU fan, bit 1 the GPU
 	# fan, bit 2 a third. So byte 16 of the whole reply.
-	if reply="$(
-		{
-			printf '%s' "\\_SB.WMID.WMAA 0 3 $CLEANER_MODERN_GET" >"$ACPI_CALL" &&
-				tr -d '\000' <"$ACPI_CALL"
-		} 2>/dev/null
-	)"; then
+	if reply="$(acpi_call_ask "\\_SB.WMID.WMAA 0 3 $CLEANER_MODERN_GET" 2>/dev/null)"; then
 		hex="$(acpi_hex "$reply")"
 		code="$(hex_byte "$hex" 4)"
 		mask="$(hex_byte "$hex" 16)"
@@ -516,12 +528,7 @@ if [ -e "$ACPI_CALL" ]; then
 
 	# Legacy: bit 5 of the first data byte, i.e. byte 8 of the reply.
 	if [ "$CLEANER" -eq 0 ] && [ "$CLEANER_UNREACHABLE" -eq 0 ]; then
-		if reply="$(
-			{
-				printf '%s' "\\_SB.WMID.WMAA 0 2 $CLEANER_LEGACY_GET" >"$ACPI_CALL" &&
-					tr -d '\000' <"$ACPI_CALL"
-			} 2>/dev/null
-		)"; then
+		if reply="$(acpi_call_ask "\\_SB.WMID.WMAA 0 2 $CLEANER_LEGACY_GET" 2>/dev/null)"; then
 			hex="$(acpi_hex "$reply")"
 			code="$(hex_byte "$hex" 4)"
 			flags="$(hex_byte "$hex" 8)"
@@ -723,9 +730,34 @@ fi
 wmi_skip_reason() {
 	if [ ! -d "$HP_WMI_DIR" ]; then
 		echo "no hp-wmi interface on this machine"
+	elif ! is_hp_vendor; then
+		echo "this machine does not report HP as its maker, so no HP firmware command is sent"
 	elif [ ! -e "$ACPI_CALL" ]; then
 		echo "/proc/acpi/call is not there, so the firmware cannot be asked"
 	fi
+}
+
+# Mirrors pyren_rgb::lightbar::is_hp.
+is_hp_vendor() {
+	_vendor="$(read_value /sys/class/dmi/id/sys_vendor 2>/dev/null || echo '')"
+	case "$_vendor" in
+	HP | "HP "* | Hewlett*) return 0 ;;
+	esac
+	return 1
+}
+
+# Mirrors pyren_rgb::fourzone::HP_FOURZONE_128.check_writable with the
+# daemon's default settings: the data after the 8-byte header is exactly
+# 128 bytes, or exactly the 34 acpi_call cuts it to (writes through a
+# cut-short reply are allowed by default), and bytes 1..25 are zero.
+# fourZone only counts as answering where a write could follow.
+is_fourzone_writable() {
+	_data="$(acpi_hex "$1" | cut -c 17-)"
+	[ "${#_data}" -eq 256 ] || [ "${#_data}" -eq 68 ] || return 1
+	case "$(printf '%s' "$_data" | cut -c 3-50)" in
+	*[!0]*) return 1 ;;
+	esac
+	return 0
 }
 
 DRIVEN=""
@@ -747,22 +779,28 @@ fi
 probe_wmi_dialect() {
 	_id="$1"
 	_buffer="$2"
+	# The lightbar's read is upstream's alone, so it is only sent when
+	# nothing earlier answered - as the daemon does.
+	if [ "$_id" = lightbar ] && [ -n "$DRIVEN" ]; then
+		record skip "lighting-$_id" "Lighting dialect: $_id" \
+			"not asked: another protocol already answered, and this one's read is not confirmed by any published driver"
+		return
+	fi
 	_skip="$(wmi_skip_reason)"
 	if [ -n "$_skip" ]; then
 		record skip "lighting-$_id" "Lighting dialect: $_id" "$_skip"
 		return
 	fi
-	# stderr is redirected for the whole group, not per command: a failed
-	# *redirection* is reported by the shell before the command's own
+	# stderr is redirected for the whole call, not per command inside it: a
+	# failed *redirection* is reported by the shell before a command's own
 	# 2>/dev/null would apply, so a non-root run would print a raw
 	# "Permission denied" over this tool's output.
-	if _reply="$(
-		{
-			printf '%s' "\\_SB.WMID.WMAA 0 3 $_buffer" >"$ACPI_CALL" &&
-				tr -d '\000' <"$ACPI_CALL"
-		} 2>/dev/null
-	)"; then
-		if is_acpi_pass "$_reply"; then
+	if _reply="$(acpi_call_ask "\\_SB.WMID.WMAA 0 3 $_buffer" 2>/dev/null)"; then
+		if is_acpi_pass "$_reply" && [ "$_id" = fourZone ] && ! is_fourzone_writable "$_reply"; then
+			record warn "lighting-$_id" "Lighting dialect: $_id" \
+				"the firmware's reply has a length or shape no known four-zone layout has, so it cannot be written back safely" \
+				"This is one of several ways of talking to these lights; the others are checked separately. 'pyren-ctl rgb dialect <id>' forces one by hand."
+		elif is_acpi_pass "$_reply"; then
 			record pass "lighting-$_id" "Lighting dialect: $_id" \
 				"answered a read of all four zones"
 			DRIVEN="${DRIVEN:-$_id}"

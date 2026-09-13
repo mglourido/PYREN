@@ -369,6 +369,7 @@ mod tests {
                 } else {
                     "skipped: nothing to ask through".into()
                 },
+                write_mode: None,
             })
             .collect();
         Probe {

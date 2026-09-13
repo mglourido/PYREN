@@ -499,6 +499,15 @@
     }
   }
 
+  async function setAllowTruncatedFourZone(enabled: boolean) {
+    try {
+      status = await daemon.setRgbAllowTruncatedFourZone(enabled);
+      error = null;
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
   async function setRestoreOnStart(enabled: boolean) {
     try {
       status = await daemon.setRgbRestoreOnStart(enabled);
@@ -563,6 +572,8 @@
           ? t("lighting.throttledBatteryPaused")
           : t("lighting.throttledBattery", { fps: status.batteryFps })}
       </p>
+    {:else if mode === "effect" && status?.throttled === "dialect"}
+      <p class="notice">{t("lighting.throttledDialect", { fps: status.effectiveFps })}</p>
     {/if}
 
     {#if loaded && unavailable}
@@ -901,6 +912,23 @@
         />
       </div>
 
+      {#if dialects.some((d) => d.id === "fourZone" && d.asked)}
+        <!-- Only where the four-zone protocol was actually asked: nowhere
+             else does the setting change anything. -->
+        <div class="setting">
+          <span class="label">
+            {t("lighting.allowTruncatedFourZone")}
+            <InfoTip>{t("lighting.allowTruncatedFourZoneHint")}</InfoTip>
+          </span>
+          <Toggle
+            checked={status?.allowTruncatedFourZone ?? true}
+            disabled={telemetry.demo || busy}
+            onchange={(v) => void setAllowTruncatedFourZone(v)}
+            ariaLabel={t("lighting.allowTruncatedFourZone")}
+          />
+        </div>
+      {/if}
+
       <div class="setting">
         <span class="label">
           {t("lighting.powerAnimation")}
@@ -976,11 +1004,15 @@
         </div>
       </div>
 
-      {#if readBack?.dialect === "fourZone"}
+      {#if readBack?.dialect === "fourZone" && readBack.zones.length < 4}
         <!-- Live on this project's own laptop, and worth a sentence rather
-             than a mystery: the colour written to zone 4 is real, it just
-             cannot be read back. -->
+             than a mystery: three swatches, because zone 4 cannot be read
+             back through a cut-short reply. -->
         <p class="notice warn">{t("lighting.zoneFourUnreadable")}</p>
+      {/if}
+
+      {#if status?.writeMode === "truncated"}
+        <p class="notice warn">{t("lighting.truncatedWrites")}</p>
       {/if}
 
       {#if perKey?.present}

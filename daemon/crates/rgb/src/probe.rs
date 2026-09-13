@@ -14,7 +14,7 @@
 use pyren_core::Msg;
 use serde::Serialize;
 
-use crate::dialect::{self, Dialect, DialectProbe};
+use crate::dialect::{self, Dialect, DialectProbe, Policy};
 use crate::{fourzone, lightbar};
 
 /// The HP Gaming Keyboard II's lighting interface, as `lsusb` prints it.
@@ -27,7 +27,7 @@ const USB_DEVICES: &str = "/sys/bus/usb/devices";
 /// does for the fan checks. Without it the per-key probe can only ever be
 /// tested on a machine that has the keyboard, which is no machine here.
 fn usb_devices_root() -> String {
-    std::env::var("PYREN_USB_DEVICES").unwrap_or_else(|_| USB_DEVICES.to_string())
+    pyren_core::acpi::test_override("PYREN_USB_DEVICES").unwrap_or_else(|| USB_DEVICES.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,8 +100,15 @@ pub struct Lighting {
 }
 
 pub fn probe() -> Probe {
+    probe_with(None, Policy::default())
+}
+
+/// [`probe`], knowing which dialect - if any - the user pinned. That
+/// decides whether the lightbar's unconfirmed read is sent when an earlier
+/// dialect already answered; see [`crate::dialect`].
+pub fn probe_with(pinned: Option<Dialect>, policy: Policy) -> Probe {
     let per_key = probe_per_key();
-    let lighting = probe_lighting();
+    let lighting = probe_lighting(pinned, policy);
     Probe {
         supported: lighting.present,
         per_key,
@@ -160,7 +167,7 @@ impl Lighting {
     }
 }
 
-fn probe_lighting() -> Lighting {
+fn probe_lighting(pinned: Option<Dialect>, policy: Policy) -> Lighting {
     let Interfaces {
         hp_wmi,
         acpi_call,
@@ -171,12 +178,25 @@ fn probe_lighting() -> Lighting {
     // dialect missing from the list would be indistinguishable from a
     // dialect that failed, and the whole point of the list is that a
     // person can see which of them was even asked.
-    let dialects: Vec<DialectProbe> = dialect::ORDER.into_iter().map(Dialect::probe).collect();
+    let mut dialects: Vec<DialectProbe> = Vec::with_capacity(dialect::ORDER.len());
+    for d in dialect::ORDER {
+        let answered = dialects.iter().any(|p| p.available);
+        if d == Dialect::Lightbar && answered && pinned != Some(Dialect::Lightbar) {
+            dialects.push(d.not_asked(pyren_core::msg!(
+                "rgb.dialect.skipped.lightbar",
+                "not asked: another protocol already answered, and this one's read is not \
+                 confirmed by any published driver"
+            )));
+            continue;
+        }
+        dialects.push(d.probe(policy));
+    }
     let present = dialects.iter().any(|d| d.available);
 
     // Asked only when it can be, and only once: it is one ACPI round trip
     // and it answers a question none of the dialect probes do.
-    let command_answers = (hp_wmi && acpi_call).then(|| fourzone::platform_info().is_ok());
+    let command_answers =
+        (hp_wmi && acpi_call && lightbar::is_hp()).then(|| fourzone::platform_info().is_ok());
 
     // "Nothing could be asked" is not "the firmware said no". A dialect
     // whose interfaces are here and which still could not put the question
@@ -311,6 +331,47 @@ mod tests {
         // Asks the real machine, so nothing may redirect it meanwhile.
         let _acpi = crate::testenv::real();
         assert_eq!(probe().lighting.interfaces(), interfaces());
+    }
+
+    /// The lightbar's read is upstream's alone: once another dialect has
+    /// answered it is not sent at all - unless the lightbar is the dialect
+    /// somebody pinned, which is the one case its answer is needed.
+    #[test]
+    fn the_lightbar_is_not_asked_once_another_dialect_answered() {
+        let dir = std::env::temp_dir().join(format!("pyren-probe-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let zones = dir.join("rgb_zones");
+        crate::testenv::zone_files(&zones);
+        let acpi = dir.join("acpi_call");
+        std::fs::write(&acpi, "").unwrap();
+        let _env = crate::testenv::fixture(&acpi, &zones);
+
+        let find = |p: &Probe, id: &str| {
+            p.lighting
+                .dialects
+                .iter()
+                .find(|d| d.id == id)
+                .cloned()
+                .unwrap()
+        };
+        let auto = probe_with(None, Policy::default());
+        assert!(find(&auto, "kernelZones").available);
+        let lightbar = find(&auto, "lightbar");
+        assert!(!lightbar.asked && !lightbar.available);
+        assert_eq!(lightbar.detail.key, "rgb.dialect.skipped.lightbar");
+        let sent = std::fs::read_to_string(&acpi).unwrap_or_default();
+        assert!(
+            !sent.contains("b53454355080002000400"),
+            "no lightbar read reached acpi_call: {sent}"
+        );
+
+        let pinned = probe_with(Some(Dialect::Lightbar), Policy::default());
+        assert_ne!(
+            find(&pinned, "lightbar").detail.key,
+            "rgb.dialect.skipped.lightbar",
+            "a pinned lightbar is asked (or says why it could not be)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The distinction the `detail` text exists for: "not installed",
