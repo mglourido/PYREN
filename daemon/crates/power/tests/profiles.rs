@@ -93,6 +93,16 @@ impl Machine {
                 &format!("cpu/cpu{cpu}/cpufreq/scaling_governor"),
                 "powersave",
             );
+            // What makes the hint mean what it says: an EPP driver, and the
+            // list of values it takes.
+            machine.write(
+                &format!("cpu/cpu{cpu}/cpufreq/scaling_driver"),
+                "intel_pstate",
+            );
+            machine.write(
+                &format!("cpu/cpu{cpu}/cpufreq/energy_performance_available_preferences"),
+                "default performance balance_performance balance_power power",
+            );
         }
         // `intel_pstate/no_turbo`, whose polarity is inverted: 1 is off.
         machine.write("cpu/intel_pstate/no_turbo", "0");
@@ -117,6 +127,14 @@ impl Machine {
         machine.write_os_profile("balanced");
         machine.install_profiles_service();
         machine.apply_env();
+        // Most of this file is about the OS half, which ships switched off.
+        // A user who turned it on, then, as a config file rather than a
+        // call: `setApplyToOsProfile` would re-apply a mode, and put
+        // requests in the logs the tests count.
+        machine
+            .store()
+            .save("power", &json!({ "applyToOsProfile": true }))
+            .expect("fixture config");
         machine
     }
 
@@ -305,6 +323,9 @@ impl Machine {
         std::env::set_var("PYREN_CPU_ROOT", self.root.join("cpu"));
         std::env::set_var("PYREN_POWERCAP", self.root.join("powercap"));
         std::env::set_var("PYREN_TOOLS_DIR", self.root.join("bin"));
+        // No power supply at all: a desktop, neither on battery nor off.
+        std::env::set_var("PYREN_POWER_SUPPLY", self.root.join("power_supply"));
+        std::env::set_var("PYREN_MSR_ROOT", self.root.join("msr"));
     }
 
     /// A config store inside the fixture, so the daemon's memory dies with
@@ -373,6 +394,8 @@ impl Drop for Machine {
             "PYREN_CPU_ROOT",
             "PYREN_POWERCAP",
             "PYREN_TOOLS_DIR",
+            "PYREN_POWER_SUPPLY",
+            "PYREN_MSR_ROOT",
         ] {
             std::env::remove_var(name);
         }
@@ -1962,4 +1985,254 @@ fn the_watcher_follows_the_machine_with_nobody_asking() {
         PowerMode::Balanced,
         "followed within a few seconds"
     );
+}
+
+// ---------------------------------------------------------------------
+// Guards: what the daemon checks before it touches anything
+// ---------------------------------------------------------------------
+
+/// The OS profile belongs to the power manager the user installed, so a
+/// fresh install moves only the laptop's own.
+#[test]
+fn a_fresh_install_leaves_the_os_profile_to_its_manager() {
+    let machine = Machine::new("os-profile-default");
+    std::fs::remove_file(machine.store().path_for("power")).expect("no config yet");
+
+    let daemon = machine.boot();
+    set(&daemon, PowerMode::Eco);
+
+    assert_eq!(machine.hardware_profile(), "low-power");
+    assert_eq!(machine.os_profile(), "balanced", "the manager's, untouched");
+    assert!(machine.os_profile_requests().is_empty());
+}
+
+/// Firmware that takes the write and keeps its old profile - HP does this
+/// with `performance` on battery on some boards. The mode did not happen,
+/// so the OS half that already moved is put back rather than left in a
+/// mode the firmware is not in, and `setMode` says it failed.
+#[test]
+fn a_firmware_that_does_not_take_its_profile_rolls_the_os_half_back() {
+    let machine = Machine::new("firmware-refuses");
+    let profile = machine.root.join("acpi/platform_profile");
+    std::fs::remove_file(&profile).expect("replace the firmware file");
+    // Accepts every write and never reads back what was written.
+    std::os::unix::fs::symlink("/dev/null", &profile).expect("a swallowing firmware");
+
+    let daemon = machine.boot();
+    let before = daemon.mode();
+    let limits = machine.limits();
+
+    let refused = daemon.call("setMode", json!({ "mode": "eco" }));
+    assert!(
+        refused.is_err(),
+        "a firmware that kept its profile is a failure"
+    );
+    assert_eq!(daemon.mode(), before, "the mode must not move");
+    assert_eq!(
+        machine.os_profile(),
+        "balanced",
+        "the OS profile went to power-saver and was put back"
+    );
+    assert_eq!(
+        machine.os_profile_requests(),
+        vec!["power-saver".to_string(), "balanced".to_string()]
+    );
+    assert_eq!(
+        machine.limits(),
+        limits,
+        "no envelope for a mode that did not happen"
+    );
+}
+
+/// A mode nobody tuned has no opinion about watts or turbo. Whatever the
+/// firmware or another tool put there stays - writing "stock" back over it
+/// on every mode change is this daemon overriding a choice it was never
+/// asked to make.
+#[test]
+fn an_untuned_mode_leaves_the_limits_and_turbo_to_whoever_set_them() {
+    let machine = Machine::new("untuned-envelope");
+    let daemon = machine.boot();
+    let theirs = Limits {
+        pl1_uw: Some(50 * W),
+        ..stock()
+    };
+    machine.write_limits(theirs);
+    machine.write("cpu/intel_pstate/no_turbo", "1");
+
+    for mode in PowerMode::ALL {
+        set(&daemon, *mode);
+        assert_eq!(machine.limits(), theirs, "{mode:?} wrote a limit");
+        assert!(!machine.turbo(), "{mode:?} turned turbo back on");
+    }
+}
+
+/// Leaving a tuned mode is the one time an untuned mode writes: its cap
+/// has to be lifted, once. After that the knobs are the firmware's again.
+#[test]
+fn leaving_a_tuned_mode_puts_stock_back_once_and_then_lets_go() {
+    let machine = Machine::new("tuned-then-untuned");
+    let daemon = machine.boot();
+    daemon
+        .call(
+            "setTuning",
+            json!({ "mode": "performance", "pl1W": 40.0, "turbo": false }),
+        )
+        .expect("setTuning");
+
+    set(&daemon, PowerMode::Performance);
+    assert!(machine.limits().pl1_uw.unwrap() < STOCK_PL1);
+    assert!(!machine.turbo());
+
+    set(&daemon, PowerMode::Balanced);
+    assert_eq!(machine.limits(), stock(), "Performance's cap was lifted");
+    assert!(machine.turbo(), "and its turbo choice with it");
+
+    let theirs = Limits {
+        pl1_uw: Some(50 * W),
+        ..stock()
+    };
+    machine.write_limits(theirs);
+    set(&daemon, PowerMode::Eco);
+    assert_eq!(machine.limits(), theirs, "nothing of pyren's left to undo");
+}
+
+/// A tuning request with anything the daemon does not understand is
+/// refused whole, not half-applied with the unknown part ignored.
+#[test]
+fn a_tuning_request_it_does_not_understand_changes_nothing() {
+    let machine = Machine::new("tuning-refusals");
+    let daemon = machine.boot();
+    let tuning = || daemon.call("getState", Value::Null).unwrap()["limits"]["tuning"].clone();
+    let untouched = tuning();
+
+    for params in [
+        json!({ "mode": "ludicrous", "pl1W": 40.0 }),
+        json!({ "pl1W": "40" }),
+        json!({ "turbo": "no" }),
+        json!({ "mode": "eco", "pl1W": 70.0, "pl2W": 30.0 }),
+    ] {
+        assert!(
+            daemon.call("setTuning", params.clone()).is_err(),
+            "{params} was accepted"
+        );
+        assert_eq!(tuning(), untouched, "{params} changed the tuning");
+    }
+    assert_eq!(machine.limits(), stock());
+}
+
+/// auto-cpufreq keeps pyren's `--force` in its own state. Switching the OS
+/// half off hands it back its own judgement instead of leaving the last
+/// mode forced there for good.
+#[test]
+fn switching_the_os_profile_off_takes_pyrens_override_out_of_auto_cpufreq() {
+    let machine = Machine::new("release-auto-cpufreq");
+    machine.install_auto_cpufreq();
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    set(&daemon, PowerMode::Eco);
+    assert_eq!(machine.read("acf_override").as_deref(), Some("powersave"));
+
+    daemon
+        .call("setApplyToOsProfile", json!({ "enabled": false }))
+        .expect("switching it off");
+    assert_eq!(
+        machine.read("acf_override"),
+        None,
+        "reset to auto-cpufreq's own"
+    );
+
+    set(&daemon, PowerMode::Eco);
+    daemon.on_exit();
+    assert_eq!(
+        machine.read("acf_override"),
+        None,
+        "and nothing forced again while the switch is off"
+    );
+}
+
+/// A config written by an older build or by hand never went through
+/// `setAutoConfig`'s checks. Crossed thresholds turn auto-switching off
+/// at boot rather than running a supervisor that flips modes forever.
+#[test]
+fn an_auto_config_with_crossed_thresholds_on_disk_is_not_run() {
+    let machine = Machine::new("crossed-auto-on-disk");
+    machine
+        .store()
+        .save(
+            "power",
+            &json!({
+                "applyToOsProfile": true,
+                "auto": { "enabled": true, "loadLow": 0.9, "loadHigh": 0.2 }
+            }),
+        )
+        .expect("fixture config");
+
+    let daemon = machine.boot();
+    let state = daemon.call("getState", Value::Null).unwrap();
+    assert_eq!(state["auto"]["enabled"], json!(false));
+}
+
+/// The CPU hint is only written where it means what it says. Under the
+/// performance governor intel_pstate pins it, and a write would succeed on
+/// some CPUs and fail on others.
+#[test]
+fn the_cpu_hint_is_not_written_where_the_cpu_would_not_keep_it() {
+    let machine = Machine::new("epp-guard");
+    machine.remove_tool("busctl");
+    for cpu in 0..4 {
+        machine.write(
+            &format!("cpu/cpu{cpu}/cpufreq/scaling_governor"),
+            "performance",
+        );
+    }
+    machine.apply_env();
+    let daemon = machine.boot();
+
+    let report = set(&daemon, PowerMode::Eco);
+    assert_eq!(
+        machine
+            .read("cpu/cpu2/cpufreq/energy_performance_preference")
+            .as_deref(),
+        Some("balance_performance")
+    );
+    let failed = report["failed"].to_string();
+    assert!(failed.contains("governor"), "{report}");
+    assert_eq!(
+        machine.hardware_profile(),
+        "low-power",
+        "the firmware half still moved"
+    );
+}
+
+/// Firmware that locked the package limits (the MSR lock bit, read only
+/// because `/dev/cpu/0/msr` is already there): tuning a limit is refused
+/// with a reason a UI can show, `getState` says so, and nothing is written.
+#[test]
+fn a_firmware_locked_envelope_is_refused_up_front_and_reported() {
+    let machine = Machine::new("rapl-locked");
+    let msr = machine.root.join("msr/0");
+    std::fs::create_dir_all(&msr).expect("msr dir");
+    let register = std::fs::File::create(msr.join("msr")).expect("msr file");
+    std::os::unix::fs::FileExt::write_all_at(&register, &(1u64 << 63).to_le_bytes(), 0x610)
+        .expect("lock bit");
+
+    let daemon = machine.boot();
+    let state = daemon.call("getState", Value::Null).unwrap();
+    assert_eq!(state["limits"]["locked"], json!("msr"));
+
+    let refused = daemon
+        .call("setTuning", json!({ "mode": "balanced", "pl1W": 40.0 }))
+        .expect_err("a locked limit cannot be tuned");
+    assert!(
+        format!("{refused:?}").contains("power.err.limitsLocked"),
+        "{refused:?}"
+    );
+    assert_eq!(machine.limits(), stock());
+
+    // Turbo is not behind that lock, and is still the user's to set.
+    daemon
+        .call("setTuning", json!({ "mode": "balanced", "turbo": false }))
+        .expect("turbo is not locked");
+    assert!(!machine.turbo());
 }

@@ -59,6 +59,7 @@
 //!   laptop running for an hour.
 
 use std::fs;
+use std::time::{Duration, Instant};
 
 use pyren_core::{msg, Msg};
 use serde::{Deserialize, Serialize};
@@ -107,7 +108,8 @@ pub struct AutoConfig {
     /// single threshold would step back up into the same wall.
     pub temp_low_c: f64,
     /// Consecutive agreeing samples required before a refinement happens.
-    /// Does not apply to a change of power source, which is immediate.
+    /// A change of power source has its own, shorter confirmation - see
+    /// [`SOURCE_SAMPLES_TO_SWITCH`].
     pub samples_to_switch: u32,
     pub interval_secs: u64,
     /// How long a manual mode change suspends refinement.
@@ -544,6 +546,25 @@ pub fn refine(
     None
 }
 
+/// Consecutive samples that must agree on a new power source before it is
+/// believed.
+///
+/// Two, not one: a worn USB-C cable or a PD negotiation that renegotiates
+/// flips `online` for a moment, and answering each flicker would switch
+/// the whole profile - processes started, limits written - every tick.
+/// Two samples still answers a real unplug within one interval.
+pub const SOURCE_SAMPLES_TO_SWITCH: u32 = 2;
+
+/// The least time between two mode switches caused by the power source.
+///
+/// The sample confirmation catches a flicker; this catches a cable that
+/// comes and goes for real, every few seconds, for minutes - a dock with a
+/// loose connector does exactly that. Each switch starts processes and
+/// writes limits, and a machine that changes profile every ten seconds is
+/// worse off than one that waits. The transition is not lost: it is applied
+/// as soon as the gap has passed, if the source is still the one confirmed.
+pub const TRANSITION_GAP: Duration = Duration::from_secs(30);
+
 /// Tracks the power source and how long a refinement has been the answer,
 /// so a switch only happens once conditions have held.
 #[derive(Debug, Default)]
@@ -551,6 +572,14 @@ pub struct AutoSwitcher {
     /// `None` until the first sample: the first tick after startup must not
     /// look like the user just plugged the machine in.
     last_on_battery: Option<bool>,
+    /// A power source differing from `last_on_battery`, and how many
+    /// samples in a row have reported it.
+    unconfirmed_source: Option<(bool, u32)>,
+    /// A confirmed power source whose transition has not been applied yet,
+    /// held back by [`TRANSITION_GAP`].
+    deferred_transition: Option<bool>,
+    /// When the last transition switch was handed out.
+    last_transition_at: Option<Instant>,
     pending: Option<(PowerMode, u32)>,
     heat: HeatLatch,
     /// The mode the user last picked by hand, which refinement works around
@@ -567,6 +596,18 @@ impl AutoSwitcher {
         config: &AutoConfig,
         current: PowerMode,
     ) -> Option<AutoDecision> {
+        self.observe_at(inputs, config, current, Instant::now())
+    }
+
+    /// [`Self::observe`] at a given moment, so the transition gap can be
+    /// tested without waiting it out.
+    pub fn observe_at(
+        &mut self,
+        inputs: AutoInputs,
+        config: &AutoConfig,
+        current: PowerMode,
+        now: Instant,
+    ) -> Option<AutoDecision> {
         // Updated on every tick, including the ones that return early:
         // the latch is about the machine, not about which branch this
         // sample took, and a transition must not leave it stale.
@@ -578,8 +619,32 @@ impl AutoSwitcher {
             return self.refinement(inputs, config, false, current);
         };
 
-        let previous = self.last_on_battery.replace(on_battery);
-        let source_changed = previous.is_some_and(|was| was != on_battery);
+        let source_changed = match self.last_on_battery {
+            None => {
+                self.last_on_battery = Some(on_battery);
+                false
+            }
+            Some(was) if was == on_battery => {
+                self.unconfirmed_source = None;
+                false
+            }
+            Some(_) => {
+                let seen = match self.unconfirmed_source {
+                    Some((source, seen)) if source == on_battery => seen + 1,
+                    _ => 1,
+                };
+                if seen < SOURCE_SAMPLES_TO_SWITCH {
+                    // Not believed yet, and not the old source either:
+                    // no refinement is judged against a power source that
+                    // may be a flicker.
+                    self.unconfirmed_source = Some((on_battery, seen));
+                    return None;
+                }
+                self.unconfirmed_source = None;
+                self.last_on_battery = Some(on_battery);
+                true
+            }
+        };
 
         if source_changed {
             // A choice made for the old power source is not one for the new
@@ -587,22 +652,37 @@ impl AutoSwitcher {
             // off, or the old choice would outlive the cable it was about.
             self.manual = None;
             self.pending = None;
+            // The newest confirmed source replaces any transition still
+            // waiting: only where the machine is now is worth switching for.
+            self.deferred_transition = system_enabled(on_battery, config).then_some(on_battery);
         }
 
-        if source_changed && system_enabled(on_battery, config) {
-            let mode = config.preferred(on_battery);
-            if mode != current {
-                return Some(AutoDecision {
-                    mode,
-                    reason: if on_battery {
-                        msg!("power.autoReason.toBattery", "switched to battery")
-                    } else {
-                        msg!("power.autoReason.pluggedIn", "plugged in")
-                    },
-                    from_transition: true,
-                });
+        if let Some(source) = self.deferred_transition {
+            let mode = config.preferred(source);
+            if source != on_battery || mode == current {
+                self.deferred_transition = None;
+                return None;
             }
-            return None;
+            let too_soon = self
+                .last_transition_at
+                .is_some_and(|at| now.saturating_duration_since(at) < TRANSITION_GAP);
+            if too_soon {
+                // Held, not dropped - and no refinement meanwhile, which
+                // would be judging the old source's mode by the new
+                // source's rules.
+                return None;
+            }
+            self.deferred_transition = None;
+            self.last_transition_at = Some(now);
+            return Some(AutoDecision {
+                mode,
+                reason: if source {
+                    msg!("power.autoReason.toBattery", "switched to battery")
+                } else {
+                    msg!("power.autoReason.pluggedIn", "plugged in")
+                },
+                from_transition: true,
+            });
         }
 
         self.refinement(inputs, config, on_battery, current)
@@ -782,12 +862,119 @@ mod tests {
         switcher
     }
 
+    /// Reports a new power source for as many samples as it takes to be
+    /// believed, insisting that every one before the last does nothing.
+    fn switched(
+        switcher: &mut AutoSwitcher,
+        sample: AutoInputs,
+        config: &AutoConfig,
+        current: PowerMode,
+    ) -> Option<AutoDecision> {
+        for _ in 1..SOURCE_SAMPLES_TO_SWITCH {
+            assert_eq!(
+                switcher.observe(sample, config, current),
+                None,
+                "one sample of a new power source is not believed yet"
+            );
+        }
+        switcher.observe(sample, config, current)
+    }
+
+    /// A cable that really does come and go - unplugged, plugged back in
+    /// half a minute is not up - switches once, then waits out the gap
+    /// before the second switch, and applies it then rather than losing it.
     #[test]
-    fn unplugging_drops_to_the_preferred_battery_mode_immediately() {
+    fn a_second_power_source_switch_waits_out_the_gap_and_then_happens() {
+        let t0 = Instant::now();
         let mut switcher = settled(false);
-        let decision = switcher
-            .observe(inputs(Some(true), 0.5), &config(), PowerMode::Performance)
-            .expect("a source change is answered at once");
+        let config = config();
+        let sample = |on_battery: bool| inputs(Some(on_battery), 0.5);
+        let at = |switcher: &mut AutoSwitcher, secs: u64, on_battery: bool, current| {
+            switcher.observe_at(
+                sample(on_battery),
+                &config,
+                current,
+                t0 + Duration::from_secs(secs),
+            )
+        };
+
+        assert_eq!(at(&mut switcher, 0, true, PowerMode::Performance), None);
+        let unplugged = at(&mut switcher, 1, true, PowerMode::Performance)
+            .expect("the first confirmed transition is not held");
+        assert_eq!(unplugged.mode, PowerMode::Eco);
+
+        assert_eq!(at(&mut switcher, 5, false, PowerMode::Eco), None);
+        for secs in 6..31 {
+            assert_eq!(
+                at(&mut switcher, secs, false, PowerMode::Eco),
+                None,
+                "{secs}s after the last switch is inside the gap"
+            );
+        }
+        let plugged = at(&mut switcher, 31, false, PowerMode::Eco)
+            .expect("held until the gap passed, then applied");
+        assert_eq!(plugged.mode, PowerMode::Performance);
+        assert!(plugged.from_transition);
+    }
+
+    /// A transition held by the gap is dropped if the machine goes back to
+    /// the source whose mode is already in force.
+    #[test]
+    fn a_held_transition_the_cable_took_back_is_forgotten() {
+        let t0 = Instant::now();
+        let config = config();
+        let mut switcher = settled(false);
+        let tick = |switcher: &mut AutoSwitcher, secs: u64, on_battery: bool, current| {
+            switcher.observe_at(
+                inputs(Some(on_battery), 0.5),
+                &config,
+                current,
+                t0 + Duration::from_secs(secs),
+            )
+        };
+
+        tick(&mut switcher, 0, true, PowerMode::Performance);
+        assert!(tick(&mut switcher, 1, true, PowerMode::Performance).is_some());
+        tick(&mut switcher, 5, false, PowerMode::Eco);
+        assert_eq!(tick(&mut switcher, 6, false, PowerMode::Eco), None, "held");
+        tick(&mut switcher, 10, true, PowerMode::Eco);
+        tick(&mut switcher, 11, true, PowerMode::Eco);
+        assert_eq!(
+            tick(&mut switcher, 60, true, PowerMode::Eco),
+            None,
+            "back on battery in Eco: nothing left to switch"
+        );
+    }
+
+    /// A charger that drops out for one sample and comes back is a flicker,
+    /// not an unplug, and moves nothing - including the confirmation count,
+    /// which starts again from scratch.
+    #[test]
+    fn a_power_source_that_flickers_for_one_sample_switches_nothing() {
+        let mut switcher = settled(false);
+        for _ in 0..10 {
+            assert_eq!(
+                switcher.observe(inputs(Some(true), 0.5), &config(), PowerMode::Performance),
+                None
+            );
+            assert_eq!(
+                switcher.observe(inputs(Some(false), 0.5), &config(), PowerMode::Performance),
+                None
+            );
+        }
+        assert_eq!(switcher.on_battery(), Some(false));
+    }
+
+    #[test]
+    fn unplugging_drops_to_the_preferred_battery_mode_once_confirmed() {
+        let mut switcher = settled(false);
+        let decision = switched(
+            &mut switcher,
+            inputs(Some(true), 0.5),
+            &config(),
+            PowerMode::Performance,
+        )
+        .expect("a confirmed source change is answered at once");
 
         assert_eq!(
             decision.mode,
@@ -801,18 +988,26 @@ mod tests {
             ..config()
         };
         let mut switcher = settled(false);
-        let decision = switcher
-            .observe(inputs(Some(true), 0.5), &balanced, PowerMode::Performance)
-            .unwrap();
+        let decision = switched(
+            &mut switcher,
+            inputs(Some(true), 0.5),
+            &balanced,
+            PowerMode::Performance,
+        )
+        .unwrap();
         assert_eq!(decision.mode, PowerMode::Balanced);
     }
 
     #[test]
-    fn plugging_in_steps_up_to_performance_immediately() {
+    fn plugging_in_steps_up_to_performance_once_confirmed() {
         let mut switcher = settled(true);
-        let decision = switcher
-            .observe(inputs(Some(false), 0.1), &config(), PowerMode::Eco)
-            .expect("a source change is answered at once");
+        let decision = switched(
+            &mut switcher,
+            inputs(Some(false), 0.1),
+            &config(),
+            PowerMode::Eco,
+        )
+        .expect("a confirmed source change is answered at once");
 
         assert_eq!(decision.mode, PowerMode::Performance);
         assert!(decision.from_transition);
@@ -1000,7 +1195,12 @@ mod tests {
     #[test]
     fn the_latch_is_updated_even_on_a_tick_that_answers_a_transition() {
         let mut switcher = settled(false);
-        let decision = switcher.observe(at(92.0, true, 0.99), &config(), PowerMode::Performance);
+        let decision = switched(
+            &mut switcher,
+            at(92.0, true, 0.99),
+            &config(),
+            PowerMode::Performance,
+        );
         assert!(decision.is_some_and(|d| d.from_transition));
         assert!(
             switcher.is_hot(),
@@ -1065,9 +1265,13 @@ mod tests {
     #[test]
     fn unplugging_does_move_a_machine_out_of_unlimited() {
         let mut switcher = settled(false);
-        let decision = switcher
-            .observe(inputs(Some(true), 0.5), &config(), PowerMode::Unlimited)
-            .unwrap();
+        let decision = switched(
+            &mut switcher,
+            inputs(Some(true), 0.5),
+            &config(),
+            PowerMode::Unlimited,
+        )
+        .unwrap();
 
         assert_eq!(decision.mode, PowerMode::Eco);
     }
@@ -1255,9 +1459,13 @@ mod tests {
         let config = preferring(PowerMode::Eco, PowerMode::Balanced);
         let mut switcher = settled(true);
 
-        let plugged = switcher
-            .observe(inputs(Some(false), 0.9), &config, PowerMode::Eco)
-            .unwrap();
+        let plugged = switched(
+            &mut switcher,
+            inputs(Some(false), 0.9),
+            &config,
+            PowerMode::Eco,
+        )
+        .unwrap();
         assert_eq!(plugged.mode, PowerMode::Balanced);
         assert!(plugged.from_transition);
 
@@ -1500,7 +1708,12 @@ mod tests {
         let mut switcher = settled(true);
         switcher.adopt(PowerMode::Performance);
 
-        let plugged = switcher.observe(inputs(Some(false), 0.5), &config(), PowerMode::Performance);
+        let plugged = switched(
+            &mut switcher,
+            inputs(Some(false), 0.5),
+            &config(),
+            PowerMode::Performance,
+        );
         assert_eq!(
             plugged, None,
             "already in Performance, the mains preference"
@@ -1513,7 +1726,8 @@ mod tests {
             ..config()
         };
         assert_eq!(
-            switcher.observe(
+            switched(
+                &mut switcher,
                 inputs(Some(true), 0.5),
                 &no_eco_system,
                 PowerMode::Performance

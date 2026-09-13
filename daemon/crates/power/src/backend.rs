@@ -46,10 +46,14 @@
 //! success it can't verify. Writes need root; running the daemon
 //! unprivileged surfaces a permission error instead of failing silently.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
+use pyren_core::process;
 use serde::Serialize;
 
 use crate::watch::Knobs;
@@ -144,6 +148,11 @@ pub struct BackendState {
     pub auto_cpufreq: bool,
     pub energy_preference: Option<String>,
     pub governor: Option<String>,
+    /// Power managers running here that this module does not drive -
+    /// tuned without tuned-ppd, system76-power, TLP - found through
+    /// systemd. Each rewrites the CPU hint on its own schedule, so while
+    /// any is active the hint is left alone and the conflict is reported.
+    pub other_managers: Vec<String>,
     /// Mechanisms that could be used here, best first.
     pub available: Vec<&'static str>,
 }
@@ -158,6 +167,11 @@ pub struct ApplyReport {
     /// the reference [`crate::watch`] compares the machine against.
     #[serde(skip)]
     pub(crate) expected: Knobs,
+    /// The firmware refused its profile, so everything this apply had
+    /// already changed was put back: the mode did not happen, and nothing
+    /// after it (the envelope) may be applied as if it had.
+    #[serde(skip)]
+    pub(crate) rolled_back: bool,
 }
 
 impl ApplyReport {
@@ -213,6 +227,7 @@ pub fn read_state() -> BackendState {
         auto_cpufreq,
         energy_preference,
         governor: read_trimmed(cpu_root().join("cpu0/cpufreq/scaling_governor")),
+        other_managers: other_managers(),
         available,
     }
 }
@@ -282,9 +297,18 @@ pub(crate) fn plan(
         if state.auto_cpufreq {
             steps.push(Step::AutoCpufreq(auto_cpufreq_name(mode)));
         }
-        // Writing the hint ourselves only where no manager would undo it.
+        // Writing the hint ourselves only where no manager would undo it -
+        // including the ones this module cannot ask, which would silently
+        // put their own value back on the next charger event.
         if steps.is_empty() && state.energy_preference.is_some() {
-            steps.push(Step::EnergyPreference(energy_preference_name(mode)));
+            if state.other_managers.is_empty() {
+                steps.push(Step::EnergyPreference(energy_preference_name(mode)));
+            } else {
+                problems.push(format!(
+                    "energy_performance_preference: left to {}, which manages it",
+                    state.other_managers.join(", ")
+                ));
+            }
         }
     }
 
@@ -304,19 +328,44 @@ pub(crate) fn plan(
 /// performance mode also change what my desktop thinks the power policy
 /// is?". Both answers are legitimate, which is why it is a question and
 /// not a fixed order of preference.
-pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
-    let (steps, problems) = plan(&read_state(), mode, os_profile);
+///
+/// `before` is the machine as read *before* the caller took its lock (the
+/// read starts processes, and must not stall everyone else behind it). It
+/// doubles as the snapshot a refused firmware profile is rolled back to.
+pub fn apply(before: &BackendState, mode: PowerMode, os_profile: bool) -> ApplyReport {
+    let (steps, problems) = plan(before, mode, os_profile);
     let mut report = ApplyReport {
         applied: Vec::new(),
         failed: problems,
         expected: Knobs::default(),
+        rolled_back: false,
     };
+    // auto-cpufreq's override is not part of `BackendState` (reading it is
+    // a Python start-up), so it is only captured when it is about to move.
+    let auto_cpufreq_before = steps
+        .iter()
+        .any(|s| matches!(s, Step::AutoCpufreq(_)))
+        .then(read_auto_cpufreq)
+        .flatten();
+    let mut done = Vec::new();
 
     for step in steps {
-        match step {
-            Step::PlatformProfile(profile) => match fs::write(platform_profile_path(), &profile) {
+        match &step {
+            Step::PlatformProfile(profile) => match write_platform_profile(profile) {
                 Ok(()) => report.applied.push(format!("platform_profile={profile}")),
-                Err(e) => report.failed.push(format!("platform_profile: {e}")),
+                Err(e) => {
+                    // The firmware profile is what a mode *is* (it moves
+                    // the EC's fan curve). An OS profile left in the new
+                    // mode over a firmware still in the old one is a
+                    // machine in neither, so the OS half is put back too.
+                    report.failed.push(format!("platform_profile: {e}"));
+                    report
+                        .failed
+                        .extend(roll_back(before, auto_cpufreq_before.as_deref(), &done));
+                    report.applied.clear();
+                    report.rolled_back = true;
+                    break;
+                }
             },
             Step::PowerProfilesDaemon(profile) => match set_power_profiles(profile) {
                 Ok(()) => report
@@ -332,26 +381,90 @@ pub fn apply(mode: PowerMode, os_profile: bool) -> ApplyReport {
                 Ok(()) => report.applied.push(format!("auto-cpufreq={force}")),
                 Err(e) => report.failed.push(format!("auto-cpufreq: {e}")),
             },
-            Step::EnergyPreference(preference) => {
-                match write_all_cpus("energy_performance_preference", preference) {
-                    Ok(count) => {
-                        report.expected.energy_preference = read_energy_preference();
-                        report.applied.push(format!(
-                            "energy_performance_preference={preference} ({count} cpus)"
-                        ))
-                    }
-                    Err(e) => report
-                        .failed
-                        .push(format!("energy_performance_preference: {e}")),
+            Step::EnergyPreference(preference) => match write_energy_preference(preference) {
+                Ok(count) => {
+                    report.expected.energy_preference = read_energy_preference();
+                    report.applied.push(format!(
+                        "energy_performance_preference={preference} ({count} cpus)"
+                    ))
                 }
-            }
+                Err(e) => report
+                    .failed
+                    .push(format!("energy_performance_preference: {e}")),
+            },
         }
+        done.push(step);
     }
 
     // Read back whether or not this call wrote it: whatever it says now is
     // where the machine was left, and a change from here is someone else's.
     report.expected.platform_profile = read_platform_profile();
     report
+}
+
+/// Writes the firmware profile and reads it back.
+///
+/// Some firmware accepts the write and keeps its old profile - HP refuses
+/// `performance` on battery on some boards - and the kernel still reports
+/// success. The file afterwards is the only answer that means anything.
+fn write_platform_profile(profile: &str) -> Result<(), String> {
+    fs::write(platform_profile_path(), profile).map_err(|e| e.to_string())?;
+    match read_platform_profile() {
+        Some(now) if now == profile => Ok(()),
+        Some(now) => Err(format!("asked for {profile}, the firmware kept {now}")),
+        None => Err(format!(
+            "asked for {profile}, the firmware profile is unreadable afterwards"
+        )),
+    }
+}
+
+/// Puts back what `done` changed, newest first, from the snapshot taken
+/// before the apply. Returns what could not be put back.
+///
+/// Best-effort by nature - the machine just refused one write - so every
+/// miss is reported rather than treated as a reason to stop undoing.
+fn roll_back(
+    before: &BackendState,
+    auto_cpufreq_before: Option<&str>,
+    done: &[Step],
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    for step in done.iter().rev() {
+        let result = match step {
+            Step::PlatformProfile(_) => continue,
+            Step::PowerProfilesDaemon(_) => match &before.power_profiles_daemon {
+                Some(previous) => set_power_profiles(previous),
+                None => continue,
+            },
+            Step::Tlp(_) => match &before.tlp {
+                Some(previous) => set_tlp(previous),
+                None => continue,
+            },
+            Step::AutoCpufreq(_) => match auto_cpufreq_before {
+                Some("default") | None => set_auto_cpufreq("reset"),
+                Some(previous) => set_auto_cpufreq(previous),
+            },
+            Step::EnergyPreference(_) => match &before.energy_preference {
+                Some(previous) => {
+                    write_all_cpus("energy_performance_preference", previous).map(|_| ())
+                }
+                None => continue,
+            },
+        };
+        if let Err(e) = result {
+            failed.push(format!("rolling back {step:?}: {e}"));
+        }
+    }
+    // An OS manager's own platform driver may have moved the firmware file
+    // on the way past; the snapshot's value is the one to leave behind.
+    if let Some(previous) = &before.platform_profile {
+        if read_platform_profile().as_ref() != Some(previous) {
+            if let Err(e) = fs::write(platform_profile_path(), previous) {
+                failed.push(format!("rolling back platform_profile: {e}"));
+            }
+        }
+    }
+    failed
 }
 
 /// Maps a mode onto whichever profile names this firmware actually offers.
@@ -457,10 +570,11 @@ const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 /// (checked against systemd 261, which still asks the unit to start),
 /// which is why reads go through `Properties.Get` by hand.
 fn busctl(args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new(tool("busctl"))
-        .args(["--system", "--auto-start=no"])
-        .args(args)
-        .output()
+    process::output(
+        Command::new(tool("busctl"))
+            .args(["--system", "--auto-start=no"])
+            .args(args),
+    )
 }
 
 /// `v s "balanced"` - busctl's rendering of a string variant - to `balanced`.
@@ -506,19 +620,16 @@ fn request_profile(endpoint: ProfilesEndpoint, profile: &str) -> Result<(), Stri
             "s",
             profile,
         ]),
-        ProfilesEndpoint::Cli => Command::new(tool("powerprofilesctl"))
-            .args(["set", profile])
-            .output(),
+        ProfilesEndpoint::Cli => {
+            process::output(Command::new(tool("powerprofilesctl")).args(["set", profile]))
+        }
     }
     .map_err(|e| e.to_string())?;
     succeeded(&output)
 }
 
 fn read_powerprofilesctl() -> Option<String> {
-    let output = Command::new(tool("powerprofilesctl"))
-        .arg("get")
-        .output()
-        .ok()?;
+    let output = process::output(Command::new(tool("powerprofilesctl")).arg("get")).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -536,7 +647,7 @@ fn read_powerprofilesctl() -> Option<String> {
 /// and a TLP that has not run this boot has no saved profile to print;
 /// neither is something `tlp <profile>` could be asked to change.
 fn read_tlp() -> Option<String> {
-    let output = Command::new(tool("tlp-stat")).arg("-m").output().ok()?;
+    let output = process::output(Command::new(tool("tlp-stat")).arg("-m")).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -555,10 +666,8 @@ fn parse_tlp_mode(output: &str) -> Option<String> {
 /// nothing, which is exactly the kind of miss the second attempt is for.
 fn set_tlp(profile: &str) -> Result<(), String> {
     set_and_confirm("TLP", profile, read_tlp, || {
-        let output = Command::new(tool("tlp"))
-            .arg(profile)
-            .output()
-            .map_err(|e| e.to_string())?;
+        let output =
+            process::output(Command::new(tool("tlp")).arg(profile)).map_err(|e| e.to_string())?;
         succeeded(&output)
     })
 }
@@ -571,10 +680,94 @@ fn set_tlp(profile: &str) -> Result<(), String> {
 /// the same question but is a Python start-up - most of a second, on every
 /// status read, on every machine that merely has it installed.
 fn auto_cpufreq_running() -> bool {
-    Command::new(tool("pgrep"))
-        .args(["-f", "auto-cpufreq.* --daemon"])
-        .output()
-        .is_ok_and(|output| output.status.success())
+    cached(&AUTO_CPUFREQ_CACHE, || {
+        process::output(Command::new(tool("pgrep")).args(["-f", "auto-cpufreq.* --daemon"]))
+            .is_ok_and(|output| output.status.success())
+    })
+}
+
+/// auto-cpufreq's current override as `--get-state` prints it
+/// (`default`, `powersave`, `performance`).
+fn read_auto_cpufreq() -> Option<String> {
+    let output = process::output(Command::new(tool("auto-cpufreq")).arg("--get-state")).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Takes auto-cpufreq's override off, if its daemon is running: the
+/// override is auto-cpufreq's own persisted state and outlives both pyren
+/// and the switch that put it there.
+pub(crate) fn release_auto_cpufreq() -> Option<Result<(), String>> {
+    if !auto_cpufreq_running() || read_auto_cpufreq().as_deref() == Some("default") {
+        return None;
+    }
+    Some(set_auto_cpufreq("reset"))
+}
+
+/// Units that manage the CPU hint and are not asked through anything this
+/// module speaks. TLP is listed even though it can be asked directly: a
+/// TLP before 1.8 has no profiles, and still rewrites the hint.
+const OTHER_MANAGER_UNITS: [&str; 3] = ["tlp.service", "tuned.service", "system76-power.service"];
+
+/// The [`OTHER_MANAGER_UNITS`] systemd reports as active.
+///
+/// No systemd, or a `systemctl` that fails, is "none found": this only
+/// ever *withholds* a write, so not knowing must not invent a reason to.
+fn other_managers() -> Vec<String> {
+    cached(&OTHER_MANAGERS_CACHE, || {
+        let Ok(output) = process::output(
+            Command::new(tool("systemctl"))
+                .arg("is-active")
+                .args(OTHER_MANAGER_UNITS),
+        ) else {
+            return Vec::new();
+        };
+        // One line per unit, in order; the exit status is non-zero as soon
+        // as any one is inactive, so it says nothing here.
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .zip(OTHER_MANAGER_UNITS)
+            .filter(|(state, _)| state.trim() == "active")
+            .map(|(_, unit)| unit.trim_end_matches(".service").to_string())
+            .collect()
+    })
+}
+
+/// How long a manager's presence is trusted before it is looked for again.
+///
+/// Every status read and every apply asks, and each answer is a process;
+/// whether a daemon is installed and running does not change several times
+/// a second.
+const MANAGER_CACHE_TTL: Duration = Duration::from_secs(5);
+
+type Cache<T> = OnceLock<Mutex<Option<(Instant, Option<OsString>, T)>>>;
+static AUTO_CPUFREQ_CACHE: Cache<bool> = OnceLock::new();
+static OTHER_MANAGERS_CACHE: Cache<Vec<String>> = OnceLock::new();
+
+/// `compute`, remembered for [`MANAGER_CACHE_TTL`].
+///
+/// Keyed by `PYREN_TOOLS_DIR`, so a test that swaps the fake machine's
+/// programs is never answered from the previous machine's.
+fn cached<T: Clone>(cache: &'static Cache<T>, compute: impl FnOnce() -> T) -> T {
+    let key = std::env::var_os("PYREN_TOOLS_DIR");
+    // A fixture installs and removes managers mid-test; only a real system
+    // is stable enough to cache.
+    if key.is_some() {
+        return compute();
+    }
+    let slot = cache.get_or_init(|| Mutex::new(None));
+    let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, for_key, value)) = slot.as_ref() {
+        if at.elapsed() < MANAGER_CACHE_TTL && *for_key == key {
+            return value.clone();
+        }
+    }
+    let value = compute();
+    *slot = Some((Instant::now(), key, value.clone()));
+    value
 }
 
 /// `auto-cpufreq --force`, confirmed through `--get-state`, which reports
@@ -584,22 +777,10 @@ fn auto_cpufreq_running() -> bool {
 /// something resets it - which Balanced does.
 fn set_auto_cpufreq(force: &str) -> Result<(), String> {
     let expected = if force == "reset" { "default" } else { force };
-    let read = || {
-        let output = Command::new(tool("auto-cpufreq"))
-            .arg("--get-state")
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        (!value.is_empty()).then_some(value)
-    };
-    set_and_confirm("auto-cpufreq", expected, read, || {
-        let output = Command::new(tool("auto-cpufreq"))
-            .arg(format!("--force={force}"))
-            .output()
-            .map_err(|e| e.to_string())?;
+    set_and_confirm("auto-cpufreq", expected, read_auto_cpufreq, || {
+        let output =
+            process::output(Command::new(tool("auto-cpufreq")).arg(format!("--force={force}")))
+                .map_err(|e| e.to_string())?;
         succeeded(&output)
     })
 }
@@ -681,6 +862,70 @@ fn set_and_confirm(
             "asked for {wanted}, {who} did not answer afterwards (tried {OS_PROFILE_ATTEMPTS} times)"
         ),
     })
+}
+
+/// CPU frequency drivers whose `energy_performance_preference` is the
+/// hint this module means. Passive intel_pstate, amd-pstate in guided or
+/// passive mode and the generic drivers either lack the file or treat it
+/// as something else.
+const EPP_DRIVERS: [&str; 2] = ["intel_pstate", "amd-pstate-epp"];
+
+/// The CPU hint, written only where it means what it says, and read back
+/// on every CPU.
+fn write_energy_preference(value: &str) -> Result<usize, String> {
+    let cpu0 = cpu_root().join("cpu0/cpufreq");
+    match read_trimmed(cpu0.join("scaling_driver")) {
+        Some(driver) if EPP_DRIVERS.contains(&driver.as_str()) => {}
+        Some(driver) => return Err(format!("the {driver} driver has no usable hint")),
+        None => return Err("the CPU frequency driver is unknown".to_string()),
+    }
+    // The performance governor pins the hint: intel_pstate refuses writes
+    // with EBUSY on some CPUs and not others, leaving a mixed machine.
+    if read_trimmed(cpu0.join("scaling_governor")).as_deref() == Some("performance") {
+        return Err("the performance governor fixes the hint".to_string());
+    }
+    let offered = read_trimmed(cpu0.join("energy_performance_available_preferences"))
+        .ok_or_else(|| "this CPU lists no available hints".to_string())?;
+    if !offered.split_whitespace().any(|choice| choice == value) {
+        return Err(format!(
+            "{value} is not one of this CPU's hints ({offered})"
+        ));
+    }
+
+    let count = write_all_cpus("energy_performance_preference", value)?;
+    let mismatched = cpu_dirs()
+        .into_iter()
+        .filter_map(|(name, dir)| {
+            let path = dir.join("cpufreq/energy_performance_preference");
+            (path.exists() && read_trimmed(&path).as_deref() != Some(value)).then_some(name)
+        })
+        .collect::<Vec<_>>();
+    if mismatched.is_empty() {
+        Ok(count)
+    } else {
+        Err(format!(
+            "asked for {value}, {} kept their own hint",
+            mismatched.join(", ")
+        ))
+    }
+}
+
+/// `cpuN` directories under the CPU root, with their names.
+fn cpu_dirs() -> Vec<(String, PathBuf)> {
+    let Ok(entries) = fs::read_dir(cpu_root()) else {
+        return Vec::new();
+    };
+    let mut cpus: Vec<(String, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let digits = name.strip_prefix("cpu")?;
+            (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+                .then(|| (name, entry.path()))
+        })
+        .collect();
+    cpus.sort();
+    cpus
 }
 
 /// Writes one cpufreq attribute on every CPU, returning how many took it.
@@ -778,6 +1023,7 @@ mod tests {
             auto_cpufreq: false,
             energy_preference: Some("balance_performance".into()),
             governor: Some("powersave".into()),
+            other_managers: Vec::new(),
             available: vec!["platform_profile", "power-profiles-daemon"],
         }
     }
@@ -825,6 +1071,23 @@ mod tests {
                 Step::PlatformProfile("low-power".into())
             ]
         );
+    }
+
+    /// tuned or system76-power running where nothing serves the profiles
+    /// API: they rewrite the hint themselves, so it is not written under
+    /// them - and the user is told why it did not move.
+    #[test]
+    fn the_cpu_hint_is_not_written_under_a_manager_this_module_cannot_ask() {
+        let tuned = BackendState {
+            power_profiles_daemon: None,
+            other_managers: vec!["tuned".into()],
+            ..full_machine()
+        };
+        let (steps, problems) = plan(&tuned, PowerMode::Eco, true);
+
+        assert_eq!(steps, vec![Step::PlatformProfile("low-power".into())]);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("tuned"), "{problems:?}");
     }
 
     /// Board 8D2F: no firmware profile at all, so the OS half is the whole

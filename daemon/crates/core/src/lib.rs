@@ -17,6 +17,7 @@ pub mod client;
 pub mod events;
 pub mod log;
 pub mod msg;
+pub mod process;
 pub mod sensors;
 pub mod signals;
 mod socket;

@@ -401,7 +401,7 @@ supervisor that can drive it automatically.
 | `power.setMode` | `{ "mode": "eco" \| "balanced" \| "performance" \| "unlimited" }` | `{ "applied": [...], "failed": [...] }` | ✅ implemented |
 | `power.setAutoConfig` | full auto config object | stored config + whether it reached disk | ✅ implemented |
 | `power.setRestoreOnStart` | `{ "enabled": bool }` | as above | ✅ implemented |
-| `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState` | ✅ implemented |
+| `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState`; refusals below | ✅ implemented |
 | `power.setApplyToOsProfile` | `{ "enabled": bool }` | as `getState` | ✅ implemented |
 
 ### A mode is a profile, in three separable parts
@@ -409,7 +409,7 @@ supervisor that can drive it automatically.
 | part | mechanism | applied |
 |---|---|---|
 | the laptop's own profile | ACPI `platform_profile` | always |
-| the OS profile | power-profiles-daemon | only when `applyToOsProfile` |
+| the OS profile | power-profiles-daemon / TLP / auto-cpufreq | only when `applyToOsProfile` — **off by default** |
 | the power envelope | powercap PL1/PL2 + turbo | only where someone set it |
 
 **These are three different owners, which is why they are three switches.**
@@ -423,7 +423,11 @@ valuable third of a mode.
 
 The *OS* profile is what the desktop's battery menu shows, and it is
 optional on purpose: changing how the laptop behaves without changing what
-the desktop thinks is a reasonable thing to want. It is also **delegated,
+the desktop thinks is a reasonable thing to want. `applyToOsProfile`
+**defaults to `false`**: the OS profile belongs to whatever power manager
+the user installed, and a fresh install does not start overriding it. A
+`power.json` that already stores `true` keeps it; one without the field
+reads as `false`. It is also **delegated,
 not reimplemented** — power-profiles-daemon already drives EPP and the
 governor for the running system, and writing those files ourselves on top
 of it would be two things fighting over them. The per-CPU
@@ -459,12 +463,21 @@ a 15 W one, and a percentage at least travels honestly.
   "available": true, "turboAvailable": true,
   "stock":   { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
   "current": { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
+  "locked": null,
   "turbo": true,
   "tuning": { "eco": { "pl1Percent": 100, "pl2Percent": 100, "turbo": true }, "...": {} }
 }
 ```
 
-Four rules worth knowing before writing a client:
+`locked` is `"msr"` or `"sysfs"` when the firmware has locked PL1/PL2 until
+the next reboot, `null` when they are not locked *or* nothing could tell.
+It is read from a `locked` attribute on the RAPL zone where a kernel has
+one, otherwise from bit 63 of `MSR_PKG_POWER_LIMIT` (0x610) — and only if
+`/dev/cpu/0/msr` already exists and is readable: the daemon never loads the
+`msr` module to find out. Where neither answers, a locked limit shows up as
+a write that did not read back.
+
+Rules worth knowing before writing a client:
 
 - **Nothing ever asks for more than stock.** Raising a limit past what the
   firmware shipped is overclocking, and is a separate feature with separate
@@ -474,13 +487,47 @@ Four rules worth knowing before writing a client:
   different hardware.
 - **PL4 is left at stock.** The peak-power ceiling exists to keep the VRM
   in spec, and lowering it buys nothing a lower PL1 has not already bought.
+- **A mode nobody tuned writes nothing.** While a mode's tuning is the
+  shipped default (100 % / 100 % / turbo on) its limits and turbo are left
+  to the firmware and to whatever power manager moves them; writing "stock"
+  back on every mode change would override choices the daemon was never
+  asked to make. The one exception: leaving a tuned mode puts the stock
+  envelope back once, so its cap does not outlive it. `power.json` records
+  this as `envelopeOwned` (`true` while an envelope on the machine is the
+  daemon's).
+- **Limits are always ordered and sane.** Every target is held to
+  PL1 ≤ PL2 ≤ PL4. The recorded `stock` drops values under 1 W or over
+  500 W, does not believe a stored PL4 above the one the machine reads, and
+  is held to the same order — so a hand-edited `stockLimits` is not a
+  licence to write 200 W.
+- **Every write is read back.** A limit more than 1 W from what was asked
+  for (RAPL rounds to its power unit), or turbo not in the state asked for,
+  is reported in `failed`. A RAPL zone reading `enabled = 0`, or a locked
+  one (above), is reported instead of written. Constraints are found by
+  their `constraint_N_name` (`long_term`, `short_term`, `peak_power`), not
+  by position.
 - **Applying a mode never touches the fans.** A lower limit makes them spin
   less because there is less heat. Reaching into the fan module to also
   command a fan mode would put two owners on one piece of hardware.
 
 `setTuning` defaults to the mode currently in force and re-applies it
 immediately when that is the one changed, so a slider is audible now rather
-than at the next mode switch.
+than at the next mode switch. It re-applies only when the tuning actually
+changed, and the re-apply is not a manual mode choice: it does not pause
+the supervisor.
+
+A request with anything the daemon does not understand is refused whole,
+nothing stored:
+
+| error `key` | kind | when |
+|---|---|---|
+| `power.err.badMode` | `invalidParams` | `mode` is present and not one of the four (it is no longer read as "the current mode") |
+| `power.err.wattsNumber` | `invalidParams` | `pl1W` or `pl2W` is present and not a number; `params: { key }` |
+| `power.err.turboBool` | `invalidParams` | `turbo` is present and not a boolean |
+| `power.err.wattsPositive` | `invalidParams` | a limit of zero, a negative one, or NaN |
+| `power.err.limitsCrossed` | `invalidParams` | the result would put PL1 above PL2; `params: { pl1, pl2 }` in watts |
+| `power.err.noPackageLimit` | `notCapable` | no RAPL package zone to tune |
+| `power.err.limitsLocked` | `notCapable` | `pl1W`/`pl2W` asked for while the firmware has the limits locked; `params: { source }` (`msr` / `sysfs`). `turbo` alone is still accepted |
 
 ### Mechanisms
 
@@ -494,7 +541,36 @@ the OMEN Gaming Hub does:
 2. **power-profiles-daemon** (`powerprofilesctl`), used when the firmware
    exposes no profile of its own.
 3. **`energy_performance_preference`** (intel_pstate/amd_pstate EPP),
-   applied on every CPU alongside either of the above.
+   only where no power manager is present to delegate to. It is written
+   only when `scaling_driver` is `intel_pstate` or `amd-pstate-epp`, the
+   value is listed in `energy_performance_available_preferences`, and the
+   governor is not `performance` (which pins it). Every CPU is read back,
+   and the ones that kept their own hint are named in `failed`.
+
+`getState`'s `backend.otherManagers` lists power managers systemd reports
+as active that the daemon does not drive — `tlp`, `tuned`,
+`system76-power` (found with `systemctl is-active`, cached for 5 s). While
+any is active the EPP fallback is skipped and `failed` says which manager
+was left in charge, rather than writing a hint the manager would silently
+put back.
+
+**The firmware profile is what a mode is.** After writing
+`platform_profile` the daemon reads it back; firmware that accepts the
+write and keeps its old profile (some HP boards refuse `performance` on
+battery) counts as a failure. Then everything the apply had already
+changed — the OS profile, auto-cpufreq's override, the hint — is put back
+to what it was before, the envelope is not applied, the mode is not
+recorded, and `setMode` returns `power.err.applyFailed`.
+
+Every external program (`busctl`, `powerprofilesctl`, `tlp`, `tlp-stat`,
+`pgrep`, `auto-cpufreq`, `systemctl`) is killed after 3 s, and
+`nvidia-smi`/`nvidia-settings` in the overclock module after 10 s, so a
+stuck D-Bus or a busy TLP lock cannot hang the daemon. `getState` reads
+the machine before taking the module's lock.
+
+auto-cpufreq keeps a `--force` override in its own state, so the daemon
+resets it (`--force=reset`) when `applyToOsProfile` is switched off and when
+it stops on SIGTERM.
 
 Each is best-effort, so the result **lists what actually changed** rather
 than reporting a success it can't verify:
@@ -529,9 +605,18 @@ plus a thermal rule that applies to both:
 | `performanceOnLoad` | the machine is plugged in | goes to `preferredOnMains` *at once*, then moves between Balanced and Performance |
 | `backOffWhenHot` | the machine is over `tempHighC` | holds it one step below its baseline until it is back under `tempLowC` |
 
-So a change of power source is a discrete event with an immediate answer,
+So a change of power source is a discrete event with a prompt answer,
 and everything after it is a slow refinement inside the range that source
-allows:
+allows. "Prompt", not "instant", for two guards against a charger that
+comes and goes:
+
+- **A new source has to be seen on 2 consecutive samples** before it is
+  believed. A single-sample flicker changes nothing, and no refinement is
+  judged while it is unconfirmed.
+- **Two source-triggered switches are at least 30 s apart.** A confirmed
+  transition inside the gap is held, not dropped: it is applied on the first
+  tick after the gap, if the machine is still on that source and not already
+  in its mode.
 
 ```text
   on battery:   Eco  <--->  Balanced
@@ -594,11 +679,11 @@ Consequences worth knowing:
 | `preferredOnBattery` / `preferredOnMains` | the home mode for each source (see above). Values outside the source's range are clamped into it |
 | `loadHigh` / `loadLow` | 1-minute load average **per core** above/below which load counts as high/low. The gap between them is a dead band where the supervisor has no opinion — this is what stops the mode flapping around a threshold. |
 | `batteryLowPercent` | at or below this charge, Eco is preferred on battery whatever the load is doing |
-| `samplesToSwitch` | consecutive agreeing samples required before a *refinement*. Transitions ignore it. |
+| `samplesToSwitch` | consecutive agreeing samples required before a *refinement*. Transitions ignore it (they have their fixed 2-sample confirmation and 30 s gap) |
 | `intervalSecs` | how often it samples |
 | `manualOverrideSecs` | how long a manual `setMode` suspends refinement entirely — after that the hand-picked mode is the baseline refinement works around |
 | `backOffWhenHot` | whether a hot machine is a reason to step down. On by default; the case it exists for is a laptop on a duvet |
-| _validation_ | `setAutoConfig` refuses `loadLow` ≥ `loadHigh` (or negative), `tempLowC` ≥ `tempHighC`, and `batteryLowPercent` outside 0–100, with `power.err.loadBand` / `tempBand` / `batteryPercent`; the stored config is left as it was |
+| _validation_ | `setAutoConfig` refuses `loadLow` ≥ `loadHigh` (or negative), `tempLowC` ≥ `tempHighC`, and `batteryLowPercent` outside 0–100, with `power.err.loadBand` / `tempBand` / `batteryPercent`; the stored config is left as it was. A `power.json` that fails the same checks at startup (older build, hand-edited) loads with `enabled: false` and a warning in the log |
 | `tempHighC` / `tempLowC` | the temperature at or above which the machine counts as hot, and the one it has to come back below before it stops counting. **Latched between the two**, and the band is wider than the load one on purpose: a chassis that has just been throttled is still full of heat, and a single threshold would step straight back into the same wall |
 
 The load average is used rather than instantaneous CPU usage precisely
@@ -661,7 +746,17 @@ succeeds and the UI says so rather than failing.
 is **off by default**: changing a machine's power behaviour at boot should
 be something the user asked for. Enabling it records the current mode
 immediately, so a reboot restores what the user could see when they ticked
-the box.
+the box. A machine that boots **on battery** does not get `performance` or
+`unlimited` back: it gets `preferredOnBattery` instead, and the supervisor
+or the user can raise it from there.
+
+Protocol-visible fields of `power.json` added by the safety guards:
+
+| field | meaning |
+|---|---|
+| `applyToOsProfile` | default `false` (was `true`) |
+| `envelopeOwned` | `true` while a limit or turbo setting on the machine was written by the daemon for a tuned mode; the next untuned mode puts stock back once and clears it. Default `false` |
+| `stockLimits` | now sanitised on load (see the envelope rules above) |
 
 ### Battery detection
 

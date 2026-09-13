@@ -6,6 +6,16 @@ use serde::Serialize;
 
 const POWER_SUPPLY: &str = "/sys/class/power_supply";
 
+/// The power-supply class, or a fixture standing in for it
+/// (`PYREN_POWER_SUPPLY`): a boot-time restore depends on whether the
+/// machine is on battery, and a test must not depend on whether the
+/// developer's laptop happens to be plugged in.
+fn power_supply_root() -> std::path::PathBuf {
+    std::env::var_os("PYREN_POWER_SUPPLY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(POWER_SUPPLY))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PowerSupplyState {
@@ -19,7 +29,7 @@ pub struct PowerSupplyState {
 
 impl PowerSupplyState {
     pub fn read() -> Self {
-        let Ok(entries) = fs::read_dir(POWER_SUPPLY) else {
+        let Ok(entries) = fs::read_dir(power_supply_root()) else {
             return Self {
                 on_battery: None,
                 battery_percent: None,

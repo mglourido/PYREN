@@ -14,7 +14,7 @@
 //! | `power.setAutoConfig` | [`AutoConfig`] | the stored config, and whether it reached disk |
 //! | `power.setRestoreOnStart` | `{ "enabled": bool }` | as above |
 //! | `power.setApplyToOsProfile` | `{ "enabled": bool }` | as `getState` |
-//! | `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState`; defaults to the current mode |
+//! | `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | as `getState`; defaults to the current mode, and refuses a mode it does not know, a value of the wrong type or PL1 above PL2 |
 //!
 //! A **mode is a profile**, and it has three parts that are applied
 //! separately because they belong to different owners:
@@ -62,7 +62,7 @@ use serde_json::{json, Value};
 
 pub use auto::{AutoConfig, AutoInputs, AutoSwitcher, HeatLatch, Sensors};
 pub use backend::{ApplyReport, BackendState};
-pub use limits::{Limits, ModeTuning, Tuning};
+pub use limits::{Limits, LockSource, ModeTuning, Tuning};
 pub use supply::PowerSupplyState;
 pub use watch::Override;
 
@@ -122,8 +122,9 @@ impl PowerMode {
     }
 }
 
-/// What is persisted to `power.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// What is persisted to `power.json`. Every default is "leave the machine
+/// alone": no restore at boot, no OS profile, no envelope.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PowerConfig {
     pub auto: AutoConfig,
@@ -143,6 +144,10 @@ pub struct PowerConfig {
     /// profile is what the desktop's battery menu shows. Wanting the first
     /// without the second is a reasonable thing to want, and the app has
     /// had a switch for it since before the daemon honoured it.
+    ///
+    /// Off unless the user turns it on: the OS profile belongs to whatever
+    /// power manager the user installed, and a fresh install should not
+    /// start overriding it.
     pub apply_to_os_profile: bool,
     /// The machine's own power limits, captured before this daemon ever
     /// wrote one.
@@ -156,22 +161,14 @@ pub struct PowerConfig {
     pub stock_limits: Option<Limits>,
     /// Each mode's share of that envelope.
     pub tuning: ModeTuning,
-}
-
-impl Default for PowerConfig {
-    fn default() -> Self {
-        Self {
-            auto: AutoConfig::default(),
-            mode: None,
-            restore_mode_on_start: false,
-            // On by default: someone who picks "Eco" in this app almost
-            // always means the whole machine, and the switch is there for
-            // the case where they do not.
-            apply_to_os_profile: true,
-            stock_limits: None,
-            tuning: ModeTuning::default(),
-        }
-    }
+    /// Whether the limits and turbo on the machine are this daemon's -
+    /// written for a mode someone tuned - rather than the firmware's.
+    ///
+    /// A mode whose tuning is untouched writes nothing (see
+    /// [`Tuning::is_default`]), with one exception this remembers: leaving
+    /// a tuned mode has to put the stock envelope back, or its cap would
+    /// outlive it. Persisted, because that cap outlives a daemon restart.
+    pub envelope_owned: bool,
 }
 
 /// Where a mode change is announced, so that anything watching the daemon
@@ -321,10 +318,20 @@ impl PowerModule {
         }
         let mut config = loaded.value;
 
+        // `setAutoConfig` refuses crossed thresholds, but a file from an
+        // older build or edited by hand never went through it - and a
+        // supervisor running on `loadLow >= loadHigh` flips modes forever.
+        if let Some(problem) = config.auto.problem() {
+            if config.auto.enabled {
+                log_warn!("power auto-switch config is invalid ({problem}); auto-switching is off until it is fixed");
+                config.auto.enabled = false;
+            }
+        }
+
         // Read the envelope before anything has had a chance to change it.
         let limit_paths = limits::LimitPaths::discover();
         let observed = limits::read(&limit_paths);
-        config.stock_limits = Some(highest(config.stock_limits, observed));
+        config.stock_limits = Some(sane_stock(config.stock_limits, observed));
 
         // Start from whatever the machine is already set to rather than
         // assuming Balanced, so the first supervisor tick compares against
@@ -339,7 +346,9 @@ impl PowerModule {
 
         if config.restore_mode_on_start {
             if let Some(saved) = config.mode {
-                let report = apply_profile(saved, &config, &limit_paths);
+                let saved = boot_mode(saved, &config, PowerSupplyState::read().on_battery);
+                let before = backend::read_state();
+                let report = apply_profile(&before, saved, &mut config, &limit_paths);
                 expected = report.expected.clone();
                 if report.is_empty() {
                     log_warn!(
@@ -464,12 +473,15 @@ impl PowerModule {
     /// its back, which is the difference between a redundant re-read and a
     /// necessary one.
     fn set_mode(&self, mode: PowerMode, manual: bool, source: &str) -> ApplyReport {
+        // Read before the lock: it starts processes, and even bounded by
+        // their timeouts that is not something to hold everyone up for.
+        let before = backend::read_state();
         // Applied and recorded under one lock, so the watcher can never see
         // the machine already in the new mode while the daemon still
         // expects the old one - which it would take for someone else's
         // change, and follow.
         let mut state = lock(&self.state);
-        let report = apply_profile(mode, &state.config, &self.limits);
+        let report = apply_profile(&before, mode, &mut state.config, &self.limits);
         state.record_apply(&report);
         // Only record the mode if something actually took effect; otherwise
         // the UI would show a mode the machine isn't in.
@@ -495,8 +507,15 @@ impl PowerModule {
     }
 
     fn state_json(&self) -> Value {
-        let state = lock(&self.state);
+        // Everything that reads the machine happens before the lock: the
+        // backend read starts processes, and a status poll must never make
+        // a mode change wait on it.
+        let backend = backend::read_state();
         let supply = PowerSupplyState::read();
+        let current_limits = limits::read(&self.limits);
+        let turbo = limits::read_turbo(&self.limits);
+        let locked = limits::locked(&self.limits);
+        let state = lock(&self.state);
         let override_remaining = state
             .manual_override_at
             .map(|at| {
@@ -508,13 +527,16 @@ impl PowerModule {
 
         json!({
             "mode": state.mode,
-            "backend": backend::read_state(),
+            "backend": backend,
             "limits": {
                 "available": self.limits.has_limits(),
                 "turboAvailable": self.limits.has_turbo(),
                 "stock": state.config.stock_limits,
-                "current": limits::read(&self.limits),
-                "turbo": limits::read_turbo(&self.limits),
+                "current": current_limits,
+                // `"msr"` or `"sysfs"` when the firmware locked PL1/PL2 -
+                // the limits cannot change until reboot, whatever is tuned.
+                "locked": locked,
+                "turbo": turbo,
                 "tuning": state.config.tuning,
             },
             "supply": supply,
@@ -547,6 +569,26 @@ impl PowerModule {
             "configPath": self.store.path_for("power"),
             "configSaveError": state.last_save_error,
         })
+    }
+}
+
+impl PowerModule {
+    /// What the daemon undoes on its way out.
+    ///
+    /// auto-cpufreq keeps a `--force` override in its own state, so a mode
+    /// pyren put there would outlive pyren and quietly keep the machine in
+    /// it. The firmware profile and the limits are left alone: they are
+    /// where the user put the machine, and the firmware resets the limits
+    /// at the next boot anyway.
+    pub fn on_exit(&self) {
+        if !lock(&self.state).config.apply_to_os_profile {
+            return;
+        }
+        match backend::release_auto_cpufreq() {
+            Some(Ok(())) => log_info!("power: handed auto-cpufreq back its own control"),
+            Some(Err(e)) => log_warn!("power: could not reset auto-cpufreq's override: {e}"),
+            None => {}
+        }
     }
 }
 
@@ -670,27 +712,100 @@ impl Module for PowerModule {
             }
 
             "setTuning" => {
-                let mode = params
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .and_then(PowerMode::parse)
-                    .unwrap_or_else(|| lock(&self.state).mode);
+                let mode = match params.get("mode") {
+                    None | Some(Value::Null) => lock(&self.state).mode,
+                    // A mode that is named and not understood is refused
+                    // rather than read as "the current one": tuning the
+                    // wrong mode is a change nobody can see happen.
+                    Some(value) => value.as_str().and_then(PowerMode::parse).ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!(
+                                "power.err.badMode",
+                                "params.mode must be one of eco, balanced, performance, unlimited"
+                            ),
+                        )
+                    })?,
+                };
+                let watts = |key: &str| match params.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!(
+                                "power.err.wattsNumber",
+                                { "key" => key },
+                                "params.{key} must be a number of watts"
+                            ),
+                        )
+                    }),
+                };
+                let pl1_watts = watts("pl1W")?;
+                let pl2_watts = watts("pl2W")?;
+                // A limit the firmware locked would be stored, applied,
+                // accepted by the kernel and then not happen. Said now, not
+                // discovered as a read-back failure on every mode change.
+                if pl1_watts.is_some() || pl2_watts.is_some() {
+                    if let Some(source) = limits::locked(&self.limits) {
+                        return Err(ModuleError::localised(
+                            ErrorKind::NotCapable,
+                            msg!(
+                                "power.err.limitsLocked",
+                                { "source" => match source {
+                                    LockSource::Msr => "msr",
+                                    LockSource::Sysfs => "sysfs",
+                                } },
+                                "the firmware has locked this machine's power limits ({source}); they cannot be changed until it reboots"
+                            ),
+                        ));
+                    }
+                }
+                let turbo = match params.get("turbo") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => Some(value.as_bool().ok_or_else(|| {
+                        ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!("power.err.turboBool", "params.turbo must be a boolean"),
+                        )
+                    })?),
+                };
 
                 let mut state = lock(&self.state);
-                let mut tuning = state.config.tuning.get(mode);
+                let previous = state.config.tuning.get(mode);
+                let mut tuning = previous;
                 let stock = state.config.stock_limits.unwrap_or_default();
 
                 // Watts on the wire, because that is what the user is
                 // shown; percentages on disk, because that is what
                 // survives being restored onto different hardware.
-                if let Some(watts) = params.get("pl1W").and_then(Value::as_f64) {
+                if let Some(watts) = pl1_watts {
                     tuning.pl1_percent = percent_of(watts, stock.pl1_uw)?;
                 }
-                if let Some(watts) = params.get("pl2W").and_then(Value::as_f64) {
+                if let Some(watts) = pl2_watts {
                     tuning.pl2_percent = percent_of(watts, stock.pl2_uw)?;
                 }
-                if let Some(turbo) = params.get("turbo").and_then(Value::as_bool) {
+                if let Some(turbo) = turbo {
                     tuning.turbo = turbo;
+                }
+                let asked = tuning.target(stock);
+                if let (Some(pl1), Some(pl2)) = (asked.pl1_uw, asked.pl2_uw) {
+                    if pl1 > pl2 {
+                        return Err(ModuleError::localised(
+                            ErrorKind::InvalidParams,
+                            msg!(
+                                "power.err.limitsCrossed",
+                                {
+                                    "pl1" => (pl1 / 1_000_000).to_string(),
+                                    "pl2" => (pl2 / 1_000_000).to_string()
+                                },
+                                "the sustained limit ({pl1} W) cannot be above the boost limit ({pl2} W)"
+                            ),
+                        ));
+                    }
+                }
+                if tuning == previous {
+                    drop(state);
+                    return Ok(self.state_json());
                 }
                 state.config.tuning.set(mode, tuning);
                 let applies_now = state.mode == mode;
@@ -698,9 +813,11 @@ impl Module for PowerModule {
                 drop(state);
 
                 // Tuning the mode the machine is in should be audible
-                // straight away, not after the next mode switch.
+                // straight away, not after the next mode switch. Not a
+                // manual choice of mode, though: editing a number must not
+                // pause the supervisor as if the user had picked one.
                 if applies_now {
-                    self.set_mode(mode, true, "tuning");
+                    self.set_mode(mode, false, "tuning");
                 }
                 Ok(self.state_json())
             }
@@ -715,12 +832,21 @@ impl Module for PowerModule {
                             msg!("power.err.enabledBool", "params.enabled must be a boolean"),
                         )
                     })?;
-                let mode = {
+                let (mode, was) = {
                     let mut state = lock(&self.state);
+                    let was = state.config.apply_to_os_profile;
                     state.config.apply_to_os_profile = enabled;
                     persist(&self.store, &mut state);
-                    state.mode
+                    (state.mode, was)
                 };
+                // Switched off: the OS profile is the power manager's again,
+                // and auto-cpufreq's override is the one piece of pyren's
+                // choice that would otherwise stay in its state.
+                if was && !enabled {
+                    if let Some(Err(e)) = backend::release_auto_cpufreq() {
+                        log_warn!("power: could not reset auto-cpufreq's override: {e}");
+                    }
+                }
                 // Re-apply so the answer takes effect now rather than at
                 // the next mode change - turning it on and seeing nothing
                 // happen would look broken.
@@ -767,75 +893,97 @@ fn spawn_supervisor(
     sensors: Sensors,
 ) {
     std::thread::spawn(move || loop {
-        let (interval, decision) = {
-            let mut guard = lock(&state);
-            let interval = Duration::from_secs(guard.config.auto.interval_secs.max(1));
-
-            if !guard.config.auto.enabled {
-                (interval, None)
-            } else {
-                let supply = PowerSupplyState::read();
-                let inputs =
-                    AutoInputs::sample(supply.on_battery, supply.battery_percent, &sensors);
-                let current = guard.mode;
-                let config = guard.config.auto.clone();
-                let decision = guard.switcher.observe(inputs, &config, current);
-
-                // A manual choice suspends *refinement*, but not the answer
-                // to the power source changing: plugging the machine in is
-                // the user speaking too, and more recently.
-                match decision {
-                    Some(d) if d.from_transition => (interval, Some(d)),
-                    other if manual_override_active(&guard) => {
-                        guard.switcher.reset();
-                        let _ = other;
-                        (interval, None)
-                    }
-                    other => (interval, other),
-                }
-            }
-        };
-
-        if let Some(decision) = decision {
-            let mode = decision.mode;
-            // The whole profile, not just its OS half: a mode has to mean
-            // the same thing whether the user picked it or the supervisor
-            // did, or "Eco" would quietly be two different settings.
-            let mut guard = lock(&state);
-            let report = apply_profile(mode, &guard.config, &paths);
-            guard.record_apply(&report);
-            if !report.is_empty() {
-                guard.mode = mode;
-                log_info!("power auto-switch -> {mode:?} ({})", decision.reason);
-                guard.last_auto_switch = Some(decision.reason);
-                // Only worth a disk write when the mode is meant to survive
-                // a reboot; otherwise the supervisor would rewrite the file
-                // every time conditions change.
-                if guard.config.restore_mode_on_start {
-                    guard.config.mode = Some(mode);
-                    persist(&store, &mut guard);
-                }
-                // The one mode change nobody asked for. An open app has no
-                // other way to learn about it, and this is the case where
-                // it is most likely to be sitting there showing the wrong
-                // one - the supervisor switches while the user watches.
-                drop(guard);
-                announce.publish(mode, "auto");
-            } else {
-                guard.last_auto_switch = Some(msg!(
-                    "power.autoSwitch.failed",
-                    { "mode" => format!("{mode:?}"), "failed" => report.failed.join("; ") },
-                    "{mode} failed: {failed}"
-                ));
-                log_warn!(
-                    "power auto-switch to {mode:?} failed: {}",
-                    report.failed.join("; ")
-                );
-            }
-        }
-
+        // One pass at a time behind `catch_unwind`: a panic in a sensor
+        // read or a parse must cost one tick, not auto-switching for the
+        // rest of the daemon's life. The lock recovers from poisoning, so
+        // the state a panicking pass held is still usable.
+        let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            supervise_once(&state, &store, &paths, &announce, &sensors)
+        }));
+        let interval = pass.unwrap_or_else(|_| {
+            log_warn!("power supervisor pass panicked; carrying on at the next tick");
+            Duration::from_secs(lock(&state).config.auto.interval_secs.max(1))
+        });
         std::thread::sleep(interval);
     });
+}
+
+/// One supervisor pass; returns how long to wait before the next.
+fn supervise_once(
+    state: &Arc<Mutex<State>>,
+    store: &ConfigStore,
+    paths: &limits::LimitPaths,
+    announce: &Announcer,
+    sensors: &Sensors,
+) -> Duration {
+    let (interval, decision) = {
+        let mut guard = lock(state);
+        let interval = Duration::from_secs(guard.config.auto.interval_secs.max(1));
+
+        if !guard.config.auto.enabled {
+            (interval, None)
+        } else {
+            let supply = PowerSupplyState::read();
+            let inputs = AutoInputs::sample(supply.on_battery, supply.battery_percent, sensors);
+            let current = guard.mode;
+            let config = guard.config.auto.clone();
+            let decision = guard.switcher.observe(inputs, &config, current);
+
+            // A manual choice suspends *refinement*, but not the answer
+            // to the power source changing: plugging the machine in is
+            // the user speaking too, and more recently.
+            match decision {
+                Some(d) if d.from_transition => (interval, Some(d)),
+                other if manual_override_active(&guard) => {
+                    guard.switcher.reset();
+                    let _ = other;
+                    (interval, None)
+                }
+                other => (interval, other),
+            }
+        }
+    };
+
+    if let Some(decision) = decision {
+        let mode = decision.mode;
+        // The whole profile, not just its OS half: a mode has to mean
+        // the same thing whether the user picked it or the supervisor
+        // did, or "Eco" would quietly be two different settings.
+        let before = backend::read_state();
+        let mut guard = lock(state);
+        let report = apply_profile(&before, mode, &mut guard.config, paths);
+        guard.record_apply(&report);
+        if !report.is_empty() {
+            guard.mode = mode;
+            log_info!("power auto-switch -> {mode:?} ({})", decision.reason);
+            guard.last_auto_switch = Some(decision.reason);
+            // Only worth a disk write when the mode is meant to survive
+            // a reboot; otherwise the supervisor would rewrite the file
+            // every time conditions change.
+            if guard.config.restore_mode_on_start {
+                guard.config.mode = Some(mode);
+                persist(store, &mut guard);
+            }
+            // The one mode change nobody asked for. An open app has no
+            // other way to learn about it, and this is the case where
+            // it is most likely to be sitting there showing the wrong
+            // one - the supervisor switches while the user watches.
+            drop(guard);
+            announce.publish(mode, "auto");
+        } else {
+            guard.last_auto_switch = Some(msg!(
+                "power.autoSwitch.failed",
+                { "mode" => format!("{mode:?}"), "failed" => report.failed.join("; ") },
+                "{mode} failed: {failed}"
+            ));
+            log_warn!(
+                "power auto-switch to {mode:?} failed: {}",
+                report.failed.join("; ")
+            );
+        }
+    }
+
+    interval
 }
 
 /// The watcher loop: [`watch_once`] every [`watch::INTERVAL`], for as long
@@ -914,7 +1062,7 @@ fn watch_once(
     let from = guard.mode;
     // The envelope belongs to the mode, whoever picked it; the OS profile
     // is left alone - see `watch` for why pushing it back is a loop.
-    let envelope = apply_envelope(mode, &guard.config, paths);
+    let envelope = apply_envelope(mode, &mut guard.config, paths);
     guard.mode = mode;
     guard.config.mode = Some(mode);
     guard.expected = watch::Knobs {
@@ -964,8 +1112,18 @@ fn manual_override_active(state: &State) -> bool {
 /// fans spin less because there is less heat, which is the honest way to
 /// get there; reaching across into the fan module to also command a fan
 /// mode would put two owners on one piece of hardware.
-fn apply_profile(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPaths) -> ApplyReport {
-    let mut report = backend::apply(mode, config.apply_to_os_profile);
+fn apply_profile(
+    before: &BackendState,
+    mode: PowerMode,
+    config: &mut PowerConfig,
+    paths: &limits::LimitPaths,
+) -> ApplyReport {
+    let mut report = backend::apply(before, mode, config.apply_to_os_profile);
+    // The firmware refused the mode and the OS half was put back: capping
+    // the CPU for a mode the machine is not in would be a third state.
+    if report.rolled_back {
+        return report;
+    }
     let envelope = apply_envelope(mode, config, paths);
     report.applied.extend(envelope.applied);
     report.failed.extend(envelope.failed);
@@ -981,19 +1139,29 @@ fn apply_profile(mode: PowerMode, config: &PowerConfig, paths: &limits::LimitPat
 /// each knob it was meant to set and did not fail to: a value the kernel
 /// clamped is the value to watch, and one this daemon could not write is
 /// not its to watch at all.
+///
+/// A mode nobody tuned writes nothing at all, unless the envelope on the
+/// machine is still one this daemon wrote for a tuned mode - then the stock
+/// envelope is put back once, and the knobs are the firmware's again (see
+/// `PowerConfig::envelope_owned`).
 fn apply_envelope(
     mode: PowerMode,
-    config: &PowerConfig,
+    config: &mut PowerConfig,
     paths: &limits::LimitPaths,
 ) -> ApplyReport {
     let mut report = ApplyReport {
         applied: Vec::new(),
         failed: Vec::new(),
         expected: watch::Knobs::default(),
+        rolled_back: false,
     };
 
-    let stock = config.stock_limits.unwrap_or_default();
     let tuning = config.tuning.get(mode);
+    if tuning.is_default() && !config.envelope_owned {
+        return report;
+    }
+
+    let stock = config.stock_limits.unwrap_or_default();
     let target = tuning.target(stock).clamp_to_stock(stock);
 
     if !target.is_empty() {
@@ -1023,7 +1191,51 @@ fn apply_envelope(
         None => report.expected.turbo = limits::read_turbo(paths),
     }
 
+    // Owned while a tuned mode is in force; handed back once the stock
+    // envelope is really back, and kept otherwise so the next mode change
+    // tries again rather than leaving a cap nobody will ever lift.
+    config.envelope_owned = !tuning.is_default() || !report.failed.is_empty();
     report
+}
+
+/// The stock envelope to trust: [`highest`] of what is on file and what the
+/// machine reads, after throwing out what cannot be a real ceiling.
+///
+/// - Values no laptop has (see [`Limits::without_absurd`]) are dropped from
+///   both, so a hand-edited `pl1Uw: 200000000000` is not a licence.
+/// - A stored PL4 above the one read now is not believed: nothing here
+///   ever lowers PL4, so the firmware's own value is the reading.
+/// - PL1 and PL2 are held under PL4, and PL1 under PL2
+///   ([`Limits::ordered`]): a sustained limit above the instantaneous one
+///   is a corrupt file or another tool's leftovers, not what shipped.
+///
+/// `constraint_*_max_power_uw` is deliberately not a ceiling here either;
+/// see [`Limits::clamp_to_stock`] for the machine where it reads a third of
+/// the real limit.
+fn sane_stock(stored: Option<Limits>, observed: Limits) -> Limits {
+    let observed = observed.without_absurd();
+    let mut stored = stored.unwrap_or_default().without_absurd();
+    if let (Some(on_file), Some(now)) = (stored.pl4_uw, observed.pl4_uw) {
+        stored.pl4_uw = Some(on_file.min(now));
+    }
+    highest(Some(stored), observed).ordered()
+}
+
+/// The mode a restore at boot actually applies.
+///
+/// A machine that booted on battery does not get Performance or Unlimited
+/// back just because that was the last mode on mains: with nobody at the
+/// keyboard yet, the battery preference is the honest guess, and the
+/// supervisor or the user can raise it within seconds.
+fn boot_mode(saved: PowerMode, config: &PowerConfig, on_battery: Option<bool>) -> PowerMode {
+    match (saved, on_battery) {
+        (PowerMode::Performance | PowerMode::Unlimited, Some(true)) => {
+            let battery = config.auto.preferred(true);
+            log_info!("power: booted on battery, restoring {battery:?} instead of {saved:?}");
+            battery
+        }
+        _ => saved,
+    }
 }
 
 /// Keeps the larger of each recorded limit.
@@ -1180,6 +1392,78 @@ mod tests {
         );
     }
 
+    /// A hand-edited or corrupt `stockLimits` is not a licence: an absurd
+    /// value is dropped, a PL4 above the machine's own is not believed, and
+    /// PL1/PL2 are held under it.
+    #[test]
+    fn a_stored_ceiling_no_machine_could_have_is_not_trusted() {
+        let observed = Limits {
+            pl1_uw: Some(45 * W),
+            pl2_uw: Some(60 * W),
+            pl4_uw: Some(168 * W),
+        };
+        let edited = Limits {
+            pl1_uw: Some(200 * W),
+            pl2_uw: Some(90_000 * W),
+            pl4_uw: Some(400 * W),
+        };
+        assert_eq!(
+            sane_stock(Some(edited), observed),
+            Limits {
+                // The absurd PL2 on file is dropped for the 60 W read now,
+                // and the stored 200 W PL1 is lowered under it.
+                pl1_uw: Some(60 * W),
+                pl2_uw: Some(60 * W),
+                pl4_uw: Some(168 * W),
+            }
+        );
+
+        let crossed = Limits {
+            pl1_uw: Some(90 * W),
+            pl2_uw: Some(77 * W),
+            pl4_uw: None,
+        };
+        assert_eq!(
+            sane_stock(Some(crossed), Limits::default()).pl1_uw,
+            Some(77 * W),
+            "PL1 above PL2 is lowered to it"
+        );
+    }
+
+    #[test]
+    fn booting_on_battery_does_not_restore_a_mains_only_mode() {
+        let config = PowerConfig::default();
+        let battery = config.auto.preferred(true);
+        assert_eq!(
+            boot_mode(PowerMode::Unlimited, &config, Some(true)),
+            battery
+        );
+        assert_eq!(
+            boot_mode(PowerMode::Performance, &config, Some(true)),
+            battery
+        );
+        assert_eq!(
+            boot_mode(PowerMode::Performance, &config, Some(false)),
+            PowerMode::Performance
+        );
+        assert_eq!(
+            boot_mode(PowerMode::Eco, &config, Some(true)),
+            PowerMode::Eco
+        );
+        assert_eq!(
+            boot_mode(PowerMode::Unlimited, &config, None),
+            PowerMode::Unlimited,
+            "a desktop has no battery to protect"
+        );
+    }
+
+    #[test]
+    fn the_os_profile_is_left_to_its_manager_unless_asked() {
+        assert!(!PowerConfig::default().apply_to_os_profile);
+        let old: PowerConfig = serde_json::from_value(json!({ "applyToOsProfile": true })).unwrap();
+        assert!(old.apply_to_os_profile, "a stored choice is kept");
+    }
+
     #[test]
     fn watts_become_a_percentage_of_this_machines_own_limit() {
         assert_eq!(percent_of(38.5, Some(77 * W)).unwrap(), 50);
@@ -1216,8 +1500,14 @@ mod tests {
         std::env::set_var("PYREN_CPU_ROOT", nowhere.join("cpu"));
         std::env::set_var("PYREN_TOOLS_DIR", nowhere.join("bin"));
 
-        let config = PowerConfig::default();
-        let report = apply_profile(PowerMode::Eco, &config, &limits::LimitPaths::default());
+        let mut config = PowerConfig::default();
+        let before = backend::read_state();
+        let report = apply_profile(
+            &before,
+            PowerMode::Eco,
+            &mut config,
+            &limits::LimitPaths::default(),
+        );
 
         assert!(!report.applied.iter().any(|a| a.starts_with("PL")));
         assert!(!report.applied.iter().any(|a| a.starts_with("turbo")));

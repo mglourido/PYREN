@@ -57,7 +57,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use pyren_core::{msg, Msg};
+use pyren_core::{msg, process, Msg};
 
 use crate::nvml;
 use crate::plan::{ClockLock, Range};
@@ -225,13 +225,14 @@ impl Nvidia {
         if !self.smi {
             return Err(NvidiaError::NotInstalled("nvidia-smi"));
         }
-        let output = Command::new("nvidia-smi")
-            .args(["-i", &index.to_string(), argument])
-            .output()
-            .map_err(|e| NvidiaError::Unreadable {
-                what: "nvidia-smi",
-                detail: e.to_string(),
-            })?;
+        let output = process::output_within(
+            Command::new("nvidia-smi").args(["-i", &index.to_string(), argument]),
+            NVIDIA_TOOL_TIMEOUT,
+        )
+        .map_err(|e| NvidiaError::Unreadable {
+            what: "nvidia-smi",
+            detail: e.to_string(),
+        })?;
         if output.status.success() {
             return Ok(());
         }
@@ -471,14 +472,14 @@ impl Nvidia {
         attribute: &str,
     ) -> Result<(i32, Option<Range>), NvidiaError> {
         let mut command = self.settings_command()?;
-        let output = command
-            .arg("-q")
-            .arg(format!("[gpu:{index}]/{attribute}"))
-            .output()
-            .map_err(|e| NvidiaError::Unreadable {
-                what: "nvidia-settings",
-                detail: e.to_string(),
-            })?;
+        let output = process::output_within(
+            command.arg("-q").arg(format!("[gpu:{index}]/{attribute}")),
+            NVIDIA_TOOL_TIMEOUT,
+        )
+        .map_err(|e| NvidiaError::Unreadable {
+            what: "nvidia-settings",
+            detail: e.to_string(),
+        })?;
 
         // nvidia-settings exits 0 even when it prints only an error, so the
         // status says nothing and the text is what has to be read.
@@ -494,14 +495,16 @@ impl Nvidia {
 
     fn write_attribute(&self, index: u32, attribute: &str, value: i32) -> Result<(), NvidiaError> {
         let mut command = self.settings_command()?;
-        let output = command
-            .arg("-a")
-            .arg(format!("[gpu:{index}]/{attribute}={value}"))
-            .output()
-            .map_err(|e| NvidiaError::Unreadable {
-                what: "nvidia-settings",
-                detail: e.to_string(),
-            })?;
+        let output = process::output_within(
+            command
+                .arg("-a")
+                .arg(format!("[gpu:{index}]/{attribute}={value}")),
+            NVIDIA_TOOL_TIMEOUT,
+        )
+        .map_err(|e| NvidiaError::Unreadable {
+            what: "nvidia-settings",
+            detail: e.to_string(),
+        })?;
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -781,8 +784,16 @@ fn which(program: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// How long `nvidia-smi` or `nvidia-settings` may take before it is killed.
+///
+/// Longer than the power backend's ceiling: both start cold in a second or
+/// two when the driver's persistence mode is off. What it guards against is
+/// a driver mid-reset, where they wait indefinitely - and this is called
+/// with the overclock state lock held.
+const NVIDIA_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn run_ok(command: &mut Command) -> Option<String> {
-    let output = command.output().ok()?;
+    let output = process::output_within(command, NVIDIA_TOOL_TIMEOUT).ok()?;
     output
         .status
         .success()
