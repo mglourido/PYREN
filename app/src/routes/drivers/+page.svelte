@@ -110,6 +110,16 @@
     return oldRpm !== null && newRpm !== null && oldRpm === newRpm ? "cal-green" : "cal-yellow";
   }
 
+  /** True only when both rows are an exact match - the same "both green"
+   *  the table already colors row by row. Anything else surfaces the
+   *  recalibrate prompt below the table. */
+  function calibrationAllGreen(baseline: { maxRpm: number | null; minRpm: number | null }, fresh: FanCalibration): boolean {
+    return (
+      calibrationClass(baseline.maxRpm, fresh.fanMaxRpm) === "cal-green" &&
+      calibrationClass(baseline.minRpm, fresh.fanStableMinRpm) === "cal-green"
+    );
+  }
+
   // --- Admin mode --------------------------------------------------------
   //
   // Most "Pyren is broken" is missing privilege, and from the UI the two
@@ -442,6 +452,26 @@
     <hr class="sep" />
     <div class="check">
       <div class="controls">
+        <button class="run" onclick={checkRgbKeyboard} disabled={rgbChecking}>
+          <Icon name="refresh" size={15} />
+          {rgbChecking ? t("diagnostics.checkingRgb") : t("diagnostics.checkRgb")}
+        </button>
+      </div>
+
+      {#if rgbResult}
+        <details class="result {rgbResult.ok ? '' : 'warn'}" open>
+          <summary>{t("diagnostics.viewResult")}</summary>
+          <p class="notice {rgbResult.ok ? '' : 'warn'}">{rgbResult.text}</p>
+        </details>
+      {/if}
+
+      <p class="hint">{t("diagnostics.checkRgbHint")}</p>
+    </div>
+  </Panel>
+
+  <Panel title={t("diagnostics.calibrationPanelTitle")}>
+    <div class="check">
+      <div class="controls">
         <button
           class="run"
           onclick={runCalibrationCheck}
@@ -483,28 +513,19 @@
             </tbody>
           </table>
         </details>
+
+        {#if !calibrationAllGreen(calibrationBaseline, calibration)}
+          <p class="notice">{t("diagnostics.calibrationMismatchHint")}</p>
+          <div class="controls">
+            <button class="run" onclick={runCalibrationCheck} disabled={calibrating}>
+              <Icon name="refresh" size={15} />
+              {t("diagnostics.calibrationRecalibrate")}
+            </button>
+          </div>
+        {/if}
       {/if}
 
       <p class="hint">{t("diagnostics.calibrationHint")}</p>
-    </div>
-
-    <hr class="sep" />
-    <div class="check">
-      <div class="controls">
-        <button class="run" onclick={checkRgbKeyboard} disabled={rgbChecking}>
-          <Icon name="refresh" size={15} />
-          {rgbChecking ? t("diagnostics.checkingRgb") : t("diagnostics.checkRgb")}
-        </button>
-      </div>
-
-      {#if rgbResult}
-        <details class="result {rgbResult.ok ? '' : 'warn'}" open>
-          <summary>{t("diagnostics.viewResult")}</summary>
-          <p class="notice {rgbResult.ok ? '' : 'warn'}">{rgbResult.text}</p>
-        </details>
-      {/if}
-
-      <p class="hint">{t("diagnostics.checkRgbHint")}</p>
     </div>
   </Panel>
 

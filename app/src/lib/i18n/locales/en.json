@@ -622,6 +622,7 @@
   "diagnostics": {
     "title": "Hardware check",
     "checkPanelTitle": "Compatibility",
+    "calibrationPanelTitle": "Calibration",
     "runCheck": "Check driver compatibility",
     "running": "Checking...",
     "allowWrites": "Also test that the fan accepts writes",
@@ -641,6 +642,8 @@
     "calibrationUnknown": "—",
     "calibrationSaved": "Saved",
     "calibrationNow": "Just measured",
+    "calibrationMismatchHint": "You can recalibrate if you trust this new reading. Recalibrating matters if you've lifted the official driver's limit: the minimum RPM then sits close to the fans' real stall speed, and skipping the recalibration can make them fail.",
+    "calibrationRecalibrate": "Recalibrate",
     "blockedByCalibration": "Disabled while the calibration check below is running: both hold the fans, and only one may at a time.",
     "blockedByWriteCheck": "Disabled while the driver check above is running with writes enabled: both hold the fans, and only one may at a time.",
     "verdict": {

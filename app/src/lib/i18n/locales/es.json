@@ -622,6 +622,7 @@
   "diagnostics": {
     "title": "Comprobación de hardware",
     "checkPanelTitle": "Compatibilidad",
+    "calibrationPanelTitle": "Calibración",
     "runCheck": "Comprobar compatibilidad con el driver",
     "running": "Comprobando...",
     "allowWrites": "Probar también que el ventilador acepta escrituras",
@@ -641,6 +642,8 @@
     "calibrationUnknown": "—",
     "calibrationSaved": "Guardado",
     "calibrationNow": "Medido ahora",
+    "calibrationMismatchHint": "Se puede recalibrar si consideras que este resultado es fiable. Recalibrar es importante si desactivas el límite puesto por el driver oficial, ya que los RPM mínimos se acercan mucho a los RPM mínimos de funcionamiento de los ventiladores, y no recalibrarlo puede hacer que fallen.",
+    "calibrationRecalibrate": "Recalibrar",
     "blockedByCalibration": "Deshabilitado mientras se ejecuta la comprobación de calibración de abajo: ambas usan los ventiladores, y solo una puede hacerlo a la vez.",
     "blockedByWriteCheck": "Deshabilitado mientras se ejecuta la comprobación del driver de arriba con escrituras activadas: ambas usan los ventiladores, y solo una puede hacerlo a la vez.",
     "verdict": {
