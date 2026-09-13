@@ -70,11 +70,17 @@ stop_leftovers() {
         esac
         comm=$(cat "$proc/comm" 2>/dev/null) || continue
         for name in "$@"; do
-            if [ "$comm" = "$name" ]; then
-                kill -TERM "$pid" 2>/dev/null &&
-                    say "  stopped $comm (pid $pid, left over from before)"
-                break
-            fi
+            # Unquoted: lets a caller pass a glob (e.g. "node*"). Modern
+            # Node renames its main thread to "<exe>-MainThread" and /proc
+            # truncates comm to 15 bytes, so a plain "node" is reported as
+            # "node-MainThread" and would never match here as a literal.
+            case "$comm" in
+                $name)
+                    kill -TERM "$pid" 2>/dev/null &&
+                        say "  stopped $comm (pid $pid, left over from before)"
+                    break
+                    ;;
+            esac
         done
     done
 }
@@ -83,7 +89,7 @@ say "cleaning up leftovers from a previous run"
 stop_leftovers "$ROOT/daemon" cargo rustc
 stop_leftovers "$ROOT/osd" cargo rustc
 stop_leftovers "$ROOT/app/src-tauri" cargo rustc pyren
-stop_leftovers "$ROOT/app" bun node vite
+stop_leftovers "$ROOT/app" bun 'node*' vite
 
 # Belt and braces for the vite dev server specifically: it is the one
 # leftover that does not just waste a cycle but actively breaks the next
@@ -107,16 +113,22 @@ say "widget"
 # world-readable under /proc - without being able to read its cwd, so
 # this one is matched by binary path rather than `stop_leftovers`, and
 # gets the one sudo prompt it actually needs, not the daemon's own.
+# Checked unconditionally, not only when no unit is installed: a daemon
+# started by hand for a quick test (see --help) can otherwise keep running
+# right alongside a freshly restarted service, both fighting over the same
+# socket, with whichever one loses left silently answering with the old
+# build - the exact failure this script exists to prevent.
+dev_daemon_pid=$(pgrep -f "^$ROOT/daemon/target/(debug|release)/pyren-daemon\$" 2>/dev/null | head -1 || true)
+if [ -n "$dev_daemon_pid" ]; then
+    say "stopping a hand-run pyren-daemon left over from before (needs root)"
+    sudo kill -TERM "$dev_daemon_pid" 2>/dev/null || true
+fi
+
 if systemctl list-unit-files "$UNIT" >/dev/null 2>&1 &&
     systemctl cat "$UNIT" >/dev/null 2>&1; then
     say "restarting $UNIT (needs root)"
     sudo systemctl restart "$UNIT"
 else
-    dev_daemon_pid=$(pgrep -f "^$ROOT/daemon/target/(debug|release)/pyren-daemon\$" 2>/dev/null | head -1 || true)
-    if [ -n "$dev_daemon_pid" ]; then
-        say "stopping the old hand-run pyren-daemon (needs root)"
-        sudo kill -TERM "$dev_daemon_pid" 2>/dev/null || true
-    fi
     say "no $UNIT installed - restart your daemon yourself"
     echo "    cd daemon && sudo -E cargo run -p pyren-daemon"
 fi
