@@ -224,6 +224,11 @@ fn fan_set_keep_driver_floor(enabled: bool) -> Result<Value, String> {
 }
 
 #[tauri::command(async)]
+fn fan_set_thermal_safety_checker(enabled: bool) -> Result<Value, String> {
+    call_daemon("fan", "setThermalSafetyChecker", json!({ "enabled": enabled }))
+}
+
+#[tauri::command(async)]
 fn fan_clear_floor_notices() -> Result<Value, String> {
     call_daemon("fan", "clearFloorNotices", json!({}))
 }
@@ -407,6 +412,11 @@ fn rgb_power_off() -> Result<Value, String> {
 #[tauri::command(async)]
 fn rgb_set_power_animation(enabled: bool) -> Result<Value, String> {
     call_daemon("rgb", "setPowerAnimation", json!({ "enabled": enabled }))
+}
+
+#[tauri::command(async)]
+fn rgb_set_allow_truncated_four_zone(enabled: bool) -> Result<Value, String> {
+    call_daemon("rgb", "setAllowTruncatedFourZone", json!({ "enabled": enabled }))
 }
 
 #[tauri::command(async)]
@@ -1019,6 +1029,7 @@ pub fn run() {
             fan_set_curve,
             fan_set_restore_on_start,
             fan_set_keep_driver_floor,
+            fan_set_thermal_safety_checker,
             fan_clear_floor_notices,
             fan_cleaner_status,
             fan_start_cleaning,
@@ -1060,6 +1071,7 @@ pub fn run() {
             rgb_power_on,
             rgb_power_off,
             rgb_set_power_animation,
+            rgb_set_allow_truncated_four_zone,
             rgb_set_battery_fps,
             installer_inspect,
             installer_autodetect,

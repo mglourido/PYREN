@@ -99,7 +99,7 @@ export const LIMITS = {
 function defaults(): HardwareState {
   return {
     powerMode: "balanced",
-    applyToOsPowerProfile: true,
+    applyToOsPowerProfile: false,
     autoEco: true,
     autoPerformance: true,
     fanMode: "auto",
@@ -567,6 +567,10 @@ class HardwareStore {
 
   async setKeepDriverFloor(enabled: boolean) {
     await this.pushFan(() => daemon.setKeepDriverFloor(enabled));
+  }
+
+  async setThermalSafetyChecker(enabled: boolean) {
+    await this.pushFan(() => daemon.setThermalSafetyChecker(enabled));
   }
 
   /**

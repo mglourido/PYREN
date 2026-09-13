@@ -53,6 +53,18 @@ export type FanCurvePoint = { tempC: number; percent: number };
 /** Which temperature the curve follows. */
 export type FanReferenceSensor = "cpu" | "gpu";
 
+/** `fan.getStatus().safety`: the daemon's thermal guards, live. */
+export type FanSafety = {
+  checker: "idle" | "watching" | "answered" | "firmware" | "max";
+  critical: boolean;
+  sensorFailed: boolean;
+  stalled: boolean;
+  holding: "auto" | "max" | null;
+  hotC: number;
+  coolC: number;
+  criticalC: number;
+};
+
 /**
  * One time the daemon's stall watch raised Pyren's fan floor because the
  * fans kept giving out at it. The daemon persists these (newest first,
@@ -121,6 +133,13 @@ export type FanStatus = {
    *  and it does nothing here" rather than only hiding the control. */
   speedControl: FanSpeedControl;
   restoreModeOnStart: boolean;
+  /** The thermal safety checker: hot and the fans not answering hands them
+   *  to the firmware, then to full speed, until the machine cools. */
+  thermalSafetyChecker: boolean;
+  /** What the thermal guards are doing right now. `holding` is the mode a
+   *  guard has put the hardware in over the setting; `mode` stays the
+   *  setting. */
+  safety: FanSafety;
   /** Whether a cleaning cycle owns the fans - through both transitions,
    *  not only while they are actually reversed. `fanCleanerStatus` is the
    *  detail; this is here so any page can grey out a fan control. */
@@ -245,6 +264,10 @@ export type RgbDialectProbe = {
   asked: boolean;
   /** Translatable - render with `tm()`. */
   detail: Msg;
+  /** How a write goes out, where the dialect has more than one way:
+   *  `"truncated"` is fourZone writing through a reply `acpi_call` cut
+   *  short, with the bytes it cut off sent as zero. Absent otherwise. */
+  writeMode?: "full" | "truncated";
 };
 
 /**
@@ -347,14 +370,23 @@ export type RgbStatus = {
    *  effect that stopped on write failures (see `error`) or one put out
    *  by `powerOff` (see `dark`). */
   effectRunning: boolean;
+  /** The rate asked for. */
   fps: number;
+  /** What an effect actually gets, after the active dialect's cap, the
+   *  battery setting and the lid. */
+  effectiveFps: number;
   powerAnimation: boolean;
+  /** Whether fourZone may write through a reply `acpi_call` cut short. */
+  allowTruncatedFourZone: boolean;
+  /** How the active dialect writes: `"truncated"` means the setting above
+   *  is in use right now. Null where the dialect has only one way. */
+  writeMode: "full" | "truncated" | null;
   /** Put out by `powerOff` and not yet brought back. */
   dark: boolean;
   /** An effect's frame rate on battery; 0 pauses it there. */
   batteryFps: number;
   /** Why an effect is running slower than `fps`, or not at all. */
-  throttled: "brightness" | "lid" | "battery" | null;
+  throttled: "brightness" | "lid" | "battery" | "dialect" | null;
 };
 
 export type RgbEffectKind = "breathing" | "spectrum" | "rainbowWave" | "wave" | "fade";
@@ -1153,6 +1185,7 @@ const DAEMON_ROUTES: Record<
   fan_set_curve: { module: "fan", method: "setCurve" },
   fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
   fan_set_keep_driver_floor: { module: "fan", method: "setKeepDriverFloor" },
+  fan_set_thermal_safety_checker: { module: "fan", method: "setThermalSafetyChecker" },
   fan_clear_floor_notices: { module: "fan", method: "clearFloorNotices" },
   fan_cleaner_status: { module: "fan", method: "cleanerStatus" },
   fan_start_cleaning: { module: "fan", method: "startCleaning" },
@@ -1406,6 +1439,8 @@ export const daemon = {
   /** Keep the driver's floor (true) or use the lower one Pyren measured. */
   setKeepDriverFloor: (enabled: boolean) =>
     call<FanStatus>("fan_set_keep_driver_floor", { enabled }),
+  setThermalSafetyChecker: (enabled: boolean) =>
+    call<FanStatus>("fan_set_thermal_safety_checker", { enabled }),
   /** Empties the daemon's log of automatic floor raises. */
   clearFloorNotices: () => call<FanStatus>("fan_clear_floor_notices"),
   /** `refresh` re-asks the firmware what it can do (two ACPI calls); the
@@ -1520,6 +1555,8 @@ export const daemon = {
   rgbPowerOff: () => call<RgbStatus>("rgb_power_off"),
   setRgbPowerAnimation: (enabled: boolean) =>
     call<RgbStatus>("rgb_set_power_animation", { enabled }),
+  setRgbAllowTruncatedFourZone: (enabled: boolean) =>
+    call<RgbStatus>("rgb_set_allow_truncated_four_zone", { enabled }),
   setRgbBatteryFps: (fps: number) => call<RgbStatus>("rgb_set_battery_fps", { fps }),
   /** What this machine has, and whether the patched driver is needed. */
   installerInspect: () => call<InstallerInspection>("installer_inspect"),

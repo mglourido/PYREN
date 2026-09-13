@@ -340,6 +340,22 @@ fn main() {
     // this a daemon that starts in Eco and is left alone would follow the
     // shared curve until something moved the mode.
     fan.set_active_profile(power.mode().as_str());
+    // The fan safety checker's idea of "hot" is the power supervisor's
+    // "hot at" / "cooled below", read from its file rather than asked of the
+    // module, for the same reason as above: neither crate knows the other.
+    {
+        let power_config = power.config_path();
+        fan.set_heat_source(Box::new(move || {
+            let text = std::fs::read_to_string(&power_config).ok()?;
+            let file: serde_json::Value = serde_json::from_str(&text).ok()?;
+            let auto = file.get("auto")?;
+            Some((
+                auto.get("tempHighC")?.as_f64()?,
+                auto.get("tempLowC")?.as_f64()?,
+            ))
+        }));
+    }
+    let fan_at_exit = fan.clone();
 
     registry.register(Box::new(system));
     registry.register(Box::new(power.clone()));
@@ -369,6 +385,7 @@ fn main() {
     // that frame on the keys - and a shutdown is when the power-off sweep
     // plays. Whether this is a shutdown or only the service stopping is
     // asked of systemd, because SIGTERM is the same signal either way.
+    let power_at_exit = power.clone();
     pyren_core::signals::on_termination(move |signal| {
         let stopping = pyren_core::signals::system_is_stopping();
         log_info!(
@@ -381,6 +398,11 @@ fn main() {
             }
         );
         rgb.on_exit(stopping);
+        // No destructor runs after this handler: a curve's low speed or a
+        // calibration's near-stall floor would stay on the fans otherwise.
+        fan_at_exit.on_exit();
+        // auto-cpufreq keeps pyren's override in its own state otherwise.
+        power_at_exit.on_exit();
     });
 
     // The shortcut, once somebody has taught the daemon which key it is.

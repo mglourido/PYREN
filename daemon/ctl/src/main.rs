@@ -72,6 +72,10 @@ FANS
                                in. --profile shared edits the fallback used
                                where no profile has been announced
   fan restore-on-start <on|off>
+  fan safety-checker <on|off>  when the machine is hot and the fans do not
+                               speed up, give them to the firmware, then
+                               full speed until it cools, then put the fan
+                               mode back. On by default
   fan floor <driver|pyren>     the slowest speed the fans are commanded
                                at: the driver's (its fan table's, 1800 rpm
                                on board 8D2F) or Pyren's, which
@@ -116,6 +120,8 @@ LIGHTS
   rgb dialect <auto|id>        pin one by hand, e.g. rgb dialect fourZone
   rgb restore-on-start <on|off>
                                'set' and 'zones' also take --brightness 0-100
+  rgb truncated-four-zone <on|off>
+                               allow four-zone writes through a cut acpi_call reply
   rgb effects                  the effects there are, and their defaults
   rgb effect <kind>            run one: breathing, spectrum, rainbowWave,
                                wave or fade. Takes --colors c,c,...
@@ -393,6 +399,18 @@ fn run(command: &args::Command) -> Run {
                 print_fan,
             )
         }
+        ["fan", "safety-checker", value] => {
+            let enabled = word_switch("safety-checker", value)?;
+            show(
+                command,
+                client::call(
+                    "fan",
+                    "setThermalSafetyChecker",
+                    json!({ "enabled": enabled }),
+                )?,
+                print_fan,
+            )
+        }
         ["fan", "floor", which] => {
             let keep = match *which {
                 "driver" => true,
@@ -624,6 +642,18 @@ fn run(command: &args::Command) -> Run {
             show(
                 command,
                 client::call("rgb", "setRestoreOnStart", json!({ "enabled": enabled }))?,
+                print_rgb,
+            )
+        }
+        ["rgb", "truncated-four-zone", value] => {
+            let enabled = word_switch("truncated-four-zone", value)?;
+            show(
+                command,
+                client::call(
+                    "rgb",
+                    "setAllowTruncatedFourZone",
+                    json!({ "enabled": enabled }),
+                )?,
                 print_rgb,
             )
         }
@@ -1486,6 +1516,17 @@ fn print_fan(status: &Value) {
                 rpm_of("pyrenMinRpm"),
                 rpm_of("slowestHeldRpm")
             ),
+        );
+    }
+    if let Some(enabled) = status.get("thermalSafetyChecker").and_then(Value::as_bool) {
+        let holding = status
+            .pointer("/safety/holding")
+            .and_then(Value::as_str)
+            .map(|mode| format!("; a guard is holding the fans at {mode}"))
+            .unwrap_or_default();
+        row(
+            "safety",
+            format!("checker {}{holding}", if enabled { "on" } else { "off" }),
         );
     }
     if status.get("fansReleased").and_then(Value::as_bool) == Some(true) {

@@ -299,12 +299,16 @@
     "protocol": "Protocol",
     "protocolLead": "There is no single OMEN lighting protocol. Three unrelated ways of talking to these lights exist, and which one a laptop speaks is not decided by its model name — so all three are tried and the first that answers is used.",
     "dialect": "Which protocol",
-    "dialectHint": "Automatic uses the first protocol that answers a read. Pick one by hand when the automatic choice is wrong: a pinned protocol is used whether or not it answered, because you can see the lights and this app can only ask.",
+    "dialectHint": "Automatic uses the first protocol that answers a read. Pick one by hand when the automatic choice is wrong: a pinned protocol still has to answer its read, so Pyren never sends a protocol the firmware refused.",
     "autoUsing": "Automatic — using {dialect}",
     "autoNothing": "Automatic — nothing answered",
     "noAnswer": "no answer",
     "wrongDialect": "Your firmware has a lighting command, and none of the three protocols this build knows is the one it wants. That is a machine with lights this app cannot speak to yet, not a machine without them — pinning a protocol by hand below is the next thing to try.",
-    "zoneFourUnreadable": "Zone 4 always reads back black on this protocol. The colour sent to it is real — the lights show it — but acpi_call cuts the firmware's reply short one byte before zone 4 begins, so it cannot be read back. Installing a kernel driver that publishes the zones as files removes the limit.",
+    "zoneFourUnreadable": "Only zones 1–3 can be read back on this protocol: acpi_call cuts the firmware's reply short one byte before zone 4 begins. Whatever was sent to zone 4 is still on the keyboard. Installing a kernel driver that publishes the zones as files removes the limit.",
+    "allowTruncatedFourZone": "Write through cut-short replies",
+    "allowTruncatedFourZoneHint": "Four-zone keyboards are written by reading the firmware's 128-byte settings buffer, changing the colours and sending it back. On many machines acpi_call returns only the first 34 bytes, so the other 94 cannot be read and are sent as zero. Every byte that can be seen there is zero, so this is very likely harmless — but it is not verified. On by default, because without it these keyboards cannot be lit without a kernel module. Off, colours are only written where the whole buffer was read.",
+    "truncatedWrites": "Colours are being written through a cut-short firmware reply: the bytes acpi_call cut off are sent as zero. Turn off “Write through cut-short replies” to stop, or install a kernel driver that publishes the zones as files.",
+    "throttledDialect": "This protocol is sent at most {fps} fps, so the effect runs at that rate.",
     "effect": "Effect",
     "effectKind": "Which effect",
     "effectNames": {
@@ -523,6 +527,8 @@
     "unitPerCore": "% per core",
     "keepFanMode": "Keep the fan control mode across restarts",
     "keepFanModeHint": "Off by default. On, the daemon remembers whichever fan mode was in force when it stopped - auto, manual, max or curve - and puts it back when it starts, whatever the power profile. Off, it leaves the fans on the firmware's own control at boot until you ask for something.",
+    "thermalSafetyChecker": "Thermal safety checker",
+    "thermalSafetyCheckerHint": "On by default. When the machine is hot (at or over {hot}, the \"hot at\" value of the automatic mode) and the fans do not speed up within a few seconds, the firmware is given them; if it does not speed them up either, they run at full speed until the machine is back under {cool}, and then whatever fan mode you had is put back. Independent of this, manual and curve always go to full speed at 90 °C.",
     "perFanRpm": "Show each fan's speed in Performance control",
     "perFanRpmHint": "On by default. Under the headline fan speed (the figure sent to the controller), list every fan the machine reports on its own - the CPU fan, the GPU fan - so you can see where each reading comes from. Machines with a single fan show nothing extra.",
     "keepDriverFloor": "Keep the official driver's minimum fan speed",
@@ -599,6 +605,7 @@
       "needsRoot": "writing the kernel's zone files needs root",
       "io": "{error}",
       "answered": "answered a read of all four zones",
+      "answeredTruncated": "answered, with a reply acpi_call cut short; writes go through with the bytes it cut off sent as zero, because that is allowed in the lighting settings",
       "transport": {
         "kernelZones": "the kernel's rgb_zones files",
         "fourZone": "WMI 0x20009, command types 2/3",
@@ -607,7 +614,19 @@
       "unreachable": {
         "kernelZones": "no kernel rgb_zones files, under either hp-wmi or omen-rgb-keyboard",
         "noWmi": "no hp-wmi interface on this machine",
-        "noAcpiCall": "/proc/acpi/call is not there, so the firmware cannot be asked"
+        "noAcpiCall": "/proc/acpi/call is not there, so the firmware cannot be asked",
+        "notHp": "this machine does not report HP as its maker, so no HP firmware command is sent"
+      },
+      "skipped": {
+        "lightbar": "not asked: another protocol already answered, and this one's read is not confirmed by any published driver"
+      },
+      "fourZone": {
+        "truncatedOff": "the firmware's reply was cut short to {got} of {need} bytes ({layout}), and writing through a cut-short reply is turned off, so nothing was written",
+        "length": "the firmware's reply was {got} bytes, a length the {layout} layout does not know (it needs {need}), so nothing was written",
+        "shape": "the firmware's reply does not have the {layout} layout's shape (byte {at} is {value} where it should be 0), so nothing was written"
+      },
+      "kernelZones": {
+        "driver": "{path} does not belong to hp-wmi or omen-rgb-keyboard (driver: '{driver}'), so its zone files were not written"
       }
     },
     "err": {
@@ -800,7 +819,9 @@
     "control": {
       "unsupported": "this machine's driver does not support {what} (missing {missing})",
       "needsRoot": "writing {path} needs root: {error}",
-      "io": "writing {path}: {error}"
+      "io": "writing {path}: {error}",
+      "tooHot": "{temp} °C is too hot to hold the fans for a measurement (the limit is {limit} °C)",
+      "noTemperature": "no temperature sensor could be read, so the fans cannot be held for a measurement"
     },
     "caps": {
       "both": "both pwm1 and pwm1_enable",
@@ -813,16 +834,24 @@
       "cannotCalibrate": "calibration puts the fans at max and watches them, which this machine cannot do: the hp-wmi driver exposes {exposes}. Run fan.diagnose for the details.",
       "noCpuTemp": "no CPU temperature sensor, so a curve cannot be followed",
       "curveEmpty": "the curve has no points",
-      "curveNoPoints": "params.curve must have at least one point",
       "curvePointNotFinite": "curve point ({temp}, {percent}) is not a finite number",
-      "calibrating": "a calibration run is already in progress"
+      "calibrating": "a calibration run is already in progress",
+      "cleaningHoldsFans": "a fan-cleaning cycle has the fans; wait for it to finish",
+      "curvePointCount": "a curve needs {min} to {max} points; this one has {count}",
+      "curveTempRange": "a curve point at {temp} °C is outside 0-{max} °C",
+      "curvePercentRange": "a curve point at {percent} % is outside 0-100 %",
+      "curveDecreasing": "the curve slows the fans down as the temperature rises, at {temp} °C",
+      "curveNotFullWhenHot": "the curve asks for {percent} % at {temp} °C; it has to reach 100 % by then",
+      "loopPanicked": "the fan control loop kept failing, so the fans were left to the firmware; set a fan mode to try again"
     },
     "cleaner": {
       "err": {
         "refused": "the firmware refused the fan-cleaner call (it answered: {answer})",
         "notCapable": "this machine's firmware has no fan cleaner",
         "busy": "a fan-cleaning cycle is already in progress",
-        "tooHot": "{temp} °C is too hot to reverse the fans (the limit is {limit} °C)"
+        "tooHot": "{temp} °C is too hot to reverse the fans (the limit is {limit} °C)",
+        "noTemperature": "no temperature sensor could be read, so it is not safe to reverse the fans",
+        "endedHot": "the cycle was ended early: {temp} °C is over the {limit} °C limit"
       },
       "probe": {
         "modern": "the firmware answered: reverse spin is available on {fans}",
@@ -902,7 +931,11 @@
       "batteryPercent": "batteryLowPercent has to be between 0 and 100, not {percent}",
       "enabledBool": "params.enabled must be a boolean",
       "noPackageLimit": "this machine exposes no package power limit, so there is nothing to tune",
-      "wattsPositive": "power limits must be a positive number of watts"
+      "wattsPositive": "power limits must be a positive number of watts",
+      "wattsNumber": "params.{key} must be a number of watts",
+      "turboBool": "params.turbo must be a boolean",
+      "limitsCrossed": "the sustained limit ({pl1} W) cannot be above the boost limit ({pl2} W)",
+      "limitsLocked": "the firmware has locked this machine's power limits ({source}); they cannot be changed until it reboots"
     }
   },
   "installer": {

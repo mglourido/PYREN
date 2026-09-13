@@ -299,12 +299,16 @@
     "protocol": "Protocolo",
     "protocolLead": "No hay un único protocolo de iluminación OMEN. Existen tres formas distintas de hablar con estas luces, y el modelo del portátil no dice cuál habla el tuyo, así que se prueban las tres y se usa la primera que responde.",
     "dialect": "Qué protocolo",
-    "dialectHint": "El automático usa el primer protocolo que responde a una lectura. Elige uno a mano cuando el automático se equivoque: un protocolo fijado se usa responda o no, porque tú ves las luces y esta aplicación solo puede preguntar.",
+    "dialectHint": "El automático usa el primer protocolo que responde a una lectura. Elige uno a mano cuando el automático se equivoque: un protocolo fijado tiene que responder igualmente a su lectura, así que Pyren nunca envía un protocolo que el firmware rechazó.",
     "autoUsing": "Automático — usando {dialect}",
     "autoNothing": "Automático — no respondió ninguno",
     "noAnswer": "sin respuesta",
     "wrongDialect": "Tu firmware tiene un comando de iluminación, y ninguno de los tres protocolos que conoce esta versión es el que quiere. Es una máquina con luces con las que la aplicación aún no sabe hablar, no una máquina sin ellas: fijar un protocolo a mano aquí abajo es lo siguiente que probar.",
-    "zoneFourUnreadable": "La zona 4 siempre se lee negra con este protocolo. El color que se le envía es real —las luces lo muestran— pero acpi_call corta la respuesta del firmware un byte antes de donde empieza la zona 4, así que no se puede leer de vuelta. Instalar un driver del kernel que publique las zonas como ficheros quita el límite.",
+    "zoneFourUnreadable": "Con este protocolo solo se pueden leer las zonas 1–3: acpi_call corta la respuesta del firmware un byte antes de donde empieza la zona 4. Lo que se envió a la zona 4 sigue en el teclado. Instalar un driver del kernel que publique las zonas como ficheros quita el límite.",
+    "allowTruncatedFourZone": "Escribir con respuestas cortadas",
+    "allowTruncatedFourZoneHint": "Los teclados de cuatro zonas se escriben leyendo el búfer de ajustes de 128 bytes del firmware, cambiando los colores y devolviéndolo. En muchas máquinas acpi_call solo devuelve los primeros 34 bytes, así que los otros 94 no se pueden leer y se envían como cero. Todos los bytes que sí se ven ahí son cero, así que es muy probable que sea inofensivo, pero no está verificado. Activado por defecto, porque sin esto estos teclados no se pueden iluminar sin un módulo del kernel. Desactivado, los colores solo se escriben cuando se leyó el búfer entero.",
+    "truncatedWrites": "Los colores se están escribiendo con una respuesta del firmware cortada: los bytes que acpi_call cortó se envían como cero. Desactiva «Escribir con respuestas cortadas» para dejar de hacerlo, o instala un driver del kernel que publique las zonas como ficheros.",
+    "throttledDialect": "Este protocolo recibe como mucho {fps} fps, así que el efecto va a esa velocidad.",
     "effect": "Efecto",
     "effectKind": "Qué efecto",
     "effectNames": {
@@ -523,6 +527,8 @@
     "unitPerCore": "% por núcleo",
     "keepFanMode": "Mantener el modo de control de los ventiladores entre reinicios",
     "keepFanModeHint": "Desactivado por defecto. Activado, el daemon recuerda el modo de ventilador que estaba en uso cuando se detuvo (automático, manual, máximo o curva) y lo vuelve a aplicar al arrancar, sea cual sea el perfil de rendimiento. Desactivado, al arrancar deja los ventiladores bajo el control del firmware hasta que pidas algo.",
+    "thermalSafetyChecker": "Comprobador de seguridad térmica",
+    "thermalSafetyCheckerHint": "Activado por defecto. Cuando el equipo está caliente (a {hot} o más, el valor \"caliente a partir de\" del modo automático) y los ventiladores no aceleran en unos segundos, se le pasan al firmware; si tampoco los acelera, giran a máxima velocidad hasta que el equipo baja de {cool}, y después se vuelve a poner el modo de ventilador que tenías. Aparte de esto, los modos manual y curva siempre pasan a máxima velocidad a 90 °C.",
     "perFanRpm": "Mostrar la velocidad de cada ventilador en Control de rendimiento",
     "perFanRpmHint": "Activado por defecto. Debajo de la velocidad principal (la cifra que se envía al controlador) se enumera cada ventilador que el equipo informa por separado - el de la CPU, el de la GPU - para que sepas de dónde viene cada lectura. Los equipos con un solo ventilador no muestran nada adicional.",
     "keepDriverFloor": "Mantener el límite mínimo de velocidad del driver oficial",
@@ -599,6 +605,7 @@
       "needsRoot": "escribir los ficheros de zonas del kernel requiere root",
       "io": "{error}",
       "answered": "respondió a una lectura de las cuatro zonas",
+      "answeredTruncated": "respondió, con una respuesta que acpi_call cortó; las escrituras se hacen enviando como cero los bytes cortados, porque así lo permiten los ajustes de iluminación",
       "transport": {
         "kernelZones": "los ficheros rgb_zones del kernel",
         "fourZone": "WMI 0x20009, tipos de orden 2/3",
@@ -607,7 +614,19 @@
       "unreachable": {
         "kernelZones": "no hay ficheros rgb_zones del kernel, ni en hp-wmi ni en omen-rgb-keyboard",
         "noWmi": "no hay interfaz hp-wmi en esta máquina",
-        "noAcpiCall": "/proc/acpi/call no existe, así que no se le puede preguntar al firmware"
+        "noAcpiCall": "/proc/acpi/call no existe, así que no se le puede preguntar al firmware",
+        "notHp": "esta máquina no indica HP como fabricante, así que no se envía ninguna orden de firmware de HP"
+      },
+      "skipped": {
+        "lightbar": "no se preguntó: otro protocolo ya respondió, y la lectura de este no la confirma ningún driver publicado"
+      },
+      "fourZone": {
+        "truncatedOff": "la respuesta del firmware se cortó a {got} de {need} bytes ({layout}), y escribir con respuestas cortadas está desactivado, así que no se escribió nada",
+        "length": "la respuesta del firmware tenía {got} bytes, una longitud que la disposición {layout} no conoce (necesita {need}), así que no se escribió nada",
+        "shape": "la respuesta del firmware no tiene la forma de la disposición {layout} (el byte {at} vale {value} donde debería ser 0), así que no se escribió nada"
+      },
+      "kernelZones": {
+        "driver": "{path} no pertenece a hp-wmi ni a omen-rgb-keyboard (driver: '{driver}'), así que no se escribió en sus ficheros de zonas"
       }
     },
     "err": {
@@ -800,7 +819,9 @@
     "control": {
       "unsupported": "el controlador de este equipo no admite {what} (falta {missing})",
       "needsRoot": "escribir {path} necesita root: {error}",
-      "io": "escribiendo {path}: {error}"
+      "io": "escribiendo {path}: {error}",
+      "tooHot": "{temp} °C es demasiado para retener los ventiladores durante una medición (el límite son {limit} °C)",
+      "noTemperature": "no se pudo leer ningún sensor de temperatura, así que no se pueden retener los ventiladores para una medición"
     },
     "caps": {
       "both": "pwm1 y pwm1_enable, los dos",
@@ -813,16 +834,24 @@
       "cannotCalibrate": "la calibración pone los ventiladores al máximo y los observa, lo que este equipo no puede hacer: el controlador hp-wmi expone {exposes}. Ejecuta fan.diagnose para ver los detalles.",
       "noCpuTemp": "no hay sensor de temperatura de la CPU, así que no se puede seguir una curva",
       "curveEmpty": "la curva no tiene puntos",
-      "curveNoPoints": "params.curve debe tener al menos un punto",
       "curvePointNotFinite": "el punto de curva ({temp}, {percent}) no es un número finito",
-      "calibrating": "ya hay una calibración en curso"
+      "calibrating": "ya hay una calibración en curso",
+      "cleaningHoldsFans": "un ciclo de limpieza tiene los ventiladores; espera a que termine",
+      "curvePointCount": "una curva necesita de {min} a {max} puntos; esta tiene {count}",
+      "curveTempRange": "un punto de la curva a {temp} °C está fuera de 0-{max} °C",
+      "curvePercentRange": "un punto de la curva al {percent} % está fuera de 0-100 %",
+      "curveDecreasing": "la curva frena los ventiladores cuando sube la temperatura, a {temp} °C",
+      "curveNotFullWhenHot": "la curva pide un {percent} % a {temp} °C; a esa temperatura tiene que llegar al 100 %",
+      "loopPanicked": "el bucle de control de los ventiladores falló repetidamente, así que se dejaron al firmware; elige un modo de ventilador para volver a intentarlo"
     },
     "cleaner": {
       "err": {
         "refused": "el firmware rechazó la llamada de limpieza de ventiladores (respondió: {answer})",
         "notCapable": "el firmware de este equipo no tiene limpieza de ventiladores",
         "busy": "ya hay un ciclo de limpieza en curso",
-        "tooHot": "{temp} °C es demasiado para invertir los ventiladores (el límite son {limit} °C)"
+        "tooHot": "{temp} °C es demasiado para invertir los ventiladores (el límite son {limit} °C)",
+        "noTemperature": "no se pudo leer ningún sensor de temperatura, así que no es seguro invertir los ventiladores",
+        "endedHot": "el ciclo terminó antes de tiempo: {temp} °C supera el límite de {limit} °C"
       },
       "probe": {
         "modern": "el firmware respondió: el giro inverso está disponible en {fans}",
@@ -902,7 +931,11 @@
       "batteryPercent": "batteryLowPercent tiene que estar entre 0 y 100, no {percent}",
       "enabledBool": "params.enabled debe ser un booleano",
       "noPackageLimit": "este equipo no expone ningún límite de potencia de paquete, así que no hay nada que ajustar",
-      "wattsPositive": "los límites de potencia deben ser un número positivo de vatios"
+      "wattsPositive": "los límites de potencia deben ser un número positivo de vatios",
+      "wattsNumber": "params.{key} debe ser un número de vatios",
+      "turboBool": "params.turbo debe ser un booleano",
+      "limitsCrossed": "el límite sostenido ({pl1} W) no puede superar al límite de ráfaga ({pl2} W)",
+      "limitsLocked": "el firmware ha bloqueado los límites de potencia de este equipo ({source}); no se pueden cambiar hasta reiniciar"
     }
   },
   "installer": {

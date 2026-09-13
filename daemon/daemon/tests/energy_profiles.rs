@@ -169,6 +169,9 @@ impl Machine {
         std::env::set_var("PYREN_CPU_ROOT", self.root.join("cpu"));
         std::env::set_var("PYREN_POWERCAP", self.root.join("powercap"));
         std::env::set_var("PYREN_TOOLS_DIR", self.root.join("bin"));
+        // No power supply at all: a desktop, neither on battery nor off.
+        std::env::set_var("PYREN_POWER_SUPPLY", self.root.join("power_supply"));
+        std::env::set_var("PYREN_MSR_ROOT", self.root.join("msr"));
         std::env::set_var("PYREN_HWMON_DIR", self.root.join("hwmon"));
         std::env::set_var("PYREN_CPU_TEMP_PATH", self.root.join("cpu_temp"));
     }
@@ -228,6 +231,8 @@ impl Drop for Machine {
             "PYREN_CPU_ROOT",
             "PYREN_POWERCAP",
             "PYREN_TOOLS_DIR",
+            "PYREN_POWER_SUPPLY",
+            "PYREN_MSR_ROOT",
             "PYREN_HWMON_DIR",
             "PYREN_CPU_TEMP_PATH",
         ] {
@@ -587,7 +592,7 @@ fn curve_mode_writes_the_pwm_the_curve_asks_for_at_this_temperature() {
         { "tempC": 30, "percent": 20 },
         { "tempC": 50, "percent": 45 },
         { "tempC": 70, "percent": 75 },
-        { "tempC": 90, "percent": 100 },
+        { "tempC": 85, "percent": 100 },
     ]);
     fan.call(
         "setCurve",
@@ -620,8 +625,10 @@ fn curve_mode_writes_the_pwm_the_curve_asks_for_at_this_temperature() {
 }
 
 /// A flat curve is the same assertion with the thermometer taken out of
-/// it: every temperature maps to one percentage, so the PWM is knowable
-/// without reading a sensor at all.
+/// it: every temperature the fixture can be at maps to one percentage, so
+/// the PWM is knowable without reading a sensor at all. Flat up to 80 C
+/// rather than all the way: every curve has to reach full speed by 85 C
+/// (`curve::validate`), and the fixture sensor reads 45.
 #[test]
 fn a_flat_curve_pins_the_pwm_whatever_the_temperature_is() {
     let machine = Machine::new("fan-curve-flat");
@@ -629,7 +636,11 @@ fn a_flat_curve_pins_the_pwm_whatever_the_temperature_is() {
 
     fan.call(
         "setCurve",
-        json!({ "curve": [{ "tempC": 0, "percent": 60 }, { "tempC": 110, "percent": 60 }] }),
+        json!({ "curve": [
+            { "tempC": 0, "percent": 60 },
+            { "tempC": 80, "percent": 60 },
+            { "tempC": 85, "percent": 100 },
+        ] }),
     )
     .expect("setCurve");
     fan.call("setMode", json!({ "mode": "curve" }))
@@ -650,7 +661,15 @@ fn editing_the_curve_while_it_is_running_moves_the_fans_at_once() {
     let machine = Machine::new("fan-curve-live");
     let fan = machine.fan();
 
-    let flat = |percent: u64| json!({ "curve": [{ "tempC": 0, "percent": percent }, { "tempC": 110, "percent": percent }] });
+    // Flat below 80 C, where the fixture sensor is; full speed by 85 C as
+    // every curve has to be.
+    let flat = |percent: u64| {
+        json!({ "curve": [
+            { "tempC": 0, "percent": percent },
+            { "tempC": 80, "percent": percent },
+            { "tempC": 85, "percent": 100 },
+        ] })
+    };
 
     fan.call("setCurve", flat(40)).expect("setCurve");
     fan.call("setMode", json!({ "mode": "curve" }))
@@ -814,7 +833,10 @@ fn changing_the_fan_mode_never_writes_to_the_power_envelope() {
 
     for mode in ["max", "auto", "curve"] {
         if mode == "curve" {
-            fan.call("setCurve", json!({ "curve": [{ "tempC": 0, "percent": 50 }, { "tempC": 110, "percent": 50 }] }))
+            fan.call(
+                "setCurve",
+                json!({ "curve": [{ "tempC": 0, "percent": 50 }, { "tempC": 85, "percent": 100 }] }),
+            )
                 .expect("a curve");
         }
         fan.call("setMode", json!({ "mode": mode }))
