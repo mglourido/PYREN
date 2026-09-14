@@ -120,10 +120,18 @@ nothing is actually being written" instead of a silent no-op — the same
 
 ## Capture mechanism
 
-Two chokepoints in `daemon/daemon/src/main.rs`, not per-module
-instrumentation — consistent with the existing rule that modules don't call
-each other and don't know who's listening (see `events.rs`'s doc comment on
-`EventBus::subscribe`).
+Two chokepoints, not per-module instrumentation — consistent with the
+existing rule that modules don't call each other and don't know who's
+listening (see `events.rs`'s doc comment on `EventBus::subscribe`).
+
+**Every call site is exactly one line: a call to a `debuglog::` function,
+added after the existing logic, never a branch woven into it.** Nothing
+inside `Registry::dispatch` or the `EventBus` wiring changes shape — an
+`if`/`match` is not restructured to accommodate logging, a call is appended
+where the value to log already exists (the `Response`, the published
+event). Removing the feature later means deleting those one-line calls (and
+the `debuglog` module itself); the surrounding function is exactly what it
+was before. The same rule applies to the OSD and app call sites below.
 
 ### 1. `EventBus` subscriber
 
@@ -140,15 +148,22 @@ supervisor, an external firmware-profile change, a plain `setMode`), unlike
 the bounded ring `core.nextEvent` reads from. A change made while no client
 was polling still lands in the file.
 
-### 2. IPC dispatch wrapper
+### 2. `Registry::dispatch` call site
 
-Where `main.rs` matches `module`/`method` and calls into the registry, wrap
-the call (when `debuglog::enabled()`) to:
+`daemon/crates/core/src/lib.rs`'s `Registry::dispatch` (line 329) is the one
+place every IPC request already passes through — one `match` against
+`req.module`, one `m.call(...)`, one `Response` built from the result. This
+design adds **one line** right before that `Response` is returned:
+`debuglog::on_ipc(&req, &response, started.elapsed());` — a plain function
+call, not a restructuring of the match. Timing the call needs one
+`let started = Instant::now();` at the top of the function; nothing else in
+`dispatch` changes. `debuglog::on_ipc` itself (in `pyren_core::debuglog`,
+not in `dispatch`) does all the branching:
 
-1. Always append a one-line summary to `ipc.jsonl`:
+1. When enabled, always appends a one-line summary to `ipc.jsonl`:
    `{ ts, module, method, ok, durationMs, error? }` (params included, since
    nothing in the protocol is secret).
-2. Additionally, based on `(module, method)`, append a richer copy to the
+2. Additionally, based on `(module, method)`, appends a richer copy to the
    matching category file — the existing result/report struct is already
    `Serialize`, so this is "dump what the module already computed", not new
    instrumentation inside `fan`/`rgb`/`installer`:
@@ -290,9 +305,11 @@ i18n: new keys under a `debugLogs` (or similar) namespace in both
 
 ## Files touched (implementation-time reference)
 
-- `daemon/crates/core/src/debuglog.rs` (new), `lib.rs` (register module)
-- `daemon/daemon/src/main.rs` (EventBus subscriber, IPC dispatch wrap,
-  lifecycle logging, `debug` module registration)
+- `daemon/crates/core/src/debuglog.rs` (new)
+- `daemon/crates/core/src/lib.rs` (register module; one-line call in
+  `Registry::dispatch`)
+- `daemon/daemon/src/main.rs` (one-line `events.subscribe(...)` addition,
+  lifecycle logging calls, `debug` module registration)
 - `daemon/crates/config/src/lib.rs` — no change expected; reused as-is
 - `docs/01-ipc-protocol.md` — document the new `debug` module and
   `debug.changed` topic
