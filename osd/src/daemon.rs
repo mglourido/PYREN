@@ -171,6 +171,12 @@ fn poll_forever(events: async_channel::Sender<Message>) {
 }
 
 fn poll_until_closed(events: &async_channel::Sender<Message>) {
+    if let Ok(status) = client::call("debug", "getStatus", Value::Null) {
+        if let Some(enabled) = status.get("enabled").and_then(Value::as_bool) {
+            pyren_core::debuglog::set_enabled(enabled);
+        }
+    }
+
     let mut since: Option<u64> = None;
     let mut connected = false;
 
@@ -215,6 +221,16 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
                     .into_iter()
                     .flatten()
                 {
+                    if event.get("topic").and_then(Value::as_str) == Some("debug.changed") {
+                        if let Some(enabled) = event
+                            .get("payload")
+                            .and_then(|p| p.get("enabled"))
+                            .and_then(Value::as_bool)
+                        {
+                            pyren_core::debuglog::set_enabled(enabled);
+                        }
+                    }
+
                     if let Some(message) = interpret(event) {
                         if events.send_blocking(message).is_err() {
                             return;

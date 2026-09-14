@@ -71,6 +71,8 @@ the 'pyren' group.
 ";
 
 fn main() -> glib::ExitCode {
+    pyren_core::debuglog::init(pyren_core::debuglog::user_root());
+
     let mut show_now = false;
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
@@ -122,6 +124,10 @@ fn main() -> glib::ExitCode {
         // only here.
         glib::spawn_future_local(async move {
             while let Ok(message) = receiver.recv().await {
+                pyren_core::debuglog::record(
+                    pyren_core::debuglog::Category::Widget,
+                    serde_json::json!({ "message": format!("{message:?}") }),
+                );
                 match message {
                     Message::Show(mode) => ui.show(mode),
                     Message::Pressed {
