@@ -14,6 +14,7 @@ use serde_json::{Map, Value};
 
 pub mod acpi;
 pub mod client;
+pub mod debug_module;
 pub mod debuglog;
 pub mod events;
 pub mod log;
@@ -22,6 +23,7 @@ pub mod process;
 pub mod sensors;
 pub mod signals;
 mod socket;
+pub use debug_module::DebugModule;
 pub use events::{Batch, Event, EventBus};
 pub use msg::Msg;
 pub use socket::{serve_unix_socket, socket_group, Audience};
