@@ -206,6 +206,8 @@ fn main() {
     // blocked in every one of them (see `pyren_core::signals`).
     pyren_core::signals::block_termination();
 
+    pyren_core::debuglog::init(pyren_core::debuglog::daemon_root());
+
     // The hardware modules come first, because what this machine can be
     // told to do is something only they can answer - `system` used to
     // answer it from a copied list of DMI board ids, which said "supported"
@@ -243,6 +245,7 @@ fn main() {
     let keymap = KeymapModule::new();
 
     let system = SystemModule::new(controls);
+    let debug = pyren_core::DebugModule::new();
 
     // Printing what we detected at startup is the fastest way to diagnose a
     // "nothing works on my machine" report - it is the first thing to ask
@@ -276,6 +279,21 @@ fn main() {
         );
     }
 
+    pyren_core::debuglog::record_if_changed(
+        pyren_core::debuglog::Category::DriverKernel,
+        serde_json::json!({
+            "vendor": identity.vendor,
+            "model": identity.model,
+            "boardName": identity.board_name,
+            "boardVendor": identity.board_vendor,
+            "biosVersion": identity.bios_version,
+            "kernel": identity.kernel,
+            "cpu": identity.cpu,
+            "gpus": identity.gpus,
+            "driverInstalled": fan.is_supported(),
+        }),
+    );
+
     // Saying which lighting was found - and, when none was, which of the
     // three reasons applies - is the difference between "no lighting page"
     // and "no lighting page because acpi_call is not installed".
@@ -303,6 +321,7 @@ fn main() {
 
     let mut registry = Registry::new();
     let events = Arc::clone(registry.events());
+    debug.publish_to(Arc::clone(&events));
     // Everything that moves the power mode - the key, the app, the CLI,
     // the supervisor - is announced on this, so an open UI never sits
     // showing a mode the machine has already left.
@@ -336,6 +355,14 @@ fn main() {
             }
         });
     }
+    events.subscribe(|topic, payload| {
+        if matches!(topic, "power.mode" | "fan.mode" | "fan.floorRaised") {
+            pyren_core::debuglog::record(
+                pyren_core::debuglog::Category::Performance,
+                serde_json::json!({ "topic": topic, "payload": payload }),
+            );
+        }
+    });
     // The first announcement only comes with the first *change*, so without
     // this a daemon that starts in Eco and is left alone would follow the
     // shared curve until something moved the mode.
@@ -367,6 +394,7 @@ fn main() {
     registry.register(Box::new(network));
     registry.register(Box::new(hotkey.clone()));
     registry.register(Box::new(keymap));
+    registry.register(Box::new(debug));
     // Installing the driver reloads hp-wmi, which renumbers the hwmon
     // directory the fan module found at startup. Handing it a way to look
     // again is what makes an install take effect without anyone being told
@@ -397,6 +425,14 @@ fn main() {
                 ""
             }
         );
+        pyren_core::debuglog::record(
+            pyren_core::debuglog::Category::Daemon,
+            serde_json::json!({
+                "event": "shutdown",
+                "signal": pyren_core::signals::name(signal),
+                "systemStopping": stopping,
+            }),
+        );
         rgb.on_exit(stopping);
         // No destructor runs after this handler: a curve's low speed or a
         // calibration's near-stall floor would stay on the fans otherwise.
@@ -420,6 +456,15 @@ fn main() {
     for cap in registry.capabilities() {
         println!("  module '{}' supported={}", cap.id, cap.supported);
     }
+
+    pyren_core::debuglog::record(
+        pyren_core::debuglog::Category::Daemon,
+        serde_json::json!({
+            "event": "startup",
+            "version": env!("CARGO_PKG_VERSION"),
+            "privileged": is_root(),
+        }),
+    );
 
     let socket_path = socket_path();
 
