@@ -841,7 +841,6 @@
       "curveTempRange": "a curve point at {temp} °C is outside 0-{max} °C",
       "curvePercentRange": "a curve point at {percent} % is outside 0-100 %",
       "curveDecreasing": "the curve slows the fans down as the temperature rises, at {temp} °C",
-      "curveNotFullWhenHot": "the curve asks for {percent} % at {temp} °C; it has to reach 100 % by then",
       "loopPanicked": "the fan control loop kept failing, so the fans were left to the firmware; set a fan mode to try again"
     },
     "cleaner": {

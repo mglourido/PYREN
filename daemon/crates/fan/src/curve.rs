@@ -87,8 +87,6 @@ pub const MAX_CURVE_POINTS: usize = 16;
 /// Highest temperature a point may sit at. Past this a part is being
 /// damaged, and a point there is one the curve can never usefully reach.
 pub const MAX_CURVE_TEMP_C: f64 = 110.0;
-/// By this temperature every curve has to be asking for full speed.
-pub const FULL_SPEED_BY_C: f64 = 85.0;
 
 /// Why a curve was refused. Carries the offending numbers so the message
 /// can name them.
@@ -103,18 +101,16 @@ pub enum CurveProblem {
     PercentOutOfRange(f64),
     /// Speed drops as the temperature rises, at this temperature.
     Decreasing(f64),
-    /// What the curve asks for at [`FULL_SPEED_BY_C`].
-    NotFullWhenHot(f64),
 }
 
 /// Whether a curve is one the fans may follow.
 ///
 /// Checked when a curve arrives and again when one is loaded from disk,
 /// because a hand-edited file reaches the fans by the same road as the
-/// app. The last rule is the one that matters most: a curve may be as
-/// quiet as anyone likes while the machine is cool, but it may not decide
-/// that a machine at 85 C needs anything less than every fan it has.
-pub fn validate(curve: &[CurvePoint], interpolation: Interpolation) -> Result<(), CurveProblem> {
+/// app. How fast the fans run when hot is the user's call: the critical
+/// override and the thermal safety checker (see `safety`) are what step in
+/// when a quiet curve is not enough.
+pub fn validate(curve: &[CurvePoint]) -> Result<(), CurveProblem> {
     if !(MIN_CURVE_POINTS..=MAX_CURVE_POINTS).contains(&curve.len()) {
         return Err(CurveProblem::PointCount(curve.len()));
     }
@@ -137,10 +133,6 @@ pub fn validate(curve: &[CurvePoint], interpolation: Interpolation) -> Result<()
     if let Some(pair) = sorted.windows(2).find(|w| w[1].percent < w[0].percent) {
         return Err(CurveProblem::Decreasing(pair[1].temp_c));
     }
-    let at_hot = percent_at(&sorted, FULL_SPEED_BY_C, interpolation).unwrap_or(0.0);
-    if at_hot < 100.0 - 1e-9 {
-        return Err(CurveProblem::NotFullWhenHot(at_hot));
-    }
     Ok(())
 }
 
@@ -150,9 +142,8 @@ pub fn validate(curve: &[CurvePoint], interpolation: Interpolation) -> Result<()
 /// For a curve read from disk, where refusing means silently losing a shape
 /// somebody tuned. Every change only ever makes the fans faster or the
 /// numbers saner: non-finite points are dropped, the rest clamped into
-/// range, speeds raised so they never fall as the heat rises, and full speed
-/// added at [`FULL_SPEED_BY_C`].
-pub fn repair(curve: &[CurvePoint], interpolation: Interpolation) -> Option<Vec<CurvePoint>> {
+/// range, and speeds raised so they never fall as the heat rises.
+pub fn repair(curve: &[CurvePoint]) -> Option<Vec<CurvePoint>> {
     let mut points: Vec<CurvePoint> = curve
         .iter()
         .filter(|p| p.temp_c.is_finite() && p.percent.is_finite())
@@ -163,25 +154,14 @@ pub fn repair(curve: &[CurvePoint], interpolation: Interpolation) -> Option<Vec<
         .collect();
     points.sort_by(|a, b| a.temp_c.total_cmp(&b.temp_c));
 
-    // Room for the full-speed point, keeping the quiet end the user drew.
-    points.truncate(MAX_CURVE_POINTS - 1);
+    points.truncate(MAX_CURVE_POINTS);
     let mut highest = 0.0_f64;
     for point in &mut points {
         highest = highest.max(point.percent);
         point.percent = highest;
-        if point.temp_c >= FULL_SPEED_BY_C {
-            point.percent = 100.0;
-        }
-    }
-    if percent_at(&points, FULL_SPEED_BY_C, interpolation).unwrap_or(0.0) < 100.0 {
-        points.retain(|p| p.temp_c < FULL_SPEED_BY_C);
-        points.push(CurvePoint {
-            temp_c: FULL_SPEED_BY_C,
-            percent: 100.0,
-        });
     }
 
-    validate(&points, interpolation).ok().map(|()| points)
+    validate(&points).ok().map(|()| points)
 }
 
 /// Percentage → the 0-255 value `pwm1` takes.
@@ -391,45 +371,36 @@ mod tests {
 
     #[test]
     fn a_sensible_curve_is_accepted() {
-        assert_eq!(validate(&curve(), Interpolation::Smooth), Ok(()));
-        assert_eq!(
-            validate(&pts(&[(40.0, 0.0), (85.0, 100.0)]), Interpolation::Discrete),
-            Ok(())
-        );
+        assert_eq!(validate(&curve()), Ok(()));
+        assert_eq!(validate(&pts(&[(40.0, 0.0), (85.0, 100.0)])), Ok(()));
     }
 
     #[test]
     fn a_curve_needs_between_two_and_sixteen_points() {
         assert_eq!(
-            validate(&pts(&[(80.0, 100.0)]), Interpolation::Smooth),
+            validate(&pts(&[(80.0, 100.0)])),
             Err(CurveProblem::PointCount(1))
         );
         let many: Vec<(f64, f64)> = (0..17).map(|i| (i as f64 * 5.0, 100.0)).collect();
-        assert_eq!(
-            validate(&pts(&many), Interpolation::Smooth),
-            Err(CurveProblem::PointCount(17))
-        );
+        assert_eq!(validate(&pts(&many)), Err(CurveProblem::PointCount(17)));
     }
 
     #[test]
     fn out_of_range_numbers_are_refused() {
         assert_eq!(
-            validate(&pts(&[(-1e9, 10.0), (80.0, 100.0)]), Interpolation::Smooth),
+            validate(&pts(&[(-1e9, 10.0), (80.0, 100.0)])),
             Err(CurveProblem::TempOutOfRange(-1e9))
         );
         assert_eq!(
-            validate(&pts(&[(40.0, 10.0), (111.0, 100.0)]), Interpolation::Smooth),
+            validate(&pts(&[(40.0, 10.0), (111.0, 100.0)])),
             Err(CurveProblem::TempOutOfRange(111.0))
         );
         assert_eq!(
-            validate(&pts(&[(40.0, -5.0), (80.0, 100.0)]), Interpolation::Smooth),
+            validate(&pts(&[(40.0, -5.0), (80.0, 100.0)])),
             Err(CurveProblem::PercentOutOfRange(-5.0))
         );
         assert!(matches!(
-            validate(
-                &pts(&[(f64::NAN, 5.0), (80.0, 100.0)]),
-                Interpolation::Smooth
-            ),
+            validate(&pts(&[(f64::NAN, 5.0), (80.0, 100.0)])),
             Err(CurveProblem::NotFinite { .. })
         ));
     }
@@ -437,43 +408,28 @@ mod tests {
     #[test]
     fn speed_may_not_fall_as_the_heat_rises() {
         assert_eq!(
-            validate(
-                &pts(&[(40.0, 50.0), (60.0, 30.0), (80.0, 100.0)]),
-                Interpolation::Smooth
-            ),
+            validate(&pts(&[(40.0, 50.0), (60.0, 30.0), (80.0, 100.0)])),
             Err(CurveProblem::Decreasing(60.0))
         );
     }
 
-    /// The curves this guard exists for: a flat 5 % to 100 C, and one that
-    /// only reaches full speed after the machine is already in trouble.
+    /// How quiet a curve is when hot is the user's choice; the critical
+    /// override is what covers it.
     #[test]
-    fn a_curve_that_is_not_at_full_speed_by_85_c_is_refused() {
-        assert_eq!(
-            validate(&pts(&[(40.0, 5.0), (100.0, 5.0)]), Interpolation::Smooth),
-            Err(CurveProblem::NotFullWhenHot(5.0))
-        );
-        assert!(matches!(
-            validate(&pts(&[(40.0, 20.0), (100.0, 100.0)]), Interpolation::Smooth),
-            Err(CurveProblem::NotFullWhenHot(_))
-        ));
-        assert!(matches!(
-            validate(
-                &pts(&[(40.0, 20.0), (84.0, 60.0), (90.0, 100.0)]),
-                Interpolation::Discrete
-            ),
-            Err(CurveProblem::NotFullWhenHot(_))
-        ));
+    fn a_quiet_curve_is_the_users_call() {
+        assert_eq!(validate(&pts(&[(40.0, 5.0), (100.0, 5.0)])), Ok(()));
     }
 
     #[test]
     fn a_stored_curve_is_repaired_into_a_safe_one_keeping_its_quiet_end() {
-        let repaired = repair(
-            &pts(&[(40.0, 10.0), (60.0, 5.0), (100.0, 40.0), (150.0, 90.0)]),
-            Interpolation::Smooth,
-        )
+        let repaired = repair(&pts(&[
+            (40.0, 10.0),
+            (60.0, 5.0),
+            (100.0, 40.0),
+            (150.0, 90.0),
+        ]))
         .expect("repairable");
-        assert_eq!(validate(&repaired, Interpolation::Smooth), Ok(()));
+        assert_eq!(validate(&repaired), Ok(()));
         assert_eq!(
             repaired[0],
             CurvePoint {
@@ -482,18 +438,12 @@ mod tests {
             }
         );
         assert_eq!(repaired[1].percent, 10.0, "raised, never lowered");
-        assert_eq!(
-            percent_at(&repaired, FULL_SPEED_BY_C, Interpolation::Smooth),
-            Some(100.0)
-        );
+        assert_eq!(repaired[3].temp_c, MAX_CURVE_TEMP_C, "clamped into range");
     }
 
     #[test]
     fn a_single_bad_point_is_nothing_to_repair() {
-        assert_eq!(
-            repair(&pts(&[(f64::NAN, 1.0)]), Interpolation::Smooth),
-            None
-        );
+        assert_eq!(repair(&pts(&[(f64::NAN, 1.0)])), None);
     }
 
     #[test]

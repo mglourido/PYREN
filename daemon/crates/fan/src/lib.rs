@@ -307,8 +307,7 @@ impl FanConfig {
     /// it reaches the fans by the same road as the app - so it gets the same
     /// checks. Curves are repaired rather than dropped where that is
     /// possible (see [`curve::repair`]): a curve somebody tuned before the
-    /// "full speed by 85 C" rule existed should come back as that curve with
-    /// its top end raised, not vanish.
+    /// rules existed should come back as the nearest valid curve, not vanish.
     pub fn sanitise(&mut self) -> Vec<String> {
         let mut changed = Vec::new();
 
@@ -331,12 +330,11 @@ impl FanConfig {
             }
         }
 
-        let interpolation = self.interpolation;
         let mut check = |name: &str, points: &mut Vec<CurvePoint>| -> bool {
-            if points.is_empty() || curve::validate(points, interpolation).is_ok() {
+            if points.is_empty() || curve::validate(points).is_ok() {
                 return true;
             }
-            match curve::repair(points, interpolation) {
+            match curve::repair(points) {
                 Some(repaired) => {
                     changed.push(format!("the {name} curve was repaired to a safe shape"));
                     *points = repaired;
@@ -1310,8 +1308,7 @@ impl FanModule {
         reference_sensor: Option<ReferenceSensor>,
         profile: Option<&str>,
     ) -> ModuleResult {
-        let checked_as = interpolation.unwrap_or(lock(&self.state).config.interpolation);
-        if let Err(problem) = curve::validate(&curve, checked_as) {
+        if let Err(problem) = curve::validate(&curve) {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
                 curve_problem(problem),
@@ -2778,11 +2775,6 @@ fn curve_problem(problem: curve::CurveProblem) -> Msg {
             { "temp" => temp },
             "the curve slows the fans down as the temperature rises, at {temp} °C"
         ),
-        P::NotFullWhenHot(percent) => msg!(
-            "fan.err.curveNotFullWhenHot",
-            { "percent" => percent.round(), "temp" => curve::FULL_SPEED_BY_C },
-            "the curve asks for {percent} % at {temp} °C; it has to reach 100 % by then"
-        ),
     }
 }
 
@@ -3525,13 +3517,12 @@ mod tests {
         );
     }
 
-    /// A curve whose distinguishing point is `pairs`, finished with the
-    /// full-speed point every curve has to have (see `curve::validate`), so
-    /// the shapes these tests tell apart are all ones the module accepts.
+    /// A curve whose distinguishing point is `pairs`, finished with a
+    /// full-speed point so every shape rises and has at least two points.
     fn points(pairs: &[(f64, f64)]) -> Vec<CurvePoint> {
         pairs
             .iter()
-            .chain(&[(curve::FULL_SPEED_BY_C, 100.0)])
+            .chain(&[(85.0, 100.0)])
             .map(|(t, p)| CurvePoint {
                 temp_c: *t,
                 percent: *p,
@@ -4297,7 +4288,7 @@ mod tests {
         let error = module
             .call(
                 "setCurve",
-                json!({ "curve": [{ "tempC": 40.0, "percent": 5.0 }, { "tempC": 100.0, "percent": 5.0 }] }),
+                json!({ "curve": [{ "tempC": 40.0, "percent": 50.0 }, { "tempC": 100.0, "percent": 5.0 }] }),
             )
             .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidParams);
@@ -4333,7 +4324,7 @@ mod tests {
         assert_eq!(config.ma_window, MAX_MA_WINDOW);
         assert_eq!(config.fan_max_rpm, None);
         assert_eq!(config.fan_min_rpm, None);
-        assert_eq!(curve::validate(&config.curve, config.interpolation), Ok(()));
+        assert_eq!(curve::validate(&config.curve), Ok(()));
         assert_eq!(
             config.curve[0],
             CurvePoint {
@@ -4342,7 +4333,7 @@ mod tests {
             }
         );
         assert!(!config.profile_curves.contains_key("eco"));
-        assert_eq!(changes.len(), 5, "{changes:?}");
+        assert_eq!(changes.len(), 4, "{changes:?}");
     }
 
     /// The daemon's way out: firmware control, the driver's own floor, and

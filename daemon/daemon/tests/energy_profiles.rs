@@ -626,9 +626,7 @@ fn curve_mode_writes_the_pwm_the_curve_asks_for_at_this_temperature() {
 
 /// A flat curve is the same assertion with the thermometer taken out of
 /// it: every temperature the fixture can be at maps to one percentage, so
-/// the PWM is knowable without reading a sensor at all. Flat up to 80 C
-/// rather than all the way: every curve has to reach full speed by 85 C
-/// (`curve::validate`), and the fixture sensor reads 45.
+/// the PWM is knowable without reading a sensor at all.
 #[test]
 fn a_flat_curve_pins_the_pwm_whatever_the_temperature_is() {
     let machine = Machine::new("fan-curve-flat");
@@ -638,8 +636,7 @@ fn a_flat_curve_pins_the_pwm_whatever_the_temperature_is() {
         "setCurve",
         json!({ "curve": [
             { "tempC": 0, "percent": 60 },
-            { "tempC": 80, "percent": 60 },
-            { "tempC": 85, "percent": 100 },
+            { "tempC": 100, "percent": 60 },
         ] }),
     )
     .expect("setCurve");
@@ -661,13 +658,10 @@ fn editing_the_curve_while_it_is_running_moves_the_fans_at_once() {
     let machine = Machine::new("fan-curve-live");
     let fan = machine.fan();
 
-    // Flat below 80 C, where the fixture sensor is; full speed by 85 C as
-    // every curve has to be.
     let flat = |percent: u64| {
         json!({ "curve": [
             { "tempC": 0, "percent": percent },
-            { "tempC": 80, "percent": percent },
-            { "tempC": 85, "percent": 100 },
+            { "tempC": 100, "percent": percent },
         ] })
     };
 

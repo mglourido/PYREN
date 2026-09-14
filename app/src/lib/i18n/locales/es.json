@@ -841,7 +841,6 @@
       "curveTempRange": "un punto de la curva a {temp} °C está fuera de 0-{max} °C",
       "curvePercentRange": "un punto de la curva al {percent} % está fuera de 0-100 %",
       "curveDecreasing": "la curva frena los ventiladores cuando sube la temperatura, a {temp} °C",
-      "curveNotFullWhenHot": "la curva pide un {percent} % a {temp} °C; a esa temperatura tiene que llegar al 100 %",
       "loopPanicked": "el bucle de control de los ventiladores falló repetidamente, así que se dejaron al firmware; elige un modo de ventilador para volver a intentarlo"
     },
     "cleaner": {
