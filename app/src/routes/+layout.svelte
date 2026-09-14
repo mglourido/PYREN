@@ -17,6 +17,7 @@
   import { notifications } from "$lib/stores/notifications.svelte";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { goto } from "$app/navigation";
+  import { debugLog } from "$lib/api/debug";
 
   let { children }: { children: Snippet } = $props();
 
@@ -46,10 +47,12 @@
     // The notification history follows the same event bus, and the header
     // bell is on every page.
     const stopNotifications = notifications.start();
+    const stopErrorCapture = debugLog.installErrorCapture();
     return () => {
       telemetry.stop();
       stopWatching();
       stopNotifications();
+      stopErrorCapture();
     };
   });
 
