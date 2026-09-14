@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "libc",
  "serde",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-osd"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-channel",
  "gtk4",
