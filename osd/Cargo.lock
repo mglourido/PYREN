@@ -587,10 +587,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyren-config"
+version = "0.1.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "pyren-core"
 version = "0.1.4"
 dependencies = [
  "libc",
+ "pyren-config",
  "serde",
  "serde_json",
  "thiserror",
