@@ -15,9 +15,12 @@
   import {
     daemon,
     errorText,
+    onDaemonEvent,
     type FanSensorFailureAction,
     type HotkeyStatus,
   } from "$lib/api/daemon";
+  import { debugLog, type DebugLogStatus } from "$lib/api/debug";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
   /**
    * What is running in this session. Read from the shell rather than from
@@ -54,11 +57,20 @@
   /** True while a polkit prompt is up, so the toggle cannot be double-fired. */
   let elevating = $state(false);
 
+  /** The debug-logging toggle, as the daemon has it. */
+  let debugStatus = $state<DebugLogStatus | null>(null);
+  let debugStatusError = $state<string | null>(null);
+
   onMount(() => {
     if (!session.available()) return;
     void run(() => session.status());
     void refreshPrivileges();
     void refreshHotkey();
+    void refreshDebugStatus();
+    const stopDebugWatch = onDaemonEvent((event) => {
+      if (event.topic === "debug.changed") void refreshDebugStatus();
+    });
+    return stopDebugWatch;
   });
 
   async function refreshPrivileges() {
@@ -69,6 +81,25 @@
       // "unknown", and a settings page is not where a broken shell call
       // should become a red banner.
       privileges = null;
+    }
+  }
+
+  async function refreshDebugStatus() {
+    try {
+      debugStatus = await debugLog.status();
+      debugStatusError = null;
+    } catch (e) {
+      debugStatus = null;
+      debugStatusError = errorText(e);
+    }
+  }
+
+  async function setDebugLogging(enabled: boolean) {
+    try {
+      debugStatus = await debugLog.setEnabled(enabled);
+      debugStatusError = null;
+    } catch (e) {
+      debugStatusError = errorText(e);
     }
   }
 
@@ -595,6 +626,39 @@
       {/if}
     </Panel>
   {/if}
+
+  <Panel title={t("settings.debugLogs")}>
+    <div class="row">
+      <span>
+        {t("settings.debugLogsEnable")}
+        <small class="hint-inline"><RichText text={t("settings.debugLogsEnableHint")} /></small>
+      </span>
+      <Toggle
+        checked={debugStatus?.enabled ?? false}
+        onchange={(v) => void setDebugLogging(v)}
+        ariaLabel={t("settings.debugLogsEnable")}
+      />
+    </div>
+    {#if debugStatusError}
+      <p class="notice warn">{debugStatusError}</p>
+    {:else if debugStatus && !debugStatus.daemonDirWritable}
+      <p class="notice warn">
+        {t("settings.debugLogsNotWritable", { path: debugStatus.daemonDir })}
+      </p>
+    {/if}
+    {#if debugStatus}
+      <div class="row">
+        <span>{t("settings.debugLogsFolder")}</span>
+        <button
+          type="button"
+          class="action"
+          onclick={() => void revealItemInDir(debugStatus!.userDir)}
+        >
+          {t("settings.debugLogsOpenFolder")}
+        </button>
+      </div>
+    {/if}
+  </Panel>
 
   <Panel title={t("settings.startup")}>
     <!-- The machine first, then the session, then this window. The daemon
