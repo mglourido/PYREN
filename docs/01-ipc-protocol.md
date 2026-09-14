@@ -204,6 +204,7 @@ Topics so far:
 | `power.overridden` | another program changed something the daemon set (the CPU hint, turbo, a package limit, a firmware profile no mode maps onto) - reported, not rewritten | `{ knob, expected, found, reverted }` — `reverted` when it happened within 15 s of the daemon's own write |
 | `fan.mode` | a `fan.setMode` took effect, **whoever asked** — the app, `pyren-ctl`, the widget's click | `{ mode, manualPwm, source }` — `manualPwm` is the commanded manual speed (0-255), for a client that shows a slider but not a curve |
 | `fan.floorRaised` | the stall watch nudged Pyren's fan floor up because the fans kept giving out at it | `{ fromRpm, toRpm, stalls, reachedDriverFloor }` — `reachedDriverFloor` means it is now the driver's own and a recalibration is the next step |
+| `debug.changed` | `debug.setEnabled` took effect | `{ enabled }` |
 
 `power.mode` is published for *every* change that took effect, not only the
 ones this daemon was asked for by a key. `source` says who asked:
@@ -1001,6 +1002,28 @@ Whichever is found is treated as **read-only**. `apply` copies the tree to
 `/usr/src/hp-wmi-omen-1.0/` first and patches *that*, so the snapshot stays
 pristine and a second install never starts from the first one's output —
 which is why `stage-source` comes before `patch-source` in every plan.
+
+## `debug` module
+
+The one switch behind the app's "Registros de depuración" setting. See
+`docs/superpowers/specs/2026-09-14-debug-logging-design.md` for the full
+design of what gets written and where.
+
+| method | params | result |
+|---|---|---|
+| `debug.getStatus` | none | `{ "enabled": bool, "daemonDir": string, "daemonDirWritable": bool, "userDir": string }` |
+| `debug.setEnabled` | `{ "enabled": bool }` | same shape as `getStatus` |
+
+`daemonDir` is where the daemon itself writes (`/var/cache/pyren/
+depuration` when it can, `~/.cache/pyren/depuration` when it's running
+unprivileged); `userDir` is always `~/.cache/pyren/depuration`, the
+directory the OSD widget and the desktop app write to directly, since both
+already run as the desktop user. `daemonDirWritable: false` means the
+switch is on but the daemon has nowhere to write - the UI should say so
+rather than imply the files exist.
+
+Enabling or disabling this publishes `debug.changed` (see the event topics
+table above): `{ "enabled": bool }`.
 
 ## `fan` module
 
