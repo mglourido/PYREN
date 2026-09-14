@@ -11,6 +11,7 @@
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `fan.setKeepDriverFloor` | `{ "enabled": bool }` | the new status |
 //! | `fan.setThermalSafetyChecker` | `{ "enabled": bool }` | the new status |
+//! | `fan.setSensorFailureAction` | `{ "action": "max"\|"auto" }` | the new status |
 //! | `fan.clearFloorNotices` | none | the new status |
 //! | `fan.calibrate` | `{ "seconds"?: 10-120 }` | what full speed measured, see [`calibration`] |
 //! | `fan.cleanerStatus` | `{ "refresh"?: bool }` | what the fan cleaner can do here, see [`cleaner`] |
@@ -27,6 +28,9 @@
 //! cycle has to be able to stop the loop writing `pwm1` underneath it, and
 //! putting the two in different modules would mean one calling the other -
 //! which this project's modules never do.
+
+// The status object is one `json!` literal, past the macro's default depth.
+#![recursion_limit = "256"]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -271,6 +275,9 @@ pub struct FanConfig {
     /// turning it off is choosing to trust a setting over the temperature.
     /// See [`safety::ThermalChecker`].
     pub thermal_safety_checker: bool,
+    /// Where the fans go while a curve, or a slow manual speed, has lost its
+    /// temperature readings. See [`SensorFailureAction`].
+    pub sensor_failure_action: SensorFailureAction,
 }
 
 impl Default for FanConfig {
@@ -295,6 +302,45 @@ impl Default for FanConfig {
             cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
             cleaner_speed: None,
             thermal_safety_checker: true,
+            sensor_failure_action: SensorFailureAction::default(),
+        }
+    }
+}
+
+/// What a lost temperature reading hands the fans to.
+///
+/// Full speed is the default because it does not depend on anything still
+/// working: loud, but never hot. Auto hands them to the firmware, which
+/// reads its own sensors and is quiet - and trusts that the firmware's
+/// thermal control is sound on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SensorFailureAction {
+    #[default]
+    Max,
+    Auto,
+}
+
+impl SensorFailureAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Max => "max",
+            Self::Auto => "auto",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "max" => Some(Self::Max),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+
+    fn mode(self) -> FanMode {
+        match self {
+            Self::Max => FanMode::Max,
+            Self::Auto => FanMode::Auto,
         }
     }
 }
@@ -1215,6 +1261,7 @@ impl FanModule {
             "recentFanStalls": state.stall.recent_faults(),
             "calibrating": state.calibrating,
             "thermalSafetyChecker": state.config.thermal_safety_checker,
+            "sensorFailureAction": state.config.sensor_failure_action.as_str(),
             // What the thermal guards are doing right now. `holding` is the
             // mode a guard has put the hardware in over the user's setting,
             // null while the setting has the fans; `mode` above is always the
@@ -1559,6 +1606,19 @@ impl FanModule {
         {
             let mut state = lock(&self.state);
             state.config.thermal_safety_checker = enabled;
+            persist(&self.store, &mut state);
+        }
+        let _ = self.tick_once();
+        Ok(self.status())
+    }
+
+    /// Picks where the fans go when their temperature readings are lost.
+    /// Applied on the next tick, so a failure already in progress moves
+    /// over straight away.
+    fn set_sensor_failure_action(&self, action: SensorFailureAction) -> ModuleResult {
+        {
+            let mut state = lock(&self.state);
+            state.config.sensor_failure_action = action;
             persist(&self.store, &mut state);
         }
         let _ = self.tick_once();
@@ -1967,8 +2027,9 @@ impl FanModule {
                 if failed {
                     log_warn!(
                         "the fan {} lost its temperature readings; \
-                         fans to full speed until they return",
-                        mode.as_str()
+                         fans to {} until they return",
+                        mode.as_str(),
+                        state.config.sensor_failure_action.as_str()
                     );
                 } else {
                     log_info!("the fan {}'s temperature readings are back", mode.as_str());
@@ -2032,8 +2093,10 @@ impl FanModule {
         // Most urgent first. A stall hands over to the firmware, and if the
         // firmware does not answer the heat that follows, the checker above
         // outranks it.
-        let hold = if critical || sensor_failed {
+        let hold = if critical {
             Some(FanMode::Max)
+        } else if sensor_failed {
+            Some(state.config.sensor_failure_action.mode())
         } else if let Some(mode) = state.checker.command() {
             Some(mode)
         } else if state.stalled && mode.needs_pwm() {
@@ -2531,6 +2594,19 @@ impl Module for FanModule {
                         ModuleError::InvalidParams("params.enabled must be a boolean".into())
                     })?;
                 self.set_thermal_safety_checker(enabled)
+            }
+
+            "setSensorFailureAction" => {
+                let action = params
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .and_then(SensorFailureAction::parse)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams(
+                            "params.action must be \"max\" or \"auto\"".into(),
+                        )
+                    })?;
+                self.set_sensor_failure_action(action)
             }
 
             "clearFloorNotices" => {
@@ -4279,6 +4355,53 @@ mod tests {
         assert!(!stored.thermal_safety_checker);
         let old: FanConfig = serde_json::from_str("{}").unwrap();
         assert!(old.thermal_safety_checker, "a file from before it existed");
+    }
+
+    #[test]
+    fn the_sensor_failure_action_defaults_to_max_and_refuses_other_words() {
+        let _acpi = crate::testenv::real();
+        let module = module("sensor-action");
+        assert_eq!(module.status()["sensorFailureAction"], json!("max"));
+        let status = module
+            .call("setSensorFailureAction", json!({ "action": "auto" }))
+            .unwrap();
+        assert_eq!(status["sensorFailureAction"], json!("auto"));
+        let stored = module.store.load::<FanConfig>("fan").value;
+        assert_eq!(stored.sensor_failure_action, SensorFailureAction::Auto);
+        let error = module
+            .call("setSensorFailureAction", json!({ "action": "off" }))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidParams);
+        let old: FanConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.sensor_failure_action, SensorFailureAction::Max);
+    }
+
+    /// With auto chosen, a curve that loses its sensor goes to the firmware
+    /// instead of full speed - and still comes back once it reads again.
+    #[test]
+    fn a_failed_sensor_can_hand_the_fans_to_the_firmware_instead() {
+        let (module, dir) = driven_on_a_fixture("sensor-fail-auto", 60);
+        module
+            .call("setSensorFailureAction", json!({ "action": "auto" }))
+            .unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1", "following the curve");
+
+        set_temp(&dir, "garbage");
+        for _ in 0..3 {
+            module.tick_once().unwrap();
+        }
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "2",
+            "third bad reading: the firmware"
+        );
+        assert_eq!(module.status()["safety"]["sensorFailed"], json!(true));
+        assert_eq!(module.status()["safety"]["holding"], json!("auto"));
+
+        set_temp(&dir, "61000");
+        module.tick_once().unwrap();
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
     }
 
     #[test]

@@ -229,6 +229,11 @@ fn fan_set_thermal_safety_checker(enabled: bool) -> Result<Value, String> {
 }
 
 #[tauri::command(async)]
+fn fan_set_sensor_failure_action(action: String) -> Result<Value, String> {
+    call_daemon("fan", "setSensorFailureAction", json!({ "action": action }))
+}
+
+#[tauri::command(async)]
 fn fan_clear_floor_notices() -> Result<Value, String> {
     call_daemon("fan", "clearFloorNotices", json!({}))
 }
@@ -1030,6 +1035,7 @@ pub fn run() {
             fan_set_restore_on_start,
             fan_set_keep_driver_floor,
             fan_set_thermal_safety_checker,
+            fan_set_sensor_failure_action,
             fan_clear_floor_notices,
             fan_cleaner_status,
             fan_start_cleaning,

@@ -16,6 +16,7 @@ import {
   type ApplyReport,
   type AutoConfig,
   type FanReferenceSensor,
+  type FanSensorFailureAction,
   type FanStatus,
   type NetworkStatus,
   type PowerConfigReply,
@@ -571,6 +572,10 @@ class HardwareStore {
 
   async setThermalSafetyChecker(enabled: boolean) {
     await this.pushFan(() => daemon.setThermalSafetyChecker(enabled));
+  }
+
+  async setSensorFailureAction(action: FanSensorFailureAction) {
+    await this.pushFan(() => daemon.setSensorFailureAction(action));
   }
 
   /**

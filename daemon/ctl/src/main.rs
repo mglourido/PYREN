@@ -76,6 +76,10 @@ FANS
                                speed up, give them to the firmware, then
                                full speed until it cools, then put the fan
                                mode back. On by default
+  fan sensor-failure <max|auto>
+                               where the fans go when a curve (or a slow
+                               manual speed) loses its temperature
+                               readings. max by default
   fan floor <driver|pyren>     the slowest speed the fans are commanded
                                at: the driver's (its fan table's, 1800 rpm
                                on board 8D2F) or Pyren's, which
@@ -411,6 +415,11 @@ fn run(command: &args::Command) -> Run {
                 print_fan,
             )
         }
+        ["fan", "sensor-failure", action @ ("max" | "auto")] => show(
+            command,
+            client::call("fan", "setSensorFailureAction", json!({ "action": action }))?,
+            print_fan,
+        ),
         ["fan", "floor", which] => {
             let keep = match *which {
                 "driver" => true,
@@ -1526,7 +1535,14 @@ fn print_fan(status: &Value) {
             .unwrap_or_default();
         row(
             "safety",
-            format!("checker {}{holding}", if enabled { "on" } else { "off" }),
+            format!(
+                "checker {}; sensor lost -> {}{holding}",
+                if enabled { "on" } else { "off" },
+                status
+                    .get("sensorFailureAction")
+                    .and_then(Value::as_str)
+                    .unwrap_or("max"),
+            ),
         );
     }
     if status.get("fansReleased").and_then(Value::as_bool) == Some(true) {

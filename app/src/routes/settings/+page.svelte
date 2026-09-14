@@ -3,6 +3,7 @@
   import Panel from "$lib/components/Panel.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import RichText from "$lib/components/RichText.svelte";
   import { availableLocales, localeName, t, tm } from "$lib/i18n/index.svelte";
   import { settings } from "$lib/stores/settings.svelte";
@@ -11,7 +12,12 @@
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { session, type SessionStatus } from "$lib/api/session";
   import { admin, type AdminStatus } from "$lib/api/admin";
-  import { daemon, errorText, type HotkeyStatus } from "$lib/api/daemon";
+  import {
+    daemon,
+    errorText,
+    type FanSensorFailureAction,
+    type HotkeyStatus,
+  } from "$lib/api/daemon";
 
   /**
    * What is running in this session. Read from the shell rather than from
@@ -535,6 +541,21 @@
           checked={fan.thermalSafetyChecker}
           onchange={(v) => void hardware.setThermalSafetyChecker(v)}
           ariaLabel={t("settings.thermalSafetyChecker")}
+        />
+      </div>
+      <div class="row">
+        <span>
+          {t("settings.sensorFailureAction")}
+          <small class="hint-inline"><RichText text={t("settings.sensorFailureActionHint")} /></small>
+        </span>
+        <Segmented
+          variant="pill"
+          value={fan.sensorFailureAction ?? "max"}
+          options={[
+            { value: "max", label: t("settings.sensorFailureMax") },
+            { value: "auto", label: t("settings.sensorFailureAuto") },
+          ]}
+          onchange={(v) => void hardware.setSensorFailureAction(v as FanSensorFailureAction)}
         />
       </div>
       <div class="row">

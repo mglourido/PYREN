@@ -89,6 +89,8 @@ export type FanFloorNotice = {
  *  label; unknown values should be shown verbatim. */
 export type FanTachometer = { key: "cpu" | "gpu" | (string & {}); rpm: number; isReverse: boolean };
 
+export type FanSensorFailureAction = "max" | "auto";
+
 export type FanStatus = {
   driverInstalled: boolean;
   capabilities: FanCapabilities;
@@ -136,6 +138,9 @@ export type FanStatus = {
   /** The thermal safety checker: hot and the fans not answering hands them
    *  to the firmware, then to full speed, until the machine cools. */
   thermalSafetyChecker: boolean;
+  /** Where the fans go when a curve or slow manual speed loses its
+   *  temperature readings: full speed, or the firmware. */
+  sensorFailureAction: FanSensorFailureAction;
   /** What the thermal guards are doing right now. `holding` is the mode a
    *  guard has put the hardware in over the setting; `mode` stays the
    *  setting. */
@@ -1186,6 +1191,7 @@ const DAEMON_ROUTES: Record<
   fan_set_restore_on_start: { module: "fan", method: "setRestoreOnStart" },
   fan_set_keep_driver_floor: { module: "fan", method: "setKeepDriverFloor" },
   fan_set_thermal_safety_checker: { module: "fan", method: "setThermalSafetyChecker" },
+  fan_set_sensor_failure_action: { module: "fan", method: "setSensorFailureAction" },
   fan_clear_floor_notices: { module: "fan", method: "clearFloorNotices" },
   fan_cleaner_status: { module: "fan", method: "cleanerStatus" },
   fan_start_cleaning: { module: "fan", method: "startCleaning" },
@@ -1441,6 +1447,8 @@ export const daemon = {
     call<FanStatus>("fan_set_keep_driver_floor", { enabled }),
   setThermalSafetyChecker: (enabled: boolean) =>
     call<FanStatus>("fan_set_thermal_safety_checker", { enabled }),
+  setSensorFailureAction: (action: FanSensorFailureAction) =>
+    call<FanStatus>("fan_set_sensor_failure_action", { action }),
   /** Empties the daemon's log of automatic floor raises. */
   clearFloorNotices: () => call<FanStatus>("fan_clear_floor_notices"),
   /** `refresh` re-asks the firmware what it can do (two ACPI calls); the
