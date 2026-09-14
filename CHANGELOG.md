@@ -11,6 +11,15 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **Opt-in debug logging.** A new "Registros de depuración" switch in
+  Settings (`debug.getStatus`/`debug.setEnabled`) keeps a rolling,
+  human-readable history under `~/.cache/pyren/depuration` (or
+  `/var/cache/pyren/depuration` for the installed daemon): driver/kernel
+  identity whenever it changes, combined power+fan mode history, every
+  RGB command sent, full calibration and diagnostic runs, the fan
+  cleaner, driver installs, the daemon's own startup/shutdown, the full
+  IPC transcript, and what the OSD widget and the app itself did. Off by
+  default; five 5 MB files per category, one rotation generation each.
 - **A preferred mode for each power source in the automatic switcher.**
   Under each auto switch on the home screen, choose what the supervisor
   treats as home: **Eco or Balanced on battery**, **Balanced or Performance
