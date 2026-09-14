@@ -115,6 +115,10 @@ mod tests {
 
     #[test]
     fn a_fresh_module_starts_disabled() {
+        // `with_store` calls `debuglog::set_enabled` internally, so even
+        // this read-only-looking test mutates the shared global and must
+        // hold the lock, same as `energy_profiles.rs`'s `Machine::new`.
+        let _guard = debuglog::test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let module = DebugModule::with_store(store("fresh"));
         let status = module.status();
         assert_eq!(status["enabled"], false);
@@ -122,6 +126,7 @@ mod tests {
 
     #[test]
     fn set_enabled_flips_the_flag_and_persists_it() {
+        let _guard = debuglog::test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let store = store("persist");
         let module = DebugModule::with_store(store.clone());
 
@@ -140,6 +145,7 @@ mod tests {
 
     #[test]
     fn set_enabled_without_a_bool_is_invalid_params() {
+        let _guard = debuglog::test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let module = DebugModule::with_store(store("bad-params"));
         let err = module.call("setEnabled", json!({})).unwrap_err();
         assert_eq!(err.kind(), crate::ErrorKind::InvalidParams);
@@ -147,6 +153,7 @@ mod tests {
 
     #[test]
     fn an_unknown_method_is_refused() {
+        let _guard = debuglog::test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let module = DebugModule::with_store(store("unknown-method"));
         let err = module.call("nope", Value::Null).unwrap_err();
         assert_eq!(err.kind(), crate::ErrorKind::UnknownMethod);
@@ -154,6 +161,7 @@ mod tests {
 
     #[test]
     fn set_enabled_publishes_debug_changed_once_wired_to_a_bus() {
+        let _guard = debuglog::test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let module = DebugModule::with_store(store("publish"));
         let events = Arc::new(EventBus::new());
         module.publish_to(Arc::clone(&events));

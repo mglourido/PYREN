@@ -669,6 +669,9 @@ mod tests {
     /// directory instead, precisely to avoid needing a second `init`.
     #[test]
     fn a_dispatched_call_is_recorded_to_the_ipc_transcript_when_enabled() {
+        let _guard = crate::debuglog::test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir()
             .join(format!("pyren-core-dispatch-debuglog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -697,6 +700,9 @@ mod tests {
     /// written at all - not even the directory is created.
     #[test]
     fn a_dispatched_call_writes_nothing_when_debug_logging_is_off() {
+        let _guard = crate::debuglog::test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir()
             .join(format!("pyren-core-dispatch-nodebuglog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

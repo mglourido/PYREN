@@ -13,6 +13,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use serde::Serialize;
@@ -57,6 +59,19 @@ const MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Guards `ENABLED`/`ROOT` for the duration of any test that mutates or
+/// asserts on them - both are process-global, and Cargo's default test
+/// runner shares one process across threads, so two tests touching either
+/// static race exactly like `energy_profiles.rs`'s `PYREN_*` overrides do
+/// (see that file's `machine_lock`). Not a `#[test]` itself: it is
+/// infrastructure other test modules (`debug_module.rs`, `lib.rs`) reach
+/// via `crate::debuglog::test_lock()`.
+#[cfg(test)]
+pub(crate) fn test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Sets the directory every `record`/`record_if_changed` call writes
 /// into. Call once, near the top of `main`, before anything might log.
@@ -382,14 +397,15 @@ mod tests {
 
     #[test]
     fn record_and_record_if_changed_are_a_no_op_while_disabled() {
-        // No global ENABLED/ROOT mutation here on purpose - other tests in
-        // this binary run in parallel and share those statics. This test
-        // only proves the guard exists by construction: `record`/
+        // Other tests in this binary flip ENABLED under `test_lock()`, so
+        // take the same lock before reading it here - otherwise this can
+        // observe another thread's `true` mid-flight. `record`/
         // `record_if_changed` both check `enabled()` before touching the
-        // filesystem, which the source below shows directly. The
+        // filesystem, which the source above shows directly. The
         // filesystem-touching behaviour itself is covered through
         // `write_entry`/`rotate_if_needed`/`last_line_matches` above,
         // which take an explicit root and never read the global state.
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
         assert!(!enabled(), "must default to off");
     }
 
