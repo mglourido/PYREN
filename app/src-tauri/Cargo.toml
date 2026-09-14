@@ -53,6 +53,7 @@ libc = "0.2"
 # versioning behaviour. The two remain separate Cargo workspaces and ship as
 # separate binaries; this is one small library crate in common, not a merge.
 pyren-config = { path = "../../daemon/crates/config" }
+pyren-core = { path = "../../daemon/crates/core" }
 
 # What `tools/release.sh` builds. `thin` rather than fat LTO on purpose:
 # this crate pulls in ~490 others (WebKitGTK/GTK bindings), and a fat-LTO

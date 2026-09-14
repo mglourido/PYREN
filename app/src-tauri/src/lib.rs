@@ -184,6 +184,30 @@ fn fan_get_status() -> Result<Value, String> {
     call_daemon("fan", "getStatus", Value::Null)
 }
 
+#[tauri::command(async)]
+fn debug_get_status() -> Result<Value, String> {
+    call_daemon("debug", "getStatus", Value::Null)
+}
+
+#[tauri::command(async)]
+fn debug_set_enabled(enabled: bool) -> Result<Value, String> {
+    call_daemon("debug", "setEnabled", json!({ "enabled": enabled }))
+}
+
+/// Writes one line to `frontend.jsonl` from the webview - uncaught errors
+/// and a short list of user-action breadcrumbs (see `$lib/api/debug.ts`).
+/// Does not go through the daemon: this file is only ever the app's own,
+/// under the user's `~/.cache/pyren/depuration`.
+#[tauri::command(async)]
+fn debug_log_frontend(category: String, entry: Value) -> Result<(), String> {
+    let mut payload = entry;
+    if let Value::Object(map) = &mut payload {
+        map.insert("category".to_string(), Value::String(category));
+    }
+    pyren_core::debuglog::record(pyren_core::debuglog::Category::Frontend, payload);
+    Ok(())
+}
+
 /// `pwm` is only meaningful for `manual`; the daemon ignores it otherwise
 /// and refuses a mode this machine's driver cannot do, rather than
 /// pretending it worked.
@@ -1006,6 +1030,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            pyren_core::debuglog::init(pyren_core::debuglog::user_root());
             watch_daemon_events(app.handle().clone());
             // On a thread: it may shell out to systemctl, and nothing about
             // starting the widget should hold up the window.
@@ -1086,6 +1111,9 @@ pub fn run() {
             admin_status,
             admin_grant,
             session_status,
+            debug_get_status,
+            debug_set_enabled,
+            debug_log_frontend,
             session_start_osd,
             session_show_osd,
             session_stop_osd,
