@@ -2742,6 +2742,7 @@ version = "0.1.4"
 dependencies = [
  "libc",
  "pyren-config",
+ "pyren-core",
  "serde",
  "serde_json",
  "tauri",
@@ -2755,6 +2756,17 @@ dependencies = [
 name = "pyren-config"
 version = "0.1.4"
 dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "pyren-core"
+version = "0.1.4"
+dependencies = [
+ "libc",
+ "pyren-config",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
