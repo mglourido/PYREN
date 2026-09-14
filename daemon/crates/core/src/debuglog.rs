@@ -219,6 +219,63 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether `(module, method)` gets a richer copy of its result alongside
+/// the general `ipc.jsonl` line - the calls whose value is in the full
+/// response, not a one-line summary. Everything else still reaches
+/// `ipc.jsonl`; this only decides the *extra* copy.
+fn category_for(module: &str, method: &str) -> Option<Category> {
+    match (module, method) {
+        ("fan", "calibrate" | "diagnose" | "probeSpeedControl") => Some(Category::Calibration),
+        ("fan", "startCleaning" | "stopCleaning" | "cleanerStatus") => Some(Category::Cleaner),
+        ("rgb", _) => Some(Category::Lighting),
+        ("installer", "apply" | "plan" | "inspect") => Some(Category::Installer),
+        _ => None,
+    }
+}
+
+/// Called once per IPC request from [`crate::Registry::dispatch`], after
+/// the response already exists. `core.*` calls never reach here -
+/// `dispatch` answers those before this would be called, which is also
+/// why `nextEvent`'s long poll never pollutes the transcript.
+pub fn on_ipc(
+    module: &str,
+    method: &str,
+    params: Option<Value>,
+    response: &crate::Response,
+    duration: std::time::Duration,
+) {
+    if !enabled() {
+        return;
+    }
+    let ok = response.error.is_none();
+    let error_message = response.error.as_ref().map(|e| e.message.clone());
+    record(
+        Category::Ipc,
+        json!({
+            "module": module,
+            "method": method,
+            "params": params.clone(),
+            "ok": ok,
+            "durationMs": duration.as_millis() as u64,
+            "error": error_message.clone(),
+        }),
+    );
+
+    let Some(category) = category_for(module, method) else {
+        return;
+    };
+    record(
+        category,
+        json!({
+            "method": method,
+            "params": params,
+            "ok": ok,
+            "result": response.result.clone(),
+            "error": error_message,
+        }),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,5 +391,31 @@ mod tests {
         // `write_entry`/`rotate_if_needed`/`last_line_matches` above,
         // which take an explicit root and never read the global state.
         assert!(!enabled(), "must default to off");
+    }
+
+    #[test]
+    fn category_for_routes_the_rich_methods_to_their_own_file() {
+        assert_eq!(category_for("fan", "calibrate"), Some(Category::Calibration));
+        assert_eq!(category_for("fan", "diagnose"), Some(Category::Calibration));
+        assert_eq!(
+            category_for("fan", "probeSpeedControl"),
+            Some(Category::Calibration)
+        );
+        assert_eq!(category_for("fan", "startCleaning"), Some(Category::Cleaner));
+        assert_eq!(category_for("fan", "stopCleaning"), Some(Category::Cleaner));
+        assert_eq!(category_for("fan", "cleanerStatus"), Some(Category::Cleaner));
+        assert_eq!(category_for("rgb", "setStatic"), Some(Category::Lighting));
+        assert_eq!(category_for("rgb", "setBrightness"), Some(Category::Lighting));
+        assert_eq!(category_for("installer", "apply"), Some(Category::Installer));
+        assert_eq!(category_for("installer", "plan"), Some(Category::Installer));
+        assert_eq!(category_for("installer", "inspect"), Some(Category::Installer));
+    }
+
+    #[test]
+    fn category_for_is_none_for_everything_else() {
+        assert_eq!(category_for("power", "setMode"), None);
+        assert_eq!(category_for("fan", "getStatus"), None);
+        assert_eq!(category_for("fan", "setMode"), None);
+        assert_eq!(category_for("installer", "autodetect"), None);
     }
 }

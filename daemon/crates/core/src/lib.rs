@@ -7,7 +7,7 @@
 //! `docs/01-ipc-protocol.md` at the repo root for the wire format.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -332,7 +332,9 @@ impl Registry {
             return self.dispatch_core(&req);
         }
 
-        match self.modules.iter().find(|m| m.id() == req.module) {
+        let started = Instant::now();
+        let logged_params = debuglog::enabled().then(|| req.params.clone());
+        let response = match self.modules.iter().find(|m| m.id() == req.module) {
             None => Response::err(
                 req.id,
                 ErrorKind::UnknownModule,
@@ -342,7 +344,9 @@ impl Registry {
                 Ok(v) => Response::ok(req.id, v),
                 Err(e) => Response::err_msg(req.id, e.kind(), e.into_msg()),
             },
-        }
+        };
+        debuglog::on_ipc(&req.module, &req.method, logged_params, &response, started.elapsed());
+        response
     }
 
     fn dispatch_core(&self, req: &Request) -> Response {
@@ -653,5 +657,62 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("since"));
+    }
+
+    /// The one integration point this task adds: a real `dispatch()` call,
+    /// with logging on, produces a real line in `ipc.jsonl`. `ROOT` is a
+    /// `OnceLock` and can only be set once per process, so this is the
+    /// only test in the crate allowed to call `debuglog::init` - every
+    /// other debug-log test (in `debuglog.rs`) works against an explicit
+    /// directory instead, precisely to avoid needing a second `init`.
+    #[test]
+    fn a_dispatched_call_is_recorded_to_the_ipc_transcript_when_enabled() {
+        let dir = std::env::temp_dir()
+            .join(format!("pyren-core-dispatch-debuglog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::debuglog::init(dir.clone());
+        crate::debuglog::set_enabled(true);
+
+        let mut registry = Registry::new();
+        registry.register(Box::new(Stub(|| ModuleError::Failed("unused".into()))));
+        registry.dispatch(Request {
+            id: 1,
+            module: "stub".to_string(),
+            method: "ok".to_string(),
+            params: Value::Null,
+        });
+
+        crate::debuglog::set_enabled(false);
+
+        let text = std::fs::read_to_string(dir.join("ipc.jsonl")).expect("ipc.jsonl written");
+        let line: Value = serde_json::from_str(text.lines().next().expect("one line")).unwrap();
+        assert_eq!(line["module"], "stub");
+        assert_eq!(line["method"], "ok");
+        assert_eq!(line["ok"], true);
+    }
+
+    /// The other half: with the toggle off (the default), nothing is
+    /// written at all - not even the directory is created.
+    #[test]
+    fn a_dispatched_call_writes_nothing_when_debug_logging_is_off() {
+        let dir = std::env::temp_dir()
+            .join(format!("pyren-core-dispatch-nodebuglog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // `debuglog::init` was already called by the previous test in this
+        // binary (or will be by a later one) - `ROOT` sticks to whichever
+        // directory won that race, which is fine here: this test never
+        // enables logging, so nothing should be written to *any* root.
+        crate::debuglog::set_enabled(false);
+
+        let mut registry = Registry::new();
+        registry.register(Box::new(Stub(|| ModuleError::Failed("unused".into()))));
+        registry.dispatch(Request {
+            id: 2,
+            module: "stub".to_string(),
+            method: "ok".to_string(),
+            params: Value::Null,
+        });
+
+        assert!(!dir.join("ipc.jsonl").exists());
     }
 }
