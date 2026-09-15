@@ -16,6 +16,7 @@ export type DebugLogStatus = {
   daemonDir: string;
   daemonDirWritable: boolean;
   userDir: string;
+  userDirWritable: boolean;
 };
 
 export const debugLog = {

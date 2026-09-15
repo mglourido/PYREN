@@ -186,9 +186,23 @@ fn fan_get_status() -> Result<Value, String> {
 
 #[tauri::command(async)]
 fn debug_get_status() -> Result<Value, String> {
-    let result = call_daemon("debug", "getStatus", Value::Null)?;
+    let mut result = call_daemon("debug", "getStatus", Value::Null)?;
     if let Some(enabled) = result.get("enabled").and_then(Value::as_bool) {
         pyren_core::debuglog::set_enabled(enabled);
+    }
+    // The daemon reports `userDir` as resolved in its own process, which
+    // normally runs as root under systemd with no desktop `$HOME` - that
+    // path doesn't match where this app actually writes `frontend.jsonl`
+    // (see `debug_log_frontend` below). Override it with the app-local
+    // value so "open logs folder" points at a real, existing directory.
+    let user_dir = pyren_core::debuglog::user_root();
+    let user_dir_writable = pyren_core::debuglog::is_writable(&user_dir);
+    if let Value::Object(map) = &mut result {
+        map.insert(
+            "userDir".to_string(),
+            Value::String(user_dir.display().to_string()),
+        );
+        map.insert("userDirWritable".to_string(), Value::Bool(user_dir_writable));
     }
     Ok(result)
 }
