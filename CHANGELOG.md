@@ -11,6 +11,10 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **`tools/release.sh --dev`** for test builds: skips the version prompt
+  (keeps whatever the manifests currently say), implies `--allow-dirty`,
+  and names the archive `pyren-<version>-dev+<commit>-...` so it can't be
+  mistaken for a tagged release.
 - **Opt-in debug logging.** A new "Registros de depuración" switch in
   Settings (`debug.getStatus`/`debug.setEnabled`) keeps a rolling,
   human-readable history under `~/.cache/pyren/depuration` (or

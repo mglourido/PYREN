@@ -16,6 +16,8 @@
 #   5. package    - pyren-<version>-x86_64-linux.tar.gz + SHA256SUMS in dist/
 #
 #   tools/release.sh                 the full run
+#   tools/release.sh --dev           test build: skip the version prompt,
+#                                    allow a dirty tree, name it <version>-dev+<commit>
 #   tools/release.sh --skip-tests    trust a green CI, go straight to building
 #   tools/release.sh --appimage      also build a portable .AppImage
 #   tools/release.sh --publish       create a DRAFT GitHub release with gh
@@ -34,6 +36,7 @@ run_tests=yes
 appimage=no
 publish=no
 allow_dirty=no
+dev=no
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -42,6 +45,7 @@ while [ $# -gt 0 ]; do
     --appimage) appimage=yes; shift ;;
     --publish) publish=yes; shift ;;
     --allow-dirty) allow_dirty=yes; shift ;;
+    --dev) dev=yes; allow_dirty=yes; shift ;;
     -h | --help)
         sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
@@ -79,7 +83,9 @@ VERSION=$(toml_version "$ROOT/daemon/Cargo.toml")
 # default (just press Enter to keep it). Anything else is handed to
 # bump-version.sh, and the run stops so the bump can be reviewed and
 # committed - a release build wants a clean tree and a real commit to tag.
-if { true >/dev/tty; } 2>/dev/null; then
+if [ "$dev" = yes ]; then
+    echo "  --dev: skipping the version prompt, building $VERSION as-is"
+elif { true >/dev/tty; } 2>/dev/null; then
     printf 'Version to release [%s]: ' "$VERSION" >/dev/tty
     read -r want </dev/tty || want=
     [ -n "$want" ] || want=$VERSION
@@ -183,6 +189,9 @@ fi
 
 # --- 4. stage ------------------------------------------------------
 
+if [ "$dev" = yes ]; then
+    VERSION="$VERSION-dev+$(git -C "$ROOT" rev-parse --short HEAD)"
+fi
 NAME="pyren-$VERSION"
 DEST="$STAGE/$NAME"
 

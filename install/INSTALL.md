@@ -176,7 +176,8 @@ git add -A && git commit -m "release: 0.2.0"
 ```
 
 `release.sh` refuses a dirty tree (`--allow-dirty` is for throwaway builds
-only).
+only). To try a build before committing to a version at all, skip straight
+to `tools/release.sh --dev` (see below).
 
 ### 4 · Build
 
@@ -184,7 +185,14 @@ only).
 tools/release.sh                 # CI checks, then build and pack
 tools/release.sh --skip-tests    # skip the checks if CI is already green on this commit
 tools/release.sh --appimage      # also produce a portable AppImage of the app
+tools/release.sh --dev           # test build: no version prompt, dirty tree OK
 ```
+
+`--dev` is for trying a build before cutting a real release — no need to
+bump the version or commit first. It skips the version prompt (keeps
+whatever `daemon/Cargo.toml` currently says), implies `--allow-dirty`, and
+names the archive `pyren-<version>-dev+<commit>-x86_64-linux.tar.gz` so it
+never collides with, or gets mistaken for, a tagged release.
 
 Phases: preflight → checks (`cargo test` + `clippy` + `svelte-check`, the
 same set as `.github/workflows/ci.yml`) → build → stage → package.
