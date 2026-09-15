@@ -44,6 +44,7 @@
   import { onDestroy, tick } from "svelte";
   import InstallProgress from "$lib/components/InstallProgress.svelte";
   import type { LiveStep } from "$lib/components/InstallProgress.svelte";
+  import { debugLog } from "$lib/api/debug";
   import {
     daemon,
     type Autodetected,
@@ -303,6 +304,7 @@
   function toggleOpen() {
     open = !open;
     if (open && !inspection && !inspecting) inspect();
+    if (open) debugLog.action("driverWizardOpened");
   }
 
   // A different set of steps means the plan on screen is not this plan.

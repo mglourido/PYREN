@@ -15,6 +15,7 @@
   import Toggle from "$lib/components/Toggle.svelte";
   import { daemon, errorText, type FanDiagnosis, type CheckStatus, type FanCalibration } from "$lib/api/daemon";
   import { admin, type AdminAction, type AdminStatus } from "$lib/api/admin";
+  import { debugLog } from "$lib/api/debug";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
@@ -83,6 +84,7 @@
   async function runCalibrationCheck() {
     calibrating = true;
     calibrationError = null;
+    debugLog.action("fanCalibrationStarted");
     calibrationBaseline = {
       maxRpm: hardware.fan?.fanMaxRpm ?? null,
       // The swept minimum (Pyren's floor before its margin), not

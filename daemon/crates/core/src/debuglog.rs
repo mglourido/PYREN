@@ -90,10 +90,27 @@ pub fn daemon_root() -> PathBuf {
         return PathBuf::from(dir);
     }
     const SYSTEM_ROOT: &str = "/var/cache/pyren/depuration";
-    if fs::create_dir_all(SYSTEM_ROOT).is_ok() && is_writable(Path::new(SYSTEM_ROOT)) {
+    let path = Path::new(SYSTEM_ROOT);
+    if fs::create_dir_all(SYSTEM_ROOT).is_ok() && is_writable(path) {
+        restrict_system_root(path);
         return PathBuf::from(SYSTEM_ROOT);
     }
     user_root()
+}
+
+/// Matches the socket's own trust boundary (`socket.rs`'s `bind_restricted`):
+/// `0750`, group `pyren`, so this system-wide, potentially-multi-user
+/// directory is not left at `create_dir_all`'s default `0755 root:root`
+/// under systemd. Idempotent - safe to call on a directory a prior run
+/// already created at the old, wider mode - and degrades the same way
+/// `socket.rs` does when the `pyren` group does not exist: the directory is
+/// simply left as it is rather than failing daemon startup.
+fn restrict_system_root(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o750));
+    if let Some(gid) = crate::socket::lookup_gid(&crate::socket::socket_group()) {
+        let _ = crate::socket::chown_group(path, gid);
+    }
 }
 
 /// `~/.cache/pyren/depuration`, always - for a process that already runs
@@ -119,7 +136,15 @@ pub fn user_root() -> PathBuf {
 /// Whether `dir` can actually be written to, checked by trying rather than
 /// by looking at the effective uid - being root is not the same as the
 /// path being writable (read-only `/var`, containers, immutable distros).
+///
+/// Creates `dir` first if it does not exist yet, so this reports what a
+/// real [`record`] call would actually achieve (which also does
+/// `create_dir_all` internally) rather than false-negativing with `ENOENT`
+/// on a directory nothing has written to yet - e.g. the `user_root()`
+/// fallback, or a `PYREN_DEPURATION_DIR` override, neither of which is
+/// created just by computing the path.
 pub fn is_writable(dir: &Path) -> bool {
+    let _ = fs::create_dir_all(dir);
     let probe = dir.join(".pyren-write-test");
     match File::create(&probe) {
         Ok(_) => {

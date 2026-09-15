@@ -545,6 +545,7 @@
     "debugLogsNotWritable": "El interruptor está activado, pero {path} no se puede escribir, así que de momento no se está guardando nada ahí.",
     "debugLogsFolder": "Archivos de registro",
     "debugLogsOpenFolder": "Abrir carpeta de registros",
+    "debugLogsOpenDaemonFolder": "Abrir carpeta de registros del daemon",
     "storage": "Almacenamiento",
     "configFile": "Archivo de ajustes",
     "daemonConfigFile": "Archivo de ajustes del daemon",

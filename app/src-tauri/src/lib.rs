@@ -186,12 +186,20 @@ fn fan_get_status() -> Result<Value, String> {
 
 #[tauri::command(async)]
 fn debug_get_status() -> Result<Value, String> {
-    call_daemon("debug", "getStatus", Value::Null)
+    let result = call_daemon("debug", "getStatus", Value::Null)?;
+    if let Some(enabled) = result.get("enabled").and_then(Value::as_bool) {
+        pyren_core::debuglog::set_enabled(enabled);
+    }
+    Ok(result)
 }
 
 #[tauri::command(async)]
 fn debug_set_enabled(enabled: bool) -> Result<Value, String> {
-    call_daemon("debug", "setEnabled", json!({ "enabled": enabled }))
+    let result = call_daemon("debug", "setEnabled", json!({ "enabled": enabled }))?;
+    if let Some(enabled) = result.get("enabled").and_then(Value::as_bool) {
+        pyren_core::debuglog::set_enabled(enabled);
+    }
+    Ok(result)
 }
 
 /// Writes one line to `frontend.jsonl` from the webview - uncaught errors
@@ -981,6 +989,16 @@ fn watch_daemon_events(app: tauri::AppHandle) {
             };
 
             for event in result.get("events").and_then(Value::as_array).into_iter().flatten() {
+                if event.get("topic").and_then(Value::as_str) == Some("debug.changed") {
+                    if let Some(enabled) = event
+                        .get("payload")
+                        .and_then(|p| p.get("enabled"))
+                        .and_then(Value::as_bool)
+                    {
+                        pyren_core::debuglog::set_enabled(enabled);
+                    }
+                }
+
                 // Emitted verbatim: which topics are worth reacting to is
                 // the frontend's business, and a topic this build has never
                 // heard of has to reach it rather than be filtered out here.

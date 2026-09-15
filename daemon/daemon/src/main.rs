@@ -404,6 +404,19 @@ fn main() {
             .publish_to(Arc::clone(&events))
             .on_driver_changed(Box::new(move || {
                 fan.rediscover();
+                // Not the full snapshot the startup call above logs: `system`
+                // (and the `identity` reference borrowed from it) is already
+                // moved into the registry by this point, so a full re-read of
+                // vendor/board/kernel/etc is not reachable here without
+                // restructuring what this closure captures. `driverInstalled`
+                // is: it is exactly what `fan.rediscover()` just refreshed,
+                // so this re-logs the one fact this hook exists to observe -
+                // that an install changed whether the driver is now seen as
+                // present, without anyone restarting the daemon.
+                pyren_core::debuglog::record_if_changed(
+                    pyren_core::debuglog::Category::DriverKernel,
+                    serde_json::json!({ "driverInstalled": fan.is_supported() }),
+                );
             })),
     ));
     let registry = Arc::new(registry);

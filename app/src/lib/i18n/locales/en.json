@@ -545,6 +545,7 @@
     "debugLogsNotWritable": "The switch is on, but {path} isn't writable, so nothing is being recorded there yet.",
     "debugLogsFolder": "Log files",
     "debugLogsOpenFolder": "Open logs folder",
+    "debugLogsOpenDaemonFolder": "Open daemon logs folder",
     "storage": "Storage",
     "configFile": "Settings file",
     "daemonConfigFile": "Daemon settings file",

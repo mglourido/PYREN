@@ -62,7 +62,7 @@ pub fn socket_group() -> String {
 /// no other thread is in a `getgr*` call. This runs once, from `main`,
 /// before any connection thread exists, and nothing else in the daemon
 /// looks up groups.
-fn lookup_gid(name: &str) -> Option<u32> {
+pub(crate) fn lookup_gid(name: &str) -> Option<u32> {
     let c_name = CString::new(name).ok()?;
     // SAFETY: c_name outlives the call; the returned pointer is read
     // immediately and never stored.
@@ -76,7 +76,7 @@ fn lookup_gid(name: &str) -> Option<u32> {
     }
 }
 
-fn chown_group(path: &Path, gid: u32) -> std::io::Result<()> {
+pub(crate) fn chown_group(path: &Path, gid: u32) -> std::io::Result<()> {
     let c_path = CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     // uid_t of -1 means "leave the owner alone".

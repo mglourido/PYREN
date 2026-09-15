@@ -98,6 +98,7 @@
     try {
       debugStatus = await debugLog.setEnabled(enabled);
       debugStatusError = null;
+      debugLog.action("debugLoggingToggled", { enabled });
     } catch (e) {
       debugStatusError = errorText(e);
     }
@@ -657,6 +658,18 @@
           {t("settings.debugLogsOpenFolder")}
         </button>
       </div>
+      {#if debugStatus.daemonDir !== debugStatus.userDir && debugStatus.daemonDirWritable}
+        <div class="row">
+          <span>{t("settings.debugLogsFolder")}</span>
+          <button
+            type="button"
+            class="action"
+            onclick={() => void revealItemInDir(debugStatus!.daemonDir)}
+          >
+            {t("settings.debugLogsOpenDaemonFolder")}
+          </button>
+        </div>
+      {/if}
     {/if}
   </Panel>
 
