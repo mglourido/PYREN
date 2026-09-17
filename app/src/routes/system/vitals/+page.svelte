@@ -18,6 +18,16 @@
 
   const advanced = $derived(settings.current.vitalsAdvancedView);
 
+  let scrollArea: HTMLDivElement | undefined = $state();
+  /** Switching view swaps the whole `{#if}` block for one of very different
+   * height. The scroll area keeps its old scrollTop across that swap, so a
+   * tall advanced scroll position can leave the shorter basic view's content
+   * clipped past the bottom. Reset it. */
+  $effect(() => {
+    advanced;
+    scrollArea?.scrollTo(0, 0);
+  });
+
   const cpuSeries = $derived<Series[]>([
     { label: t("vitals.usage"), color: "#2f8fff", values: telemetry.cpuUsageHistory },
     { label: t("vitals.temperature"), color: "#b14cff", values: telemetry.cpuTempHistory },
@@ -64,14 +74,12 @@
       <div class="view-buttons">
         <button
           class:active={!advanced}
-          title={t("vitals.basicView")}
           onclick={() => settings.set("vitalsAdvancedView", false)}
         >
           <Icon name="gauge" size={20} />
         </button>
         <button
           class:active={advanced}
-          title={t("vitals.advancedView")}
           onclick={() => settings.set("vitalsAdvancedView", true)}
         >
           <Icon name="chip" size={20} />
@@ -98,6 +106,7 @@
     </div>
   </header>
 
+  <div class="scroll-area" bind:this={scrollArea}>
   {#if !advanced}
     <div class="grid">
       <!-- One card per GPU: a hybrid machine has two, and which of them is
@@ -109,7 +118,7 @@
         <section class="card">
           <h2>{gpuHeading(gpu)}</h2>
           <Gauge value={gpu.usagePercent} label={t("vitals.gpuUsage")} id="gpu-{slot}" />
-          <p class="chip-name" title={gpu.name}>{gpu.name}</p>
+          <p class="chip-name">{gpu.name}</p>
           <div class="foot">
             <span class="digital" style="color:{tempColor(gpu.tempC)}">
               {formatTemp(gpu.tempC)}
@@ -173,7 +182,7 @@
         <ul class="disks">
           {#each telemetry.disks as disk (disk.mount)}
             <li>
-              <span class="mount" title="{disk.device} ({disk.fstype})">{disk.mount}</span>
+              <span class="mount">{disk.mount}</span>
               <span class="bar">
                 <span
                   class="fill"
@@ -231,7 +240,7 @@
           <tbody>
             {#each telemetry.processes as process (process.pid)}
               <tr>
-                <td class="proc-name" title="PID {process.pid}">{process.name}</td>
+                <td class="proc-name">{process.name}</td>
                 <td>{process.cpuPercent.toFixed(1)} %</td>
                 <td>
                   {process.gpuPercent === null ? "--" : `${process.gpuPercent.toFixed(1)} %`}
@@ -420,16 +429,15 @@
       </section>
     </div>
   {/if}
+  </div>
 </div>
 
 <style>
-  /* `.grid` paints the black stage, so this needs the full height for the
-     same reason the lighting page does: without it a short grid leaves the
-     tab area's grey showing below the black. */
   .vitals {
     display: flex;
     flex-direction: column;
-    min-height: 100%;
+    height: 100%;
+    min-height: 0;
   }
 
   .toolbar {
@@ -440,6 +448,19 @@
     padding: 8px 26px;
     background: var(--bg-chrome);
     border-bottom: 1px solid var(--line-soft);
+    flex: 0 0 auto;
+  }
+
+  /* Scrolls independently of the header above, which never moves.
+     `.grid` paints the black stage, so this needs the full height for the
+     same reason the lighting page does: without it a short grid leaves the
+     tab area's grey showing below the black. */
+  .scroll-area {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
   }
 
   .views {
