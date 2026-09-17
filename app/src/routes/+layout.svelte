@@ -13,10 +13,11 @@
   import { settings } from "$lib/stores/settings.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
   import { lightingPresets } from "$lib/stores/lighting-presets.svelte";
-  import { telemetry } from "$lib/stores/telemetry.svelte";
+  import { isDetailRoute, telemetry } from "$lib/stores/telemetry.svelte";
   import { notifications } from "$lib/stores/notifications.svelte";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { goto } from "$app/navigation";
+  import { page } from "$app/state";
   import { debugLog } from "$lib/api/debug";
 
   let { children }: { children: Snippet } = $props();
@@ -54,6 +55,10 @@
       stopNotifications();
       stopErrorCapture();
     };
+  });
+
+  $effect(() => {
+    telemetry.setDetailActive(isDetailRoute(page.url.pathname));
   });
 
   /** Debounced writes could otherwise be lost when the window closes. */
