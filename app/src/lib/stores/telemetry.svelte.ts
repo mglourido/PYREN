@@ -29,6 +29,26 @@ import { hardware } from "./hardware.svelte";
 import { notifications } from "./notifications.svelte";
 import { settings } from "./settings.svelte";
 
+/**
+ * Routes that render fields only `applyMetrics()` populates (CPU/GPU
+ * temps or usage, RAM, disks, network throughput, process list). Every
+ * other route only reads `telemetry.demo` / `.systemInfo` /
+ * `.driverInstalled`, which stay live from `fanStatus()` alone - see
+ * `Telemetry.detailActive` below for why that split exists. Adding a page
+ * that shows live readings means adding its path here.
+ */
+export const DETAIL_ROUTES = new Set([
+  "/",
+  "/system/vitals",
+  "/system/performance",
+  "/system/advanced",
+  "/system/network",
+]);
+
+export function isDetailRoute(pathname: string): boolean {
+  return DETAIL_ROUTES.has(pathname);
+}
+
 /** Number of samples kept for the sparkline graphs (~2 min at 2s). */
 const HISTORY = 60;
 
@@ -99,6 +119,16 @@ export class Telemetry {
    * `null` until the first poll, so the first failure still logs.
    */
   private lastReachable: boolean | null = null;
+  /**
+   * Whether the currently-shown page renders live CPU/GPU/RAM/disk/network
+   * data (see `isDetailRoute`). `false` means `pollOnce()` skips the heavy
+   * `daemon.systemMetrics()` round trip - and with it the daemon's
+   * `nvidia-smi` spawn and `/proc` process walk - entirely. Only the cheap
+   * `daemon.fanStatus()` call still runs every tick regardless, because
+   * `demo`/`driverInstalled` and fan-floor notifications are read from the
+   * sidebar and other pages regardless of route.
+   */
+  private detailActive = false;
 
   /**
    * The configured interval, floored at 250 ms. A settings file holding 0
@@ -149,6 +179,16 @@ export class Telemetry {
     this.timer = setInterval(() => void this.poll(), this.intervalMs);
   }
 
+  /** Driven from the root layout as the route changes (see `isDetailRoute`).
+   *  Turning detail back on kicks an immediate poll so the page doesn't sit
+   *  on stale numbers for up to `intervalMs` while the next tick comes
+   *  around. */
+  setDetailActive(active: boolean) {
+    const wasActive = this.detailActive;
+    this.detailActive = active;
+    if (active && !wasActive) void this.poll();
+  }
+
   async loadSystemInfo() {
     try {
       this.systemInfo = await daemon.systemInfo();
@@ -184,17 +224,24 @@ export class Telemetry {
     // `allSettled` rather than `all`, because either is allowed to fail on
     // its own: the fan module is HP-only and its absence says nothing about
     // whether the daemon is up.
+    //
+    // The metrics call is skipped outright - not even sent - when no page
+    // showing live readings is on screen: it's the expensive one (a full
+    // /proc sweep plus an `nvidia-smi` spawn on the daemon side), and
+    // `fanStatus()` alone is enough to keep `demo`/notifications live.
     const [metrics, fan] = await Promise.allSettled([
-      daemon.systemMetrics(),
+      this.detailActive ? daemon.systemMetrics() : Promise.resolve(null),
       daemon.fanStatus(),
     ]);
 
-    if (metrics.status === "fulfilled") {
-      reachable = true;
-      this.applyMetrics(metrics.value);
-    } else {
-      const e = metrics.reason;
-      this.daemonError = e instanceof DaemonUnavailable ? e.message : String(e);
+    if (this.detailActive) {
+      if (metrics.status === "fulfilled" && metrics.value) {
+        reachable = true;
+        this.applyMetrics(metrics.value);
+      } else if (metrics.status === "rejected") {
+        const e = metrics.reason;
+        this.daemonError = e instanceof DaemonUnavailable ? e.message : String(e);
+      }
     }
 
     // Applied after the metrics and not before: `applyMetrics` reads
@@ -231,7 +278,7 @@ export class Telemetry {
 
     this.demo = !reachable;
     if (reachable) this.daemonError = null;
-    this.record();
+    if (this.detailActive) this.record();
   }
 
   private applyMetrics(metrics: Awaited<ReturnType<typeof daemon.systemMetrics>>) {
