@@ -60,7 +60,7 @@
 <div class="vitals">
   <header class="toolbar">
     <div class="views">
-      <span class="label">{t("vitals.mode")}</span>
+      <span class="label label-inline">{t("vitals.mode")}</span>
       <div class="view-buttons">
         <button
           class:active={!advanced}
@@ -196,11 +196,11 @@
       <section class="card">
         <h2>{t("vitals.network")}</h2>
         <div class="net">
-          <span class="net-value">{telemetry.netUpMbps.toFixed(1)}</span>
+          <span class="net-value">{telemetry.netUpMbps.toFixed(2)}</span>
           <small>{t("vitals.uploadSpeed")}<br />Mbps</small>
         </div>
         <div class="net">
-          <span class="net-value">{telemetry.netDownMbps.toFixed(1)}</span>
+          <span class="net-value">{telemetry.netDownMbps.toFixed(2)}</span>
           <small>{t("vitals.downloadSpeed")}<br />Mbps</small>
         </div>
         <p class="config-label">{t("home.networkBooster")}</p>
@@ -434,12 +434,18 @@
 
   .toolbar {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     justify-content: space-between;
     gap: 20px;
-    padding: 14px 26px;
+    padding: 8px 26px;
     background: var(--bg-chrome);
     border-bottom: 1px solid var(--line-soft);
+  }
+
+  .views {
+    display: flex;
+    align-items: center;
+    gap: 14px;
   }
 
   .label {
@@ -447,6 +453,10 @@
     color: var(--text-dim);
     font-size: 14px;
     margin-bottom: 6px;
+  }
+
+  .label-inline {
+    margin-bottom: 0;
   }
 
   .view-buttons {
@@ -458,8 +468,8 @@
   .view-buttons button {
     display: grid;
     place-items: center;
-    width: 38px;
-    height: 34px;
+    width: 32px;
+    height: 28px;
     border: none;
     border-radius: 2px;
     background: var(--bg-card);
