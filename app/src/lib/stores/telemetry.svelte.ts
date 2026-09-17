@@ -1,8 +1,9 @@
 /**
  * Live hardware readings for the whole UI.
  *
- * One poller feeds every page, so switching tabs doesn't restart sampling
- * and the history graphs stay continuous.
+ * Polling is gated to routes that display live data (see `isDetailRoute`):
+ * history keeps accumulating while the user moves between detail routes,
+ * but pauses as soon as none is on screen.
  *
  * Two sources, deliberately independent:
  *
@@ -46,10 +47,13 @@ export const DETAIL_ROUTES = new Set([
 ]);
 
 export function isDetailRoute(pathname: string): boolean {
-  return DETAIL_ROUTES.has(pathname);
+  const normalized =
+    pathname !== "/" && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  return DETAIL_ROUTES.has(normalized);
 }
 
-/** Number of samples kept for the sparkline graphs (~2 min at 2s). */
+/** Number of samples kept for the sparkline graphs (~2 min at 2s, only while
+ *  a detail route is being viewed continuously - see `isDetailRoute`). */
 const HISTORY = 60;
 
 export type Series = { label: string; color: string; values: number[] };

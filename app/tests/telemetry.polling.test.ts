@@ -84,6 +84,14 @@ describe("isDetailRoute", () => {
     expect(isDetailRoute("/settings")).toBe(false);
     expect(isDetailRoute("/system/lighting")).toBe(false);
   });
+
+  it("tolerates a trailing slash", () => {
+    expect(isDetailRoute("/system/vitals/")).toBe(true);
+  });
+
+  it("matches the root with no trailing slash to strip", () => {
+    expect(isDetailRoute("/")).toBe(true);
+  });
 });
 
 describe("Telemetry polling gate", () => {
@@ -106,6 +114,7 @@ describe("Telemetry polling gate", () => {
 
     expect(daemon.systemMetrics).toHaveBeenCalledTimes(1);
     expect(telemetry.cpuUsage).toBe(42);
+    expect(daemon.fanStatus).toHaveBeenCalledTimes(1);
   });
 
   it("does not grow history while detail is inactive", async () => {
@@ -129,5 +138,25 @@ describe("Telemetry polling gate", () => {
     telemetry.setDetailActive(true);
 
     await vi.waitFor(() => expect(daemon.systemMetrics).toHaveBeenCalledTimes(1));
+  });
+
+  it("stays reachable off a fulfilled fanStatus while detail is inactive", async () => {
+    const telemetry = new Telemetry();
+    (telemetry as unknown as { detailActive: boolean }).detailActive = false;
+    vi.mocked(daemon.fanStatus).mockResolvedValue(fanFixture);
+
+    await (telemetry as unknown as { pollOnce(): Promise<void> }).pollOnce();
+
+    expect(telemetry.demo).toBe(false);
+  });
+
+  it("falls back to demo off a rejected fanStatus while detail is inactive", async () => {
+    const telemetry = new Telemetry();
+    (telemetry as unknown as { detailActive: boolean }).detailActive = false;
+    vi.mocked(daemon.fanStatus).mockRejectedValue(new Error("daemon unreachable"));
+
+    await (telemetry as unknown as { pollOnce(): Promise<void> }).pollOnce();
+
+    expect(telemetry.demo).toBe(true);
   });
 });

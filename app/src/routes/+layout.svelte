@@ -31,6 +31,16 @@
   hardware.loadCache();
   lightingPresets.loadCache();
 
+  // Ordered before `onMount` below: effects and `onMount` both run in
+  // source order during component initialization, and `onMount`'s
+  // `telemetry.start()` fires an immediate poll that reads `detailActive`.
+  // Running this first means that poll already sees the right route
+  // instead of racing `setDetailActive`'s own immediate poll, which
+  // `Telemetry`'s in-flight guard would silently drop.
+  $effect(() => {
+    telemetry.setDetailActive(isDetailRoute(page.url.pathname));
+  });
+
   // Deliberately `onMount` and not `$effect`: this block reads settings
   // (`start()` needs the poll interval) *and* writes them (`hydrate()`
   // replaces `settings.current`). As an effect that is a cycle - every
@@ -55,10 +65,6 @@
       stopNotifications();
       stopErrorCapture();
     };
-  });
-
-  $effect(() => {
-    telemetry.setDetailActive(isDetailRoute(page.url.pathname));
   });
 
   /** Debounced writes could otherwise be lost when the window closes. */
