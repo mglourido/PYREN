@@ -28,6 +28,8 @@ export type Settings = {
   /** TODO item: the "driver missing" notice has a don't-show-again box. */
   hideDriverNotice: boolean;
   vitalsAdvancedView: boolean;
+  /** Animate the vitals gauges toward each new reading instead of snapping. */
+  gaugeAnimations: boolean;
   /** In Performance control, list each fan's own RPM under the headline
    *  figure (the speed sent to the controller), labelled by cooler. */
   perFanRpm: boolean;
@@ -54,6 +56,7 @@ function defaults(): Settings {
     autostart: false,
     hideDriverNotice: false,
     vitalsAdvancedView: false,
+    gaugeAnimations: true,
     // On by default: it is a read-only detail, costs nothing when the
     // machine has a single fan, and is what people come to this page for.
     perFanRpm: true,

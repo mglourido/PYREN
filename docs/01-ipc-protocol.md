@@ -342,7 +342,8 @@ machine can be asked.
 {
   "cpu": { "usagePercent": 47.8, "perCorePercent": [...], "clocksMhz": [...], "tempC": 56.0 },
   "memory": { "totalGb": 15.4, "usedGb": 6.9, "availableGb": 8.5, "percent": 45.0,
-              "swapTotalGb": 33.4, "swapUsedGb": 3.5 },
+              "swapTotalGb": 33.4, "swapUsedGb": 3.5,
+              "ramType": "DDR5", "ramSpeedMts": 5600 },
   "temperatures": [{ "chip": "coretemp", "label": "Package id 0", "celsius": 56.0 }],
   "fans": [{ "chip": "nct6798", "label": "fan1", "rpm": 1012 }],
   "disks": [{ "mount": "/", "device": "/dev/nvme0n1p3", "fstype": "btrfs",

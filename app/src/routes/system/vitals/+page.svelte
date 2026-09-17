@@ -115,7 +115,7 @@
               {formatTemp(gpu.tempC)}
             </span>
             <small>
-              {t("vitals.gpuTemp")}
+              {gpu.integrated ? t("vitals.gpuTempIntegrated") : t("vitals.gpuTemp")}
               <!-- An integrated chip usually registers no hwmon node, so the
                    dash is the honest reading rather than a failure. Saying so
                    is the difference between "not measured" and "broken". -->
@@ -154,6 +154,17 @@
         <Gauge value={telemetry.ramPercent} label={t("vitals.ramUsage")} id="ram" />
         <div class="foot">
           <small>{gb(telemetry.ramUsedGb)} / {gb(telemetry.ramTotalGb)}</small>
+          {#if telemetry.ramManufacturer || telemetry.ramType || telemetry.ramSpeedMts}
+            <small class="ram-spec">
+              {[
+                telemetry.ramManufacturer,
+                telemetry.ramType,
+                telemetry.ramSpeedMts && `${telemetry.ramSpeedMts} MT/s`,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </small>
+          {/if}
         </div>
       </section>
 
@@ -183,14 +194,6 @@
       </section>
 
       <section class="card">
-        <h2>{t("vitals.yourConfig")}</h2>
-        <p class="config-label">{t("tabs.performance")}</p>
-        <a class="config-chip" href="/system/performance">
-          {t(`performance.modes.${hardware.state.powerMode}`)}
-        </a>
-      </section>
-
-      <section class="card">
         <h2>{t("vitals.network")}</h2>
         <div class="net">
           <span class="net-value">{telemetry.netUpMbps.toFixed(1)}</span>
@@ -209,6 +212,13 @@
       <section class="card wide">
         <h2>{t("vitals.topProcesses")}</h2>
         <table>
+          <colgroup>
+            <col class="col-process" />
+            <col class="col-metric" />
+            <col class="col-metric" />
+            <col class="col-metric" />
+            <col class="col-action" />
+          </colgroup>
           <thead>
             <tr>
               <th>{t("vitals.process")}</th>
@@ -358,7 +368,50 @@
               </dd>
             {/if}
           </dl>
-          <dl></dl>
+          <dl>
+            {#if telemetry.ramManufacturer || telemetry.ramType || telemetry.ramSpeedMts || telemetry.ramSlotsTotal !== null}
+              <dt class="col-head">{t("vitals.hardware")}</dt>
+              {#if telemetry.ramManufacturer}
+                <dd class="row">
+                  <span>{t("vitals.ramManufacturer")}</span><b>{telemetry.ramManufacturer}</b>
+                </dd>
+              {/if}
+              {#if telemetry.ramType}
+                <dd class="row"><span>{t("vitals.ramType")}</span><b>{telemetry.ramType}</b></dd>
+              {/if}
+              {#if telemetry.ramSpeedMts}
+                <dd class="row">
+                  <span>{t("vitals.ramSpeed")}</span><b>{telemetry.ramSpeedMts} MT/s</b>
+                </dd>
+              {/if}
+              {#if telemetry.ramSlotsTotal !== null}
+                <dd class="row">
+                  <span>{t("vitals.ramSlots", { used: telemetry.ramSlotsUsed ?? 0, total: telemetry.ramSlotsTotal })}</span>
+                </dd>
+              {/if}
+              {#if telemetry.ramEcc !== null}
+                <dd class="row">
+                  <span>{t("vitals.ramEcc")}</span>
+                  <b>{telemetry.ramEcc ? t("common.yes") : t("common.no")}</b>
+                </dd>
+              {/if}
+            {/if}
+          </dl>
+          <dl>
+            {#if telemetry.ramModules.length > 0}
+              <dt class="col-head">{t("vitals.ramModules")}</dt>
+              {#each telemetry.ramModules as module (module.locator)}
+                <dd class="row">
+                  <span>{module.locator}</span>
+                  <b>
+                    {gb(module.sizeGb)}
+                    {#if module.manufacturer}&middot; {module.manufacturer}{/if}
+                    {#if module.partNumber}&middot; {module.partNumber}{/if}
+                  </b>
+                </dd>
+              {/each}
+            {/if}
+          </dl>
           <div class="chart">
             <Sparkline series={ramSeries} max={100} />
             <Legend series={ramSeries} />
@@ -549,10 +602,9 @@
   }
 
   .disks li {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 4px 10px;
-    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .mount {
@@ -571,10 +623,6 @@
     display: block;
     height: 100%;
     background: var(--gradient);
-  }
-
-  .disks small {
-    grid-column: 2;
   }
 
   .config-label {
@@ -609,18 +657,38 @@
 
   table {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 13px;
   }
 
+  .col-process {
+    width: 40%;
+  }
+
+  .col-metric {
+    width: 15%;
+  }
+
+  .col-action {
+    width: 15%;
+  }
+
   th {
     text-align: left;
-    padding: 8px 10px;
+    padding: 4px 10px;
     color: var(--text-dim);
     font-weight: 400;
     text-transform: uppercase;
     font-size: 12px;
     letter-spacing: 0.05em;
+  }
+
+  td {
+    padding: 3px 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .empty td {
@@ -706,6 +774,9 @@
 
   .proc-name {
     color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .none {

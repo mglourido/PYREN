@@ -754,6 +754,9 @@
   .cal-table td {
     text-align: left;
     padding: 6px 20px 6px 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .cal-table thead th {

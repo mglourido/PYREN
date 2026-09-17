@@ -57,6 +57,14 @@ export class Telemetry {
   coreClocksMhz = $state<number[]>([]);
   ramUsedGb = $state(8.6);
   ramTotalGb = $state(31.4);
+  ramType = $state<string | null>(null);
+  ramSpeedMts = $state<number | null>(null);
+  ramSlotsUsed = $state<number | null>(null);
+  ramSlotsTotal = $state<number | null>(null);
+  ramEcc = $state<boolean | null>(null);
+  ramModules = $state<
+    { locator: string; sizeGb: number; manufacturer: string | null; partNumber: string | null }[]
+  >([]);
   swapUsedGb = $state(0);
   swapTotalGb = $state(0);
   fanRpm = $state(0);
@@ -104,6 +112,15 @@ export class Telemetry {
 
   get ramPercent(): number {
     return this.ramTotalGb > 0 ? (this.ramUsedGb / this.ramTotalGb) * 100 : 0;
+  }
+
+  /** The single manufacturer across every populated DIMM, or `null` when
+   *  slots are mixed or the data is unavailable. */
+  get ramManufacturer(): string | null {
+    const makers = new Set(
+      this.ramModules.map((m) => m.manufacturer).filter((m): m is string => m !== null),
+    );
+    return makers.size === 1 ? [...makers][0] : null;
   }
 
   /**
@@ -225,6 +242,12 @@ export class Telemetry {
 
     this.ramUsedGb = metrics.memory.usedGb;
     this.ramTotalGb = metrics.memory.totalGb;
+    this.ramType = metrics.memory.ramType ?? null;
+    this.ramSpeedMts = metrics.memory.ramSpeedMts ?? null;
+    this.ramSlotsUsed = metrics.memory.ramSlotsUsed ?? null;
+    this.ramSlotsTotal = metrics.memory.ramSlotsTotal ?? null;
+    this.ramEcc = metrics.memory.ramEcc ?? null;
+    this.ramModules = metrics.memory.ramModules ?? [];
     this.swapUsedGb = metrics.memory.swapUsedGb;
     this.swapTotalGb = metrics.memory.swapTotalGb;
 

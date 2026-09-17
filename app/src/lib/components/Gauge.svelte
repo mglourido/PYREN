@@ -4,6 +4,10 @@
    * stroked SVG circle with a gradient, and the unfilled remainder stays
    * visible as a dim track.
    */
+  import { Tween } from "svelte/motion";
+  import { cubicOut } from "svelte/easing";
+  import { settings } from "$lib/stores/settings.svelte";
+
   type Props = {
     value: number | null;
     label: string;
@@ -14,8 +18,14 @@
 
   const radius = $derived(size / 2 - 8);
   const circumference = $derived(2 * Math.PI * radius);
-  const clamped = $derived(value === null ? 0 : Math.min(100, Math.max(0, value)));
-  const dash = $derived((clamped / 100) * circumference);
+  const target = $derived(value === null ? 0 : Math.min(100, Math.max(0, value)));
+
+  const displayed = new Tween(0, { duration: 350, easing: cubicOut });
+  $effect(() => {
+    displayed.set(target, settings.current.gaugeAnimations ? undefined : { duration: 0 });
+  });
+
+  const dash = $derived((displayed.current / 100) * circumference);
 </script>
 
 <div class="gauge" style="width:{size}px;height:{size}px">
@@ -48,7 +58,7 @@
     />
   </svg>
   <div class="inner">
-    <div class="value">{value === null ? "--" : `${Math.round(clamped)}%`}</div>
+    <div class="value">{value === null ? "--" : `${Math.round(target)}%`}</div>
     <div class="label">{label}</div>
   </div>
 </div>

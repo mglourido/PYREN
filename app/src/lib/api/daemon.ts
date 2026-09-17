@@ -505,6 +505,17 @@ export type SystemMetrics = {
     percent: number;
     swapTotalGb: number;
     swapUsedGb: number;
+    ramType: string | null;
+    ramSpeedMts: number | null;
+    ramSlotsUsed: number | null;
+    ramSlotsTotal: number | null;
+    ramEcc: boolean | null;
+    ramModules: {
+      locator: string;
+      sizeGb: number;
+      manufacturer: string | null;
+      partNumber: string | null;
+    }[];
   };
   temperatures: TempReading[];
   fans: FanReading[];

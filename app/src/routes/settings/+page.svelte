@@ -309,6 +309,14 @@
         {/each}
       </select>
     </div>
+    <div class="row">
+      <span>{t("settings.gaugeAnimations")}</span>
+      <Toggle
+        checked={settings.current.gaugeAnimations}
+        onchange={(v) => settings.set("gaugeAnimations", v)}
+        ariaLabel={t("settings.gaugeAnimations")}
+      />
+    </div>
   </Panel>
 
   <Panel title={t("settings.language")}>

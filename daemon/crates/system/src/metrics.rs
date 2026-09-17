@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -56,6 +57,35 @@ pub struct MemoryMetrics {
     pub percent: f64,
     pub swap_total_gb: f64,
     pub swap_used_gb: f64,
+    /// DIMM type from SMBIOS (e.g. "DDR5"), when `dmidecode` is available and
+    /// the firmware actually filled the field in - many boards leave it
+    /// "Unknown", which is folded into `None` rather than shown verbatim.
+    pub ram_type: Option<String>,
+    /// Configured (actual running) speed in MT/s, falling back to the
+    /// module's rated speed when the firmware does not report a configured
+    /// one.
+    pub ram_speed_mts: Option<u32>,
+    /// Populated DIMM slots, from SMBIOS type 17 records with a real size.
+    pub ram_slots_used: Option<u32>,
+    /// Total DIMM slots the board has, from the type 16 array record - not
+    /// the same as `ram_slots_used`, which only counts populated ones.
+    pub ram_slots_total: Option<u32>,
+    /// Whether the memory array reports error-correcting DIMMs. `None` when
+    /// the firmware does not say.
+    pub ram_ecc: Option<bool>,
+    pub ram_modules: Vec<RamModule>,
+}
+
+/// One populated DIMM slot, from an SMBIOS type 17 "Memory Device" record.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RamModule {
+    pub locator: String,
+    pub size_gb: f64,
+    /// `None` when the firmware leaves this "Unknown" or "Not Specified" -
+    /// common on laptops with soldered memory.
+    pub manufacturer: Option<String>,
+    pub part_number: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +204,11 @@ pub struct Sampler {
     hwmon: HwmonCatalog,
     gpus: GpuReader,
     drm_usage: DrmUsageReader,
+    /// DIMM inventory, read once: this is fixed for the machine's uptime,
+    /// and `dmidecode` is slow enough (tens of milliseconds, reading the raw
+    /// SMBIOS table) that paying it every sample would show up next to
+    /// `nvidia-smi` in the cost breakdown for no reason.
+    ram: RamInfo,
 }
 
 impl Default for Sampler {
@@ -202,6 +237,7 @@ impl Sampler {
             hwmon: HwmonCatalog::new(),
             gpus: GpuReader::new(),
             drm_usage: DrmUsageReader::new(),
+            ram: read_ram_info(),
         };
         // Prime the deltas so the first real call reports actual usage.
         sampler.prime();
@@ -233,9 +269,17 @@ impl Sampler {
         let processes = self.sample_processes(elapsed, &raw.drm.per_pid, raw.processes);
         let gpus = self.gpus.sample(elapsed, &raw.drm.per_card, raw.nvidia);
 
+        let mut memory = raw.memory;
+        memory.ram_type = self.ram.ram_type.clone();
+        memory.ram_speed_mts = self.ram.speed_mts;
+        memory.ram_slots_used = self.ram.slots_used;
+        memory.ram_slots_total = self.ram.slots_total;
+        memory.ram_ecc = self.ram.ecc;
+        memory.ram_modules = self.ram.modules.clone();
+
         Metrics {
             cpu,
-            memory: raw.memory,
+            memory,
             temperatures: raw.temperatures,
             fans: raw.fans,
             disks: raw.disks,
@@ -511,6 +555,205 @@ fn read_memory() -> MemoryMetrics {
         available_gb,
         swap_total_gb,
         swap_used_gb: (swap_total_gb - swap_free_gb).max(0.0),
+        ram_type: None,
+        ram_speed_mts: None,
+        ram_slots_used: None,
+        ram_slots_total: None,
+        ram_ecc: None,
+        ram_modules: Vec::new(),
+    }
+}
+
+/// Everything read once from SMBIOS at startup: DIMM type, speed, slot
+/// counts, ECC, and per-module inventory.
+#[derive(Debug, Clone, Default)]
+struct RamInfo {
+    ram_type: Option<String>,
+    speed_mts: Option<u32>,
+    slots_used: Option<u32>,
+    slots_total: Option<u32>,
+    ecc: Option<bool>,
+    modules: Vec<RamModule>,
+}
+
+/// DIMM inventory from SMBIOS, via `dmidecode -t memory`.
+///
+/// Reading the raw `/sys/firmware/dmi/tables/DMI` table directly would avoid
+/// the subprocess, but parsing SMBIOS types 16 and 17 by hand for a feature
+/// this small is not worth it - the daemon already shells out to other
+/// system tools (`lspci`, `nvidia-smi`) for the same kind of hardware
+/// inventory. Requires root, which the daemon runs as; anything else (tool
+/// missing, no permission, empty/virtual firmware) degrades to defaults.
+fn read_ram_info() -> RamInfo {
+    if !which("dmidecode") {
+        return RamInfo::default();
+    }
+    let Ok(output) = Command::new("dmidecode").args(["-t", "memory"]).output() else {
+        return RamInfo::default();
+    };
+    if !output.status.success() {
+        return RamInfo::default();
+    }
+    parse_dmidecode_memory(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Firmware placeholders that mean "the field is unset", not a real value.
+fn dmi_field_present(value: &str) -> bool {
+    !matches!(
+        value,
+        "Unknown" | "Other" | "Not Specified" | "No Module Installed"
+    )
+}
+
+/// Parses the `Physical Memory Array` (slot count, ECC) and `Memory Device`
+/// (per-DIMM) records dmidecode prints. Empty slots ("No Module Installed")
+/// and firmware-unset fields ("Unknown") are skipped rather than shown as
+/// real values.
+fn parse_dmidecode_memory(text: &str) -> RamInfo {
+    #[derive(PartialEq)]
+    enum Section {
+        None,
+        Array,
+        Device,
+    }
+
+    let mut info = RamInfo::default();
+    let mut types: Vec<String> = Vec::new();
+    let mut configured_speeds: Vec<u32> = Vec::new();
+    let mut rated_speeds: Vec<u32> = Vec::new();
+    let mut slots_used = 0u32;
+
+    let mut section = Section::None;
+    let mut locator = String::new();
+    let mut size_gb: Option<f64> = None;
+    let mut manufacturer: Option<String> = None;
+    let mut part_number: Option<String> = None;
+
+    let flush_module = |locator: &str,
+                         size_gb: Option<f64>,
+                         manufacturer: &Option<String>,
+                         part_number: &Option<String>,
+                         modules: &mut Vec<RamModule>| {
+        if let Some(size_gb) = size_gb {
+            modules.push(RamModule {
+                locator: locator.to_string(),
+                size_gb,
+                manufacturer: manufacturer.clone(),
+                part_number: part_number.clone(),
+            });
+        }
+    };
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_header = !line.is_empty() && !line.starts_with('\t') && !line.starts_with(' ');
+
+        if is_header {
+            if section == Section::Device {
+                flush_module(
+                    &locator,
+                    size_gb,
+                    &manufacturer,
+                    &part_number,
+                    &mut info.modules,
+                );
+            }
+            section = match trimmed {
+                "Physical Memory Array" => Section::Array,
+                "Memory Device" => {
+                    locator = String::new();
+                    size_gb = None;
+                    manufacturer = None;
+                    part_number = None;
+                    Section::Device
+                }
+                _ => Section::None,
+            };
+            continue;
+        }
+
+        match section {
+            Section::Array => {
+                if let Some(value) = trimmed.strip_prefix("Number Of Devices: ") {
+                    info.slots_total = value.parse().ok();
+                } else if let Some(value) = trimmed.strip_prefix("Error Correction Type: ") {
+                    // "None" is a real answer here (no ECC), unlike every
+                    // other field where it means "unset" - only "Unknown"
+                    // and "Other" mean the firmware did not say.
+                    if value != "Unknown" && value != "Other" {
+                        info.ecc = Some(value != "None");
+                    }
+                }
+            }
+            Section::Device => {
+                if let Some(value) = trimmed.strip_prefix("Locator: ") {
+                    locator = value.to_string();
+                } else if let Some(value) = trimmed.strip_prefix("Size: ") {
+                    if dmi_field_present(value) {
+                        size_gb = parse_dimm_size_gb(value);
+                        slots_used += 1;
+                    }
+                } else if let Some(value) = trimmed.strip_prefix("Manufacturer: ") {
+                    if dmi_field_present(value) {
+                        manufacturer = Some(value.to_string());
+                    }
+                } else if let Some(value) = trimmed.strip_prefix("Part Number: ") {
+                    if dmi_field_present(value) {
+                        part_number = Some(value.to_string());
+                    }
+                } else if let Some(value) = trimmed.strip_prefix("Type: ") {
+                    if dmi_field_present(value) && !types.contains(&value.to_string()) {
+                        types.push(value.to_string());
+                    }
+                } else if let Some(value) = trimmed.strip_prefix("Configured Memory Speed: ") {
+                    if let Some(mts) = value.split_whitespace().next().and_then(|v| v.parse().ok())
+                    {
+                        configured_speeds.push(mts);
+                    }
+                } else if let Some(value) = trimmed.strip_prefix("Speed: ") {
+                    if let Some(mts) = value.split_whitespace().next().and_then(|v| v.parse().ok())
+                    {
+                        rated_speeds.push(mts);
+                    }
+                }
+            }
+            Section::None => {}
+        }
+    }
+    if section == Section::Device {
+        flush_module(
+            &locator,
+            size_gb,
+            &manufacturer,
+            &part_number,
+            &mut info.modules,
+        );
+    }
+
+    info.ram_type = types.into_iter().next();
+    // The configured speed is what the memory controller actually runs at;
+    // the rated speed is only a fallback for firmware that does not report
+    // it. Either way, the highest populated slot wins - mismatched DIMMs
+    // (dual vs. single channel leftovers) run at the slowest one's speed in
+    // practice, but that nuance is not worth modelling here.
+    info.speed_mts = configured_speeds
+        .into_iter()
+        .max()
+        .or_else(|| rated_speeds.into_iter().max());
+    info.slots_used = Some(slots_used);
+    info
+}
+
+/// dmidecode reports DIMM size as e.g. `"16 GB"` or `"16384 MB"` - or, on
+/// newer versions (3.7+), `"16 GiB"` / `"16384 MiB"`, since the values are
+/// binary (1024-based) either way.
+fn parse_dimm_size_gb(value: &str) -> Option<f64> {
+    let mut parts = value.split_whitespace();
+    let amount: f64 = parts.next()?.parse().ok()?;
+    match parts.next()? {
+        "GB" | "GiB" => Some(amount),
+        "MB" | "MiB" => Some(amount / 1024.0),
+        _ => None,
     }
 }
 
@@ -1073,5 +1316,135 @@ mod tests {
     #[test]
     fn no_sensors_at_all_reports_nothing_rather_than_zero() {
         assert_eq!(cpu_temperature(&[]), None);
+    }
+
+    #[test]
+    fn dmidecode_memory_reports_type_speed_slots_ecc_and_modules() {
+        let text = "\
+# dmidecode 3.5
+Getting SMBIOS data from sysfs.
+SMBIOS 3.4.0 present.
+
+Handle 0x0011, DMI type 16, 23 bytes
+Physical Memory Array
+\tLocation: System Board Or Motherboard
+\tUse: System Memory
+\tError Correction Type: None
+\tMaximum Capacity: 64 GB
+\tNumber Of Devices: 2
+
+Handle 0x0013, DMI type 17, 92 bytes
+Memory Device
+\tArray Handle: 0x0011
+\tSize: 16 GB
+\tLocator: DIMM 0
+\tBank Locator: P0 CHANNEL A
+\tType: LPDDR5
+\tType Detail: Synchronous Unbuffered (Unregistered)
+\tSpeed: 6400 MT/s
+\tManufacturer: Samsung
+\tPart Number: K3KL9L90CM-MGCT
+\tConfigured Memory Speed: 6400 MT/s
+
+Handle 0x0014, DMI type 17, 92 bytes
+Memory Device
+\tArray Handle: 0x0011
+\tSize: No Module Installed
+\tLocator: DIMM 1
+\tBank Locator: P0 CHANNEL B
+\tType: Unknown
+\tSpeed: Unknown
+\tManufacturer: Not Specified
+\tPart Number: Not Specified
+\tConfigured Memory Speed: Unknown
+";
+        let info = parse_dmidecode_memory(text);
+        assert_eq!(info.ram_type, Some("LPDDR5".to_string()));
+        assert_eq!(info.speed_mts, Some(6400));
+        assert_eq!(info.slots_total, Some(2));
+        assert_eq!(info.slots_used, Some(1));
+        assert_eq!(info.ecc, Some(false));
+        assert_eq!(info.modules.len(), 1);
+        assert_eq!(info.modules[0].locator, "DIMM 0");
+        assert_eq!(info.modules[0].size_gb, 16.0);
+        assert_eq!(info.modules[0].manufacturer, Some("Samsung".to_string()));
+        assert_eq!(
+            info.modules[0].part_number,
+            Some("K3KL9L90CM-MGCT".to_string())
+        );
+    }
+
+    #[test]
+    fn dmidecode_memory_with_no_populated_slots_reports_none() {
+        let text = "\
+Memory Device
+\tType: Unknown
+\tSpeed: Unknown
+\tConfigured Memory Speed: Unknown
+";
+        let info = parse_dmidecode_memory(text);
+        assert_eq!(info.ram_type, None);
+        assert_eq!(info.speed_mts, None);
+        assert_eq!(info.slots_used, Some(0));
+        assert!(info.modules.is_empty());
+    }
+
+    #[test]
+    fn ecc_correction_type_is_reported_as_true() {
+        let text = "\
+Physical Memory Array
+\tError Correction Type: Single-bit ECC
+\tNumber Of Devices: 4
+";
+        let info = parse_dmidecode_memory(text);
+        assert_eq!(info.ecc, Some(true));
+        assert_eq!(info.slots_total, Some(4));
+    }
+
+    /// Regression test: dmidecode 3.7+ reports sizes in binary units
+    /// ("GiB"/"MiB") rather than "GB"/"MB", and indents with spaces instead
+    /// of a tab - both seen on a real machine where modules came back empty
+    /// despite `slots_used` being correct.
+    #[test]
+    fn dmidecode_3_7_space_indented_gib_sizes_are_parsed() {
+        let text = "\
+# dmidecode 3.7
+Getting SMBIOS data from sysfs.
+SMBIOS 3.8.0 present.
+
+Handle 0x001D, DMI type 16, 23 bytes
+Physical Memory Array
+    Location: System Board Or Motherboard
+    Use: System Memory
+    Error Correction Type: None
+    Maximum Capacity: 64 GiB
+    Number Of Devices: 2
+
+Handle 0x001E, DMI type 17, 92 bytes
+Memory Device
+    Array Handle: 0x001D
+    Total Width: 64 bits
+    Data Width: 64 bits
+    Size: 16 GiB
+    Form Factor: SODIMM
+    Locator: Bottom - Slot 1 (left)
+    Bank Locator: P0 CHANNEL A
+    Type: DDR5
+    Type Detail: Synchronous
+    Speed: 5600 MT/s
+    Manufacturer: Samsung
+    Part Number: M425R2GA3EB0-CWMOD
+    Rank: 1
+    Configured Memory Speed: 5600 MT/s
+";
+        let info = parse_dmidecode_memory(text);
+        assert_eq!(info.ram_type, Some("DDR5".to_string()));
+        assert_eq!(info.speed_mts, Some(5600));
+        assert_eq!(info.slots_total, Some(2));
+        assert_eq!(info.slots_used, Some(1));
+        assert_eq!(info.ecc, Some(false));
+        assert_eq!(info.modules.len(), 1);
+        assert_eq!(info.modules[0].size_gb, 16.0);
+        assert_eq!(info.modules[0].manufacturer, Some("Samsung".to_string()));
     }
 }
