@@ -45,6 +45,15 @@ still the option that removes the maintenance burden entirely).
 upstream ships: `.orig` is the pristine snapshot the patcher always works
 from, so patching twice gives the same result as patching once.
 
+If `.orig` is ever missing at install time, `patch_driver_tree`
+(`daemon/crates/installer/src/patch.rs`) recreates it by snapshotting
+whatever `hp-wmi.c` currently holds. That is a safety net for a copy that
+lost the file, not a substitute for keeping it committed: if `hp-wmi.c` has
+already been hand-edited when this fires, the edited version becomes the
+"pristine" baseline every future patch is built from, silently. Do not
+delete `.orig` from this tree on the assumption that the installer will
+just regenerate it correctly.
+
 ## Licensing
 
 `hp-wmi.c` is a modified copy of a Linux kernel driver. Its
