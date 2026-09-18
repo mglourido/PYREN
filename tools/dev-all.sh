@@ -26,6 +26,18 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 UNIT=pyren-daemon.service
 run_app=yes
 
+# The app, the widget, and pyren-config's `ConfigStore::user()`/`::system()`
+# fallback all read `$XDG_CONFIG_HOME` (see app/src-tauri/src/session.rs,
+# osd/src/mode.rs, daemon/crates/config/src/lib.rs). Left unset, a dev
+# `tauri dev` run reads and writes the same `~/.config/pyren` a real install
+# uses, so toggling a setting here can silently rewrite the user's
+# production config. Pointing it at a cache directory instead keeps dev
+# runs sandboxed; it is exported before the daemon build/restart below so
+# it also reaches the "run it by hand" fallback if that's used instead of
+# the installed unit. The real systemd unit is unaffected: it gets its
+# environment from the unit file, not from this script.
+export XDG_CONFIG_HOME="${XDG_CACHE_HOME:-$HOME/.cache}/pyren-dev/config"
+
 for argument in "$@"; do
     case "$argument" in
         --no-app) run_app=no ;;
@@ -145,6 +157,7 @@ if systemctl list-unit-files "$UNIT" >/dev/null 2>&1 &&
 else
     say "no $UNIT installed - restart your daemon yourself"
     echo "    cd daemon && sudo -E cargo run -p pyren-daemon"
+    echo "    (sudo -E keeps XDG_CONFIG_HOME=$XDG_CONFIG_HOME, so it still reads dev config)"
 fi
 
 # The widget is single-instance and the app spawns it when none is up, so
