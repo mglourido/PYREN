@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-check"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-core",
  "pyren-fan",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-config"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pyren-config",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-ctl"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-core",
  "serde_json",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-daemon"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-config",
  "pyren-core",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-fan"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-config",
  "pyren-core",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-gpu"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-core",
  "serde",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-hotkey"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pyren-config",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-installer"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-config",
  "pyren-core",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-keymap"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pyren-config",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-network"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-core",
  "serde",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-overclock"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pyren-config",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-power"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-config",
  "pyren-core",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-rgb"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "pyren-config",
  "pyren-core",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-system"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pyren-core",

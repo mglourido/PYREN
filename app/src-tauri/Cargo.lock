@@ -2738,7 +2738,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "pyren"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pyren-config",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-config"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "pyren-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pyren-config",
