@@ -933,8 +933,11 @@ fn supervise_once(
             // to the power source changing: plugging the machine in is
             // the user speaking too, and more recently.
             match decision {
-                Some(d) if d.from_transition => (interval, Some(d)),
-                other if manual_override_active(&guard) => {
+                Some(d) if d.from_transition || d.from_heat => (interval, Some(d)),
+                // While hot, don't reset: that would wipe the in-progress
+                // heat-confirmation count every tick and the step-down
+                // decision could never accumulate enough samples to fire.
+                other if manual_override_active(&guard) && !guard.switcher.is_hot() => {
                     guard.switcher.reset();
                     let _ = other;
                     (interval, None)

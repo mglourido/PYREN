@@ -249,6 +249,10 @@ pub struct AutoDecision {
     /// and are not suppressed by a manual override, because plugging the
     /// machine in is the user speaking too.
     pub from_transition: bool,
+    /// True for a `Why::Hot` step-down. Also not suppressed by a manual
+    /// override: heat outranks a stale manual choice, the same way a
+    /// power-source transition does.
+    pub from_heat: bool,
 }
 
 /// The two modes a given power source may move between.
@@ -682,6 +686,7 @@ impl AutoSwitcher {
                     msg!("power.autoReason.pluggedIn", "plugged in")
                 },
                 from_transition: true,
+                from_heat: false,
             });
         }
 
@@ -696,7 +701,14 @@ impl AutoSwitcher {
         current: PowerMode,
     ) -> Option<AutoDecision> {
         // Unlimited is the user's own choice; refinement leaves it alone.
-        if current == PowerMode::Unlimited || !system_enabled(on_battery, config) {
+        if current == PowerMode::Unlimited {
+            self.pending = None;
+            return None;
+        }
+        // Heat outranks the on/off toggle too: back off even when the
+        // load-based auto-switch is disabled for this power source.
+        if !system_enabled(on_battery, config) && !(self.heat.is_hot() && config.back_off_when_hot)
+        {
             self.pending = None;
             return None;
         }
@@ -729,6 +741,7 @@ impl AutoSwitcher {
                 mode: target,
                 reason: why.to_msg(inputs),
                 from_transition: false,
+                from_heat: why == Why::Hot,
             });
         }
 
@@ -1216,6 +1229,76 @@ mod tests {
         switcher.observe(at(92.0, false, 0.99), &config(), PowerMode::Performance);
         switcher.reset();
         assert!(switcher.is_hot());
+    }
+
+    /// Heat outranks the on/off toggle too: a user who disabled
+    /// `performanceOnLoad` on mains still gets stepped down when hot,
+    /// instead of `refinement` bailing out before `refine` ever runs.
+    #[test]
+    fn a_hot_machine_steps_down_even_with_the_load_switch_off() {
+        let load_switch_off = AutoConfig {
+            performance_on_load: false,
+            ..config()
+        };
+        let mut switcher = settled(false);
+        let hot = at(92.0, false, 0.99);
+
+        assert_eq!(
+            switcher.observe(hot, &load_switch_off, PowerMode::Performance),
+            None
+        );
+        assert_eq!(
+            switcher.observe(hot, &load_switch_off, PowerMode::Performance),
+            None
+        );
+        let decision = switcher
+            .observe(hot, &load_switch_off, PowerMode::Performance)
+            .unwrap();
+
+        assert_eq!(decision.mode, PowerMode::Balanced);
+        assert_eq!(decision.reason.key, "power.autoReason.hot");
+    }
+
+    /// `from_heat` is how the supervisor knows a step-down must survive a
+    /// manual override, the same way `from_transition` already does: a
+    /// user who set Performance a few minutes ago should not get to cook
+    /// the machine for the rest of the override window.
+    #[test]
+    fn a_heat_step_down_is_marked_so_a_manual_override_cannot_suppress_it() {
+        let mut switcher = settled(false);
+        let hot = at(92.0, false, 0.99);
+        let decision = run(&mut switcher, hot, &config(), PowerMode::Performance, 3)
+            .expect("a sustained hot reading steps down");
+
+        assert!(decision.from_heat, "a Why::Hot decision must be marked");
+        assert!(
+            !decision.from_transition,
+            "this decision did not come from a power-source change"
+        );
+    }
+
+    /// The real caller (`supervise_once`) resets the switcher on every
+    /// override-active tick whose decision came back `None` - and while
+    /// hot, that decision is `None` on every tick except the last one
+    /// before `samples_to_switch` is reached. Resetting unconditionally
+    /// there wipes `pending` before the count ever gets that far, so a
+    /// hot machine's step-down can never fire; the caller must gate the
+    /// reset on `!is_hot()`, mirrored here.
+    #[test]
+    fn a_reset_gated_on_heat_lets_confirmation_survive_an_active_override() {
+        let mut switcher = settled(false);
+        let hot = at(92.0, false, 0.99);
+
+        let mut decision = None;
+        for _ in 0..config().samples_to_switch {
+            decision = switcher.observe(hot, &config(), PowerMode::Performance);
+            if decision.is_none() && !switcher.is_hot() {
+                switcher.reset();
+            }
+        }
+
+        let decision = decision.expect("heat confirmation must survive the gated reset");
+        assert!(decision.from_heat, "a Why::Hot decision must be marked");
     }
 
     /// Nothing the supervisor does may arrive at Unlimited.
