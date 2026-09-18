@@ -9,13 +9,12 @@
 //! the thing being logged already happens - see
 //! `docs/superpowers/specs/2026-09-14-debug-logging-design.md`.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(test)]
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -259,6 +258,122 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// How long a run of identical `ipc.jsonl` calls (same module, method,
+/// params, ok and error - everything but `durationMs`/`ts`) is allowed to
+/// stay silently suppressed before it gets an anchor line anyway. Keeps a
+/// steady poller (e.g. a widget calling `fan.getStatus` once a second)
+/// visible in the log without one near-identical line per tick.
+const IPC_STREAK_FLUSH_MS: u64 = 15_000;
+
+/// One run of identical `ipc.jsonl` calls in progress: the shared
+/// signature (everything but `durationMs`/`ts`), how many calls have
+/// happened since the run's opening line was written, and the spread of
+/// `durationMs` seen across them.
+struct IpcStreak {
+    signature: Value,
+    count: u64,
+    first_ts: u64,
+    dur_min: u64,
+    dur_max: u64,
+    dur_sum: u64,
+}
+
+/// In-flight streaks, keyed by `(module, method)`. A crash or restart
+/// loses whatever streak was open - acceptable for an opt-in diagnostic
+/// log: the opening line for that value is already on disk, only the
+/// trailing repeat count is missing.
+fn ipc_streaks() -> &'static Mutex<HashMap<(String, String), IpcStreak>> {
+    static STREAKS: OnceLock<Mutex<HashMap<(String, String), IpcStreak>>> = OnceLock::new();
+    STREAKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Writes `ipc.jsonl`'s general (per-request) line, collapsing a run of
+/// calls that all share the same module/method/params/ok/error into a
+/// single opening line plus, only once the run actually ends or
+/// [`IPC_STREAK_FLUSH_MS`] has passed, one `"repeat"` summary carrying the
+/// suppressed count and the `durationMs` range seen across the run. A call
+/// that never repeats costs exactly the one line it always did.
+fn record_ipc(
+    root: &Path,
+    module: &str,
+    method: &str,
+    params: Option<Value>,
+    ok: bool,
+    error_message: Option<String>,
+    duration_ms: u64,
+) {
+    let signature = json!({
+        "module": module,
+        "method": method,
+        "params": params,
+        "ok": ok,
+        "error": error_message,
+    });
+    let now = now_ms();
+    let key = (module.to_string(), method.to_string());
+
+    let mut streaks = ipc_streaks().lock().unwrap_or_else(|e| e.into_inner());
+    match streaks.get_mut(&key) {
+        Some(streak) if streak.signature == signature => {
+            streak.count += 1;
+            streak.dur_min = streak.dur_min.min(duration_ms);
+            streak.dur_max = streak.dur_max.max(duration_ms);
+            streak.dur_sum += duration_ms;
+            if now.saturating_sub(streak.first_ts) >= IPC_STREAK_FLUSH_MS {
+                let streak = streaks.remove(&key).expect("just matched above");
+                flush_ipc_streak(root, &streak, now);
+            }
+        }
+        _ => {
+            if let Some(prev) = streaks.remove(&key) {
+                flush_ipc_streak(root, &prev, now);
+            }
+            let mut opening = signature.clone();
+            if let Value::Object(map) = &mut opening {
+                map.insert("durationMs".to_string(), Value::from(duration_ms));
+            }
+            with_ts_mut(&mut opening);
+            if let Err(e) = write_entry(root, Category::Ipc, &opening) {
+                crate::log_warn!("debug log: could not write {}: {e}", Category::Ipc.filename());
+            }
+            streaks.insert(
+                key,
+                IpcStreak {
+                    signature,
+                    count: 1,
+                    first_ts: now,
+                    dur_min: duration_ms,
+                    dur_max: duration_ms,
+                    dur_sum: duration_ms,
+                },
+            );
+        }
+    }
+}
+
+/// Appends the `"repeat"` summary for a finished streak - a no-op when the
+/// opening line was the only call in it (`count == 1`), so a call that
+/// never repeated costs nothing extra.
+fn flush_ipc_streak(root: &Path, streak: &IpcStreak, now: u64) {
+    if streak.count <= 1 {
+        return;
+    }
+    let mut summary = streak.signature.clone();
+    if let Value::Object(map) = &mut summary {
+        map.insert("repeat".to_string(), Value::from(streak.count - 1));
+        map.insert("durationMsMin".to_string(), Value::from(streak.dur_min));
+        map.insert("durationMsMax".to_string(), Value::from(streak.dur_max));
+        map.insert(
+            "durationMsAvg".to_string(),
+            Value::from(streak.dur_sum / streak.count),
+        );
+        map.insert("ts".to_string(), Value::from(now));
+    }
+    if let Err(e) = write_entry(root, Category::Ipc, &summary) {
+        crate::log_warn!("debug log: could not write {}: {e}", Category::Ipc.filename());
+    }
+}
+
 /// Whether `(module, method)` gets a richer copy of its result alongside
 /// the general `ipc.jsonl` line - the calls whose value is in the full
 /// response, not a one-line summary. Everything else still reaches
@@ -289,17 +404,17 @@ pub fn on_ipc(
     }
     let ok = response.error.is_none();
     let error_message = response.error.as_ref().map(|e| e.message.clone());
-    record(
-        Category::Ipc,
-        json!({
-            "module": module,
-            "method": method,
-            "params": params.clone(),
-            "ok": ok,
-            "durationMs": duration.as_millis() as u64,
-            "error": error_message.clone(),
-        }),
-    );
+    if let Some(root) = ROOT.get() {
+        record_ipc(
+            root,
+            module,
+            method,
+            params.clone(),
+            ok,
+            error_message.clone(),
+            duration.as_millis() as u64,
+        );
+    }
 
     let Some(category) = category_for(module, method) else {
         return;
@@ -458,5 +573,104 @@ mod tests {
         assert_eq!(category_for("fan", "getStatus"), None);
         assert_eq!(category_for("fan", "setMode"), None);
         assert_eq!(category_for("installer", "autodetect"), None);
+    }
+
+    // `record_ipc`'s streak state (`ipc_streaks()`) is one process-global
+    // map, shared by every test in this binary - unlike `write_entry` and
+    // friends, which take an explicit root and so need no isolation beyond
+    // their own `tmp()` directory. Each test below uses a module name
+    // found nowhere else, so streaks never cross between tests even when
+    // the test runner runs them concurrently.
+
+    #[test]
+    fn record_ipc_writes_one_opening_line_for_a_run_of_identical_calls() {
+        let dir = tmp("record-ipc-collapse");
+        let module = "test-record-ipc-collapse";
+        record_ipc(&dir, module, "getStatus", None, true, None, 34);
+        record_ipc(&dir, module, "getStatus", None, true, None, 35);
+        record_ipc(&dir, module, "getStatus", None, true, None, 36);
+
+        let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1, "the two repeats should be suppressed, not appended");
+        let line: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(line["module"], module);
+        assert_eq!(line["durationMs"], 34);
+        assert!(line.get("repeat").is_none());
+    }
+
+    #[test]
+    fn record_ipc_writes_no_summary_when_a_call_never_repeats() {
+        let dir = tmp("record-ipc-no-repeat");
+        let module = "test-record-ipc-no-repeat";
+        record_ipc(&dir, module, "getStatus", None, true, None, 30);
+        record_ipc(&dir, module, "getStatus", Some(json!({"x": 1})), true, None, 40);
+
+        let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
+        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 2, "just the two distinct opening lines, no summary between them");
+        assert!(lines.iter().all(|l| l.get("repeat").is_none()));
+    }
+
+    #[test]
+    fn record_ipc_flushes_a_repeat_summary_when_the_signature_changes() {
+        let dir = tmp("record-ipc-flush-on-change");
+        let module = "test-record-ipc-flush-on-change";
+        record_ipc(&dir, module, "getStatus", None, true, None, 30); // opening
+        record_ipc(&dir, module, "getStatus", None, true, None, 32); // suppressed repeat
+        record_ipc(&dir, module, "getStatus", Some(json!({"x": 1})), true, None, 40); // new value: flush + opening
+
+        let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
+        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 3, "opening, summary, new opening");
+
+        assert_eq!(lines[0]["durationMs"], 30);
+        assert!(lines[0].get("repeat").is_none());
+
+        assert_eq!(lines[1]["repeat"], 1, "one call was suppressed before the run ended");
+        assert_eq!(lines[1]["durationMsMin"], 30);
+        assert_eq!(lines[1]["durationMsMax"], 32);
+        assert_eq!(lines[1]["module"], module);
+
+        assert_eq!(lines[2]["params"], json!({"x": 1}));
+        assert!(lines[2].get("repeat").is_none());
+    }
+
+    #[test]
+    fn flush_ipc_streak_reports_the_suppressed_count_and_duration_spread() {
+        let dir = tmp("flush-streak-repeated");
+        let streak = IpcStreak {
+            signature: json!({"module": "fan", "method": "getStatus", "params": null, "ok": true, "error": null}),
+            count: 5,
+            first_ts: 1_000,
+            dur_min: 30,
+            dur_max: 50,
+            dur_sum: 190,
+        };
+        flush_ipc_streak(&dir, &streak, 9_999);
+
+        let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
+        let line: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(line["repeat"], 4, "count includes the already-written opening line");
+        assert_eq!(line["durationMsMin"], 30);
+        assert_eq!(line["durationMsMax"], 50);
+        assert_eq!(line["durationMsAvg"], 38);
+        assert_eq!(line["ts"], 9_999);
+    }
+
+    #[test]
+    fn flush_ipc_streak_is_a_no_op_for_a_streak_that_never_repeated() {
+        let dir = tmp("flush-streak-single");
+        let streak = IpcStreak {
+            signature: json!({"a": 1}),
+            count: 1,
+            first_ts: 0,
+            dur_min: 10,
+            dur_max: 10,
+            dur_sum: 10,
+        };
+        flush_ipc_streak(&dir, &streak, 100);
+
+        assert!(!dir.join("ipc.jsonl").exists());
     }
 }
