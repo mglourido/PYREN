@@ -107,6 +107,16 @@ pub struct Environment {
     /// already in place, where "the patched driver would add nothing" is
     /// describing the thing that is doing the work.
     pub patched_driver_installed: bool,
+
+    /// The hottest reading currently on the machine (CPU or GPU package),
+    /// in whole degrees C. `None` when no sensor was found.
+    ///
+    /// An install unloads `hp-wmi`, builds and reloads a module, and
+    /// regenerates the initramfs - all of it with no fan control at all,
+    /// on whatever curve the firmware falls back to while the module is
+    /// out. Starting that on a machine that is already hot is asking for
+    /// trouble it has no way to answer.
+    pub hottest_c: Option<f64>,
 }
 
 impl Environment {
@@ -132,6 +142,10 @@ impl Environment {
             patched_driver_installed: patched_driver_installed(&kernel.release, &distro_id),
             service_installed: Path::new("/etc/systemd/system/pyren-daemon.service").exists()
                 || Path::new("/usr/lib/systemd/system/pyren-daemon.service").exists(),
+            hottest_c: pyren_core::sensors::hottest_c(
+                pyren_core::sensors::cpu_temp_path().as_deref(),
+                pyren_core::sensors::gpu_temp_path().as_deref(),
+            ),
             dkms_status,
             distro_id,
             kernel,

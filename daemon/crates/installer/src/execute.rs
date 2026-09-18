@@ -852,6 +852,7 @@ mod tests {
             driver_source: Some(PathBuf::from("/usr/share/pyren/driver")),
             service_installed: false,
             patched_driver_installed: false,
+            hottest_c: None,
         }
     }
 

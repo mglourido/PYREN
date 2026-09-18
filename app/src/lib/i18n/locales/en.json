@@ -1109,14 +1109,16 @@
       "boardMissing": "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), and hp-wmi is loaded here - yet there is no pwm1. The stock driver did not recognise this board, which is exactly the case the patched driver plus your board's id in the right table exists for. Whether the firmware then honours a fan write is something only trying it can answer.",
       "noHpWmi": "Kernel {kernel} ships manual fan control upstream (since {major}.{minor}), but hp-wmi is not loaded at all here, so there is nothing to say this is one of the laptops either driver is for. Installing is unlikely to help.",
       "reloadDropsFanControl": "hp-wmi is unloaded and loaded again, so fan control, the laptop's hotkeys and the firmware profile are gone for a moment. The fans keep running on the firmware's own curve while they are.",
-      "skipPatches": "Installing without Pyren's patches: no measured-RPM parameters, no rounded PWM/RPM conversions, no configurable fan floor, and no experimental board id. This is the upstream hp-wmi for this board, unchanged - useful when one of Pyren's patches turns out to misbehave on this laptop, but calibration and the fan floor override will not work afterwards."
+      "skipPatches": "Installing without Pyren's patches: no measured-RPM parameters, no rounded PWM/RPM conversions, no configurable fan floor, and no experimental board id. This is the upstream hp-wmi for this board, unchanged - useful when one of Pyren's patches turns out to misbehave on this laptop, but calibration and the fan floor override will not work afterwards.",
+      "machineHot": "This machine is running at {temp} C. Installing stops fan control for as long as the build and reload take, with nothing holding the fans to a curve in the meantime."
     },
     "blocker": {
       "alreadyWorking": "Fan control is already available; nothing to install.",
       "noDriverSource": "The patched hp-wmi sources were not found. Pyren ships them in its own driver/ directory; a packaged build has to install that to /usr/share/pyren/driver, or PYREN_DRIVER_DIR has to point at a copy.",
       "kernelHeaders": "Kernel headers for the running kernel are missing or incomplete, so the module cannot be compiled.",
       "buildTools": "A C compiler and make are required to build the module.",
-      "noMeasuredRpmParam": "The hp-wmi loaded here has no measured-ceiling parameter, so there is nowhere to put the measurement. It was built before this existed; installing the driver again produces one that has it."
+      "noMeasuredRpmParam": "The hp-wmi loaded here has no measured-ceiling parameter, so there is nowhere to put the measurement. It was built before this existed; installing the driver again produces one that has it.",
+      "machineHot": "This machine is running at {temp} C; let it cool down before installing, since fan control is off for the whole build and reload."
     },
     "exec": {
       "skipped": "skipped after an earlier failure",

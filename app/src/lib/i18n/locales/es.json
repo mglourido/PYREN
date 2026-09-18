@@ -1003,7 +1003,7 @@
     "detectedCeilingsValue": "{cpu} / {gpu} rpm",
     "action": "Acción",
     "actions": {
-      "installDriver": "Instalar controlador parcheado",
+      "installDriver": "Instalar controlador",
       "restoreDriver": "Restaurar controlador de serie"
     },
     "preferHooks": "Compilar una vez, más un hook del kernel",
@@ -1109,14 +1109,16 @@
       "boardMissing": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}) y aquí hp-wmi está cargado, y aun así no hay pwm1. El controlador de serie no reconoció esta placa, que es justo el caso para el que existen el controlador parcheado y el id de tu placa en la tabla correcta. Si el firmware después acepta una escritura al ventilador solo se sabe probándolo.",
       "noHpWmi": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}), pero aquí hp-wmi no está cargado siquiera, así que nada indica que este sea uno de los portátiles para los que sirve ninguno de los dos controladores. Es poco probable que instalarlo ayude.",
       "reloadDropsFanControl": "hp-wmi se descarga y se vuelve a cargar, así que el control de ventiladores, las teclas del portátil y el perfil del firmware desaparecen un momento. Mientras tanto los ventiladores siguen con la curva del propio firmware.",
-      "skipPatches": "Instalando sin los parches de Pyren: sin parámetros de RPM medida, sin redondeo en las conversiones PWM/RPM, sin suelo de ventilador configurable y sin id de placa experimental. Es el hp-wmi original para esta placa, sin cambios — útil cuando uno de los parches de Pyren da problemas en este portátil, pero la calibración y el suelo del ventilador dejarán de funcionar después."
+      "skipPatches": "Instalando sin los parches de Pyren: sin parámetros de RPM medida, sin redondeo en las conversiones PWM/RPM, sin suelo de ventilador configurable y sin id de placa experimental. Es el hp-wmi original para esta placa, sin cambios — útil cuando uno de los parches de Pyren da problemas en este portátil, pero la calibración y el suelo del ventilador dejarán de funcionar después.",
+      "machineHot": "Este equipo está a {temp} °C. Instalar corta el control del ventilador durante todo lo que tarden la compilación y la recarga, sin nada que mantenga los ventiladores en una curva mientras tanto."
     },
     "blocker": {
       "alreadyWorking": "El control de ventiladores ya está disponible; nada que instalar.",
       "noDriverSource": "No se encontraron las fuentes parcheadas de hp-wmi. Pyren las incluye en su propio directorio driver/; un paquete debe instalarlas en /usr/share/pyren/driver, o PYREN_DRIVER_DIR debe apuntar a una copia.",
       "kernelHeaders": "Las cabeceras del kernel en ejecución faltan o están incompletas, así que el módulo no se puede compilar.",
       "buildTools": "Se necesitan un compilador de C y make para compilar el módulo.",
-      "noMeasuredRpmParam": "El hp-wmi cargado aquí no tiene parámetro de techo medido, así que no hay dónde poner la medida. Se compiló antes de que existiera; instalar el controlador otra vez produce uno que sí lo tiene."
+      "noMeasuredRpmParam": "El hp-wmi cargado aquí no tiene parámetro de techo medido, así que no hay dónde poner la medida. Se compiló antes de que existiera; instalar el controlador otra vez produce uno que sí lo tiene.",
+      "machineHot": "Este equipo está a {temp} °C; deja que se enfríe antes de instalar, ya que el control del ventilador está apagado durante toda la compilación y recarga."
     },
     "exec": {
       "skipped": "omitido tras un fallo anterior",

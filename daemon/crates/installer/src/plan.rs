@@ -15,6 +15,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::detect::{Environment, HookFlavour};
 
+/// Temperature at or above which an install is refused rather than started.
+///
+/// Lower than `pyren_power::auto`'s `back_off_when_hot` threshold (85 C) on
+/// purpose: that one backs a running machine off a power mode, this one is
+/// about to leave the fans with nothing controlling them at all for as long
+/// as a build and reload take, so it draws the line earlier.
+const HOT_CPU_TEMP_C: f64 = 70.0;
+
 /// DKMS package identity, matching the source project's `dkms.conf`.
 pub const DKMS_NAME: &str = "hp-wmi-omen";
 /// Where the measured ceilings are written for `modprobe` to pick up. In
@@ -152,6 +160,37 @@ pub fn plan(env: &Environment, action: Action, options: PlanOptions) -> Plan {
 fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
     let mut blockers = Vec::new();
     let mut warnings = Vec::new();
+
+    // An install leaves the fans on whatever the firmware falls back to,
+    // with nothing controlling them, for as long as unloading, rebuilding
+    // and reloading hp-wmi takes. Refused rather than warned about: unlike
+    // the other blockers below, a machine cooling down is not this
+    // installer's business to wait out, and `force` is the deliberate way
+    // past it for someone who has already decided the risk is theirs.
+    if let Some(hottest) = env.hottest_c {
+        if hottest >= HOT_CPU_TEMP_C {
+            let temp = hottest as i64;
+            warnings.push(msg!(
+                "installer.warn.machineHot",
+                { "temp" => temp },
+                "This machine is running at {temp} C. Installing stops fan control for as \
+                 long as the build and reload take, with nothing holding the fans to a curve \
+                 in the meantime."
+            ));
+            if !options.force {
+                blockers.push(Blocker {
+                    id: "machine-hot".to_string(),
+                    message: msg!(
+                        "installer.blocker.machineHot",
+                        { "temp" => temp },
+                        "This machine is running at {temp} C; let it cool down before \
+                         installing, since fan control is off for the whole build and reload."
+                    ),
+                    fix: None,
+                });
+            }
+        }
+    }
 
     // The most useful thing this installer can do on a modern kernel is
     // say that it isn't needed. Manual fan control went upstream in 6.20,
@@ -825,6 +864,7 @@ mod tests {
             driver_source: Some(PathBuf::from("/usr/share/pyren/driver")),
             service_installed: false,
             patched_driver_installed: false,
+            hottest_c: None,
         }
     }
 
@@ -1278,6 +1318,59 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.key == "installer.warn.skipPatches"));
+    }
+
+    /// The fans have no controller at all for the whole build and reload,
+    /// so a machine that is already hot must be refused, not just warned.
+    #[test]
+    fn a_hot_machine_is_refused() {
+        let env = Environment {
+            hottest_c: Some(72.0),
+            ..ready_env()
+        };
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+        assert!(!plan.is_runnable());
+        assert!(plan.blockers.iter().any(|b| b.id == "machine-hot"));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.machineHot"));
+    }
+
+    #[test]
+    fn a_cool_machine_is_not_warned_about_heat() {
+        let env = Environment {
+            hottest_c: Some(45.0),
+            ..ready_env()
+        };
+        let plan = plan(&env, Action::InstallDriver, PlanOptions::default());
+        assert!(!plan.blockers.iter().any(|b| b.id == "machine-hot"));
+        assert!(!plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.machineHot"));
+    }
+
+    /// `force` is the deliberate way past it - the same escape hatch the
+    /// other install blockers use - but the warning stays, so a forced
+    /// install still says why it was questionable.
+    #[test]
+    fn a_hot_machine_can_be_forced_and_still_warns() {
+        let env = Environment {
+            hottest_c: Some(90.0),
+            ..ready_env()
+        };
+        let options = PlanOptions {
+            force: true,
+            ..PlanOptions::default()
+        };
+        let plan = plan(&env, Action::InstallDriver, options);
+        assert!(plan.is_runnable());
+        assert!(!plan.blockers.iter().any(|b| b.id == "machine-hot"));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.machineHot"));
     }
 
     #[test]
