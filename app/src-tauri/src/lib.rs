@@ -589,8 +589,8 @@ fn system_get_info() -> Result<Value, String> {
 }
 
 #[tauri::command(async)]
-fn system_get_metrics() -> Result<Value, String> {
-    call_daemon("system", "getMetrics", Value::Null)
+fn system_get_metrics(include_processes: Option<bool>) -> Result<Value, String> {
+    call_daemon("system", "getMetrics", json!({ "includeProcesses": include_processes }))
 }
 
 #[tauri::command(async)]

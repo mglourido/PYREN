@@ -9,7 +9,7 @@
 //! | method | params | result |
 //! |---|---|---|
 //! | `system.getInfo` | none | machine identity + what the machine was found able to control (cached at startup) |
-//! | `system.getMetrics` | none | live CPU/memory/temps/fans/disks/network/GPU/process readings |
+//! | `system.getMetrics` | `includeProcesses?: bool` (default `true`) | live CPU/memory/temps/fans/disks/network/GPU/process readings |
 //!
 //! `getInfo` also carries a `privileges` block. Some readings are gated on
 //! what the daemon was started with rather than on what the hardware can
@@ -91,7 +91,7 @@ impl Module for SystemModule {
         true
     }
 
-    fn call(&self, method: &str, _params: Value) -> ModuleResult {
+    fn call(&self, method: &str, params: Value) -> ModuleResult {
         match method {
             "getInfo" => {
                 let mut info = serde_json::to_value(&self.identity)
@@ -104,10 +104,18 @@ impl Module for SystemModule {
                 Ok(info)
             }
             "getMetrics" => {
+                // Defaults to true so every existing/unaware caller keeps
+                // getting the process table it always did; the UI opts out
+                // on its fast tick to skip the /proc walk + `nvidia-smi`
+                // spawn, which is the expensive part of a sample.
+                let include_processes = params
+                    .get("includeProcesses")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
                 // A panicking sampler would poison the lock; recover the
                 // data rather than taking the whole daemon down with it.
                 let mut sampler = self.sampler.lock().unwrap_or_else(|e| e.into_inner());
-                serde_json::to_value(sampler.sample())
+                serde_json::to_value(sampler.sample(include_processes))
                     .map_err(|e| ModuleError::Internal(e.to_string()))
             }
             other => Err(ModuleError::UnknownMethod(other.to_string())),

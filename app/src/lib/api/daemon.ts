@@ -1411,7 +1411,11 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 export const daemon = {
   capabilities: () => call<ModuleCapability[]>("core_capabilities"),
   systemInfo: () => call<SystemInfo>("system_get_info"),
-  systemMetrics: () => call<SystemMetrics>("system_get_metrics"),
+  /** `includeProcesses` defaults to `true`; pass `false` to skip the
+   *  `/proc` process walk and `nvidia-smi` spawn on a fast poll tick that
+   *  only needs CPU/memory/temps/fans/disks/network/GPU numbers. */
+  systemMetrics: (includeProcesses = true) =>
+    call<SystemMetrics>("system_get_metrics", { includeProcesses }),
   fanStatus: () => call<FanStatus>("fan_get_status"),
   /** `allowWrites` opts into the one check that touches hardware. */
   fanDiagnose: (allowWrites = false) => call<FanDiagnosis>("fan_diagnose", { allowWrites }),

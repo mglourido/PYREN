@@ -113,9 +113,14 @@ export class Telemetry {
   fanHistory = $state<number[]>([]);
 
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Separate, slower timer for the process table alone - see
+   *  `processIntervalMs`. */
+  private processTimer: ReturnType<typeof setInterval> | null = null;
   private subscribers = 0;
   /** True while a poll is in flight; see `poll()`. */
   private polling = false;
+  /** True while a process-table poll is in flight; mirrors `polling`. */
+  private pollingProcesses = false;
   /**
    * The previous poll's reachability, so the console line below fires on
    * the transition rather than once every interval - a machine with no
@@ -125,12 +130,12 @@ export class Telemetry {
   private lastReachable: boolean | null = null;
   /**
    * Whether the currently-shown page renders live CPU/GPU/RAM/disk/network
-   * data (see `isDetailRoute`). `false` means `pollOnce()` skips the heavy
-   * `daemon.systemMetrics()` round trip - and with it the daemon's
-   * `nvidia-smi` spawn and `/proc` process walk - entirely. Only the cheap
-   * `daemon.fanStatus()` call still runs every tick regardless, because
-   * `demo`/`driverInstalled` and fan-floor notifications are read from the
-   * sidebar and other pages regardless of route.
+   * data (see `isDetailRoute`). `false` means `pollOnce()` skips the
+   * `daemon.systemMetrics()` round trip entirely, and `pollProcesses()`
+   * skips its own call too. Only the cheap `daemon.fanStatus()` call still
+   * runs every tick regardless, because `demo`/`driverInstalled` and
+   * fan-floor notifications are read from the sidebar and other pages
+   * regardless of route.
    */
   private detailActive = false;
 
@@ -142,6 +147,18 @@ export class Telemetry {
   private get intervalMs(): number {
     const value = settings.current.pollIntervalMs;
     return Number.isFinite(value) ? Math.max(250, value) : 2000;
+  }
+
+  /**
+   * How often the process table itself refreshes, independent of
+   * `intervalMs`. It is the slowest part of a sample - a full `/proc` walk
+   * plus an `nvidia-smi` spawn - so it runs on its own, longer-spaced
+   * timer instead of paying that cost on every CPU/RAM/GPU tick. Floored
+   * at 1000 ms for the same reason `intervalMs` is floored.
+   */
+  private get processIntervalMs(): number {
+    const value = settings.current.processPollIntervalMs;
+    return Number.isFinite(value) ? Math.max(1000, value) : 8000;
   }
 
   get ramPercent(): number {
@@ -165,7 +182,9 @@ export class Telemetry {
     this.subscribers += 1;
     if (this.timer !== null) return;
     void this.poll();
+    void this.pollProcesses();
     this.timer = setInterval(() => void this.poll(), this.intervalMs);
+    this.processTimer = setInterval(() => void this.pollProcesses(), this.processIntervalMs);
   }
 
   stop() {
@@ -173,6 +192,8 @@ export class Telemetry {
     if (this.subscribers === 0 && this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+      if (this.processTimer !== null) clearInterval(this.processTimer);
+      this.processTimer = null;
     }
   }
 
@@ -183,6 +204,13 @@ export class Telemetry {
     this.timer = setInterval(() => void this.poll(), this.intervalMs);
   }
 
+  /** Applies a changed process-refresh interval without losing history. */
+  restartProcesses() {
+    if (this.processTimer === null) return;
+    clearInterval(this.processTimer);
+    this.processTimer = setInterval(() => void this.pollProcesses(), this.processIntervalMs);
+  }
+
   /** Driven from the root layout as the route changes (see `isDetailRoute`).
    *  Turning detail back on kicks an immediate poll so the page doesn't sit
    *  on stale numbers for up to `intervalMs` while the next tick comes
@@ -190,7 +218,10 @@ export class Telemetry {
   setDetailActive(active: boolean) {
     const wasActive = this.detailActive;
     this.detailActive = active;
-    if (active && !wasActive) void this.poll();
+    if (active && !wasActive) {
+      void this.poll();
+      void this.pollProcesses();
+    }
   }
 
   async loadSystemInfo() {
@@ -230,11 +261,12 @@ export class Telemetry {
     // whether the daemon is up.
     //
     // The metrics call is skipped outright - not even sent - when no page
-    // showing live readings is on screen: it's the expensive one (a full
-    // /proc sweep plus an `nvidia-smi` spawn on the daemon side), and
-    // `fanStatus()` alone is enough to keep `demo`/notifications live.
+    // showing live readings is on screen, and `fanStatus()` alone is
+    // enough to keep `demo`/notifications live. `includeProcesses: false`
+    // skips the process table here too - see `pollProcesses()`, which
+    // fetches it on its own, longer-spaced timer.
     const [metrics, fan] = await Promise.allSettled([
-      this.detailActive ? daemon.systemMetrics() : Promise.resolve(null),
+      this.detailActive ? daemon.systemMetrics(false) : Promise.resolve(null),
       daemon.fanStatus(),
     ]);
 
@@ -285,6 +317,22 @@ export class Telemetry {
     if (this.detailActive) this.record();
   }
 
+  /** Refreshes only the process table, on its own timer - see
+   *  `processIntervalMs`. Guarded against overlap the same way `poll()` is,
+   *  and skipped while no detail route is on screen. */
+  private async pollProcesses() {
+    if (!this.detailActive || this.pollingProcesses) return;
+    this.pollingProcesses = true;
+    try {
+      this.processes = (await daemon.systemMetrics(true)).processes;
+    } catch {
+      // Ignored: the main `poll()` timer is what surfaces a down daemon
+      // (via `demo`/`daemonError`); this one just leaves the table stale.
+    } finally {
+      this.pollingProcesses = false;
+    }
+  }
+
   private applyMetrics(metrics: Awaited<ReturnType<typeof daemon.systemMetrics>>) {
     this.cpuUsage = metrics.cpu.usagePercent;
     this.perCoreUsage = metrics.cpu.perCorePercent;
@@ -306,7 +354,6 @@ export class Telemetry {
     this.chassisTempC = chassisTemperature(metrics.temperatures);
 
     this.disks = metrics.disks;
-    this.processes = metrics.processes;
 
     this.netUpMbps = metrics.network.upMbps;
     this.netDownMbps = metrics.network.downMbps;

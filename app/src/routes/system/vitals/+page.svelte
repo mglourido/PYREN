@@ -238,7 +238,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each telemetry.processes as process (process.pid)}
+            {#each telemetry.processes.slice(0, 11) as process (process.pid)}
               <tr>
                 <td class="proc-name">{process.name}</td>
                 <td>{process.cpuPercent.toFixed(1)} %</td>
@@ -572,6 +572,9 @@
   .card.wide {
     grid-column: span 2;
     align-items: stretch;
+    height: 360px;
+    max-height: 360px;
+    overflow: hidden;
   }
 
   @media (max-width: 620px) {
@@ -713,6 +716,11 @@
     text-transform: uppercase;
     font-size: 12px;
     letter-spacing: 0.05em;
+  }
+
+  th:first-child,
+  td:first-child {
+    padding-left: 0;
   }
 
   td {

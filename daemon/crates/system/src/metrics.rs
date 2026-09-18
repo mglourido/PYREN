@@ -23,7 +23,7 @@ use serde::Serialize;
 use crate::gpu::{read_nvidia_gpus, DrmUsageReader, GpuMetrics, GpuReader, GpuUsage};
 
 /// Busiest processes reported per sample. Matches what the UI table shows.
-const TOP_PROCESSES: usize = 12;
+const TOP_PROCESSES: usize = 11;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,11 +256,14 @@ impl Sampler {
         self.gpus.engine_stats_available()
     }
 
-    pub fn sample(&mut self) -> Metrics {
+    /// `include_processes` skips the `/proc` process walk and the
+    /// `nvidia-smi` spawn - the two slowest parts of a sample - when the
+    /// caller only wants CPU/memory/temps/fans/disks/network/GPU numbers.
+    pub fn sample(&mut self, include_processes: bool) -> Metrics {
         let elapsed = self.last_sampled.elapsed().as_secs_f64().max(0.001);
         self.last_sampled = Instant::now();
 
-        let raw = self.gather(elapsed);
+        let raw = self.gather(elapsed, include_processes);
 
         // Everything below is arithmetic over what was gathered, plus the
         // reads that had to wait for it. None of it touches the disk.
@@ -297,7 +300,7 @@ impl Sampler {
     ///
     /// A sweep that panics degrades to its empty value rather than taking
     /// the sample - and with it the connection - down with it.
-    fn gather(&mut self, elapsed: f64) -> Raw {
+    fn gather(&mut self, elapsed: f64, include_processes: bool) -> Raw {
         // Disjoint field borrows, so the two stateful sweeps can be handed
         // to threads without borrowing the whole sampler.
         let hwmon = &mut self.hwmon;
@@ -310,7 +313,17 @@ impl Sampler {
             // and the process table's GPU column.
             let drm_job = scope.spawn(|| drm_usage.sample(elapsed));
             let disks_job = scope.spawn(read_disks);
-            let processes_job = scope.spawn(read_process_stats);
+            let processes_job = scope.spawn(move || {
+                if include_processes {
+                    read_process_stats()
+                } else {
+                    Vec::new()
+                }
+            });
+            // Always run, unlike `processes_job`: this also feeds each
+            // card's own usage/temperature reading, not just the process
+            // table's GPU column, so skipping it would go stale on every
+            // fast tick.
             let nvidia_job = scope.spawn(move || {
                 if nvidia_available {
                     read_nvidia_gpus()
