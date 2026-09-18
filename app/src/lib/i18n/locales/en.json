@@ -445,11 +445,16 @@
       "title": "Minimum fan speed raised",
       "body": "The fans kept stalling at {from} rpm, so the minimum was raised to {to} rpm.",
       "bodyCapped": "The fans kept stalling at {from} rpm. The minimum is now the driver's own ({to} rpm) and cannot go lower — recalibrate to measure it again."
+    },
+    "updateAvailable": {
+      "title": "Update available",
+      "body": "Version {version} is available. See Help for the link."
     }
   },
   "settings": {
     "title": "Settings",
     "appearance": "Appearance",
+    "systemMonitor": "System monitor",
     "theme": "Theme",
     "gaugeAnimations": "Animate gauge transitions",
     "themeNames": {
@@ -507,9 +512,13 @@
     "daemonStopped": "not reachable",
     "serviceFailed": "Could not do that: {error}",
     "pollInterval": "Refresh interval",
+    "processPollInterval": "Process list refresh interval",
     "seconds": "{n} s",
     "advanced": "Advanced",
     "driverNotice": "\"Driver not installed\" notice",
+    "updates": "Updates",
+    "autoCheckUpdates": "Check for updates automatically",
+    "notifyUpdateOnce": "Only notify once per version",
     "resetSettings": "Reset all settings",
     "fans": "Fans",
     "autoControl": "Automatic power profile control",

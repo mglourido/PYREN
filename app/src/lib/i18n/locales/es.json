@@ -445,11 +445,16 @@
       "title": "Velocidad mínima de ventilador subida",
       "body": "Los ventiladores se calaban a {from} rpm, así que la velocidad mínima se subió a {to} rpm.",
       "bodyCapped": "Los ventiladores se calaban a {from} rpm. La velocidad mínima es ya la del propio controlador ({to} rpm) y no puede bajar más; recalibra para volver a medirla."
+    },
+    "updateAvailable": {
+      "title": "Actualización disponible",
+      "body": "La versión {version} está disponible. Consulta Ayuda para el enlace."
     }
   },
   "settings": {
     "title": "Ajustes",
     "appearance": "Apariencia",
+    "systemMonitor": "Monitor del sistema",
     "theme": "Tema",
     "gaugeAnimations": "Animar transición de los medidores",
     "themeNames": {
@@ -506,10 +511,14 @@
     "daemonRunning": "en marcha",
     "daemonStopped": "no accesible",
     "serviceFailed": "No se pudo: {error}",
-    "pollInterval": "Intervalo de actualización",
+    "pollInterval": "Intervalo de actualización de datos",
+    "processPollInterval": "Intervalo de actualización de procesos",
     "seconds": "{n} s",
     "advanced": "Avanzado",
     "driverNotice": "Aviso «Controlador no instalado»",
+    "updates": "Actualizaciones",
+    "autoCheckUpdates": "Buscar actualizaciones automáticamente",
+    "notifyUpdateOnce": "Notificar solo una vez por versión",
     "resetSettings": "Restablecer todos los ajustes",
     "fans": "Ventiladores",
     "autoControl": "Control automático de perfiles de rendimiento",

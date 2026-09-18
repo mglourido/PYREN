@@ -214,6 +214,11 @@
     telemetry.restart();
   }
 
+  function setProcessPollInterval(seconds: number) {
+    settings.set("processPollIntervalMs", seconds * 1000);
+    telemetry.restartProcesses();
+  }
+
   /**
    * The supervisor's tuning, shown in the units a person thinks in:
    * minutes rather than seconds, percent per core rather than a load
@@ -309,6 +314,39 @@
         {/each}
       </select>
     </div>
+  </Panel>
+
+  <Panel title={t("settings.systemMonitor")}>
+    <div class="row">
+      <span>{t("settings.pollInterval")}</span>
+      <div class="slider">
+        <Slider
+          value={settings.current.pollIntervalMs / 1000}
+          min={1}
+          max={10}
+          gradient={false}
+          ariaLabel={t("settings.pollInterval")}
+          onchange={setPollInterval}
+        />
+        <b>{t("settings.seconds", { n: settings.current.pollIntervalMs / 1000 })}</b>
+      </div>
+    </div>
+
+    <div class="row">
+      <span>{t("settings.processPollInterval")}</span>
+      <div class="slider">
+        <Slider
+          value={settings.current.processPollIntervalMs / 1000}
+          min={2}
+          max={30}
+          gradient={false}
+          ariaLabel={t("settings.processPollInterval")}
+          onchange={setProcessPollInterval}
+        />
+        <b>{t("settings.seconds", { n: settings.current.processPollIntervalMs / 1000 })}</b>
+      </div>
+    </div>
+
     <div class="row">
       <span>{t("settings.gaugeAnimations")}</span>
       <Toggle
@@ -901,22 +939,27 @@
     </Panel>
   {/if}
 
-  <Panel title={t("settings.advanced")}>
+  <Panel title={t("settings.updates")}>
     <div class="row">
-      <span>{t("settings.pollInterval")}</span>
-      <div class="slider">
-        <Slider
-          value={settings.current.pollIntervalMs / 1000}
-          min={1}
-          max={10}
-          gradient={false}
-          ariaLabel={t("settings.pollInterval")}
-          onchange={setPollInterval}
-        />
-        <b>{t("settings.seconds", { n: settings.current.pollIntervalMs / 1000 })}</b>
-      </div>
+      <span>{t("settings.autoCheckUpdates")}</span>
+      <Toggle
+        checked={settings.current.autoCheckUpdates}
+        onchange={(v) => settings.set("autoCheckUpdates", v)}
+        ariaLabel={t("settings.autoCheckUpdates")}
+      />
     </div>
 
+    <div class="row">
+      <span>{t("settings.notifyUpdateOnce")}</span>
+      <Toggle
+        checked={settings.current.notifyUpdateOnce}
+        onchange={(v) => settings.set("notifyUpdateOnce", v)}
+        ariaLabel={t("settings.notifyUpdateOnce")}
+      />
+    </div>
+  </Panel>
+
+  <Panel title={t("settings.advanced")}>
     <div class="row">
       <span>{t("settings.driverNotice")}</span>
       <Toggle
@@ -1059,6 +1102,11 @@
     align-items: center;
     gap: 14px;
     width: 260px;
+  }
+
+  .slider b {
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   select {

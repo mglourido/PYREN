@@ -15,6 +15,7 @@
   import { lightingPresets } from "$lib/stores/lighting-presets.svelte";
   import { isDetailRoute, telemetry } from "$lib/stores/telemetry.svelte";
   import { notifications } from "$lib/stores/notifications.svelte";
+  import { maybeAutoCheckForUpdate } from "$lib/version";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
@@ -59,6 +60,10 @@
     // bell is on every page.
     const stopNotifications = notifications.start();
     const stopErrorCapture = debugLog.installErrorCapture();
+    // No timer: reads the stamped `lastUpdateCheckAt` and skips if it's
+    // been under 6h, so this only ever does something once per session at
+    // most - see `maybeAutoCheckForUpdate`.
+    void maybeAutoCheckForUpdate();
     return () => {
       telemetry.stop();
       stopWatching();

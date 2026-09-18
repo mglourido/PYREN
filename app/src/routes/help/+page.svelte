@@ -12,7 +12,7 @@
     APP_VERSION,
     ISSUES_URL,
     REPO_URL,
-    checkForUpdate,
+    checkForUpdateManually,
     type UpdateCheck,
   } from "$lib/version";
 
@@ -20,7 +20,7 @@
 
   async function check() {
     update = { state: "checking" };
-    update = await checkForUpdate();
+    update = await checkForUpdateManually();
   }
 
   const info = $derived(telemetry.systemInfo);

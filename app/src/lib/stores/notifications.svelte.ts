@@ -71,6 +71,12 @@ const DESCRIPTORS: Record<
       action: capped ? "recalibrate" : undefined,
     };
   },
+  "app.updateAvailable": (data) => ({
+    kind: "info",
+    icon: "refresh",
+    title: t("notifications.updateAvailable.title"),
+    body: t("notifications.updateAvailable.body", { version: String(data.version ?? "?") }),
+  }),
 };
 
 /** A stable id, so the live event and its persisted twin collapse into
@@ -158,6 +164,24 @@ class Notifications {
       });
     }
     this.pruneReadIds();
+  }
+
+  /**
+   * Pushes a locally-originated notification - one that never came off the
+   * daemon's event bus, such as an update check. Each call is its own
+   * entry (the id carries the timestamp), so a caller that wants to skip a
+   * repeat must decide that itself before calling this - see
+   * `settings.notifyUpdateOnce` in `maybeAutoCheckForUpdate`.
+   */
+  notifyUpdateAvailable(version: string, url: string): void {
+    const at = Math.round(Date.now() / 1000);
+    const record: StoredEvent = {
+      id: `app.updateAvailable:${version}:${at}`,
+      topic: "app.updateAvailable",
+      at,
+      data: { version, url },
+    };
+    if (this.ingest(record)) void this.notifyOs(record);
   }
 
   toggle(): void {

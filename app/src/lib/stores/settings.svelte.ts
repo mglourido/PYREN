@@ -20,6 +20,10 @@ export type Settings = {
   theme: ThemeCode;
   tempUnit: TempUnit;
   pollIntervalMs: number;
+  /** How often the process table refreshes, independent of `pollIntervalMs`
+   *  - it's the slowest part of a sample (a full `/proc` walk plus an
+   *  `nvidia-smi` spawn), so it is allowed to run slower on its own. */
+  processPollIntervalMs: number;
   startMinimized: boolean;
   /** Closing the window puts Pyren in the tray instead of quitting it.
    *  Read by the Tauri shell straight out of this file - see `closes_to_tray`. */
@@ -39,6 +43,18 @@ export type Settings = {
   /** Show the power-mode row in the widget. On by default; only turned off
    *  while `widgetFanModes` is on, so the widget is never empty. */
   widgetPowerModes: boolean;
+  /** Checks GitHub for a new release on startup, at most once every 6h.
+   *  Off leaves updates to the manual button in Help. */
+  autoCheckUpdates: boolean;
+  /** Once a version has been pushed as a notification, don't push it again
+   *  on the next auto-check that finds the same tag still latest. */
+  notifyUpdateOnce: boolean;
+  /** Unix ms of the last update check, manual or automatic - shared by
+   *  both so a manual check also postpones the next automatic one. */
+  lastUpdateCheckAt: number | null;
+  /** The last version an update notification was raised for, so
+   *  `notifyUpdateOnce` has something to compare against. */
+  lastNotifiedUpdateVersion: string | null;
 };
 
 function defaults(): Settings {
@@ -48,6 +64,11 @@ function defaults(): Settings {
     theme: DEFAULT_THEME,
     tempUnit: "c",
     pollIntervalMs: 2000,
+    // Slower than `pollIntervalMs`: the process list is the heaviest part
+    // of a sample (a full /proc sweep plus an `nvidia-smi` spawn on the
+    // daemon side), so it refreshes on its own longer-spaced timer instead
+    // of paying that cost on every CPU/RAM/GPU tick.
+    processPollIntervalMs: 8000,
     startMinimized: false,
     // Off by default: the close button quitting is what every user already
     // expects, and a tray icon nobody's desktop draws would make an app that
@@ -64,6 +85,12 @@ function defaults(): Settings {
     // is an extra someone opts into.
     widgetFanModes: false,
     widgetPowerModes: true,
+    // On by default: most people want to know a new release exists without
+    // having to remember to press the button in Help.
+    autoCheckUpdates: true,
+    notifyUpdateOnce: true,
+    lastUpdateCheckAt: null,
+    lastNotifiedUpdateVersion: null,
   };
 }
 
