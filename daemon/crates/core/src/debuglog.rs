@@ -207,6 +207,7 @@ pub fn record_if_changed(category: Category, value: impl Serialize) {
 fn with_ts_mut(payload: &mut Value) {
     if let Value::Object(map) = payload {
         map.insert("ts".to_string(), Value::from(now_ms()));
+        map.insert("pid".to_string(), Value::from(std::process::id()));
     }
 }
 
