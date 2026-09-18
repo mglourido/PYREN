@@ -223,7 +223,30 @@ pub fn apply(
         .ok_or(ControlError::Unsupported(mode.as_str(), "pwm1_enable"))?;
 
     match mode {
-        FanMode::Auto => write_sysfs(enable, "2"),
+        // Two writes, in order. `pwm1_enable = 2` is the mode switch and is
+        // what `read_hardware_mode` reports, but on a driver whose auto
+        // path is not `hp_wmi_fan_control_supported()` (`hp_wmi.c`,
+        // `hp_wmi_apply_fan_settings`'s `PWM_MODE_AUTO` case) it only
+        // cancels the keep-alive re-assert and clears the "max speed" WMI
+        // bit - it never re-sends the fan speed the EC was last told to
+        // hold, because it never touches `priv->cpu_pwm`/`gpu_pwm`. The
+        // driver's own way to release a manual speed is `pwm1 = 0`
+        // (`HP_FAN_SPEED_AUTOMATIC`, a sentinel distinct from
+        // `pwm1_enable`): written while still in manual, `hp_wmi_hwmon_write`
+        // takes it straight to `hp_wmi_fan_speed_set` with the sentinel and
+        // the EC is told "auto" directly, before the mode switch happens at
+        // all. So this writes the sentinel first, whenever there is a
+        // `pwm1` to write it to - harmless when the board's auto path does
+        // reset the setpoint itself (it is overwritten a moment later
+        // anyway), and the difference between "keep-alive stops but the
+        // last manual speed is left running" and "auto" on a board where it
+        // does not.
+        FanMode::Auto => {
+            if let Some(pwm1) = paths.pwm1.as_deref().filter(|p| p.exists()) {
+                write_sysfs(pwm1, "0")?;
+            }
+            write_sysfs(enable, "2")
+        }
         FanMode::Max => write_sysfs(enable, "0"),
         FanMode::Manual | FanMode::Curve => {
             let pwm1 = paths
@@ -397,6 +420,46 @@ mod tests {
         assert_eq!(read(&dir, "pwm1_enable"), "0");
 
         apply(&p, caps, FanMode::Auto, 0).unwrap();
+        assert_eq!(read(&dir, "pwm1_enable"), "2");
+    }
+
+    /// A board without `pwm1` at all (8D2F) must still be able to switch to
+    /// auto - the sentinel write is skipped, not a hard requirement.
+    #[test]
+    fn auto_without_a_pwm1_channel_still_switches_mode() {
+        let dir = fixture("auto-nopwm1", &["pwm1_enable"]);
+        let p = paths(&dir);
+
+        apply(&p, Capabilities::detect(&p), FanMode::Auto, 0).unwrap();
+
+        assert_eq!(read(&dir, "pwm1_enable"), "2");
+    }
+
+    /// Restoring to auto after a manual/probe run must release the EC's
+    /// last commanded speed, not just stop the keep-alive. See the comment
+    /// on the `Auto` arm of `apply`: `hp_wmi_apply_fan_settings`'s auto
+    /// path does not always reset the setpoint itself, so Pyren has to
+    /// write the `HP_FAN_SPEED_AUTOMATIC` sentinel (`pwm1 = 0`) itself,
+    /// before the mode switch.
+    #[test]
+    fn auto_releases_the_last_manual_speed_via_the_sentinel_before_the_mode_switch() {
+        let dir = fixture("auto-sentinel", &["pwm1_enable", "pwm1"]);
+        let p = paths(&dir);
+        let caps = Capabilities::detect(&p);
+
+        // Simulate the state a speed probe leaves behind: manual mode, fans
+        // commanded to a high pwm.
+        apply(&p, caps, FanMode::Manual, 200).unwrap();
+        assert_eq!(read(&dir, "pwm1"), "200");
+
+        apply(&p, caps, FanMode::Auto, 0).unwrap();
+
+        assert_eq!(
+            read(&dir, "pwm1"),
+            "0",
+            "pwm1 must be released to the HP_FAN_SPEED_AUTOMATIC sentinel, \
+             not left at the last commanded speed"
+        );
         assert_eq!(read(&dir, "pwm1_enable"), "2");
     }
 
