@@ -302,6 +302,34 @@
   <h1 class="page-title">{t("settings.title")}</h1>
 
   <div class="settings-scroll">
+  <Panel title={t("settings.language")}>
+    <div class="row lang-row">
+      <label for="main-lang">{t("settings.mainLanguage")}</label>
+      <select
+        id="main-lang"
+        value={settings.current.mainLanguage}
+        onchange={(e) => settings.set("mainLanguage", e.currentTarget.value)}
+      >
+        {#each availableLocales as code (code)}
+          <option value={code}>{localeName(code)} ({code})</option>
+        {/each}
+      </select>
+    </div>
+
+    <div class="row lang-row">
+      <label for="fallback-lang">{t("settings.fallbackLanguage")}</label>
+      <select
+        id="fallback-lang"
+        value={settings.current.fallbackLanguage}
+        onchange={(e) => settings.set("fallbackLanguage", e.currentTarget.value)}
+      >
+        {#each availableLocales as code (code)}
+          <option value={code}>{localeName(code)} ({code})</option>
+        {/each}
+      </select>
+    </div>
+  </Panel>
+
   <Panel title={t("settings.appearance")}>
     <div class="row">
       <span>{t("settings.theme")}</span>
@@ -354,34 +382,6 @@
         onchange={(v) => settings.set("gaugeAnimations", v)}
         ariaLabel={t("settings.gaugeAnimations")}
       />
-    </div>
-  </Panel>
-
-  <Panel title={t("settings.language")}>
-    <div class="row">
-      <label for="main-lang">{t("settings.mainLanguage")}</label>
-      <select
-        id="main-lang"
-        value={settings.current.mainLanguage}
-        onchange={(e) => settings.set("mainLanguage", e.currentTarget.value)}
-      >
-        {#each availableLocales as code (code)}
-          <option value={code}>{localeName(code)} ({code})</option>
-        {/each}
-      </select>
-    </div>
-
-    <div class="row">
-      <label for="fallback-lang">{t("settings.fallbackLanguage")}</label>
-      <select
-        id="fallback-lang"
-        value={settings.current.fallbackLanguage}
-        onchange={(e) => settings.set("fallbackLanguage", e.currentTarget.value)}
-      >
-        {#each availableLocales as code (code)}
-          <option value={code}>{localeName(code)} ({code})</option>
-        {/each}
-      </select>
     </div>
   </Panel>
 
@@ -1095,6 +1095,10 @@
 
   .row:last-child {
     border-bottom: none;
+  }
+
+  .lang-row {
+    padding: 6px 0;
   }
 
   .slider {
