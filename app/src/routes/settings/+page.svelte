@@ -20,7 +20,6 @@
     type HotkeyStatus,
   } from "$lib/api/daemon";
   import { debugLog, type DebugLogStatus } from "$lib/api/debug";
-  import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
   /**
    * What is running in this session. Read from the shell rather than from
@@ -696,24 +695,12 @@
     {#if debugStatus}
       <div class="row">
         <span>{t("settings.debugLogsFolder")}</span>
-        <button
-          type="button"
-          class="action"
-          onclick={() => void revealItemInDir(debugStatus!.userDir)}
-        >
-          {t("settings.debugLogsOpenFolder")}
-        </button>
+        <code>{debugStatus.userDir}</code>
       </div>
       {#if debugStatus.daemonDir !== debugStatus.userDir && debugStatus.daemonDirWritable}
         <div class="row">
-          <span>{t("settings.debugLogsFolder")}</span>
-          <button
-            type="button"
-            class="action"
-            onclick={() => void revealItemInDir(debugStatus!.daemonDir)}
-          >
-            {t("settings.debugLogsOpenDaemonFolder")}
-          </button>
+          <span>{t("settings.debugLogsDaemonFolder")}</span>
+          <code>{debugStatus.daemonDir}</code>
         </div>
       {/if}
     {/if}
