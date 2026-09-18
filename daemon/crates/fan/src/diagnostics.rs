@@ -778,8 +778,14 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
 
     // A value the channel is demonstrably not already at, so that reading it
     // back means something. Which side it moves to does not matter, only
-    // that it differs - and it is in force for milliseconds, far below the
-    // driver's 90 s keep-alive, so no fan has time to react to it.
+    // that it differs. The write itself is in force for milliseconds, far
+    // below the driver's 90 s keep-alive - but on a board whose pwm1
+    // genuinely holds a setpoint (the Pass case below), that is enough for
+    // the EC to start chasing it, and `dev/FINDINGS.md` documents the EC
+    // taking up to ~120 s to reclaim control after the mode switches back.
+    // The restore below cancels the driver's own re-assert immediately;
+    // the EC's own settling time afterwards is real hardware behaviour
+    // this can't shorten, not a sign the restore failed.
     let probe_value = probe_value(original_pwm);
 
     // Manual mode, then a value that is not the one already there.
@@ -788,8 +794,20 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
         .and_then(|()| fs::read_to_string(pwm));
 
     // Restore before interpreting anything, so an early return can't leave
-    // the fans under our control.
-    let _ = fs::write(pwm, original_pwm);
+    // the fans under our control. If the original mode was auto, this needs
+    // the same fix as `control::apply`'s `Auto` arm: on a board whose
+    // driver auto path never resets the EC's setpoint itself, writing
+    // `pwm1_enable = 2` alone only cancels the keep-alive and leaves the
+    // fans pinned at `probe_value` until the mode is changed by hand.
+    // `original_pwm` cannot fix this either - it was read while already in
+    // auto, so it is a measurement, not a setpoint. So: the
+    // `HP_FAN_SPEED_AUTOMATIC` sentinel first, exactly as `apply` does,
+    // whenever the original mode was auto; otherwise put back the setpoint
+    // that was really there.
+    // The pwm1 write is best-effort either way - e.g. a read-only pwm1
+    // during a permission-denied test - so only the enable write, the one
+    // that actually changes mode, decides whether restoration succeeded.
+    let _ = fs::write(pwm, if original_mode == "2" { "0" } else { original_pwm });
     let restored = fs::write(enable, original_mode);
 
     let (status, detail) = match result {
@@ -1496,16 +1514,45 @@ mod tests {
         let _acpi = crate::testenv::real();
         let dir = fixture("write");
         write(&dir, "pwm1", "128\n");
+        write(&dir, "pwm1_enable", "1\n");
+
+        let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None);
+        assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Pass);
+        // Manual mode, and the same speed, exactly as before.
+        assert_eq!(
+            fs::read_to_string(dir.join("pwm1_enable")).unwrap().trim(),
+            "1"
+        );
+        assert_eq!(fs::read_to_string(dir.join("pwm1")).unwrap().trim(), "128");
+    }
+
+    /// The bug this check's *restore* step had: when the mode under test
+    /// was auto, it wrote back the pre-test `pwm1` reading - a measurement,
+    /// not a setpoint - then flipped `pwm1_enable` back to 2. On a board
+    /// whose driver auto path does not reset the EC itself (see `0eedc3d`,
+    /// which fixed the same bug in `control::apply`), that leaves the fans
+    /// pinned at the probe value until the mode is changed by hand, even
+    /// though the checker reports success and has already finished.
+    #[test]
+    fn the_write_test_releases_the_ec_via_the_sentinel_when_restoring_to_auto() {
+        // Reads the ACPI interface: no redirection may run under it.
+        let _acpi = crate::testenv::real();
+        let dir = fixture("write-auto-restore");
+        write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
         let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None);
         assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Pass);
-        // Automatic mode, and the same speed, exactly as before.
         assert_eq!(
             fs::read_to_string(dir.join("pwm1_enable")).unwrap().trim(),
             "2"
         );
-        assert_eq!(fs::read_to_string(dir.join("pwm1")).unwrap().trim(), "128");
+        assert_eq!(
+            fs::read_to_string(dir.join("pwm1")).unwrap().trim(),
+            "0",
+            "pwm1 must be released to the HP_FAN_SPEED_AUTOMATIC sentinel, \
+             not left at the pre-test reading"
+        );
     }
 
     /// The bug this check had for its whole life: it wrote back the value

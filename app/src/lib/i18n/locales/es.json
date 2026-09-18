@@ -673,7 +673,7 @@
     "runCheck": "Comprobar compatibilidad con el driver",
     "running": "Comprobando...",
     "allowWrites": "Probar también que el ventilador acepta escrituras",
-    "allowWritesHint": "Reescribe el valor que ya estaba puesto y restaura el modo anterior, así que ningún ventilador cambia de velocidad. Requiere que el daemon corra como root.",
+    "allowWritesHint": "Escribe un valor distinto al que ya estaba puesto y restaura el modo anterior. Si el driver realmente hace llegar ese valor a los ventiladores, pueden subir de revoluciones durante hasta un par de minutos antes de volver al modo automático - normal, no un fallo. Requiere que el daemon corra como root.",
     "viewResult": "Resultado",
     "resultDriver": "Resultado",
     "checkRgb": "Probar RGB del teclado",

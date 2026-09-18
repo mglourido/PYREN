@@ -673,7 +673,7 @@
     "runCheck": "Check driver compatibility",
     "running": "Checking...",
     "allowWrites": "Also test that the fan accepts writes",
-    "allowWritesHint": "Rewrites the value already set and restores the previous mode, so no fan changes speed. Needs the daemon to be running as root.",
+    "allowWritesHint": "Writes a value different from the one already set, then restores the previous mode. On a driver where that value genuinely reaches the fans, they can ramp up for up to a couple of minutes before settling back to auto - normal, not a fault. Needs the daemon to be running as root.",
     "viewResult": "Result",
     "resultDriver": "Driver compatibility result",
     "checkRgb": "Test keyboard RGB",
