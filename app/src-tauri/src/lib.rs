@@ -956,6 +956,22 @@ const EVENT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 /// anything happened, and would still be up to two seconds late.
 fn watch_daemon_events(app: tauri::AppHandle) {
     std::thread::spawn(move || {
+        // Seed the in-process debug-logging flag from the daemon's
+        // persisted setting before the first long poll, same as
+        // `pyren-osd`'s `poll_until_closed` - otherwise a relaunched app
+        // stays silently off (missing `debug.changed`, which only fires on
+        // the next toggle) until something happens to call
+        // `debug_get_status` first, e.g. the user opening Settings.
+        if let Ok(status) = request_daemon("debug", "getStatus", Value::Null) {
+            if let Some(enabled) = status
+                .get("result")
+                .and_then(|r| r.get("enabled"))
+                .and_then(Value::as_bool)
+            {
+                pyren_core::debuglog::set_enabled(enabled);
+            }
+        }
+
         let mut since: Option<u64> = None;
 
         loop {

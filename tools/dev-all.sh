@@ -101,15 +101,20 @@ fuser -k -TERM 1420/tcp 2>/dev/null &&
     say "  freed port 1420 (a vite dev server was still holding it)"
 
 say "daemon"
-(cd "$ROOT/daemon" && cargo build)
+# --release, not the workspace default: the installed unit runs whatever
+# `install.sh` last put at its ExecStart path, which is always a release
+# build (see install.sh's `src_bin`). Restarting the unit after a plain
+# `cargo build` would leave that path untouched and just relaunch
+# yesterday's binary - answering exactly as it did before, silently.
+(cd "$ROOT/daemon" && cargo build --release)
 
 say "widget"
 (cd "$ROOT/osd" && cargo build)
 
 # The daemon runs from a fixed path, so a fresh binary changes nothing
-# until the service is restarted. Only when the unit is actually
-# installed does this restart it that way; run by hand instead (see
-# --help below), it is root's and a plain user can read its cmdline -
+# until it is both copied there and the service is restarted. Only when
+# the unit is actually installed does this do either; run by hand instead
+# (see --help below), it is root's and a plain user can read its cmdline -
 # world-readable under /proc - without being able to read its cwd, so
 # this one is matched by binary path rather than `stop_leftovers`, and
 # gets the one sudo prompt it actually needs, not the daemon's own.
@@ -126,6 +131,15 @@ fi
 
 if systemctl list-unit-files "$UNIT" >/dev/null 2>&1 &&
     systemctl cat "$UNIT" >/dev/null 2>&1; then
+    # Read back from the unit itself, not assumed as /usr/local/bin: a
+    # user who installed with `install.sh --prefix /usr` restarts a
+    # binary at a different path, and copying to the wrong one would
+    # leave the unit exactly as stale as not copying at all.
+    exec_path=$(systemctl cat "$UNIT" 2>/dev/null | sed -n 's/^ExecStart=//p' | head -1)
+    if [ -n "$exec_path" ]; then
+        say "installing the fresh build over $exec_path (needs root)"
+        sudo install -Dm755 "$ROOT/daemon/target/release/pyren-daemon" "$exec_path"
+    fi
     say "restarting $UNIT (needs root)"
     sudo systemctl restart "$UNIT"
 else
