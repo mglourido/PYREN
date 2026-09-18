@@ -986,6 +986,13 @@ export type InstallerRequest = {
   action: InstallerAction;
   preferHooks?: boolean;
   force?: boolean;
+  /**
+   * Build `hp-wmi.c` exactly as upstream ships it - no measured-RPM
+   * parameters, no rounded PWM/RPM conversions, no configurable floor, no
+   * experimental board id. For a laptop where one of Pyren's patches turns
+   * out to misbehave.
+   */
+  skipPatches?: boolean;
   /** Anything but `true` leaves `apply` a dry run. */
   confirm?: boolean;
   /**

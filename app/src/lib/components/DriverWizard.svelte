@@ -93,6 +93,7 @@
   let autoError = $state<string | null>(null);
   let preferHooks = $state(false);
   let force = $state(false);
+  let skipPatches = $state(false);
   let cpuMaxRpm = $state<string>("");
   let gpuMaxRpm = $state<string>("");
   let experimentalBoard = $state<string>("");
@@ -215,10 +216,14 @@
     auto,
     preferHooks,
     force,
-    cpuMaxRpm: auto ? null : rpm(cpuMaxRpm),
-    gpuMaxRpm: auto ? null : rpm(gpuMaxRpm),
-    experimentalBoard: auto ? null : experimentalBoard.trim() || null,
-    boardTable: auto ? null : boardTable,
+    skipPatches,
+    // Unpatched means nothing patches the source, so a ceiling or board id
+    // typed in would be silently ignored - not sent, rather than sent and
+    // dropped.
+    cpuMaxRpm: auto || skipPatches ? null : rpm(cpuMaxRpm),
+    gpuMaxRpm: auto || skipPatches ? null : rpm(gpuMaxRpm),
+    experimentalBoard: auto || skipPatches ? null : experimentalBoard.trim() || null,
+    boardTable: auto || skipPatches ? null : boardTable,
     skipSteps,
   }));
 
@@ -234,7 +239,7 @@
    * dry run away, which is the property that matters: the report on screen
    * must always be the report for what would now run.
    */
-  const planKey = $derived(JSON.stringify({ action, preferHooks, force }));
+  const planKey = $derived(JSON.stringify({ action, preferHooks, force, skipPatches }));
 
   /** A driver action only; the service is installed by the panel above. */
   const isDriverAction = $derived(
@@ -622,6 +627,10 @@
 
         {#if auto}
           {#if autoError}<p class="notice err">{autoError}</p>{/if}
+        {:else if skipPatches}
+          <!-- Nothing patches the source when unpatched, so a ceiling or an
+               experimental board id would be typed in and then silently
+               ignored - the fields are hidden instead. -->
         {:else}
           <div class="options">
             <div class="rpm">
@@ -714,6 +723,18 @@
             <span>
               <strong>{t("installer.force")}</strong>
               <em>{t("installer.forceHint")}</em>
+            </span>
+          </label>
+
+          <label class="switch">
+            <Toggle
+              checked={skipPatches}
+              onchange={(v) => (skipPatches = v)}
+              ariaLabel={t("installer.skipPatches")}
+            />
+            <span>
+              <strong>{t("installer.skipPatches")}</strong>
+              <em>{t("installer.skipPatchesHint")}</em>
             </span>
           </label>
         </div>

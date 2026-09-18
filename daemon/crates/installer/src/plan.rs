@@ -131,6 +131,12 @@ pub struct PlanOptions {
     /// Proceed on hardware that isn't a recognised HP gaming laptop, or
     /// where the driver appears unnecessary. Never set by default.
     pub force: bool,
+    /// Build `hp-wmi.c` exactly as upstream ships it: no measured-RPM
+    /// parameters, no rounded PWM/RPM conversions, no configurable floor,
+    /// no experimental board id. An escape hatch for a laptop where one of
+    /// Pyren's patches turns out to misbehave - the stock driver for this
+    /// board minus nothing Pyren added.
+    pub skip_patches: bool,
 }
 
 pub fn plan(env: &Environment, action: Action, options: PlanOptions) -> Plan {
@@ -277,38 +283,54 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         ));
     }
 
+    if options.skip_patches {
+        warnings.push(msg!(
+            "installer.warn.skipPatches",
+            "Installing without Pyren's patches: no measured-RPM parameters, no rounded \
+             PWM/RPM conversions, no configurable fan floor, and no experimental board id. \
+             This is the upstream hp-wmi for this board, unchanged - useful when one of \
+             Pyren's patches turns out to misbehave on this laptop, but calibration and the \
+             fan floor override will not work afterwards."
+        ));
+    }
+
     let dkms_src = format!("/usr/src/{DKMS_NAME}-{DKMS_VERSION}");
     // Staging comes first so that everything after it works on the copy
     // under /usr/src: the tree the sources are read from - this repository's
     // `driver/`, or an installed /usr/share/pyren/driver - is never written
     // to, so it stays a pristine snapshot of upstream and a second install
     // never starts from the first one's output.
-    let mut steps = vec![
-        Step::internal(
-            "stage-source",
-            msg!(
-                "installer.step.stage-source",
-                { "path" => dkms_src.clone() },
-                "Copy the driver sources and dkms.conf to {path}"
-            ),
+    let mut steps = vec![Step::internal(
+        "stage-source",
+        msg!(
+            "installer.step.stage-source",
+            { "path" => dkms_src.clone() },
+            "Copy the driver sources and dkms.conf to {path}"
         ),
-        Step::internal(
+    )];
+
+    // Skipped rather than made a no-op step: a plan lists what will run,
+    // and a "patch" step that patches nothing would misdescribe the build
+    // that follows it.
+    if !options.skip_patches {
+        steps.push(Step::internal(
             "patch-source",
             msg!(
                 "installer.step.patch-source",
                 { "path" => dkms_src.clone() },
                 "Patch the staged source under {path} (fan ceilings, and any experimental board id)"
             ),
+        ));
+    }
+
+    steps.push(Step::internal(
+        "backup-driver",
+        msg!(
+            "installer.step.backup-driver",
+            "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so \
+             depmod picks the new one unambiguously"
         ),
-        Step::internal(
-            "backup-driver",
-            msg!(
-                "installer.step.backup-driver",
-                "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so \
-                 depmod picks the new one unambiguously"
-            ),
-        ),
-    ];
+    ));
 
     // A machine that was installed one way and is being installed the
     // other keeps working either way - both mechanisms rebuild from the
@@ -1227,6 +1249,35 @@ mod tests {
         ] {
             assert!(plan(&ready_env(), action, PlanOptions::default()).needs_root);
         }
+    }
+
+    /// The escape hatch for a laptop where a Pyren patch misbehaves: the
+    /// plan must not even list a patch step, and must say why.
+    #[test]
+    fn skip_patches_omits_the_patch_step_and_warns() {
+        let options = PlanOptions {
+            skip_patches: true,
+            ..PlanOptions::default()
+        };
+        let plan = plan(&ready_env(), Action::InstallDriver, options);
+        assert!(plan.is_runnable());
+        assert!(!ids(&plan).contains(&"patch-source"));
+        assert!(ids(&plan).contains(&"stage-source"));
+        assert!(ids(&plan).contains(&"backup-driver"));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.skipPatches"));
+    }
+
+    #[test]
+    fn without_skip_patches_the_patch_step_is_still_there() {
+        let plan = plan(&ready_env(), Action::InstallDriver, PlanOptions::default());
+        assert!(ids(&plan).contains(&"patch-source"));
+        assert!(!plan
+            .warnings
+            .iter()
+            .any(|w| w.key == "installer.warn.skipPatches"));
     }
 
     #[test]

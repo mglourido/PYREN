@@ -13,7 +13,7 @@
 //! |---|---|---|
 //! | `installer.inspect` | none | what this machine has, and whether the patch is needed |
 //! | `installer.autodetect` | `{ probeEc? }` | the install's inputs, worked out from the machine |
-//! | `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings |
+//! | `installer.plan` | `{ action, preferHooks?, force?, skipPatches? }` | ordered steps, blockers, warnings |
 //! | `installer.apply` | as above plus `confirm`, `auto`, `skipSteps`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | what was done (dry run unless `confirm`) |
 //!
 //! `auto` is what the wizard's install button sends: it fills in every
@@ -69,6 +69,8 @@ struct PlanRequest {
     prefer_hooks: bool,
     #[serde(default)]
     force: bool,
+    #[serde(default)]
+    skip_patches: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +81,8 @@ struct ApplyRequest {
     prefer_hooks: bool,
     #[serde(default)]
     force: bool,
+    #[serde(default)]
+    skip_patches: bool,
     /// Must be explicitly true to touch the system. Anything else is a
     /// dry run, so a mis-sent message cannot replace a kernel module.
     #[serde(default)]
@@ -108,6 +112,7 @@ impl From<&PlanRequest> for PlanOptions {
         Self {
             prefer_hooks: request.prefer_hooks,
             force: request.force,
+            skip_patches: request.skip_patches,
         }
     }
 }
@@ -227,6 +232,7 @@ impl Module for InstallerModule {
                 let options = PlanOptions {
                     prefer_hooks: request.prefer_hooks,
                     force: request.force,
+                    skip_patches: request.skip_patches,
                 };
                 let plan = plan::plan(&env, request.action, options);
 

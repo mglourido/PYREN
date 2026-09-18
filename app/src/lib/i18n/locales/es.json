@@ -1010,6 +1010,8 @@
     "preferHooksHint": "Usa el hook de kernel de la distribución en lugar de DKMS, incluso donde DKMS está disponible.",
     "force": "Forzar",
     "forceHint": "Continuar aunque el control del ventilador ya funcione, o aunque el equipo no sea un portátil gaming de HP reconocido. Rara vez es lo correcto.",
+    "skipPatches": "Instalar controlador sin parches",
+    "skipPatchesHint": "Compila el hp-wmi tal como lo publica el proyecto original: sin parámetros de RPM medida, sin redondeo en las conversiones PWM/RPM, sin suelo de ventilador configurable. Úsalo si el controlador parcheado da problemas en este portátil. La calibración y el suelo del ventilador dejarán de funcionar después.",
     "maxRpm": "Techo del ventilador",
     "maxRpmHint": "Las RPM que el controlador debe tomar como velocidad máxima. En blanco conserva su propio valor de reserva, que es una suposición. Ejecuta antes la calibración del ventilador para medirlo.",
     "maxRpmMeasured": "La calibración midió {rpm} rpm en esta máquina.",
@@ -1106,7 +1108,8 @@
       "joinGroup": "Añade a cada usuario que deba controlar este equipo al grupo «{group}»: sudo usermod -aG {group} $USER (luego cierra sesión y vuelve a entrar).",
       "boardMissing": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}) y aquí hp-wmi está cargado, y aun así no hay pwm1. El controlador de serie no reconoció esta placa, que es justo el caso para el que existen el controlador parcheado y el id de tu placa en la tabla correcta. Si el firmware después acepta una escritura al ventilador solo se sabe probándolo.",
       "noHpWmi": "El kernel {kernel} trae control manual del ventilador de serie (desde {major}.{minor}), pero aquí hp-wmi no está cargado siquiera, así que nada indica que este sea uno de los portátiles para los que sirve ninguno de los dos controladores. Es poco probable que instalarlo ayude.",
-      "reloadDropsFanControl": "hp-wmi se descarga y se vuelve a cargar, así que el control de ventiladores, las teclas del portátil y el perfil del firmware desaparecen un momento. Mientras tanto los ventiladores siguen con la curva del propio firmware."
+      "reloadDropsFanControl": "hp-wmi se descarga y se vuelve a cargar, así que el control de ventiladores, las teclas del portátil y el perfil del firmware desaparecen un momento. Mientras tanto los ventiladores siguen con la curva del propio firmware.",
+      "skipPatches": "Instalando sin los parches de Pyren: sin parámetros de RPM medida, sin redondeo en las conversiones PWM/RPM, sin suelo de ventilador configurable y sin id de placa experimental. Es el hp-wmi original para esta placa, sin cambios — útil cuando uno de los parches de Pyren da problemas en este portátil, pero la calibración y el suelo del ventilador dejarán de funcionar después."
     },
     "blocker": {
       "alreadyWorking": "El control de ventiladores ya está disponible; nada que instalar.",
