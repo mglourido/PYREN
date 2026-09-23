@@ -210,6 +210,9 @@ struct State {
 /// What a hotkey press does. Supplied by the daemon binary.
 pub type Action = Arc<dyn Fn(&KeyPress) + Send + Sync>;
 
+#[cfg(test)]
+type DeviceOpener = Arc<dyn Fn() -> Result<Vec<devices::Device>, Unavailable> + Send + Sync>;
+
 /// Cloning shares one module: every clone talks to the same state, the same
 /// watcher thread and the same config file. The daemon keeps one to wire up
 /// the action and registers another.
@@ -220,8 +223,7 @@ pub struct HotkeyModule {
     caught: Arc<Condvar>,
     store: ConfigStore,
     #[cfg(test)]
-    device_opener:
-        Option<Arc<dyn Fn() -> Result<Vec<devices::Device>, Unavailable> + Send + Sync>>,
+    device_opener: Option<DeviceOpener>,
 }
 
 impl Default for HotkeyModule {
@@ -249,16 +251,14 @@ impl HotkeyModule {
     #[cfg(test)]
     fn with_store_and_opener(
         store: ConfigStore,
-        opener: Arc<dyn Fn() -> Result<Vec<devices::Device>, Unavailable> + Send + Sync>,
+        opener: DeviceOpener,
     ) -> Self {
         Self::with_store_inner(store, Some(opener))
     }
 
     fn with_store_inner(
         store: ConfigStore,
-        #[cfg(test)] opener: Option<
-            Arc<dyn Fn() -> Result<Vec<devices::Device>, Unavailable> + Send + Sync>,
-        >,
+        #[cfg(test)] opener: Option<DeviceOpener>,
     ) -> Self {
         let loaded = store.load::<HotkeyConfig>("hotkey");
         match &loaded.outcome {

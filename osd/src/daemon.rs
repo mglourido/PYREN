@@ -32,7 +32,8 @@ pub enum Message {
         refusal: Option<String>,
     },
     /// The mode is this now - from the daemon at startup, or after a click.
-    Mode(Mode),
+    Mode(ModeUpdate),
+    ResetModeGeneration,
     /// The fan mode and what this machine can do with it - from
     /// `fan.getStatus` on reconnect, and from the reply to a click. The
     /// widget needs `switch_mode`/`set_speed` to know which of the four
@@ -57,6 +58,36 @@ pub enum Message {
     /// on screen, not in a journal the user is not reading.
     Unreachable(String),
     Reachable,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ModeUpdate {
+    pub mode: Mode,
+    pub generation: Option<u64>,
+}
+
+#[derive(Default)]
+pub struct ModeTracker {
+    last_generation: Option<u64>,
+}
+
+impl ModeTracker {
+    pub fn accepts(&mut self, update: ModeUpdate) -> bool {
+        match update.generation {
+            Some(generation) if self.last_generation.is_some_and(|last| generation <= last) => {
+                false
+            }
+            Some(generation) => {
+                self.last_generation = Some(generation);
+                true
+            }
+            None => self.last_generation.is_none(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.last_generation = None;
+    }
 }
 
 /// Something the widget wants done.
@@ -104,7 +135,10 @@ pub fn start(events: async_channel::Sender<Message>) -> mpsc::Sender<Command> {
 
 fn set_mode(mode: Mode) -> Message {
     match client::call("power", "setMode", json!({ "mode": mode.id() })) {
-        Ok(_) => Message::Mode(mode),
+        Ok(_) => Message::Mode(current_mode().unwrap_or(ModeUpdate {
+            mode,
+            generation: None,
+        })),
         Err(e) => Message::Refused(e.to_string()),
     }
 }
@@ -211,7 +245,15 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
                 // on to its predecessor's sequence would mean waiting for a
                 // number the new one will not reach for hours.
                 since = match (since, seq) {
-                    (Some(previous), Some(seq)) if seq < previous => Some(seq),
+                    (Some(previous), Some(seq)) if seq < previous => {
+                        if events.send_blocking(Message::ResetModeGeneration).is_err() {
+                            return;
+                        }
+                        if push_state(events).is_none() {
+                            return;
+                        }
+                        Some(seq)
+                    }
                     (previous, seq) => seq.or(previous),
                 };
 
@@ -250,6 +292,9 @@ fn poll_until_closed(events: &async_channel::Sender<Message>) {
                     return;
                 }
                 connected = false;
+                if events.send_blocking(Message::ResetModeGeneration).is_err() {
+                    return;
+                }
                 // Start from "now" on reconnect: the key presses that
                 // happened while the daemon was down are not worth
                 // flashing a widget for.
@@ -311,7 +356,7 @@ fn interpret(event: &Value) -> Option<Message> {
                 refusal,
             })
         }
-        "power.mode" => Some(Message::Mode(Mode::parse(payload.get("mode")?.as_str()?)?)),
+        "power.mode" => mode_update(payload).map(Message::Mode),
         "fan.mode" => {
             let mode = FanMode::parse(payload.get("mode")?.as_str()?)?;
             let manual_percent = payload
@@ -333,9 +378,16 @@ fn interpret(event: &Value) -> Option<Message> {
 /// Asked on every reconnect rather than remembered, because the app, the
 /// supervisor and `pyren-ctl` can all have moved the mode while this
 /// process was doing nothing.
-fn current_mode() -> Option<Mode> {
+fn current_mode() -> Option<ModeUpdate> {
     let state = client::call("power", "getState", Value::Null).ok()?;
-    Mode::parse(state.get("mode")?.as_str()?)
+    mode_update(&state)
+}
+
+fn mode_update(state: &Value) -> Option<ModeUpdate> {
+    Some(ModeUpdate {
+        mode: Mode::parse(state.get("mode")?.as_str()?)?,
+        generation: state.get("generation").and_then(Value::as_u64),
+    })
 }
 
 /// The fan mode the machine is in and what it can do with it, asked on
@@ -431,9 +483,58 @@ mod tests {
             "power.mode",
             json!({ "mode": "unlimited", "source": "hotkey" }),
         )) {
-            Some(Message::Mode(mode)) => assert_eq!(mode, Mode::Unlimited),
+            Some(Message::Mode(update)) => assert_eq!(update.mode, Mode::Unlimited),
             other => panic!("expected a mode, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_late_power_commit_cannot_move_the_highlight_backwards() {
+        // Power can commit A, pause before publish, then commit and publish
+        // B before A resumes. The event stream consequently carries B, A.
+        let mut displayed = Mode::Balanced;
+        let mut tracker = ModeTracker::default();
+        for (mode, generation) in [("performance", 2), ("eco", 1)] {
+            let event = event(
+                "power.mode",
+                json!({ "mode": mode, "generation": generation }),
+            );
+            if let Some(Message::Mode(update)) = interpret(&event) {
+                if tracker.accepts(update) {
+                    displayed = update.mode;
+                }
+            }
+        }
+        assert_eq!(displayed, Mode::Performance);
+    }
+
+    #[test]
+    fn mode_tracker_accepts_first_and_ordered_commits_but_rejects_repeats() {
+        let mut tracker = ModeTracker::default();
+        let update = |mode, generation| ModeUpdate {
+            mode,
+            generation: Some(generation),
+        };
+        assert!(tracker.accepts(update(Mode::Eco, 1)));
+        assert!(tracker.accepts(update(Mode::Performance, 2)));
+        assert!(!tracker.accepts(update(Mode::Eco, 2)));
+        assert!(!tracker.accepts(update(Mode::Eco, 1)));
+    }
+
+    #[test]
+    fn seeded_mode_uses_the_authoritative_generation_and_resets_for_a_new_daemon() {
+        let seed = mode_update(&json!({ "mode": "performance", "generation": 8 })).unwrap();
+        let mut tracker = ModeTracker::default();
+        assert!(tracker.accepts(seed));
+        assert!(!tracker.accepts(ModeUpdate {
+            mode: Mode::Eco,
+            generation: Some(7)
+        }));
+        tracker.reset();
+        assert!(tracker.accepts(ModeUpdate {
+            mode: Mode::Eco,
+            generation: Some(0)
+        }));
     }
 
     /// A fan-mode change from the app or the CLI moves the second row's

@@ -26,7 +26,7 @@ mod socket;
 pub use debug_module::DebugModule;
 pub use events::{Batch, Event, EventBus};
 pub use msg::Msg;
-pub use socket::{serve_unix_socket, socket_group, Audience};
+pub use socket::{acquire_daemon_instance, serve_unix_socket, socket_group, Audience, DaemonInstanceLock};
 
 /// What kind of failure this is, as it appears on the wire.
 ///

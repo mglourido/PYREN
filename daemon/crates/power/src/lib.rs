@@ -62,6 +62,8 @@ use serde_json::{json, Value};
 
 #[cfg(test)]
 static POWER_ENV_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+type BeforePublish = Arc<dyn Fn(PowerMode) + Send + Sync>;
 
 pub use auto::{AutoConfig, AutoInputs, AutoSwitcher, HeatLatch, Sensors};
 pub use backend::{ApplyReport, BackendState};
@@ -194,9 +196,9 @@ pub struct PowerConfig {
 pub struct Announcer(Arc<OnceLock<Arc<EventBus>>>);
 
 impl Announcer {
-    fn publish(&self, mode: PowerMode, source: &str) {
+    fn publish(&self, mode: PowerMode, source: &str, generation: u64) {
         if let Some(bus) = self.0.get() {
-            bus.publish("power.mode", json!({ "mode": mode, "source": source }));
+            bus.publish("power.mode", json!({ "mode": mode, "source": source, "generation": generation }));
         }
     }
 
@@ -231,6 +233,7 @@ impl Cycled {
 #[derive(Debug)]
 struct State {
     mode: PowerMode,
+    mode_generation: u64,
     config: PowerConfig,
     switcher: AutoSwitcher,
     /// When the user last set a mode by hand; the supervisor stays out of
@@ -284,6 +287,8 @@ pub struct PowerModule {
     /// follows - so a module a test has dropped must not keep doing that to
     /// whichever fixture the next test put in place.
     _alive: Arc<()>,
+    #[cfg(test)]
+    before_publish: Arc<Mutex<Option<BeforePublish>>>,
 }
 
 impl PowerModule {
@@ -367,6 +372,7 @@ impl PowerModule {
 
         let state = Arc::new(Mutex::new(State {
             mode,
+            mode_generation: 0,
             config,
             switcher: AutoSwitcher::default(),
             manual_override_at: None,
@@ -402,6 +408,8 @@ impl PowerModule {
             announce,
             sensors,
             _alive: alive,
+            #[cfg(test)]
+            before_publish: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -430,6 +438,13 @@ impl PowerModule {
     /// The mode the machine is in.
     pub fn mode(&self) -> PowerMode {
         lock(&self.state).mode
+    }
+
+    /// Mode and commit generation from one snapshot, for subscribers that
+    /// must not regress if an older publication arrives late.
+    pub fn mode_snapshot(&self) -> (PowerMode, u64) {
+        let state = lock(&self.state);
+        (state.mode, state.mode_generation)
     }
 
     /// Steps to the next mode, as the laptop's performance key does.
@@ -491,8 +506,10 @@ impl PowerModule {
         let took_effect = !report.is_empty();
         if took_effect {
             state.mode = mode;
+            state.mode_generation = state.mode_generation.checked_add(1).expect("power generation exhausted");
             state.config.mode = Some(mode);
         }
+        let generation = state.mode_generation;
         if manual {
             state.manual_override_at = Some(Instant::now());
             state.switcher.reset();
@@ -504,7 +521,13 @@ impl PowerModule {
         // state is recorded: a listener's first reaction is to ask for the
         // state, and it must not race with this.
         if took_effect {
-            self.announce.publish(mode, source);
+            #[cfg(test)]
+            let before_publish = self.before_publish.lock().unwrap().clone();
+            #[cfg(test)]
+            if let Some(hook) = before_publish {
+                hook(mode);
+            }
+            self.announce.publish(mode, source, generation);
         }
         report
     }
@@ -530,6 +553,7 @@ impl PowerModule {
 
         json!({
             "mode": state.mode,
+            "generation": state.mode_generation,
             "backend": backend,
             "limits": {
                 "available": self.limits.has_limits(),
@@ -961,6 +985,8 @@ fn supervise_once(
         guard.record_apply(&report);
         if !report.is_empty() {
             guard.mode = mode;
+            guard.mode_generation = guard.mode_generation.checked_add(1).expect("power generation exhausted");
+            let generation = guard.mode_generation;
             log_info!("power auto-switch -> {mode:?} ({})", decision.reason);
             guard.last_auto_switch = Some(decision.reason);
             // Only worth a disk write when the mode is meant to survive
@@ -975,7 +1001,7 @@ fn supervise_once(
             // it is most likely to be sitting there showing the wrong
             // one - the supervisor switches while the user watches.
             drop(guard);
-            announce.publish(mode, "auto");
+            announce.publish(mode, "auto", generation);
         } else {
             guard.last_auto_switch = Some(msg!(
                 "power.autoSwitch.failed",
@@ -1070,6 +1096,8 @@ fn watch_once(
     // is left alone - see `watch` for why pushing it back is a loop.
     let envelope = apply_envelope(mode, &mut guard.config, paths);
     guard.mode = mode;
+    guard.mode_generation = guard.mode_generation.checked_add(1).expect("power generation exhausted");
+    let generation = guard.mode_generation;
     guard.config.mode = Some(mode);
     guard.expected = watch::Knobs {
         platform_profile: Some(profile.clone()),
@@ -1093,7 +1121,7 @@ fn watch_once(
         "power: firmware profile changed to {profile} elsewhere, following {from:?} -> {mode:?}"
     );
     news.iter().for_each(|finding| announce.overridden(finding));
-    announce.publish(mode, "external");
+    announce.publish(mode, "external", generation);
     Some(mode)
 }
 
@@ -1340,6 +1368,7 @@ fn lock(state: &Arc<Mutex<State>>) -> std::sync::MutexGuard<'_, State> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyren_fan::FanModule;
 
     const W: u64 = 1_000_000;
 
@@ -1548,7 +1577,7 @@ mod tests {
             .set(Arc::clone(&bus))
             .expect("a fresh announcer is empty");
 
-        announce.publish(PowerMode::Performance, "hotkey");
+        announce.publish(PowerMode::Performance, "hotkey", 1);
 
         let batch = bus.read_since(0, Duration::from_millis(0));
         assert_eq!(batch.events.len(), 1);
@@ -1557,11 +1586,64 @@ mod tests {
         assert_eq!(batch.events[0].payload["source"], "hotkey");
     }
 
+    #[test]
+    fn a_late_old_power_event_cannot_restore_an_old_fan_profile() {
+        let _guard = POWER_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("pyren-power-event-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("platform_profile"), "balanced").unwrap();
+        std::fs::write(root.join("platform_profile_choices"), "low-power balanced performance").unwrap();
+        for (name, path) in [
+            ("PYREN_PLATFORM_PROFILE", root.join("platform_profile")),
+            ("PYREN_CPU_ROOT", root.join("cpu")),
+            ("PYREN_POWERCAP", root.join("powercap")),
+            ("PYREN_TOOLS_DIR", root.join("bin")),
+            ("PYREN_POWER_SUPPLY", root.join("supply")),
+            ("PYREN_MSR_ROOT", root.join("msr")),
+        ] { std::env::set_var(name, path); }
+        let power = PowerModule::with_store(ConfigStore::at(root.join("power-config")));
+        let fan = FanModule::with_store(ConfigStore::at(root.join("fan-config")));
+        let bus = Arc::new(EventBus::new());
+        power.publish_to(Arc::clone(&bus));
+        let fan_listener = fan.clone();
+        bus.subscribe(move |topic, payload| {
+            if topic == "power.mode" {
+                fan_listener.set_active_profile_versioned(
+                    payload["mode"].as_str().unwrap(), payload["generation"].as_u64().unwrap());
+            }
+        });
+        let (initial_mode, initial_generation) = power.mode_snapshot();
+        fan.set_active_profile_versioned(initial_mode.as_str(), initial_generation);
+        let (committed_tx, committed_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        *power.before_publish.lock().unwrap() = Some(Arc::new(move |mode| {
+            if mode == PowerMode::Eco {
+                committed_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+        }));
+        let first = power.clone();
+        let worker = std::thread::spawn(move || first.call("setMode", json!({"mode":"eco"})));
+        committed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        power.call("setMode", json!({"mode":"performance"})).unwrap();
+        assert_eq!(power.call("getState", Value::Null).unwrap()["generation"], 2);
+        assert_eq!(fan.call("getStatus", Value::Null).unwrap()["activeProfile"], "performance");
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(power.mode(), PowerMode::Performance);
+        assert_eq!(fan.call("getStatus", Value::Null).unwrap()["activeProfile"], power.mode().as_str());
+        for name in ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_POWERCAP", "PYREN_TOOLS_DIR", "PYREN_POWER_SUPPLY", "PYREN_MSR_ROOT"] {
+            std::env::remove_var(name);
+        }
+    }
+
     /// `pyren-check` and every test here build a module with nobody
     /// listening. Publishing into that must be a no-op, not a panic.
     #[test]
     fn announcing_with_nobody_listening_does_nothing_at_all() {
-        Announcer::default().publish(PowerMode::Eco, "request");
+        Announcer::default().publish(PowerMode::Eco, "request", 1);
     }
 
     /// The performance key steps through every mode and comes back round.

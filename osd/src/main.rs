@@ -123,6 +123,7 @@ fn main() -> glib::ExitCode {
         // Everything from the daemon crosses into the GTK thread here, and
         // only here.
         glib::spawn_future_local(async move {
+            let mut mode_tracker = daemon::ModeTracker::default();
             while let Ok(message) = receiver.recv().await {
                 pyren_core::debuglog::record(
                     pyren_core::debuglog::Category::Widget,
@@ -135,7 +136,11 @@ fn main() -> glib::ExitCode {
                         changed,
                         refusal,
                     } => ui.pressed(mode, changed, refusal),
-                    Message::Mode(mode) => ui.mode_is(mode),
+                    Message::Mode(update) if mode_tracker.accepts(update) => {
+                        ui.mode_is(update.mode)
+                    }
+                    Message::Mode(_) => {}
+                    Message::ResetModeGeneration => mode_tracker.reset(),
                     Message::FanState {
                         mode,
                         manual_percent,

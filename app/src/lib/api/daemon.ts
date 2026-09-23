@@ -339,10 +339,9 @@ export type NetworkStatus = {
   supported: boolean;
   /** The interface `mode` acts on, e.g. `"wlan0"`. */
   interface: string | null;
-  /** The daemon's own memory of the last `setMode` call - resets to
-   *  `"off"` on restart, it is not a read of the interface (see the
-   *  daemon module doc for why `fq_codel` alone proves nothing). */
-  mode: "off" | "auto";
+  /** Last mode the daemon could verify. An ambiguous tc result followed by
+   *  an inconclusive qdisc read leaves it unknown. */
+  mode: "off" | "auto" | null;
   /** What `tc qdisc show` reports right now, ours or the kernel's own
    *  default - `null` when `interface` is `null` or the read failed. */
   activeQdisc: string | null;

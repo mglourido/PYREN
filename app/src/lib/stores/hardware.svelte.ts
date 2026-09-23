@@ -82,7 +82,7 @@ export type HardwareState = {
   gpuCoreOffset: number;
   gpuMemOffset: number;
   gpuMode: GpuMode;
-  networkMode: NetworkMode;
+  networkMode: NetworkMode | null;
 };
 
 /** Ranges are the ones the reference app exposes on an OMEN 16. */

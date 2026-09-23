@@ -11,6 +11,7 @@
   import Sparkline from "$lib/components/Sparkline.svelte";
   import Toggle from "$lib/components/Toggle.svelte";
   import { t } from "$lib/i18n/index.svelte";
+  import { networkSummaryKey } from "$lib/network/mode";
   import { formatTemp, settings } from "$lib/stores/settings.svelte";
   import { telemetry, tempColor, type Series } from "$lib/stores/telemetry.svelte";
   import { hardware } from "$lib/stores/hardware.svelte";
@@ -214,7 +215,7 @@
         </div>
         <p class="config-label">{t("home.networkBooster")}</p>
         <a class="config-chip" href="/system/network">
-          {t(`common.${hardware.state.networkMode === "off" ? "disabled" : "enabled"}`)}
+          {t(networkSummaryKey(hardware.state.networkMode))}
         </a>
       </section>
 

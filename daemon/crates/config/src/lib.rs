@@ -29,7 +29,10 @@
 //! ```
 
 use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -171,6 +174,14 @@ impl ConfigStore {
     /// that isn't a clean read. Never fails: a daemon that cannot read its
     /// config must still start.
     pub fn load<T: DeserializeOwned + Default>(&self, name: &str) -> Loaded<T> {
+        self.load_inner(name, #[cfg(test)] || {})
+    }
+
+    fn load_inner<T: DeserializeOwned + Default>(
+        &self,
+        name: &str,
+        #[cfg(test)] before_preserve: impl FnOnce(),
+    ) -> Loaded<T> {
         let path = self.path_for(name);
 
         let text = match fs::read_to_string(&path) {
@@ -212,13 +223,48 @@ impl ConfigStore {
                 outcome: LoadOutcome::Loaded,
             },
             Err(e) => {
-                let backup = self.preserve_broken(&path);
-                Loaded {
-                    value: T::default(),
-                    outcome: LoadOutcome::Recovered {
-                        backup,
-                        reason: e.to_string(),
+                #[cfg(test)]
+                before_preserve();
+                // Only the destructive recovery needs the writer lock. The
+                // file may have been replaced since our first read, so read
+                // and classify it again while holding that lock.
+                let _writer = match lock_for_save(&path) {
+                    Ok(guard) => guard,
+                    Err(lock_error) => return Loaded {
+                        value: T::default(),
+                        outcome: LoadOutcome::Recovered {
+                            backup: None,
+                            reason: lock_error.to_string(),
+                        },
                     },
+                };
+                let current = match fs::read_to_string(&path) {
+                    Ok(text) => text,
+                    Err(read_error) if read_error.kind() == std::io::ErrorKind::NotFound => return Loaded {
+                        value: T::default(), outcome: LoadOutcome::Missing,
+                    },
+                    Err(read_error) => return Loaded {
+                        value: T::default(),
+                        outcome: LoadOutcome::Recovered { backup: None, reason: read_error.to_string() },
+                    },
+                };
+                if let Ok(probe) = serde_json::from_str::<VersionProbe>(&current) {
+                    if probe.version > CURRENT_VERSION {
+                        return Loaded { value: T::default(), outcome: LoadOutcome::TooNew { found: probe.version } };
+                    }
+                }
+                match serde_json::from_str::<Versioned<T>>(&current) {
+                    Ok(parsed) => Loaded { value: parsed.inner, outcome: LoadOutcome::Loaded },
+                    Err(current_error) => {
+                        let backup = self.preserve_broken(&path);
+                        Loaded {
+                            value: T::default(),
+                            outcome: LoadOutcome::Recovered {
+                                backup,
+                                reason: if current == text { e.to_string() } else { current_error.to_string() },
+                            },
+                        }
+                    }
                 }
             }
         }
@@ -226,23 +272,38 @@ impl ConfigStore {
 
     /// Writes one namespace atomically.
     pub fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<(), ConfigError> {
+        self.save_inner(name, value, #[cfg(test)] || {})
+    }
+
+    fn save_inner<T: Serialize>(
+        &self,
+        name: &str,
+        value: &T,
+        #[cfg(test)] before_rename: impl FnOnce(),
+    ) -> Result<(), ConfigError> {
         let path = self.path_for(name);
         fs::create_dir_all(&self.root).map_err(|source| ConfigError::Io {
             path: self.root.clone(),
             source,
         })?;
 
+        // A persistent inode shared by every ConfigStore writer makes the
+        // version check and replacement one transaction. Never unlink it:
+        // waiters must not end up locking different inodes.
+        let _save_lock = lock_for_save(&path)?;
+
         // `load` deliberately returns defaults for a file written by a
         // newer build. Check the target again here so a caller cannot write
         // those defaults back and silently downgrade the file.
-        if let Ok(text) = fs::read_to_string(&path) {
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => return Err(ConfigError::Io { path, source }),
+        };
+        if let Some(text) = text {
             if let Ok(probe) = serde_json::from_str::<VersionProbe>(&text) {
                 if probe.version > CURRENT_VERSION {
-                    return Err(ConfigError::FutureVersion {
-                        path,
-                        found: probe.version,
-                        supported: CURRENT_VERSION,
-                    });
+                    return Err(ConfigError::FutureVersion { path, found: probe.version, supported: CURRENT_VERSION });
                 }
             }
         }
@@ -277,6 +338,8 @@ impl ConfigStore {
             })?;
         }
 
+        #[cfg(test)]
+        before_rename();
         fs::rename(&temp, &path).map_err(|source| ConfigError::Io {
             path: path.clone(),
             source,
@@ -288,6 +351,28 @@ impl ConfigStore {
         let backup = path.with_extension("json.bad");
         fs::rename(path, &backup).ok().map(|()| backup)
     }
+}
+
+fn lock_for_save(path: &Path) -> Result<File, ConfigError> {
+    let lock_path = path.with_extension("json.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&lock_path)
+        .map_err(|source| ConfigError::Io { path: lock_path.clone(), source })?;
+    let metadata = lock.metadata().map_err(|source| ConfigError::Io { path: lock_path.clone(), source })?;
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(ConfigError::Io {
+            path: lock_path,
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "config lock must be a regular file owned by this user"),
+        });
+    }
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(ConfigError::Io { path: lock_path, source: std::io::Error::last_os_error() });
+    }
+    Ok(lock)
 }
 
 #[derive(Deserialize)]
@@ -417,6 +502,78 @@ mod tests {
     }
 
     #[test]
+    fn loading_old_corruption_cannot_move_a_concurrent_valid_save() {
+        let first = store("load-save-race");
+        fs::create_dir_all(first.root()).unwrap();
+        fs::write(first.path_for("thing"), "{ broken").unwrap();
+        let second = ConfigStore::at(first.root());
+        let replacement = Sample { name: "new save".into(), ..Sample::default() };
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            first.load_inner::<Sample>("thing", || {
+                read_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+            })
+        });
+        read_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        second.save("thing", &replacement).unwrap();
+        resume_tx.send(()).unwrap();
+        let loaded = worker.join().unwrap();
+        assert_eq!(loaded.outcome, LoadOutcome::Loaded);
+        assert_eq!(loaded.value, replacement);
+        assert_eq!(second.load::<Sample>("thing").value, replacement);
+        assert!(second.path_for("thing").exists());
+    }
+
+    #[test]
+    fn a_panicking_writer_releases_the_persistent_lock() {
+        let store = store("panic-lock");
+        let interrupted = std::panic::catch_unwind(|| {
+            let _ = store.save_inner("thing", &Sample::default(), || panic!("interrupted"));
+        });
+        assert!(interrupted.is_err());
+        store.save("thing", &Sample::default()).unwrap();
+        assert_eq!(store.load::<Sample>("thing").outcome, LoadOutcome::Loaded);
+    }
+
+    #[test]
+    fn lock_holder_subprocess() {
+        let Ok(root) = std::env::var("PYREN_CONFIG_LOCK_CHILD_ROOT") else { return };
+        let root = PathBuf::from(root);
+        let path = root.join("thing.json");
+        let _lock = lock_for_save(&path).unwrap();
+        fs::write(root.join("lock-ready"), "ready").unwrap();
+        loop { std::thread::park(); }
+    }
+
+    #[test]
+    fn a_dead_process_releases_the_persistent_lock() {
+        let store = store("dead-process-lock");
+        fs::create_dir_all(store.root()).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::lock_holder_subprocess"])
+            .env("PYREN_CONFIG_LOCK_CHILD_ROOT", store.root())
+            .spawn().unwrap();
+        let ready = store.root().join("lock-ready");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if !ready.exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not acquire the lock");
+        }
+        let lock_path = store.path_for("thing").with_extension("json.lock");
+        let other = OpenOptions::new().write(true).open(lock_path).unwrap();
+        assert_ne!(unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        store.save("thing", &Sample::default()).unwrap();
+    }
+
+    #[test]
     fn a_file_from_a_newer_build_is_left_untouched() {
         let store = store("future");
         fs::create_dir_all(store.root()).unwrap();
@@ -457,6 +614,38 @@ mod tests {
             "saving fallback defaults silently downgraded a newer config"
         );
         assert_eq!(fs::read_to_string(store.path_for("thing")).unwrap(), original);
+    }
+
+    #[test]
+    fn a_future_writer_between_version_check_and_rename_keeps_its_file() {
+        let store = store("future-race");
+        fs::create_dir_all(store.root()).unwrap();
+        store.save("thing", &Sample::default()).unwrap();
+        let path = store.path_for("thing");
+        let lock_path = path.with_extension("json.lock");
+        let future = format!(r#"{{"version":{},"newField":"keep"}}"#, CURRENT_VERSION + 1);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(lock_path).unwrap();
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&lock);
+            let blocked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0;
+            if blocked {
+                done_tx.send(true).unwrap();
+                assert_eq!(unsafe { libc::flock(fd, libc::LOCK_EX) }, 0);
+            }
+            fs::write(writer_path, future).unwrap();
+            if !blocked {
+                done_tx.send(false).unwrap();
+            }
+        });
+        let result = store.save_inner("thing", &Sample::default(), || {
+            done_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        });
+        writer.join().unwrap();
+        assert!(result.is_ok() || matches!(result, Err(ConfigError::FutureVersion { .. })));
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.contains("\"newField\":\"keep\""), "future config was overwritten: {text}");
     }
 
     #[test]

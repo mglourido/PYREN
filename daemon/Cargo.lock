@@ -46,6 +46,7 @@ dependencies = [
 name = "pyren-config"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
@@ -171,6 +172,7 @@ version = "0.2.0"
 dependencies = [
  "pyren-config",
  "pyren-core",
+ "pyren-fan",
  "serde",
  "serde_json",
 ]

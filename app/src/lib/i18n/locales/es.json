@@ -373,6 +373,7 @@
     "mode": "Modo",
     "descOff": "Supervisa tu consumo total de ancho de banda. No se aplica ningún cambio de cola a tu interfaz de red.",
     "descAuto": "Activa una cola inteligente en tu interfaz de red principal, para que el tráfico sensible a la latencia -juegos, llamadas, navegación- siga respondiendo bien mientras otra cosa satura la conexión.",
+    "descUnknown": "No se pudo determinar el modo de cola actual. Comprueba la cola activa o selecciona de nuevo un modo.",
     "totalBandwidth": "Consumo de ancho de banda total",
     "interface": "Interfaz",
     "activeQueuing": "Cola activa",

@@ -134,23 +134,41 @@ fn qdisc_kind(show_output: &str) -> Option<String> {
 }
 
 fn tc_present() -> bool {
-    pyren_core::process::command(tc_bin())
-        .arg("-Version")
-        .output()
+    pyren_core::process::output(pyren_core::process::command(tc_bin()).arg("-Version"))
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
 fn read_qdisc(interface: &str) -> Option<String> {
-    let output = pyren_core::process::command(tc_bin())
-        .args(["qdisc", "show", "dev", interface])
-        .output()
+    let output = pyren_core::process::output(
+        pyren_core::process::command(tc_bin()).args(["qdisc", "show", "dev", interface]),
+    )
         .ok()?;
     output
         .status
         .success()
         .then(|| qdisc_kind(&String::from_utf8_lossy(&output.stdout)))
         .flatten()
+}
+
+/// A failed command may already have changed the kernel. This read is kept
+/// separate from the best-effort status read so failure never means Off.
+fn observe_mode(interface: &str) -> Option<NetworkMode> {
+    let output = pyren_core::process::output(
+        pyren_core::process::command(tc_bin()).args(["qdisc", "show", "dev", interface]),
+    )
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let kind = qdisc_kind(&String::from_utf8_lossy(&output.stdout));
+    match kind.as_deref() {
+        Some("cake") => Some(NetworkMode::Auto),
+        // fq_codel can also be the kernel default after deletion. Its kind
+        // alone cannot establish which operation produced it.
+        Some("fq_codel") => None,
+        _ => Some(NetworkMode::Off),
+    }
 }
 
 /// Why [`enable_smart_queuing`] could not set a qdisc - distinct from
@@ -171,9 +189,10 @@ enum QdiscFailure {
 fn enable_smart_queuing(interface: &str) -> Result<&'static str, QdiscFailure> {
     let mut failures = Vec::new();
     for qdisc in QDISCS_TO_TRY {
-        let output = pyren_core::process::command(tc_bin())
-            .args(["qdisc", "replace", "dev", interface, "root", qdisc])
-            .output();
+        let output = pyren_core::process::output(
+            pyren_core::process::command(tc_bin())
+                .args(["qdisc", "replace", "dev", interface, "root", qdisc]),
+        );
         match output {
             Ok(out) if out.status.success() => return Ok(qdisc),
             Ok(out) => failures.push(format!(
@@ -196,16 +215,33 @@ fn enable_smart_queuing(interface: &str) -> Result<&'static str, QdiscFailure> {
 /// Best-effort: hands the interface back to whatever qdisc the kernel
 /// would have chosen on its own. "No such file or directory" (nothing to
 /// delete - already the default) is not a failure, it is the goal state.
-fn disable_smart_queuing(interface: &str) {
-    let _ = pyren_core::process::command(tc_bin())
-        .args(["qdisc", "del", "dev", interface, "root"])
-        .output();
+fn disable_smart_queuing(interface: &str) -> Result<(), ModuleError> {
+    let output = pyren_core::process::output(
+        pyren_core::process::command(tc_bin()).args(["qdisc", "del", "dev", interface, "root"]),
+    )
+        .map_err(|e| ModuleError::Failed(format!("could not run tc to remove qdisc: {e}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr);
+    if detail.contains("No such file or directory") {
+        return Ok(());
+    }
+    if detail.contains("Operation not permitted") {
+        return Err(ModuleError::localised(
+            ErrorKind::PermissionDenied,
+            msg!("network.err.needsRoot", { "interface" => interface.to_string() },
+                "changing the qdisc on {interface} needs root"),
+        ));
+    }
+    Err(ModuleError::Failed(format!("tc could not remove the qdisc on {interface}: {}", detail.trim())))
 }
 
 pub struct NetworkModule {
-    /// This daemon's requested/committed transition. The generation gives
-    /// an older `tc` completion a way to notice that a later request owns
-    /// the interface and restore that later request if necessary.
+    /// Serializes every physical qdisc operation through its observation
+    /// and logical commit. An earlier tc process cannot write after a later
+    /// setMode has returned.
+    operation: Mutex<()>,
     mode: Mutex<ModeState>,
     #[cfg(test)]
     before_mode_commit: Mutex<Option<BeforeModeCommit>>,
@@ -214,16 +250,19 @@ pub struct NetworkModule {
 #[derive(Debug, Clone, Copy)]
 struct ModeState {
     requested: NetworkMode,
-    committed: NetworkMode,
+    /// Last mode verified by a successful command or an authoritative read.
+    /// None means the command was ambiguous and the read also failed.
+    committed: Option<NetworkMode>,
     generation: u64,
 }
 
 impl NetworkModule {
     pub fn new() -> Self {
         Self {
+            operation: Mutex::new(()),
             mode: Mutex::new(ModeState {
                 requested: NetworkMode::Off,
-                committed: NetworkMode::Off,
+                committed: Some(NetworkMode::Off),
                 generation: 0,
             }),
             #[cfg(test)]
@@ -232,6 +271,7 @@ impl NetworkModule {
     }
 
     fn status(&self) -> Value {
+        let _operation = self.operation.lock().unwrap_or_else(|p| p.into_inner());
         let interface = default_route_interface(&read_to_string(&route_path()));
         let active_qdisc = interface.as_deref().and_then(read_qdisc);
         let mode = self
@@ -242,7 +282,7 @@ impl NetworkModule {
         json!({
             "supported": tc_present() && interface.is_some(),
             "interface": interface,
-            "mode": mode.as_str(),
+            "mode": mode.map(NetworkMode::as_str),
             "activeQdisc": active_qdisc,
         })
     }
@@ -288,6 +328,7 @@ impl Module for NetworkModule {
                     )
                 })?;
 
+                let operation = self.operation.lock().unwrap_or_else(|p| p.into_inner());
                 let interface = default_route_interface(&read_to_string(&route_path()))
                     .ok_or_else(|| {
                         ModuleError::localised(
@@ -299,26 +340,13 @@ impl Module for NetworkModule {
                         )
                     })?;
 
-                let request = {
+                {
                     let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
                     state.generation = state.generation.wrapping_add(1);
                     state.requested = mode;
-                    state.generation
-                };
-
-                if let Err(error) = apply_mode(&interface, mode) {
-                    let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
-                    if state.generation == request {
-                        state.requested = state.committed;
-                        // Reverting the desired value is itself a new
-                        // intention. A stale reconciler may already have
-                        // sampled the failed value under `request`; changing
-                        // the token prevents it from committing that sample
-                        // after this rollback.
-                        state.generation = state.generation.wrapping_add(1);
-                    }
-                    return Err(error);
                 }
+
+                let outcome = apply_mode(&interface, mode);
 
                 #[cfg(test)]
                 let before_mode_commit = {
@@ -328,29 +356,25 @@ impl Module for NetworkModule {
                         .clone()
                 };
                 #[cfg(test)]
-                if let Some(hook) = before_mode_commit {
+                if let Some(hook) = before_mode_commit.filter(|_| outcome.is_ok()) {
                     hook(mode);
                 }
 
-                // A request can be descheduled after `tc` succeeds. If a
-                // later request has since changed the interface, this old
-                // completion must neither overwrite its logical mode nor
-                // leave its own qdisc as the last external effect. Reapply
-                // the newest request until one generation stays current
-                // across its external operation and state commit.
-                let mut completed = request;
-                loop {
-                    let (generation, requested) = {
-                        let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
-                        if state.generation == completed {
-                            state.committed = state.requested;
-                            break;
+                let observation = outcome.as_ref().err().and_then(|_| observe_mode(&interface));
+                {
+                    let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
+                    match &outcome {
+                        Ok(()) => state.committed = Some(mode),
+                        Err(_) => {
+                            let previous = state.committed;
+                            state.committed = observation;
+                            state.requested = observation.or(previous).unwrap_or(state.requested);
+                            state.generation = state.generation.wrapping_add(1);
                         }
-                        (state.generation, state.requested)
-                    };
-                    apply_mode(&interface, requested)?;
-                    completed = generation;
+                    }
                 }
+                drop(operation);
+                outcome?;
                 Ok(self.status())
             }
 
@@ -361,10 +385,7 @@ impl Module for NetworkModule {
 
 fn apply_mode(interface: &str, mode: NetworkMode) -> Result<(), ModuleError> {
     match mode {
-        NetworkMode::Off => {
-            disable_smart_queuing(interface);
-            Ok(())
-        }
+        NetworkMode::Off => disable_smart_queuing(interface),
         NetworkMode::Auto => enable_smart_queuing(interface)
             .map(|_| ())
             .map_err(|failure| match failure {
@@ -441,6 +462,91 @@ mod tests {
         assert!(path.exists(), "timed out waiting for {}", path.display());
     }
 
+    fn a_blocked_tc_command_does_not_hold_status_forever(mode: &str) {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc replace")
+    if [ "$6" = cake ] && [ -f "$root/block-replace" ]; then
+      : > "$root/started"
+      while [ ! -f "$root/release" ]; do sleep 0.01; done
+      exit 2
+    fi
+    echo fq_codel > "$root/qdisc"; exit 0 ;;
+  "qdisc del")
+    if [ -f "$root/block-delete" ]; then
+      : > "$root/started"
+      while [ ! -f "$root/release" ]; do sleep 0.01; done
+      exit 2
+    fi
+    echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), if mode == "off" { "cake\n" } else { "pfifo_fast\n" }).unwrap();
+        std::fs::write(fx.dir.join(if mode == "off" { "block-delete" } else { "block-replace" }), "").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = Arc::new(NetworkModule::new());
+        let caller = Arc::clone(&module);
+        let requested = mode.to_string();
+        let operation = std::thread::spawn(move || caller.call("setMode", json!({ "mode": requested })));
+        wait_for_path(&fx.dir.join("started"));
+        let reader = Arc::clone(&module);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let status_worker = std::thread::spawn(move || tx.send(reader.call("getStatus", Value::Null)).unwrap());
+        let status_before_release = rx.recv_timeout(std::time::Duration::from_secs(4)).ok();
+        std::fs::write(fx.dir.join("release"), "go").unwrap();
+        let _ = operation.join().unwrap();
+        status_worker.join().unwrap();
+        assert!(status_before_release.is_some(), "getStatus waited for a blocked tc command to be released");
+        std::fs::remove_file(fx.dir.join(if mode == "off" { "block-delete" } else { "block-replace" })).unwrap();
+        module.call("setMode", json!({ "mode": "off" })).unwrap();
+        let recovered = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(recovered["mode"], "off");
+        assert_eq!(recovered["activeQdisc"], "pfifo_fast");
+    }
+
+    #[test]
+    fn blocked_replace_cannot_hold_network_status_forever() {
+        a_blocked_tc_command_does_not_hold_status_forever("auto");
+    }
+
+    #[test]
+    fn blocked_delete_cannot_hold_network_status_forever() {
+        a_blocked_tc_command_does_not_hold_status_forever("off");
+    }
+
+    #[test]
+    fn delete_timeout_after_physical_effect_reconciles_and_allows_next_request() {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; sleep 5; exit 2 ;;
+  "qdisc replace") echo cake > "$root/qdisc"; exit 0 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), "cake\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = NetworkModule::new();
+        assert!(module.call("setMode", json!({ "mode": "off" })).is_err());
+        let observed = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(observed["mode"], "off");
+        assert_eq!(observed["activeQdisc"], "pfifo_fast");
+        module.call("setMode", json!({ "mode": "auto" })).unwrap();
+        let recovered = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(recovered["mode"], "auto");
+        assert_eq!(recovered["activeQdisc"], "cake");
+    }
+
     #[test]
     fn every_attempt_refused_with_eperm_is_permission_denied() {
         let _fx = FakeTc::new("echo 'RTNETLINK answers: Operation not permitted' >&2; exit 2");
@@ -476,6 +582,74 @@ mod tests {
             "if [ \"$6\" = cake ]; then echo 'Error: Specified qdisc kind is unknown.' >&2; exit 2; fi\nexit 0",
         );
         assert_eq!(enable_smart_queuing("wlan0"), Ok("fq_codel"));
+    }
+
+    #[test]
+    fn failed_qdisc_delete_cannot_commit_off() {
+        let fx = FakeTc::new(
+            "case \"$1 $2\" in\n  '-Version ') exit 0 ;;\n  'qdisc show') echo 'qdisc cake 0: root'; exit 0 ;;\n  'qdisc del') echo 'RTNETLINK answers: Operation not permitted' >&2; exit 2 ;;\nesac\nexit 2",
+        );
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = NetworkModule::new();
+        let result = module.call("setMode", json!({ "mode": "off" }));
+        assert!(result.is_err(), "tc refused deletion but setMode reported success");
+        let status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(status["activeQdisc"], "cake");
+        // The fake reports cake on the interface before and after the
+        // refusal; Off cannot be claimed despite the failed request.
+        assert_eq!(status["mode"], "auto");
+        let state = module.mode.lock().unwrap();
+        assert_eq!(Some(state.requested), state.committed);
+    }
+
+    #[test]
+    fn delete_effect_followed_by_error_records_the_observed_off_mode() {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc replace") echo cake > "$root/qdisc"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; echo 'late failure' >&2; exit 2 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = NetworkModule::new();
+        module.call("setMode", json!({"mode":"auto"})).unwrap();
+        assert!(module.call("setMode", json!({"mode":"off"})).is_err());
+        let status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(status["activeQdisc"], "pfifo_fast");
+        assert_eq!(status["mode"], "off");
+    }
+
+    #[test]
+    fn replace_effect_followed_by_timeout_records_the_observed_auto_mode() {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc replace")
+    if [ "$6" = cake ]; then echo cake > "$root/qdisc"; sleep 4; fi
+    exit 2 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = NetworkModule::new();
+        assert!(module.call("setMode", json!({"mode":"auto"})).is_err());
+        let status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(status["activeQdisc"], "cake");
+        assert_eq!(status["mode"], "auto");
     }
 
     const ROUTE_TABLE: &str = "\
@@ -576,20 +750,22 @@ exit 2
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("auto request reaches the pre-commit boundary");
 
-        // This is the later request. It completes while the first caller is
-        // descheduled after its successful tc command and before its commit.
-        let off = module
-            .call("setMode", json!({ "mode": "off" }))
+        // The later request waits for the first operation's physical write
+        // and commit, then becomes the final owner of the qdisc.
+        let second = Arc::clone(&module);
+        let (off_done_tx, off_done_rx) = std::sync::mpsc::channel();
+        let off_worker = std::thread::spawn(move || {
+            off_done_tx.send(second.call("setMode", json!({ "mode": "off" }))).unwrap();
+        });
+        assert!(off_done_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+        release_auto_tx.send(()).unwrap();
+        auto_done_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap();
+        auto.join().unwrap();
+        let off = off_done_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap()
             .expect("later off request succeeds");
+        off_worker.join().unwrap();
         assert_eq!(off["mode"], "off");
         assert_eq!(off["activeQdisc"], "pfifo_fast");
-
-        release_auto_tx.send(()).unwrap();
-        auto_done_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("auto request must not remain blocked")
-            .unwrap();
-        auto.join().unwrap();
         let final_status = module.call("getStatus", Value::Null).unwrap();
         assert_eq!(final_status["activeQdisc"], "pfifo_fast");
         assert_eq!(
@@ -599,7 +775,183 @@ exit 2
     }
 
     #[test]
-    fn a_failed_request_invalidates_a_reconciler_that_sampled_its_generation() {
+    fn repeated_requests_keep_the_observed_qdisc_in_sync() {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc replace") echo cake > "$root/qdisc"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = NetworkModule::new();
+        for mode in ["auto", "auto", "off", "off", "auto"] {
+            let status = module.call("setMode", json!({"mode":mode})).unwrap();
+            assert_eq!(status["mode"], mode);
+            assert_eq!(status["activeQdisc"], if mode == "auto" { "cake" } else { "pfifo_fast" });
+        }
+    }
+
+    #[test]
+    fn later_auto_request_wins_over_paused_off_commit() {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc replace") echo cake > "$root/qdisc"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = Arc::new(NetworkModule::new());
+        module.call("setMode", json!({"mode":"auto"})).unwrap();
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let resume_rx = Arc::new(Mutex::new(resume_rx));
+        *module.before_mode_commit.lock().unwrap() = Some(Arc::new(move |mode| {
+            if mode == NetworkMode::Off {
+                paused_tx.send(()).unwrap();
+                resume_rx.lock().unwrap().recv().unwrap();
+            }
+        }));
+        let first = Arc::clone(&module);
+        let off = std::thread::spawn(move || first.call("setMode", json!({"mode":"off"})));
+        paused_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let second = Arc::clone(&module);
+        let (newer_tx, newer_rx) = std::sync::mpsc::channel();
+        let auto = std::thread::spawn(move || {
+            newer_tx.send(second.call("setMode", json!({"mode":"auto"}))).unwrap();
+        });
+        assert!(newer_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+        resume_tx.send(()).unwrap();
+        off.join().unwrap().unwrap();
+        let newer = newer_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap();
+        auto.join().unwrap();
+        assert_eq!(newer["mode"], "auto");
+        let final_status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(final_status["mode"], "auto");
+        assert_eq!(final_status["activeQdisc"], "cake");
+    }
+
+    #[test]
+    fn later_off_cannot_return_while_older_auto_has_not_written_yet() {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc replace")
+    if mkdir "$root/first" 2>/dev/null; then
+      : > "$root/auto-before-write"
+      n=0
+      while [ ! -f "$root/release-auto" ] && [ "$n" -lt 500 ]; do
+        n=$((n + 1)); sleep 0.01
+      done
+    fi
+    echo cake > "$root/qdisc"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = Arc::new(NetworkModule::new());
+        let first = Arc::clone(&module);
+        let auto = std::thread::spawn(move || first.call("setMode", json!({"mode":"auto"})));
+        wait_for_path(&fx.dir.join("auto-before-write"));
+        let reader = Arc::clone(&module);
+        let (status_tx, status_rx) = std::sync::mpsc::channel();
+        let status_worker = std::thread::spawn(move || {
+            status_tx.send(reader.call("getStatus", Value::Null)).unwrap();
+        });
+        assert!(status_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+        let second = Arc::clone(&module);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let off = std::thread::spawn(move || done_tx.send(second.call("setMode", json!({"mode":"off"}))).unwrap());
+        let returned_while_auto_in_flight = done_rx.recv_timeout(std::time::Duration::from_secs(1)).ok();
+        let returned_early = returned_while_auto_in_flight.is_some();
+        std::fs::write(fx.dir.join("release-auto"), "go").unwrap();
+        auto.join().unwrap().unwrap();
+        let off_result = match returned_while_auto_in_flight {
+            Some(result) => result,
+            None => done_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+        };
+        off_result.unwrap();
+        off.join().unwrap();
+        let in_flight_status = status_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(
+            in_flight_status["activeQdisc"],
+            if in_flight_status["mode"] == "auto" { "cake" } else { "pfifo_fast" },
+        );
+        status_worker.join().unwrap();
+        assert!(!returned_early, "Off returned while an older Auto could still write cake");
+        let status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(status["mode"], "off");
+        assert_eq!(status["activeQdisc"], "pfifo_fast");
+    }
+
+    #[test]
+    fn later_auto_cannot_return_while_older_off_has_not_written_yet() {
+        let fx = FakeTc::new(r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc replace") echo cake > "$root/qdisc"; exit 0 ;;
+  "qdisc del")
+    : > "$root/off-before-write"
+    n=0
+    while [ ! -f "$root/release-off" ] && [ "$n" -lt 500 ]; do
+      n=$((n + 1)); sleep 0.01
+    done
+    echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+esac
+exit 2
+"#);
+        std::fs::write(fx.dir.join("qdisc"), "cake\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+        let module = Arc::new(NetworkModule::new());
+        // A successful initial Auto makes the committed state match cake.
+        module.call("setMode", json!({"mode":"auto"})).unwrap();
+        let first = Arc::clone(&module);
+        let off = std::thread::spawn(move || first.call("setMode", json!({"mode":"off"})));
+        wait_for_path(&fx.dir.join("off-before-write"));
+        let second = Arc::clone(&module);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let auto = std::thread::spawn(move || done_tx.send(second.call("setMode", json!({"mode":"auto"}))).unwrap());
+        let returned_early = done_rx.recv_timeout(std::time::Duration::from_secs(1)).ok();
+        let did_return_early = returned_early.is_some();
+        std::fs::write(fx.dir.join("release-off"), "go").unwrap();
+        off.join().unwrap().unwrap();
+        let auto_result = match returned_early {
+            Some(result) => result,
+            None => done_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+        };
+        auto_result.unwrap();
+        auto.join().unwrap();
+        assert!(!did_return_early, "Auto returned while an older Off could still delete cake");
+        let status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(status["mode"], "auto");
+        assert_eq!(status["activeQdisc"], "cake");
+    }
+
+    #[test]
+    fn a_failed_request_observes_qdisc_after_prior_operation_commits() {
         let fx = FakeTc::new(
             r#"
 root=$(dirname "$0")
@@ -677,13 +1029,12 @@ exit 2
                 .send(second_module.call("setMode", json!({ "mode": "auto" })))
                 .unwrap();
         });
-        wait_for_path(&fx.dir.join("second-ready"));
-
-        // The first caller now sees generation 2 and starts replaying it.
-        // Its fake tc call pauses after that sample while generation 2's
-        // own call fails and rolls requested back to committed Off.
+        // The second request cannot reach tc until the first has committed.
+        assert!(second_done_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err());
         release_first_tx.send(()).unwrap();
-        wait_for_path(&fx.dir.join("third-ready"));
+        first_done_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap();
+        first.join().unwrap();
+        wait_for_path(&fx.dir.join("second-ready"));
         std::fs::write(fx.dir.join("release-second"), "go").unwrap();
         assert!(second_done_rx
             .recv_timeout(std::time::Duration::from_secs(1))
@@ -692,20 +1043,13 @@ exit 2
         second.join().unwrap();
         {
             let state = module.mode.lock().unwrap_or_else(|p| p.into_inner());
-            assert_eq!(state.requested, NetworkMode::Off);
+            assert_eq!(state.requested, NetworkMode::Auto);
             assert_eq!(state.generation, 3);
         }
 
-        std::fs::write(fx.dir.join("release-third"), "go").unwrap();
-        first_done_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("the reconciler finishes")
-            .unwrap();
-        first.join().unwrap();
-
         let status = module.call("getStatus", Value::Null).unwrap();
-        assert_eq!(status["mode"], "off");
-        assert_eq!(status["activeQdisc"], "pfifo_fast");
+        assert_eq!(status["mode"], "auto");
+        assert_eq!(status["activeQdisc"], "cake");
     }
 
     #[test]

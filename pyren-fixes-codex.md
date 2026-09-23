@@ -201,3 +201,58 @@ No se corrigieron C3, C4, C5, C6, C12 ni otros hallazgos en este grupo.
 - C5 no retiene locks durante el comando externo y no crea procesos persistentes. Los resultados de pasos siguen informando el fallo parcial. No se hallaron inversiones nuevas de locks ni cambios incompatibles de API en los cuatro fixes.
 - Validación final: `cargo test -p pyren-core` (77), `cargo test -p pyren-system` (32), `cargo test -p pyren-installer` (93), `cargo clippy -p pyren-core -p pyren-system -p pyren-installer -p pyren-overclock -p pyren-network -p pyren-power -p pyren-fan -p pyren-rgb --all-targets -- -D warnings` y `git diff --check` pasan. `cargo test --workspace -- --test-threads=1` pasa completo. Una corrida paralela inicial tuvo dos fallos intermitentes de FIFO en RGB; `cargo test -p pyren-rgb --lib` pasó al repetir, y la corrida serial completa pasó. `cargo clippy --workspace --all-targets -- -D warnings` sigue fallando por dos avisos `type_complexity` previos de los tests de hotkey, fuera del alcance de estos cuatro fixes.
 - C6 queda sin tocar.
+
+## Revisión independiente y correcciones adicionales (2026-09-23)
+
+Esta fase se limitó a C2, C10, C9, C7 y al orden de eventos `power.mode`. Se conservaron las nuevas reproducciones con sus assertions originales. C6 no se modificó.
+
+### C2 — confirmación tras reversión y fallo de reversión
+
+- **Reproducciones:** `a_completed_physical_revert_cannot_be_confirmed_as_applied` usa un backend GPU falso y una barrera después de la escritura física; fallaba porque `confirm` persistía el overclock ya retirado. `failed_physical_revert_remains_armed_and_retries_after_recovery` fallaba porque un error eliminaba `pending` y `armed_gpu`. Ambas comprueban hardware falso, estado y configuración persistida.
+- **Causa raíz:** `reverting` se limpiaba antes del commit lógico y el error de write seguía la misma ruta de desarme que el éxito.
+- **Cambio:** `reverting` permanece activo hasta que el resultado físico se refleja en el estado. El éxito desarma; el error conserva `pending`, `armed_gpu` y el watchdog, con un plazo de tres segundos antes del siguiente intento automático. `cancel` puede reintentar inmediatamente por petición explícita. La prueba previa que esperaba desarmar ante un GPU ausente se actualizó para exigir la nueva invariante de recuperación.
+- **Invariante:** no se confirma un objetivo después de su reversión física; un fallo de reversión sigue siendo visible, persistido como armado y reintentable.
+- **Efectos secundarios:** mientras el driver permanezca indisponible habrá un reintento como máximo cada tres segundos. El error no se oculta y el siguiente arranque continúa viendo el ajuste como no confirmado.
+- **Tests:** reproducciones rojas antes y verdes después; `cargo test -p pyren-overclock` (61 tests), `cargo clippy -p pyren-overclock --all-targets -- -D warnings` y `git diff --check` correctos.
+
+### C10 — fallo al retirar qdisc
+
+- **Reproducción:** `failed_qdisc_delete_cannot_commit_off` usa un `tc` falso con `cake` activo y `qdisc del` fallido. Fallaba porque `setMode(off)` devolvía éxito y comprometía `off`.
+- **Causa raíz:** `disable_smart_queuing` descartaba el resultado del proceso y `apply_mode(Off)` devolvía siempre éxito.
+- **Cambio:** la eliminación devuelve `Result`; un error de ejecución, permiso o código de salida se propaga. El caso "No such file or directory" sigue contando como ya desactivado.
+- **Invariante:** un fallo conocido de `tc qdisc del` no compromete `off`; el rollback de `requested` invalida reconciliadores antiguos mediante su generación.
+- **Efectos secundarios:** `setMode(off)` puede devolver un error antes oculto y conserva el modo comprometido anterior.
+- **Tests:** reproducción roja antes y verde después; `cargo test -p pyren-network` (16 tests, incluidos los de concurrencia/generaciones), clippy focal con `--all-targets -- -D warnings` y `git diff --check` correctos.
+
+### C9 — pasada sin escritura y edición de curva
+
+- **Reproducciones:** `a_curve_without_temperature_remains_pending_until_hardware_is_written` partía de Max sin temperatura y fallaba porque confirmaba Curve sin tocar el backend. `a_curve_edit_reports_a_failed_control_write` fallaba porque `set_curve` ocultaba un error de sysfs.
+- **Causa raíz:** `tick_locked` usaba `Ok(())` tanto para una transición aplicada como para una pasada aplazada. `set_curve` descartaba el resultado de `tick_once`.
+- **Cambio:** el control devuelve explícitamente `Applied` o `Deferred`, además de errores. Una petición aplazada restaura el modo comprometido y conserva `pending_mode` para el tick siguiente; no se persiste ni anuncia como modo aplicado. Las entregas deliberadas al firmware que forman parte de una curva válida cuentan como aplicación. `set_curve` conserva la edición solicitada y comunica el fallo de control al caller.
+- **Invariante:** no se compromete un modo nuevo por el solo hecho de que el tick haya terminado sin error; la petición queda pendiente hasta que exista efecto de control correspondiente.
+- **Efectos secundarios:** `setMode` puede devolver `busy` mientras falte el sensor o una operación mantenga ocupados los ventiladores. `set_curve` ahora expone fallos de escritura que antes ocultaba.
+- **Tests:** dos reproducciones rojas antes y verdes después; `cargo test -p pyren-fan` (194 tests), clippy focal con `--all-targets -- -D warnings` y `git diff --check` correctos.
+
+### C7 — writer futuro durante save
+
+- **Reproducción:** un hook solo de test pausa `save` entre comprobar la versión y hacer `rename`. Otro writer instala un JSON de versión futura. `a_future_writer_between_version_check_and_rename_keeps_its_file` fallaba porque el primer writer lo sobrescribía.
+- **Causa raíz:** la precondición de versión y el reemplazo no formaban una operación serializada entre procesos.
+- **Cambio:** cada namespace usa un archivo `.json.lock` persistente con `flock` exclusivo durante lectura, preparación y rename. Se rechazan locks que no sean archivos regulares del mismo EUID y no se siguen symlinks. Un error al leer el destino ya no se interpreta como ausencia de una versión futura.
+- **Invariante:** escritores que utilizan `ConfigStore` para el mismo namespace no pueden intercalar la comprobación y el reemplazo. Un writer ajeno que ignore este protocolo queda fuera de esa garantía.
+- **Efectos secundarios:** queda un archivo de lock persistente por namespace; los saves concurrentes esperan su turno. El lock se libera al cerrar el descriptor.
+- **Tests:** reproducción roja antes y verde después; `cargo test -p pyren-config` (12 tests), clippy focal con `--all-targets -- -D warnings` y `git diff --check` correctos.
+
+### Orden de eventos de power hacia fan
+
+- **Reproducción:** `a_late_old_power_event_cannot_restore_an_old_fan_profile` pausa A después de su commit Eco, completa B Performance y su callback de fan, y publica A al final. Fallaba con `power.mode()=Performance` y `fan.activeProfile=eco`.
+- **Causa raíz:** los commits están serializados por el estado de power, pero `publish` sucede después de soltarlo; los callbacks podían aplicar un payload antiguo al final.
+- **Cambio:** cada commit de modo de power recibe una generación monotónica, incluida en `power.mode`. El listener del daemon y el seed inicial entregan modo y generación juntos; fan compara la generación bajo su lock de estado e ignora eventos anteriores o repetidos.
+- **Invariante:** el perfil de fan no retrocede cuando llega un evento de power correspondiente a un commit más antiguo, aunque las publicaciones o callbacks se intercalen.
+- **Efectos secundarios:** el payload añade `generation`; la comparación no retiene un mutex durante el I/O de control de fan. El contador usa `checked_add` para no reutilizar una generación por wraparound.
+- **Tests:** reproducción roja antes y verde después; `cargo test -p pyren-power` (101 unitarios, 45 integraciones, uno ignorado por duración), `cargo test -p pyren-fan` (194), clippy focal de power/fan/daemon con `--all-targets -- -D warnings` y `git diff --check` correctos.
+
+### Validación conjunta
+
+- `cargo test --workspace -- --test-threads=1`: correcto fuera del sandbox. Dentro del sandbox fallaron solo los siete tests AF_UNIX de `pyren-core` con `EPERM` al crear sockets; la repetición fuera pasó completa.
+- `cargo clippy --workspace --all-targets -- -D warnings`: falla únicamente por dos warnings `type_complexity` preexistentes en `daemon/crates/hotkey/src/lib.rs`, líneas aproximadas 224 y 259–261, en los tipos del opener inyectado para tests de P2. No se modificó hotkey en esta fase.
+- `git diff --check`: correcto.

@@ -201,6 +201,13 @@ fn main() {
         }
     }
 
+    // Claim the hardware control domain before any module can probe, restore,
+    // or start a worker. The IPC socket pathname is intentionally irrelevant.
+    let _instance_lock = pyren_core::acquire_daemon_instance().unwrap_or_else(|e| {
+        eprintln!("pyren-daemon: cannot acquire system control: {e}");
+        std::process::exit(1);
+    });
+
     // Before any module starts a thread: a thread inherits the signal mask
     // it was started with, and the handler below only works if SIGTERM is
     // blocked in every one of them (see `pyren_core::signals`).
@@ -350,8 +357,11 @@ fn main() {
             if topic != "power.mode" {
                 return;
             }
-            if let Some(mode) = payload.get("mode").and_then(|m| m.as_str()) {
-                fan.set_active_profile(mode);
+            if let (Some(mode), Some(generation)) = (
+                payload.get("mode").and_then(|m| m.as_str()),
+                payload.get("generation").and_then(|g| g.as_u64()),
+            ) {
+                fan.set_active_profile_versioned(mode, generation);
             }
         });
     }
@@ -366,7 +376,8 @@ fn main() {
     // The first announcement only comes with the first *change*, so without
     // this a daemon that starts in Eco and is left alone would follow the
     // shared curve until something moved the mode.
-    fan.set_active_profile(power.mode().as_str());
+    let (initial_mode, initial_generation) = power.mode_snapshot();
+    fan.set_active_profile_versioned(initial_mode.as_str(), initial_generation);
     // The fan safety checker's idea of "hot" is the power supervisor's
     // "hot at" / "cooled below", read from its file rather than asked of the
     // module, for the same reason as above: neither crate knows the other.

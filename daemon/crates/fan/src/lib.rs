@@ -485,6 +485,9 @@ struct State {
     /// separate from `mode`: the latter is committed state exposed to
     /// callers, while this intent is retried by the control loop.
     pending_mode: Option<ModeRequest>,
+    /// Whether the last complete control sequence succeeded. A failed
+    /// multi-write can have changed the EC before reporting an error.
+    hardware_state: HardwareState,
     /// Whether *this daemon* put the fans where they are.
     ///
     /// False at startup, when `mode` is only what the hardware was found
@@ -504,6 +507,7 @@ struct State {
     /// restored unless `restoreModeOnStart` says so. `None` also covers
     /// every machine whose `power` module found nothing to control.
     active_profile: Option<String>,
+    last_power_generation: Option<u64>,
     hysteresis: curve::Hysteresis,
     /// In `manual` or `curve`, the speed asked for is below the fans' floor
     /// and they have been handed to the firmware so it can stop them. The
@@ -554,6 +558,23 @@ struct State {
     exiting: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HardwareState {
+    Unverified,
+    Known,
+    Unknown,
+}
+
+impl HardwareState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unverified => "unverified",
+            Self::Known => "known",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 impl State {
     fn new(config: FanConfig, mode: FanMode, owned: bool) -> Self {
         Self {
@@ -561,7 +582,9 @@ impl State {
             config,
             mode,
             pending_mode: None,
+            hardware_state: HardwareState::Unverified,
             active_profile: None,
+            last_power_generation: None,
             owned,
             hysteresis: curve::Hysteresis::new(),
             released: false,
@@ -602,6 +625,12 @@ impl State {
 struct ModeRequest {
     mode: FanMode,
     manual_pwm: Option<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TickOutcome {
+    Applied,
+    Deferred,
 }
 
 #[derive(Clone)]
@@ -1147,8 +1176,24 @@ impl FanModule {
     /// Takes effect immediately rather than on the next tick: a mode change
     /// is exactly when someone is listening to the fans.
     pub fn set_active_profile(&self, profile: &str) {
+        self.set_active_profile_inner(profile, None);
+    }
+
+    /// Applies a power event only if its commit is newer than the last one
+    /// accepted. The comparison and profile update share the same state lock.
+    pub fn set_active_profile_versioned(&self, profile: &str, generation: u64) {
+        self.set_active_profile_inner(profile, Some(generation));
+    }
+
+    fn set_active_profile_inner(&self, profile: &str, generation: Option<u64>) {
         {
             let mut state = lock(&self.state);
+            if let Some(generation) = generation {
+                if state.last_power_generation.is_some_and(|last| generation <= last) {
+                    return;
+                }
+                state.last_power_generation = Some(generation);
+            }
             if state.active_profile.as_deref() == Some(profile) {
                 return;
             }
@@ -1235,6 +1280,8 @@ impl FanModule {
             ),
             "isReverse": is_reverse,
             "mode": state.mode.as_str(),
+            "pendingMode": state.pending_mode.map(|request| request.mode.as_str()),
+            "hardwareState": state.hardware_state.as_str(),
             "pwm": control::read_pwm(&self.paths()),
             "targetPwm": state.last_target_pwm,
             "manualPwm": state.config.manual_pwm,
@@ -1431,10 +1478,11 @@ impl FanModule {
         }
 
         // Only touches hardware if the curve is the mode in force.
-        let _ = self.tick_once();
+        let tick_result = self.tick_once();
         let mut state = lock(&self.state);
         persist(&self.store, &mut state);
         drop(state);
+        tick_result?;
         Ok(self.status())
     }
 
@@ -2080,15 +2128,28 @@ impl FanModule {
         );
 
         let Some((request, before)) = pending.zip(before) else {
-            return outcome.map(|()| None);
+            return outcome.map(|_| None);
         };
 
         before_finish();
         match outcome {
-            Ok(()) => {
+            Ok(TickOutcome::Applied) => {
                 state.pending_mode = None;
                 persist(&self.store, &mut state);
                 Ok(Some(state.config.manual_pwm))
+            }
+            Ok(TickOutcome::Deferred) => {
+                state.config.mode = before.config_mode;
+                state.config.manual_pwm = before.manual_pwm;
+                state.mode = before.mode;
+                state.owned = before.owned;
+                state.stalled = before.stalled;
+                state.released = before.released;
+                state.hysteresis = before.hysteresis;
+                state.smoother = before.smoother;
+                state.pending_mode = Some(request);
+                Err(ModuleError::localised(ErrorKind::Busy,
+                    msg!("fan.err.modeDeferred", "the requested fan mode is pending until it can be applied")))
             }
             Err(error) => {
                 state.config.mode = before.config_mode;
@@ -2110,7 +2171,7 @@ impl FanModule {
         state: &mut State,
         events: &mut Vec<(&'static str, Value)>,
         inputs: TickInputs,
-    ) -> Result<(), ModuleError> {
+    ) -> Result<TickOutcome, ModuleError> {
         let TickInputs {
             now_secs,
             paths,
@@ -2122,19 +2183,19 @@ impl FanModule {
         } = inputs;
         if state.exiting {
             // The fans were handed back on the way out. See `on_exit`.
-            return Ok(());
+            return Ok(TickOutcome::Deferred);
         }
         if state.calibrating {
             // Somebody else is driving, on purpose. See `State::calibrating`.
             // A measurement watches the temperature itself and stops.
-            return Ok(());
+            return Ok(TickOutcome::Deferred);
         }
         if state.cleaning.holds_the_fans() {
             // A cleaning cycle owns the fans, and it is not driving them
             // through `pwm1` at all - writing a speed here would fight the
             // firmware override mid-cycle. See `Cleaning`. The cycle's own
             // heat limit is enforced in `stop_if_expired`.
-            return Ok(());
+            return Ok(TickOutcome::Deferred);
         }
         let mode = state.mode;
 
@@ -2278,7 +2339,7 @@ impl FanModule {
                 None => true,
             };
             if !due {
-                return Ok(());
+                return Ok(TickOutcome::Deferred);
             }
             state.hysteresis.reset();
             state.released = false;
@@ -2288,7 +2349,7 @@ impl FanModule {
             if result.is_ok() {
                 state.safety_hold = Some((forced, now_secs));
             }
-            return record_write(state, result);
+            return record_write(state, result).map(|_| TickOutcome::Deferred);
         }
         if state.safety_hold.take().is_some() {
             // The guard let go: what was in force goes back now, exactly.
@@ -2298,13 +2359,13 @@ impl FanModule {
                 // it was found, once, and then left alone again.
                 let pwm = state.config.manual_pwm;
                 let result = control::apply(&paths, self.caps(), mode, pwm);
-                return record_write(state, result);
+                return record_write(state, result).map(|_| TickOutcome::Applied);
             }
         }
 
         if !state.owned {
             // Watching, not driving. See `State::owned`.
-            return Ok(());
+            return Ok(TickOutcome::Deferred);
         }
 
         let target = match mode {
@@ -2326,7 +2387,7 @@ impl FanModule {
                         "fan.err.noCpuTemp",
                         "no CPU temperature sensor, so a curve cannot be followed"
                     ));
-                    return Ok(());
+                    return Ok(TickOutcome::Deferred);
                 };
                 let avg = state.smoother.push(temp_c as f64);
                 let interpolation = state.config.interpolation;
@@ -2346,12 +2407,12 @@ impl FanModule {
                         state.last_control_error =
                             Some(msg!("fan.err.curveEmpty", "the curve has no points"));
                         if state.released {
-                            return Ok(());
+                            return Ok(TickOutcome::Applied);
                         }
                         state.released = true;
                         state.hysteresis.reset();
                         let result = control::apply(&paths, self.caps(), FanMode::Auto, 0);
-                        return record_write(state, result);
+                        return record_write(state, result).map(|_| TickOutcome::Applied);
                     }
                 }
             }
@@ -2370,14 +2431,14 @@ impl FanModule {
             let stop_below = curve::stop_below_pwm(floor.rpm, state.config.fan_max_rpm);
             let release = curve::release_fans(target, stop_below, state.released);
             if release && state.released {
-                return Ok(());
+                return Ok(TickOutcome::Applied);
             }
             if release {
                 state.released = true;
                 state.hysteresis.reset();
                 state.zero_rpm.reset();
                 let result = control::apply(&self.paths(), self.caps(), FanMode::Auto, 0);
-                return record_write(state, result);
+                return record_write(state, result).map(|_| TickOutcome::Applied);
             }
             if state.released {
                 state.released = false;
@@ -2404,7 +2465,7 @@ impl FanModule {
                 if result.is_ok() {
                     state.safety_hold = Some((FanMode::Auto, now_secs));
                 }
-                return record_write(state, result);
+                return record_write(state, result).map(|_| TickOutcome::Deferred);
             }
 
             // A speed is about to be commanded, so the driver has to be
@@ -2469,7 +2530,7 @@ impl FanModule {
             (_, None) => false,
         };
         if !should {
-            return Ok(());
+            return Ok(TickOutcome::Deferred);
         }
 
         let pwm = target.unwrap_or(0);
@@ -2479,7 +2540,7 @@ impl FanModule {
         if result.is_ok() {
             state.hysteresis.applied(pwm, now_secs);
         }
-        record_write(state, result)
+        record_write(state, result).map(|_| TickOutcome::Applied)
     }
 
     /// The stall watch has seen the fans give out at Pyren's floor enough
@@ -2955,10 +3016,12 @@ fn record_write(
     match result {
         Ok(()) => {
             state.last_control_error = None;
+            state.hardware_state = HardwareState::Known;
             Ok(())
         }
         Err(e) => {
             state.last_control_error = Some(e.to_msg());
+            state.hardware_state = HardwareState::Unknown;
             Err(control_error(e))
         }
     }
@@ -4065,6 +4128,129 @@ mod tests {
             after, before,
             "a failed hardware write left the logical/configured mode committed"
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn manual_to_auto_partial_failure_does_not_claim_known_hardware() {
+        let (module, dir) = driven_on_a_fixture("manual-auto-partial", 50);
+        {
+            let mut state = lock(&module.state);
+            state.mode = FanMode::Manual;
+            state.config.mode = FanMode::Manual;
+            state.config.manual_pwm = 128;
+            state.hysteresis.applied(128, monotonic_secs());
+            persist(&module.store, &mut state);
+        }
+        fs::write(dir.join("pwm1"), "128").unwrap();
+        fs::write(dir.join("pwm1_enable"), "1").unwrap();
+        // The injected hwmon backend accepts the auto sentinel, then the
+        // mode switch fails. On the affected boards the sentinel alone
+        // releases the EC's previous manual setpoint.
+        fs::remove_file(dir.join("pwm1_enable")).unwrap();
+        fs::create_dir(dir.join("pwm1_enable")).unwrap();
+        assert!(module.set_mode(FanMode::Auto, None).is_err());
+
+        assert_eq!(read_file(&dir, "pwm1"), "0", "the first physical write landed");
+        let status = module.status();
+        assert_eq!(status["mode"], "manual");
+        assert_eq!(status["hardwareState"], "unknown");
+        let state = lock(&module.state);
+        assert_eq!(state.pending_mode.map(|p| p.mode), Some(FanMode::Auto));
+        assert_eq!(state.config.mode, FanMode::Manual);
+        assert_eq!(state.hysteresis.last_written(), Some(128));
+        drop(state);
+        assert_eq!(module.store.load::<FanConfig>("fan").value.mode, FanMode::Manual);
+
+        assert!(module.tick_once().is_err(), "a failed retry must remain pending");
+        assert_eq!(module.status()["hardwareState"], "unknown");
+        assert_eq!(module.status()["pendingMode"], "auto");
+        fs::remove_dir(dir.join("pwm1_enable")).unwrap();
+        fs::write(dir.join("pwm1_enable"), "1").unwrap();
+        module.tick_once().unwrap();
+        let recovered = module.status();
+        assert_eq!(recovered["hardwareState"], "known");
+        assert_eq!(recovered["mode"], "auto");
+        assert!(recovered["pendingMode"].is_null());
+        assert_eq!(read_file(&dir, "pwm1_enable"), "2");
+        assert_eq!(module.store.load::<FanConfig>("fan").value.mode, FanMode::Auto);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_mode_request_after_partial_failure_keeps_uncertainty_until_applied() {
+        let (module, dir) = driven_on_a_fixture("manual-auto-new-request", 50);
+        {
+            let mut state = lock(&module.state);
+            state.mode = FanMode::Manual;
+            state.config.mode = FanMode::Manual;
+            state.config.manual_pwm = 128;
+        }
+        fs::write(dir.join("pwm1"), "128").unwrap();
+        fs::write(dir.join("pwm1_enable"), "1").unwrap();
+        fs::remove_file(dir.join("pwm1_enable")).unwrap();
+        fs::create_dir(dir.join("pwm1_enable")).unwrap();
+        assert!(module.set_mode(FanMode::Auto, None).is_err());
+        assert!(module.set_mode(FanMode::Manual, Some(100)).is_err());
+        let degraded = module.status();
+        assert_eq!(degraded["hardwareState"], "unknown");
+        assert_eq!(degraded["pendingMode"], "manual");
+        fs::remove_dir(dir.join("pwm1_enable")).unwrap();
+        fs::write(dir.join("pwm1_enable"), "1").unwrap();
+        module.tick_once().unwrap();
+        assert_eq!(module.status()["hardwareState"], "known");
+        assert!(module.status()["pendingMode"].is_null());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_late_second_fan_write_failure_is_reported_as_unknown() {
+        let (module, dir) = driven_on_a_fixture("second-fan-partial", 50);
+        fs::remove_file(dir.join("pwm2")).unwrap();
+        fs::create_dir(dir.join("pwm2")).unwrap();
+        assert!(module.set_mode(FanMode::Manual, Some(180)).is_err());
+        assert_eq!(read_file(&dir, "pwm1_enable"), "1");
+        assert_eq!(read_file(&dir, "pwm1"), "180");
+        let degraded = module.status();
+        assert_eq!(degraded["mode"], "curve");
+        assert_eq!(degraded["pendingMode"], "manual");
+        assert_eq!(degraded["hardwareState"], "unknown");
+        module.set_mode(FanMode::Auto, None).unwrap();
+        assert_eq!(module.status()["hardwareState"], "known");
+        assert_eq!(module.status()["mode"], "auto");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_curve_without_temperature_remains_pending_until_hardware_is_written() {
+        let (module, dir) = driven_on_a_fixture("curve-no-temperature", 50);
+        {
+            let mut state = lock(&module.state);
+            state.mode = FanMode::Max;
+            state.config.mode = FanMode::Max;
+            persist(&module.store, &mut state);
+        }
+        fs::write(dir.join("pwm1_enable"), "0").unwrap();
+        fs::remove_file(dir.join("temp1_input")).unwrap();
+        let result = module.set_mode(FanMode::Curve, None);
+        assert!(result.is_err(), "an unwritten curve was reported as applied");
+        assert_eq!(read_file(&dir, "pwm1_enable"), "0");
+        let state = lock(&module.state);
+        assert_eq!(state.mode, FanMode::Max);
+        assert_eq!(state.config.mode, FanMode::Max);
+        assert_eq!(state.pending_mode.map(|p| p.mode), Some(FanMode::Curve));
+        drop(state);
+        assert_eq!(module.store.load::<FanConfig>("fan").value.mode, FanMode::Max);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_curve_edit_reports_a_failed_control_write() {
+        let (module, dir) = driven_on_a_fixture("curve-edit-write-failure", 50);
+        fs::remove_file(dir.join("pwm1_enable")).unwrap();
+        fs::create_dir(dir.join("pwm1_enable")).unwrap();
+        let result = module.set_curve(points(&[(40.0, 90.0)]), None, None, None);
+        assert!(result.is_err(), "set_curve hid a failed hardware write");
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -10,8 +10,9 @@ use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
+use std::os::linux::net::SocketAddrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::path::Path;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -23,6 +24,34 @@ use crate::{Registry, Request, Response};
 /// `PYREN_SOCKET_GROUP` so a packager can use whatever name the
 /// distribution prefers.
 const DEFAULT_GROUP: &str = "pyren";
+
+/// Holds the system-control singleton for the entire daemon lifetime.
+/// This is separate from the lock protecting one IPC socket pathname.
+pub struct DaemonInstanceLock {
+    _listener: UnixListener,
+}
+
+fn acquire_instance_lock_named(name: &[u8]) -> std::io::Result<DaemonInstanceLock> {
+    let address = SocketAddr::from_abstract_name(name)?;
+    // An abstract AF_UNIX address is unique in the kernel namespace across
+    // processes and UIDs. It has no filesystem pathname to unlink, no stale
+    // PID, and is released when the final listener descriptor closes.
+    let listener = UnixListener::bind_addr(&address).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            std::io::Error::new(e.kind(), "another PYREN daemon already controls this system")
+        } else {
+            e
+        }
+    })?;
+    Ok(DaemonInstanceLock { _listener: listener })
+}
+
+/// Acquire this before constructing hardware modules or starting threads.
+/// Unlike the IPC socket lock, this fixed identity spans root and development
+/// users that can otherwise reach the same physical controls.
+pub fn acquire_daemon_instance() -> std::io::Result<DaemonInstanceLock> {
+    acquire_instance_lock_named(b"pyren.daemon.system-control.v1")
+}
 
 /// Who ended up being able to reach the socket.
 ///
@@ -371,6 +400,106 @@ mod tests {
             second.success(),
             "a second process with the same effective uid unlinked and rebound the live path"
         );
+    }
+
+    #[test]
+    fn an_alternate_socket_cannot_start_a_second_daemon() {
+        let dir = fixture("different-endpoints");
+        let instance_name = format!("pyren-test-different-endpoints-{}", std::process::id());
+        let first_path = dir.join("first.sock");
+        let second_path = dir.join("second.sock");
+        let _instance = acquire_instance_lock_named(instance_name.as_bytes()).expect("first daemon owns hardware");
+        let (first, _) = bind_restricted(&first_path, "pyren").expect("first daemon binds");
+        let second = crate::process::command(std::env::current_exe().unwrap())
+            .arg("alternate_socket_bind_helper")
+            .arg("--nocapture")
+            .env("PYREN_TEST_ALTERNATE_SOCKET", &second_path)
+            .env("PYREN_TEST_INSTANCE_LOCK", &instance_name)
+            .status()
+            .expect("run second daemon process");
+        assert!(first.local_addr().is_ok());
+        assert!(second.success(), "a second daemon acquired a distinct endpoint in the same control domain");
+    }
+
+    #[test]
+    fn alternate_socket_bind_helper() {
+        let Some(path) = std::env::var_os("PYREN_TEST_ALTERNATE_SOCKET") else {
+            return;
+        };
+        let instance_name = std::env::var("PYREN_TEST_INSTANCE_LOCK").unwrap();
+        let rebound = acquire_instance_lock_named(instance_name.as_bytes()).is_ok()
+            && bind_restricted(Path::new(&path), "pyren").is_ok();
+        std::process::exit(if rebound { 42 } else { 0 });
+    }
+
+    #[test]
+    fn abrupt_process_exit_releases_the_instance_lock() {
+        let name = format!("pyren-test-dead-instance-{}", std::process::id());
+        let child = crate::process::command(std::env::current_exe().unwrap())
+            .arg("instance_lock_exit_helper")
+            .arg("--nocapture")
+            .env("PYREN_TEST_LOCK_AND_EXIT", &name)
+            .status()
+            .expect("run owner process");
+        assert!(child.success(), "owner process could not acquire lock");
+        let _new_owner = acquire_instance_lock_named(name.as_bytes()).expect("kernel must release lock after process death");
+    }
+
+    #[test]
+    fn instance_lock_exit_helper() {
+        let Some(name) = std::env::var_os("PYREN_TEST_LOCK_AND_EXIT") else {
+            return;
+        };
+        let _instance = acquire_instance_lock_named(name.as_encoded_bytes()).expect("child owns lock");
+        std::process::exit(0);
+    }
+
+    #[test]
+    fn killed_owner_releases_the_instance_lock() {
+        let name = format!("pyren-test-killed-instance-{}", std::process::id());
+        let mut child = crate::process::command(std::env::current_exe().unwrap())
+            .arg("instance_lock_kill_helper")
+            .arg("--nocapture")
+            .env("PYREN_TEST_LOCK_UNTIL_KILLED", &name)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("start owner process");
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        loop {
+            assert_ne!(output.read_line(&mut ready).expect("owner readiness line"), 0);
+            if ready.contains("INSTANCE_LOCK_READY") {
+                break;
+            }
+            ready.clear();
+        }
+        assert!(acquire_instance_lock_named(name.as_bytes()).is_err());
+        child.kill().expect("kill lock owner");
+        child.wait().expect("reap lock owner");
+        let _new_owner = acquire_instance_lock_named(name.as_bytes()).expect("SIGKILL must release lock");
+    }
+
+    #[test]
+    fn instance_lock_kill_helper() {
+        let Some(name) = std::env::var_os("PYREN_TEST_LOCK_UNTIL_KILLED") else {
+            return;
+        };
+        let _instance = acquire_instance_lock_named(name.as_encoded_bytes()).expect("child owns lock");
+        println!("INSTANCE_LOCK_READY");
+        std::io::stdout().flush().unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[test]
+    fn instance_descriptor_is_close_on_exec() {
+        let name = format!("pyren-test-cloexec-{}", std::process::id());
+        let instance = acquire_instance_lock_named(name.as_bytes()).unwrap();
+        // SAFETY: the listener is alive and owns a valid descriptor.
+        let flags = unsafe { libc::fcntl(instance._listener.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
     }
 
     #[test]

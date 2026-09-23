@@ -373,6 +373,7 @@
     "mode": "Mode",
     "descOff": "Monitors your total bandwidth usage. No queuing changes are made to your network interface.",
     "descAuto": "Enables smart queuing on your main network interface, so responsive traffic - games, calls, browsing - stays snappy while something else is using the connection heavily.",
+    "descUnknown": "The current queuing mode could not be determined. Check the active qdisc below or select a mode again.",
     "totalBandwidth": "Total bandwidth usage",
     "interface": "Interface",
     "activeQueuing": "Active queuing",

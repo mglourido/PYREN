@@ -9,6 +9,7 @@
    */
   import Segmented from "$lib/components/Segmented.svelte";
   import { t } from "$lib/i18n/index.svelte";
+  import { networkDescriptionKey } from "$lib/network/mode";
   import { hardware, type NetworkMode } from "$lib/stores/hardware.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
 
@@ -22,7 +23,7 @@
     <div class="mode">
       <span class="label">{t("network.mode")}</span>
       <Segmented
-        value={mode}
+        value={mode ?? ""}
         options={[
           { value: "off", label: t("common.off") },
           { value: "auto", label: t("common.auto") },
@@ -32,7 +33,7 @@
     </div>
 
     <p class="desc">
-      {t(mode === "off" ? "network.descOff" : "network.descAuto")}
+      {t(networkDescriptionKey(mode))}
     </p>
 
     {#if status}
