@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -199,6 +198,9 @@ pub struct Sampler {
     cpu: CpuSample,
     net: HashMap<String, NetCounters>,
     process_ticks: HashMap<i32, u64>,
+    /// Process ticks are not gathered on every sample, so their delta needs
+    /// its own interval rather than the interval of the fast metrics tick.
+    last_process_sampled: Instant,
     /// `None` for the very first sample taken at construction.
     last_sampled: Instant,
     hwmon: HwmonCatalog,
@@ -233,6 +235,7 @@ impl Sampler {
             cpu: CpuSample::default(),
             net: HashMap::new(),
             process_ticks: HashMap::new(),
+            last_process_sampled: Instant::now(),
             last_sampled: Instant::now(),
             hwmon: HwmonCatalog::new(),
             gpus: GpuReader::new(),
@@ -248,7 +251,9 @@ impl Sampler {
         self.cpu = read_cpu_sample();
         self.net = read_net_counters();
         self.process_ticks = read_process_ticks();
-        self.last_sampled = Instant::now();
+        let now = Instant::now();
+        self.last_process_sampled = now;
+        self.last_sampled = now;
     }
 
     /// See [`GpuReader::engine_stats_available`].
@@ -269,7 +274,13 @@ impl Sampler {
         // reads that had to wait for it. None of it touches the disk.
         let cpu = self.sample_cpu(raw.cpu, raw.clocks, &raw.temperatures);
         let network = self.sample_network(raw.net, elapsed);
-        let processes = self.sample_processes(elapsed, &raw.drm.per_pid, raw.processes);
+        let processes = if include_processes && !raw.processes.is_empty() {
+            let process_elapsed = self.last_process_sampled.elapsed().as_secs_f64().max(0.001);
+            self.last_process_sampled = Instant::now();
+            self.sample_processes(process_elapsed, &raw.drm.per_pid, raw.processes)
+        } else {
+            Vec::new()
+        };
         let gpus = self.gpus.sample(elapsed, &raw.drm.per_card, raw.nvidia);
 
         let mut memory = raw.memory;
@@ -422,6 +433,12 @@ impl Sampler {
         gpu: &HashMap<i32, f64>,
         stats: Vec<(i32, ProcessStat)>,
     ) -> Vec<ProcessUsage> {
+        // An omitted process sweep is represented by an empty list. It must
+        // not discard the baseline that the next full sweep compares with.
+        if stats.is_empty() {
+            return Vec::new();
+        }
+
         let cores = self.cpu.per_core.len().max(1) as f64;
         let mut current_ticks = HashMap::with_capacity(stats.len());
         let mut processes = Vec::with_capacity(stats.len());
@@ -601,7 +618,7 @@ fn read_ram_info() -> RamInfo {
     if !which("dmidecode") {
         return RamInfo::default();
     }
-    let Ok(output) = Command::new("dmidecode").args(["-t", "memory"]).output() else {
+    let Ok(output) = pyren_core::process::command("dmidecode").args(["-t", "memory"]).output() else {
         return RamInfo::default();
     };
     if !output.status.success() {
@@ -1240,6 +1257,22 @@ fn read_process_ticks() -> HashMap<i32, u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_processless_sample_preserves_the_cpu_delta_baseline() {
+        let mut sampler = Sampler::new();
+        sampler.process_ticks.clear();
+        sampler.process_ticks.insert(4242, 100);
+
+        let processes = sampler.sample_processes(1.0, &HashMap::new(), Vec::new());
+
+        assert!(processes.is_empty());
+        assert_eq!(
+            sampler.process_ticks.get(&4242),
+            Some(&100),
+            "the fast sample erased the baseline needed by the next process sample"
+        );
+    }
 
     #[test]
     fn process_stat_survives_names_with_spaces_and_parens() {

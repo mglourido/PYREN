@@ -219,8 +219,9 @@ pub struct HotkeyModule {
     /// Notified when a learn window catches a key, and when one opens.
     caught: Arc<Condvar>,
     store: ConfigStore,
-    /// Whether there is a keyboard here at all, decided once at startup.
-    present: bool,
+    #[cfg(test)]
+    device_opener:
+        Option<Arc<dyn Fn() -> Result<Vec<devices::Device>, Unavailable> + Send + Sync>>,
 }
 
 impl Default for HotkeyModule {
@@ -235,6 +236,30 @@ impl HotkeyModule {
     }
 
     pub fn with_store(store: ConfigStore) -> Self {
+        #[cfg(test)]
+        {
+            Self::with_store_inner(store, None)
+        }
+        #[cfg(not(test))]
+        {
+            Self::with_store_inner(store)
+        }
+    }
+
+    #[cfg(test)]
+    fn with_store_and_opener(
+        store: ConfigStore,
+        opener: Arc<dyn Fn() -> Result<Vec<devices::Device>, Unavailable> + Send + Sync>,
+    ) -> Self {
+        Self::with_store_inner(store, Some(opener))
+    }
+
+    fn with_store_inner(
+        store: ConfigStore,
+        #[cfg(test)] opener: Option<
+            Arc<dyn Fn() -> Result<Vec<devices::Device>, Unavailable> + Send + Sync>,
+        >,
+    ) -> Self {
         let loaded = store.load::<HotkeyConfig>("hotkey");
         match &loaded.outcome {
             LoadOutcome::Loaded | LoadOutcome::Missing => {}
@@ -258,8 +283,10 @@ impl HotkeyModule {
         // Asked once, before anything is watched, so `core.capabilities`
         // can tell "this machine has no keyboard" apart from "this daemon
         // is not root" - which are a hidden feature and a fixable error.
+        #[cfg(test)]
+        let probe = opener.as_ref().map_or_else(devices::open_all, |open| open());
+        #[cfg(not(test))]
         let probe = devices::open_all();
-        let present = !matches!(probe, Err(Unavailable::NoDevices));
         let unavailable = probe.as_ref().err().cloned();
 
         let state = State {
@@ -280,8 +307,17 @@ impl HotkeyModule {
             state: Arc::new(Mutex::new(state)),
             caught: Arc::new(Condvar::new()),
             store,
-            present,
+            #[cfg(test)]
+            device_opener: opener,
         }
+    }
+
+    fn open_devices(&self) -> Result<Vec<devices::Device>, Unavailable> {
+        #[cfg(test)]
+        if let Some(open) = &self.device_opener {
+            return open();
+        }
+        devices::open_all()
     }
 
     /// Starts the watcher thread with the action a matched key runs.
@@ -290,9 +326,38 @@ impl HotkeyModule {
     /// an unprivileged development daemon cannot read `/dev/input`, and
     /// that is a line at startup rather than a refusal to run.
     pub fn watch(&self, action: Action) -> bool {
-        {
+        let retry_no_devices = {
             let mut state = self.lock();
             state.action = Some(action);
+            if state.watching {
+                return true;
+            }
+            match state.unavailable.as_ref() {
+                Some(Unavailable::NoDevices) => true,
+                Some(Unavailable::NeedsRoot) => return false,
+                None => false,
+            }
+        };
+
+        if retry_no_devices {
+            let probe = self.open_devices();
+            let mut state = self.lock();
+            if state.watching {
+                return true;
+            }
+            match probe {
+                Ok(devices) => {
+                    state.devices = devices.iter().map(|device| device.name.clone()).collect();
+                    state.unavailable = None;
+                    state.watching = true;
+                }
+                Err(reason) => {
+                    state.unavailable = Some(reason);
+                    return false;
+                }
+            }
+        } else {
+            let mut state = self.lock();
             if state.watching {
                 return true;
             }
@@ -311,7 +376,7 @@ impl HotkeyModule {
 
     /// The watcher. Opens the keyboards, waits, and hands on what arrives.
     fn run(self) {
-        let mut devices = match devices::open_all() {
+        let mut devices = match self.open_devices() {
             Ok(devices) => devices,
             Err(reason) => {
                 let mut state = self.lock();
@@ -367,7 +432,7 @@ impl HotkeyModule {
 
             if last_scan.elapsed() >= RESCAN_EVERY {
                 last_scan = Instant::now();
-                if let Ok(found) = devices::open_all() {
+                if let Ok(found) = self.open_devices() {
                     // Only devices that are new: the open ones carry
                     // half-read packets that must not be thrown away.
                     let known: Vec<_> = devices.iter().map(|d| d.path.clone()).collect();
@@ -642,7 +707,10 @@ impl Module for HotkeyModule {
     /// `permissionDenied` with a fix in it, and hiding the feature instead
     /// would hide the fix as well.
     fn is_supported(&self) -> bool {
-        self.present
+        !matches!(
+            self.lock().unavailable.as_ref(),
+            Some(Unavailable::NoDevices)
+        )
     }
 
     fn call(&self, method: &str, params: Value) -> ModuleResult {
@@ -693,6 +761,7 @@ impl Module for HotkeyModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn press(device: &str, keycode: Option<u16>, scancode: Option<u32>) -> KeyPress {
         KeyPress {
@@ -707,6 +776,31 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pyren-hotkey-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         ConfigStore::at(dir)
+    }
+
+    #[test]
+    fn a_keyboard_appearing_after_the_initial_probe_can_start_the_watcher() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&attempts);
+        let module = HotkeyModule::with_store_and_opener(
+            store("late-keyboard"),
+            Arc::new(move || {
+                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(Unavailable::NoDevices)
+                } else {
+                    Ok(vec![devices::fake_keyboard()])
+                }
+            }),
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        let watching = module.watch(Arc::new(|_| {}));
+
+        assert!(
+            watching,
+            "watch trusted the startup NoDevices result without probing after hotplug"
+        );
+        assert!(attempts.load(Ordering::SeqCst) >= 2);
     }
 
     #[test]

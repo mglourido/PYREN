@@ -18,7 +18,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -202,7 +201,7 @@ fn is_on_the_root_bus(slot: &str) -> bool {
 /// to the driver name.
 fn pci_names() -> HashMap<String, String> {
     let mut names = HashMap::new();
-    let Ok(output) = Command::new("lspci").arg("-mm").output() else {
+    let Ok(output) = pyren_core::process::command("lspci").arg("-mm").output() else {
         return names;
     };
     if !output.status.success() {
@@ -278,12 +277,16 @@ fn hwmon_value(device: &Path, attribute: &str) -> Option<f64> {
 /// the sampler runs this on its own thread and overlaps it with everything
 /// else rather than paying for it in series.
 pub(crate) fn read_nvidia_gpus() -> Vec<GpuMetrics> {
-    let output = Command::new("nvidia-smi")
-        .args([
+    read_nvidia_gpus_from(Path::new("nvidia-smi"))
+}
+
+fn read_nvidia_gpus_from(program: &Path) -> Vec<GpuMetrics> {
+    let output = pyren_core::process::output(
+        pyren_core::process::command(program).args([
             "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,clocks.gr",
             "--format=csv,noheader,nounits",
-        ])
-        .output();
+        ]),
+    );
 
     let Ok(output) = output else {
         return Vec::new();
@@ -733,6 +736,69 @@ fn parse_drm_client(text: &str) -> Option<DrmClient> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stuck_nvidia_smi_cannot_stall_a_metrics_sample_forever() {
+        use std::ffi::CString;
+        use std::io::{Read, Write};
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-nvidia-timeout-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ready = dir.join("ready");
+        let release = dir.join("release");
+        for fifo in [&ready, &release] {
+            let fifo = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        }
+        let command = dir.join("nvidia-smi");
+        fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\nprintf x > '{}'\nIFS= read -r line < '{}'\n",
+                ready.display(),
+                release.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let value = read_nvidia_gpus_from(&command);
+            let _ = finished_tx.send(value);
+        });
+
+        // Opening the FIFO is the deterministic rendezvous: the child has
+        // exec'd and is now about to wait forever on its external backend.
+        let mut signal = [0_u8; 1];
+        fs::File::open(&ready)
+            .unwrap()
+            .read_exact(&mut signal)
+            .unwrap();
+        let completed = finished_rx.recv_timeout(Duration::from_secs(4)).is_ok();
+
+        if !completed {
+            fs::File::create(&release)
+                .unwrap()
+                .write_all(b"continue\n")
+                .unwrap();
+        }
+        worker.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            completed,
+            "nvidia-smi exceeded the external-command timeout and held the sample open"
+        );
+    }
 
     #[test]
     fn several_fds_onto_one_client_are_not_counted_twice() {

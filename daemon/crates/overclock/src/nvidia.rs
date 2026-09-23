@@ -187,7 +187,7 @@ impl Nvidia {
         if !self.smi {
             return Vec::new();
         }
-        let Some(out) = run_ok(Command::new("nvidia-smi").args([
+        let Some(out) = run_ok(pyren_core::process::command("nvidia-smi").args([
             "--query-gpu=index,name,clocks.max.gr",
             "--format=csv,noheader,nounits",
         ])) else {
@@ -201,7 +201,7 @@ impl Nvidia {
     /// that cannot be pinned - so the caller reports it as unknown rather
     /// than as a refusal.
     pub fn supported_clocks(&self, index: u32) -> Option<Range> {
-        let out = run_ok(Command::new("nvidia-smi").args([
+        let out = run_ok(pyren_core::process::command("nvidia-smi").args([
             "-i",
             &index.to_string(),
             "--query-supported-clocks=gr",
@@ -226,7 +226,7 @@ impl Nvidia {
             return Err(NvidiaError::NotInstalled("nvidia-smi"));
         }
         let output = process::output_within(
-            Command::new("nvidia-smi").args(["-i", &index.to_string(), argument]),
+            pyren_core::process::command("nvidia-smi").args(["-i", &index.to_string(), argument]),
             NVIDIA_TOOL_TIMEOUT,
         )
         .map_err(|e| NvidiaError::Unreadable {
@@ -344,7 +344,7 @@ impl Nvidia {
                 "nvidia-settings has no X display to talk to: no socket in {path}"
             ))
         })?;
-        let mut command = Command::new("nvidia-settings");
+        let mut command = pyren_core::process::command("nvidia-settings");
         command.env("DISPLAY", &display.name);
         match &display.xauthority {
             Some(path) => {

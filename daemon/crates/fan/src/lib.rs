@@ -481,6 +481,10 @@ struct State {
     /// Mode actually in force, which is only the configured one once it has
     /// been applied - and on a machine that cannot do it, never.
     mode: FanMode,
+    /// A requested mode whose first hardware application failed. It is
+    /// separate from `mode`: the latter is committed state exposed to
+    /// callers, while this intent is retried by the control loop.
+    pending_mode: Option<ModeRequest>,
     /// Whether *this daemon* put the fans where they are.
     ///
     /// False at startup, when `mode` is only what the hardware was found
@@ -556,6 +560,7 @@ impl State {
             smoother: curve::TempSmoother::new(config.ma_window),
             config,
             mode,
+            pending_mode: None,
             active_profile: None,
             owned,
             hysteresis: curve::Hysteresis::new(),
@@ -591,6 +596,34 @@ impl State {
         self.stall.idle();
         self.zero_rpm.reset();
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModeRequest {
+    mode: FanMode,
+    manual_pwm: Option<u8>,
+}
+
+#[derive(Clone)]
+struct ModeSnapshot {
+    config_mode: FanMode,
+    manual_pwm: u8,
+    mode: FanMode,
+    owned: bool,
+    stalled: bool,
+    released: bool,
+    hysteresis: curve::Hysteresis,
+    smoother: curve::TempSmoother,
+}
+
+struct TickInputs {
+    now_secs: u64,
+    paths: FanPaths,
+    cpu_temp_c: Option<i64>,
+    gpu_temp_c: Option<i64>,
+    rpm_reading: Option<i64>,
+    rpm: i64,
+    heat: safety::HeatThresholds,
 }
 
 /// The fans, claimed for a measurement or a write check that must not have
@@ -648,6 +681,11 @@ pub struct FanModule {
     hardware: Arc<Mutex<Hardware>>,
     store: ConfigStore,
     state: Arc<Mutex<State>>,
+    /// Serialises the explicit requested -> applied -> committed mode
+    /// transition. The ordinary state lock still protects all fields; this
+    /// gate prevents a second transition from replacing the pending intent
+    /// while a control pass is applying it.
+    mode_operation: Arc<Mutex<()>>,
     announcer: Announcer,
     heat_source: Arc<std::sync::OnceLock<HeatSource>>,
 }
@@ -814,6 +852,7 @@ impl FanModule {
             hardware: Arc::new(Mutex::new(Hardware { paths, caps })),
             store,
             state,
+            mode_operation: Arc::new(Mutex::new(())),
             announcer: Announcer::default(),
             heat_source: Arc::default(),
         };
@@ -885,6 +924,7 @@ impl FanModule {
         let mode = observed_mode(&paths).unwrap_or(FanMode::Auto);
         Self {
             state: Arc::new(Mutex::new(State::new(config, mode, false))),
+            mode_operation: Arc::new(Mutex::new(())),
             store: ConfigStore::system(),
             hardware: Arc::new(Mutex::new(Hardware { paths, caps })),
             announcer: Announcer::default(),
@@ -1307,27 +1347,19 @@ impl FanModule {
             ));
         }
 
-        {
-            let mut state = lock(&self.state);
-            if let Some(pwm) = pwm {
-                state.config.manual_pwm = pwm.max(curve::MIN_COMMANDED_PWM);
-            }
-            state.config.mode = mode;
-            state.mode = mode;
-            state.owned = true;
-            // Somebody chose again: a stall that handed the fans to the
-            // firmware is worth one more try.
-            state.stalled = false;
-            // A mode change must land now, whatever the last write was.
-            state.forget_writes();
-            state.smoother = curve::TempSmoother::new(state.config.ma_window);
-        }
-
-        self.tick_once()?;
-        let mut state = lock(&self.state);
-        persist(&self.store, &mut state);
-        let manual_pwm = state.config.manual_pwm;
-        drop(state);
+        let _operation = self
+            .mode_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock(&self.state).pending_mode = Some(ModeRequest {
+            mode,
+            manual_pwm: pwm.map(|value| value.max(curve::MIN_COMMANDED_PWM)),
+        });
+        let mut events = Vec::new();
+        let applied = self.apply_pending_mode(&mut events);
+        drop(_operation);
+        Self::publish_tick_events(&self.announcer, events);
+        let manual_pwm = applied?;
 
         // Announced the way `power.mode` is: anything watching the daemon -
         // the app's fan page, the widget, `pyren-ctl` - hears that the fan
@@ -1932,6 +1964,21 @@ impl FanModule {
         }
     }
 
+    /// Applies the pending request tentatively and commits it only after a
+    /// complete control pass succeeds. On an external failure the previous
+    /// logical state is restored while the intent remains queued for the
+    /// next control tick.
+    fn apply_pending_mode(
+        &self,
+        events: &mut Vec<(&'static str, Value)>,
+    ) -> Result<u8, ModuleError> {
+        let request = lock(&self.state)
+            .pending_mode
+            .expect("called with a pending mode");
+        self.tick_with_mode_request(events, Some(request), || {})
+            .map(|manual_pwm| manual_pwm.expect("a mode request returns its committed pwm"))
+    }
+
     /// One pass of the control loop. Also used by `setMode`/`setCurve` so a
     /// call takes effect immediately rather than up to [`TICK`] later.
     ///
@@ -1939,15 +1986,53 @@ impl FanModule {
     /// lock is gone, so a listener that reaches back into this module cannot
     /// deadlock against it.
     fn tick_once(&self) -> Result<(), ModuleError> {
+        let _operation = self
+            .mode_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut events = Vec::new();
-        let outcome = self.tick(&mut events);
-        for (topic, payload) in events {
-            self.announcer.publish(topic, payload);
+        let pending = lock(&self.state).pending_mode;
+        let result = if let Some(request) = pending {
+            self.apply_pending_mode(&mut events)
+                .map(|manual_pwm| Some((request.mode, manual_pwm)))
+        } else {
+            self.tick(&mut events).map(|()| None)
+        };
+        drop(_operation);
+        Self::publish_tick_events(&self.announcer, events);
+        if let Some((mode, manual_pwm)) = result? {
+            self.announcer.publish(
+                "fan.mode",
+                json!({ "mode": mode.as_str(), "manualPwm": manual_pwm, "source": "retry" }),
+            );
         }
-        outcome
+        Ok(())
+    }
+
+    fn publish_tick_events(announcer: &Announcer, events: Vec<(&'static str, Value)>) {
+        for (topic, payload) in events {
+            announcer.publish(topic, payload);
+        }
     }
 
     fn tick(&self, events: &mut Vec<(&'static str, Value)>) -> Result<(), ModuleError> {
+        self.tick_with_mode_request(events, None, || {}).map(drop)
+    }
+
+    /// Runs a control pass with an optional tentative mode. The tentative
+    /// fields and their rollback/commit stay behind one uninterrupted state
+    /// guard, so a status reader cannot observe a mode whose hardware write
+    /// has not succeeded.
+    ///
+    /// `before_finish` is the exact scheduling boundary used by the
+    /// regression test: the control pass has returned, but the same state
+    /// guard still protects the pending transition.
+    fn tick_with_mode_request(
+        &self,
+        events: &mut Vec<(&'static str, Value)>,
+        pending: Option<ModeRequest>,
+        before_finish: impl FnOnce(),
+    ) -> Result<Option<u8>, ModuleError> {
         let now_secs = monotonic_secs();
         let paths = self.paths();
         let cpu_temp_c = paths.cpu_temp.as_deref().and_then(read_millideg_c);
@@ -1957,6 +2042,84 @@ impl FanModule {
         let heat = self.heat_thresholds(now_secs);
 
         let mut state = lock(&self.state);
+        let before = pending.map(|request| {
+            let before = ModeSnapshot {
+                config_mode: state.config.mode,
+                manual_pwm: state.config.manual_pwm,
+                mode: state.mode,
+                owned: state.owned,
+                stalled: state.stalled,
+                released: state.released,
+                hysteresis: state.hysteresis.clone(),
+                smoother: state.smoother.clone(),
+            };
+            if let Some(pwm) = request.manual_pwm {
+                state.config.manual_pwm = pwm;
+            }
+            state.config.mode = request.mode;
+            state.mode = request.mode;
+            state.owned = true;
+            state.stalled = false;
+            state.forget_writes();
+            state.smoother = curve::TempSmoother::new(state.config.ma_window);
+            before
+        });
+
+        let outcome = self.tick_locked(
+            &mut state,
+            events,
+            TickInputs {
+                now_secs,
+                paths,
+                cpu_temp_c,
+                gpu_temp_c,
+                rpm_reading,
+                rpm,
+                heat,
+            },
+        );
+
+        let Some((request, before)) = pending.zip(before) else {
+            return outcome.map(|()| None);
+        };
+
+        before_finish();
+        match outcome {
+            Ok(()) => {
+                state.pending_mode = None;
+                persist(&self.store, &mut state);
+                Ok(Some(state.config.manual_pwm))
+            }
+            Err(error) => {
+                state.config.mode = before.config_mode;
+                state.config.manual_pwm = before.manual_pwm;
+                state.mode = before.mode;
+                state.owned = before.owned;
+                state.stalled = before.stalled;
+                state.released = before.released;
+                state.hysteresis = before.hysteresis;
+                state.smoother = before.smoother;
+                state.pending_mode = Some(request);
+                Err(error)
+            }
+        }
+    }
+
+    fn tick_locked(
+        &self,
+        state: &mut State,
+        events: &mut Vec<(&'static str, Value)>,
+        inputs: TickInputs,
+    ) -> Result<(), ModuleError> {
+        let TickInputs {
+            now_secs,
+            paths,
+            cpu_temp_c,
+            gpu_temp_c,
+            rpm_reading,
+            rpm,
+            heat,
+        } = inputs;
         if state.exiting {
             // The fans were handed back on the way out. See `on_exit`.
             return Ok(());
@@ -2125,7 +2288,7 @@ impl FanModule {
             if result.is_ok() {
                 state.safety_hold = Some((forced, now_secs));
             }
-            return record_write(&mut state, result);
+            return record_write(state, result);
         }
         if state.safety_hold.take().is_some() {
             // The guard let go: what was in force goes back now, exactly.
@@ -2135,7 +2298,7 @@ impl FanModule {
                 // it was found, once, and then left alone again.
                 let pwm = state.config.manual_pwm;
                 let result = control::apply(&paths, self.caps(), mode, pwm);
-                return record_write(&mut state, result);
+                return record_write(state, result);
             }
         }
 
@@ -2188,7 +2351,7 @@ impl FanModule {
                         state.released = true;
                         state.hysteresis.reset();
                         let result = control::apply(&paths, self.caps(), FanMode::Auto, 0);
-                        return record_write(&mut state, result);
+                        return record_write(state, result);
                     }
                 }
             }
@@ -2214,7 +2377,7 @@ impl FanModule {
                 state.hysteresis.reset();
                 state.zero_rpm.reset();
                 let result = control::apply(&self.paths(), self.caps(), FanMode::Auto, 0);
-                return record_write(&mut state, result);
+                return record_write(state, result);
             }
             if state.released {
                 state.released = false;
@@ -2241,7 +2404,7 @@ impl FanModule {
                 if result.is_ok() {
                     state.safety_hold = Some((FanMode::Auto, now_secs));
                 }
-                return record_write(&mut state, result);
+                return record_write(state, result);
             }
 
             // A speed is about to be commanded, so the driver has to be
@@ -2282,8 +2445,7 @@ impl FanModule {
                     if let stall::Tick::RaiseFloor { faults } =
                         state.stall.observe(now_secs, expected, rpm, steady)
                     {
-                        if let Some(payload) =
-                            self.raise_floor_after_stalls(&mut state, faults, driver)
+                        if let Some(payload) = self.raise_floor_after_stalls(state, faults, driver)
                         {
                             events.push(("fan.floorRaised", payload));
                         }
@@ -2312,10 +2474,12 @@ impl FanModule {
 
         let pwm = target.unwrap_or(0);
         let result = control::apply(&self.paths(), self.caps(), mode, pwm);
-        // Recorded even when the write failed, so a machine that cannot be
-        // written to is retried once a minute rather than every tick.
-        state.hysteresis.applied(pwm, now_secs);
-        record_write(&mut state, result)
+        // Only an effect that reached the hardware can suppress a later
+        // write. A failure remains immediately retryable.
+        if result.is_ok() {
+            state.hysteresis.applied(pwm, now_secs);
+        }
+        record_write(state, result)
     }
 
     /// The stall watch has seen the fans give out at Pyren's floor enough
@@ -3840,6 +4004,137 @@ mod tests {
             .unwrap()
             .trim()
             .to_string()
+    }
+
+    #[test]
+    fn a_power_profile_event_can_publish_a_real_fan_safety_transition() {
+        let (module, dir) = driven_on_a_fixture("event-reentry", 95);
+        let bus = Arc::new(pyren_core::EventBus::new());
+        module.publish_to(Arc::clone(&bus));
+
+        // This is the listener installed by the daemon: a power transition
+        // immediately applies that profile's curve. At 95 C the tick emits
+        // the real critical-latch fan.safety transition back onto the bus.
+        let fan = module.clone();
+        bus.subscribe(move |topic, payload| {
+            if topic == "power.mode" {
+                fan.set_active_profile(payload["mode"].as_str().unwrap());
+            }
+        });
+
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let publisher = Arc::clone(&bus);
+        std::thread::spawn(move || {
+            publisher.publish("power.mode", json!({ "mode": "eco" }));
+            let _ = finished_tx.send(());
+        });
+
+        assert!(
+            finished_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "publishing power.mode deadlocked when the fan listener emitted fan.safety"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_mode_write_does_not_commit_the_requested_mode() {
+        let (module, dir) = driven_on_a_fixture("mode-write-failure", 50);
+        let before = {
+            let state = lock(&module.state);
+            (state.mode, state.config.mode, state.owned)
+        };
+
+        // The capability probe succeeded, then its sysfs node became
+        // unusable before the request wrote it: a normal driver lifecycle
+        // race. A directory makes that write refusal deterministic on the
+        // ordinary temp filesystem (where deleting a file would let
+        // File::create recreate it, unlike sysfs).
+        fs::remove_file(dir.join("pwm1_enable")).unwrap();
+        fs::create_dir(dir.join("pwm1_enable")).unwrap();
+        let result = module.set_mode(FanMode::Max, None);
+        assert!(
+            result.is_err(),
+            "the missing control must make the write fail"
+        );
+
+        let after = {
+            let state = lock(&module.state);
+            (state.mode, state.config.mode, state.owned)
+        };
+        assert_eq!(
+            after, before,
+            "a failed hardware write left the logical/configured mode committed"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_mode_is_never_visible_between_the_write_and_rollback() {
+        let (module, dir) = driven_on_a_fixture("mode-write-visibility", 50);
+        fs::remove_file(dir.join("pwm1_enable")).unwrap();
+        fs::create_dir(dir.join("pwm1_enable")).unwrap();
+        let request = ModeRequest {
+            mode: FanMode::Max,
+            manual_pwm: None,
+        };
+        lock(&module.state).pending_mode = Some(request);
+
+        let (control_done_tx, control_done_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let worker_module = module.clone();
+        let worker = std::thread::spawn(move || {
+            let mut events = Vec::new();
+            worker_module.tick_with_mode_request(&mut events, Some(request), || {
+                control_done_tx.send(()).unwrap();
+                finish_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("release the rollback boundary");
+            })
+        });
+        control_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the failed control pass reaches its rollback boundary");
+
+        let (status_started_tx, status_started_rx) = std::sync::mpsc::channel();
+        let (status_tx, status_rx) = std::sync::mpsc::channel();
+        let status_module = module.clone();
+        let reader = std::thread::spawn(move || {
+            status_started_tx.send(()).unwrap();
+            status_tx.send(status_module.status()).unwrap();
+        });
+        status_started_rx.recv().unwrap();
+        assert!(
+            status_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "status observed the tentative mode before its failed hardware write was rolled back"
+        );
+
+        finish_tx.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        let status = status_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("status resumes after the atomic rollback");
+        reader.join().unwrap();
+        assert_eq!(status["mode"], "curve");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_mode_write_is_retried_on_the_next_control_tick() {
+        let (module, dir) = driven_on_a_fixture("mode-write-retry", 50);
+        fs::remove_file(dir.join("pwm1_enable")).unwrap();
+        fs::create_dir(dir.join("pwm1_enable")).unwrap();
+        assert!(module.set_mode(FanMode::Max, None).is_err());
+
+        fs::remove_dir(dir.join("pwm1_enable")).unwrap();
+        fs::write(dir.join("pwm1_enable"), "2").unwrap();
+        module.tick_once().unwrap();
+
+        assert_eq!(
+            read_file(&dir, "pwm1_enable"),
+            "0",
+            "the failed write was recorded as applied and suppressed the immediate retry"
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// A curve asking for less than the fans can hold hands them to the

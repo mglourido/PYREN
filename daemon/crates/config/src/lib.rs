@@ -232,6 +232,21 @@ impl ConfigStore {
             source,
         })?;
 
+        // `load` deliberately returns defaults for a file written by a
+        // newer build. Check the target again here so a caller cannot write
+        // those defaults back and silently downgrade the file.
+        if let Ok(text) = fs::read_to_string(&path) {
+            if let Ok(probe) = serde_json::from_str::<VersionProbe>(&text) {
+                if probe.version > CURRENT_VERSION {
+                    return Err(ConfigError::FutureVersion {
+                        path,
+                        found: probe.version,
+                        supported: CURRENT_VERSION,
+                    });
+                }
+            }
+        }
+
         let payload = serde_json::to_string_pretty(&Versioned {
             version: CURRENT_VERSION,
             inner: value,
@@ -421,6 +436,27 @@ mod tests {
             fs::read_to_string(store.path_for("thing")).unwrap(),
             original
         );
+    }
+
+    #[test]
+    fn defaults_loaded_from_a_future_file_cannot_overwrite_that_file() {
+        let store = store("future-save");
+        fs::create_dir_all(store.root()).unwrap();
+        let original = format!(
+            r#"{{"version":{},"enabled":true,"newField":"keep me"}}"#,
+            CURRENT_VERSION + 1
+        );
+        fs::write(store.path_for("thing"), &original).unwrap();
+
+        let loaded = store.load::<Sample>("thing");
+        assert!(matches!(loaded.outcome, LoadOutcome::TooNew { .. }));
+        let saved = store.save("thing", &loaded.value);
+
+        assert!(
+            matches!(saved, Err(ConfigError::FutureVersion { .. })),
+            "saving fallback defaults silently downgraded a newer config"
+        );
+        assert_eq!(fs::read_to_string(store.path_for("thing")).unwrap(), original);
     }
 
     #[test]

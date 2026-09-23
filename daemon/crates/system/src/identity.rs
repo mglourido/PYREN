@@ -5,7 +5,6 @@
 //! daemon runs, and re-reading DMI on every poll would be wasted work.
 
 use std::fs;
-use std::process::Command;
 
 use pyren_core::{msg, Msg};
 use serde::Serialize;
@@ -291,7 +290,7 @@ fn detect_gpus() -> Vec<String> {
 }
 
 fn gpus_from_lspci() -> Option<Vec<String>> {
-    let output = Command::new("lspci").arg("-mm").output().ok()?;
+    let output = pyren_core::process::command("lspci").arg("-mm").output().ok()?;
     if !output.status.success() {
         return None;
     }

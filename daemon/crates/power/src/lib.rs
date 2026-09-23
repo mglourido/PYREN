@@ -60,6 +60,9 @@ use pyren_core::{msg, ErrorKind, EventBus, Module, ModuleError, ModuleResult, Ms
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+#[cfg(test)]
+static POWER_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 pub use auto::{AutoConfig, AutoInputs, AutoSwitcher, HeatLatch, Sensors};
 pub use backend::{ApplyReport, BackendState};
 pub use limits::{Limits, LockSource, ModeTuning, Tuning};
@@ -1497,6 +1500,9 @@ mod tests {
     /// a machine it is allowed to change.
     #[test]
     fn a_profile_on_a_machine_without_powercap_still_applies_the_os_half() {
+        let _guard = POWER_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let nowhere =
             std::env::temp_dir().join(format!("pyren-power-nowhere-{}", std::process::id()));
         std::env::set_var("PYREN_PLATFORM_PROFILE", nowhere.join("platform_profile"));

@@ -14,7 +14,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use pyren_core::{msg, Msg};
 use serde::Serialize;
@@ -130,6 +129,7 @@ pub fn execute_watched(
 ) -> ExecutionReport {
     let mut results = Vec::new();
     let mut failed = false;
+    let mut reload_incomplete = false;
     let total = plan.steps.len();
 
     for (index, step) in plan.steps.iter().enumerate() {
@@ -184,6 +184,15 @@ pub fn execute_watched(
                 }
             }
         };
+        // A failed or deliberately omitted unload may leave the old live
+        // module in place. A later modprobe can exit successfully without
+        // replacing it. Still try the load, but never claim the requested
+        // transition completed when its unload was not confirmed.
+        if step.id == "modprobe-remove"
+            && matches!(done.status, StepStatus::Warned | StepStatus::Declined)
+        {
+            reload_incomplete = true;
+        }
         results.push(done);
 
         // Whatever the branch above decided, it is the last thing pushed.
@@ -201,7 +210,7 @@ pub fn execute_watched(
 
     ExecutionReport {
         dry_run,
-        succeeded: !failed,
+        succeeded: !failed && !reload_incomplete,
         results,
     }
 }
@@ -240,7 +249,7 @@ fn run_step(step: &Step, env: &Environment, context: &ExecuteContext) -> Result<
 }
 
 fn run_command(command: &[String]) -> Result<String, String> {
-    let output = Command::new(&command[0])
+    let output = pyren_core::process::command(&command[0])
         .args(&command[1..])
         .output()
         .map_err(|e| format!("could not run {}: {e}", command[0]))?;
@@ -796,7 +805,8 @@ fn remove_sleep_hook() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{plan, Action, PlanOptions};
+    use crate::plan::{plan, Action, PlanOptions, Step};
+    use std::os::unix::fs::PermissionsExt;
 
     /// The hook runs on every suspend of every machine with the service.
     /// It must hand both halves to the daemon with `--if-enabled` - never
@@ -812,7 +822,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let script = dir.join("pyren");
         fs::write(&script, &text).unwrap();
-        let checked = Command::new("sh").arg("-n").arg(&script).status().unwrap();
+        let checked = pyren_core::process::command("sh").arg("-n").arg(&script).status().unwrap();
         assert!(checked.success(), "sh -n rejected:\n{text}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -854,6 +864,65 @@ mod tests {
             patched_driver_installed: false,
             hottest_c: None,
         }
+    }
+
+    #[test]
+    fn a_busy_old_module_cannot_be_reported_as_a_successful_reload() {
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-installer-busy-module-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let command = dir.join("modprobe");
+        fs::write(
+            &command,
+            "#!/bin/sh\nif [ \"$1\" = \"-r\" ]; then echo busy >&2; exit 1; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let plan = Plan {
+            action: Action::InstallDriver,
+            strategy: None,
+            steps: vec![
+                Step {
+                    id: "modprobe-remove".into(),
+                    description: Msg::literal("remove old hp-wmi"),
+                    command: vec![
+                        command.display().to_string(),
+                        "-r".into(),
+                        "hp-wmi".into(),
+                    ],
+                    optional: true,
+                },
+                Step {
+                    id: "modprobe".into(),
+                    description: Msg::literal("load replacement hp-wmi"),
+                    command: vec![command.display().to_string(), "hp-wmi".into()],
+                    optional: false,
+                },
+            ],
+            blockers: Vec::new(),
+            warnings: Vec::new(),
+            needs_root: true,
+        };
+
+        let report = execute(
+            &plan,
+            &ready_env(),
+            &ExecuteContext::default(),
+            false,
+        );
+
+        assert_eq!(report.results[0].status, StepStatus::Warned);
+        assert_eq!(report.results[1].status, StepStatus::Ok);
+        assert!(
+            !report.succeeded,
+            "the old module was never unloaded, but the replacement was reported installed"
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// Reproduces the layout the restore used to leave behind: a

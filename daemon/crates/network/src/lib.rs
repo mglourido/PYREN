@@ -43,11 +43,15 @@
 //! ground truth: whatever `tc qdisc show` actually reports right now, ours
 //! or not.
 
-use std::process::Command;
+#[cfg(test)]
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult};
 use serde_json::{json, Value};
+
+#[cfg(test)]
+type BeforeModeCommit = Arc<dyn Fn(NetworkMode) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkMode {
@@ -130,7 +134,7 @@ fn qdisc_kind(show_output: &str) -> Option<String> {
 }
 
 fn tc_present() -> bool {
-    Command::new(tc_bin())
+    pyren_core::process::command(tc_bin())
         .arg("-Version")
         .output()
         .map(|o| o.status.success())
@@ -138,7 +142,7 @@ fn tc_present() -> bool {
 }
 
 fn read_qdisc(interface: &str) -> Option<String> {
-    let output = Command::new(tc_bin())
+    let output = pyren_core::process::command(tc_bin())
         .args(["qdisc", "show", "dev", interface])
         .output()
         .ok()?;
@@ -167,7 +171,7 @@ enum QdiscFailure {
 fn enable_smart_queuing(interface: &str) -> Result<&'static str, QdiscFailure> {
     let mut failures = Vec::new();
     for qdisc in QDISCS_TO_TRY {
-        let output = Command::new(tc_bin())
+        let output = pyren_core::process::command(tc_bin())
             .args(["qdisc", "replace", "dev", interface, "root", qdisc])
             .output();
         match output {
@@ -193,28 +197,48 @@ fn enable_smart_queuing(interface: &str) -> Result<&'static str, QdiscFailure> {
 /// would have chosen on its own. "No such file or directory" (nothing to
 /// delete - already the default) is not a failure, it is the goal state.
 fn disable_smart_queuing(interface: &str) {
-    let _ = Command::new(tc_bin())
+    let _ = pyren_core::process::command(tc_bin())
         .args(["qdisc", "del", "dev", interface, "root"])
         .output();
 }
 
 pub struct NetworkModule {
-    /// This daemon's own memory of the last `setMode`, not a read of the
-    /// interface - see the module doc's "What `mode` means here".
-    mode: Mutex<NetworkMode>,
+    /// This daemon's requested/committed transition. The generation gives
+    /// an older `tc` completion a way to notice that a later request owns
+    /// the interface and restore that later request if necessary.
+    mode: Mutex<ModeState>,
+    #[cfg(test)]
+    before_mode_commit: Mutex<Option<BeforeModeCommit>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModeState {
+    requested: NetworkMode,
+    committed: NetworkMode,
+    generation: u64,
 }
 
 impl NetworkModule {
     pub fn new() -> Self {
         Self {
-            mode: Mutex::new(NetworkMode::Off),
+            mode: Mutex::new(ModeState {
+                requested: NetworkMode::Off,
+                committed: NetworkMode::Off,
+                generation: 0,
+            }),
+            #[cfg(test)]
+            before_mode_commit: Mutex::new(None),
         }
     }
 
     fn status(&self) -> Value {
         let interface = default_route_interface(&read_to_string(&route_path()));
         let active_qdisc = interface.as_deref().and_then(read_qdisc);
-        let mode = *self.mode.lock().unwrap_or_else(|p| p.into_inner());
+        let mode = self
+            .mode
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .committed;
         json!({
             "supported": tc_present() && interface.is_some(),
             "interface": interface,
@@ -275,36 +299,92 @@ impl Module for NetworkModule {
                         )
                     })?;
 
-                match mode {
-                    NetworkMode::Off => disable_smart_queuing(&interface),
-                    NetworkMode::Auto => {
-                        enable_smart_queuing(&interface).map_err(|failure| match failure {
-                            QdiscFailure::PermissionDenied => ModuleError::localised(
-                                ErrorKind::PermissionDenied,
-                                msg!(
-                                    "network.err.needsRoot",
-                                    { "interface" => interface.clone() },
-                                    "changing the qdisc on {interface} needs root"
-                                ),
-                            ),
-                            QdiscFailure::NotCapable(detail) => ModuleError::localised(
-                                ErrorKind::NotCapable,
-                                msg!(
-                                    "network.err.qdiscRefused",
-                                    { "detail" => detail },
-                                    "this kernel refused smart queuing: {detail}"
-                                ),
-                            ),
-                        })?;
+                let request = {
+                    let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
+                    state.generation = state.generation.wrapping_add(1);
+                    state.requested = mode;
+                    state.generation
+                };
+
+                if let Err(error) = apply_mode(&interface, mode) {
+                    let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
+                    if state.generation == request {
+                        state.requested = state.committed;
+                        // Reverting the desired value is itself a new
+                        // intention. A stale reconciler may already have
+                        // sampled the failed value under `request`; changing
+                        // the token prevents it from committing that sample
+                        // after this rollback.
+                        state.generation = state.generation.wrapping_add(1);
                     }
+                    return Err(error);
                 }
 
-                *self.mode.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+                #[cfg(test)]
+                let before_mode_commit = {
+                    self.before_mode_commit
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                };
+                #[cfg(test)]
+                if let Some(hook) = before_mode_commit {
+                    hook(mode);
+                }
+
+                // A request can be descheduled after `tc` succeeds. If a
+                // later request has since changed the interface, this old
+                // completion must neither overwrite its logical mode nor
+                // leave its own qdisc as the last external effect. Reapply
+                // the newest request until one generation stays current
+                // across its external operation and state commit.
+                let mut completed = request;
+                loop {
+                    let (generation, requested) = {
+                        let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
+                        if state.generation == completed {
+                            state.committed = state.requested;
+                            break;
+                        }
+                        (state.generation, state.requested)
+                    };
+                    apply_mode(&interface, requested)?;
+                    completed = generation;
+                }
                 Ok(self.status())
             }
 
             other => Err(ModuleError::UnknownMethod(other.to_string())),
         }
+    }
+}
+
+fn apply_mode(interface: &str, mode: NetworkMode) -> Result<(), ModuleError> {
+    match mode {
+        NetworkMode::Off => {
+            disable_smart_queuing(interface);
+            Ok(())
+        }
+        NetworkMode::Auto => enable_smart_queuing(interface)
+            .map(|_| ())
+            .map_err(|failure| match failure {
+                QdiscFailure::PermissionDenied => ModuleError::localised(
+                    ErrorKind::PermissionDenied,
+                    msg!(
+                        "network.err.needsRoot",
+                        { "interface" => interface.to_string() },
+                        "changing the qdisc on {interface} needs root"
+                    ),
+                ),
+                QdiscFailure::NotCapable(detail) => ModuleError::localised(
+                    ErrorKind::NotCapable,
+                    msg!(
+                        "network.err.qdiscRefused",
+                        { "detail" => detail },
+                        "this kernel refused smart queuing: {detail}"
+                    ),
+                ),
+            }),
     }
 }
 
@@ -335,6 +415,7 @@ mod tests {
                 std::process::id(),
                 std::thread::current().id()
             ));
+            let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("tc");
             std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -347,8 +428,17 @@ mod tests {
     impl Drop for FakeTc {
         fn drop(&mut self) {
             std::env::remove_var("PYREN_TC_BIN");
+            std::env::remove_var("PYREN_NET_ROUTE_PATH");
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    fn wait_for_path(path: &std::path::Path) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !path.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(path.exists(), "timed out waiting for {}", path.display());
     }
 
     #[test]
@@ -438,6 +528,184 @@ enp3s0\t00000000\t0102A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
         assert_eq!(NetworkMode::parse("off"), Some(NetworkMode::Off));
         assert_eq!(NetworkMode::parse("AUTO"), Some(NetworkMode::Auto));
         assert_eq!(NetworkMode::parse("custom"), None);
+    }
+
+    #[test]
+    fn the_last_concurrent_request_owns_both_mode_and_qdisc() {
+        let fx = FakeTc::new(
+            r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc replace") echo cake > "$root/qdisc"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+esac
+exit 2
+"#,
+        );
+        std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+
+        let module = Arc::new(NetworkModule::new());
+        let (auto_hardware_done_tx, auto_hardware_done_rx) = std::sync::mpsc::channel();
+        let (release_auto_tx, release_auto_rx) = std::sync::mpsc::channel();
+        let release_auto_rx = Arc::new(Mutex::new(release_auto_rx));
+        *module
+            .before_mode_commit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(move |mode| {
+            if mode == NetworkMode::Auto {
+                auto_hardware_done_tx.send(()).unwrap();
+                release_auto_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("release the auto request");
+            }
+        }));
+
+        let first = Arc::clone(&module);
+        let (auto_done_tx, auto_done_rx) = std::sync::mpsc::channel();
+        let auto = std::thread::spawn(move || {
+            let _ = auto_done_tx.send(first.call("setMode", json!({ "mode": "auto" })));
+        });
+        auto_hardware_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("auto request reaches the pre-commit boundary");
+
+        // This is the later request. It completes while the first caller is
+        // descheduled after its successful tc command and before its commit.
+        let off = module
+            .call("setMode", json!({ "mode": "off" }))
+            .expect("later off request succeeds");
+        assert_eq!(off["mode"], "off");
+        assert_eq!(off["activeQdisc"], "pfifo_fast");
+
+        release_auto_tx.send(()).unwrap();
+        auto_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("auto request must not remain blocked")
+            .unwrap();
+        auto.join().unwrap();
+        let final_status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(final_status["activeQdisc"], "pfifo_fast");
+        assert_eq!(
+            final_status["mode"], "off",
+            "the earlier request committed after the later one and made logical state disagree with qdisc"
+        );
+    }
+
+    #[test]
+    fn a_failed_request_invalidates_a_reconciler_that_sampled_its_generation() {
+        let fx = FakeTc::new(
+            r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+  "qdisc replace")
+    if [ "$6" = "fq_codel" ]; then exit 2; fi
+    if mkdir "$root/first" 2>/dev/null; then
+      echo cake > "$root/qdisc"
+      exit 0
+    fi
+    if mkdir "$root/second" 2>/dev/null; then
+      : > "$root/second-ready"
+      n=0
+      while [ ! -f "$root/release-second" ] && [ "$n" -lt 400 ]; do
+        n=$((n + 1))
+        sleep 0.01
+      done
+      exit 2
+    fi
+    if mkdir "$root/third" 2>/dev/null; then
+      : > "$root/third-ready"
+      n=0
+      while [ ! -f "$root/release-third" ] && [ "$n" -lt 400 ]; do
+        n=$((n + 1))
+        sleep 0.01
+      done
+      echo cake > "$root/qdisc"
+      exit 0
+    fi
+    echo cake > "$root/qdisc"
+    exit 0 ;;
+esac
+exit 2
+"#,
+        );
+        std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+        let route = fx.dir.join("route");
+        std::fs::write(&route, ROUTE_TABLE).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+
+        let module = Arc::new(NetworkModule::new());
+        let (first_applied_tx, first_applied_rx) = std::sync::mpsc::channel();
+        let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+        let release_first_rx = Arc::new(Mutex::new(release_first_rx));
+        *module
+            .before_mode_commit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(move |_| {
+            first_applied_tx.send(()).unwrap();
+            release_first_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("release the first request");
+        }));
+
+        let first_module = Arc::clone(&module);
+        let (first_done_tx, first_done_rx) = std::sync::mpsc::channel();
+        let first = std::thread::spawn(move || {
+            first_done_tx
+                .send(first_module.call("setMode", json!({ "mode": "auto" })))
+                .unwrap();
+        });
+        first_applied_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the first request reaches its pre-commit boundary");
+
+        let second_module = Arc::clone(&module);
+        let (second_done_tx, second_done_rx) = std::sync::mpsc::channel();
+        let second = std::thread::spawn(move || {
+            second_done_tx
+                .send(second_module.call("setMode", json!({ "mode": "auto" })))
+                .unwrap();
+        });
+        wait_for_path(&fx.dir.join("second-ready"));
+
+        // The first caller now sees generation 2 and starts replaying it.
+        // Its fake tc call pauses after that sample while generation 2's
+        // own call fails and rolls requested back to committed Off.
+        release_first_tx.send(()).unwrap();
+        wait_for_path(&fx.dir.join("third-ready"));
+        std::fs::write(fx.dir.join("release-second"), "go").unwrap();
+        assert!(second_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the second request finishes")
+            .is_err());
+        second.join().unwrap();
+        {
+            let state = module.mode.lock().unwrap_or_else(|p| p.into_inner());
+            assert_eq!(state.requested, NetworkMode::Off);
+            assert_eq!(state.generation, 3);
+        }
+
+        std::fs::write(fx.dir.join("release-third"), "go").unwrap();
+        first_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the reconciler finishes")
+            .unwrap();
+        first.join().unwrap();
+
+        let status = module.call("getStatus", Value::Null).unwrap();
+        assert_eq!(status["mode"], "off");
+        assert_eq!(status["activeQdisc"], "pfifo_fast");
     }
 
     #[test]

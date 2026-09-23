@@ -138,8 +138,9 @@ pub struct OverclockConfig {
 
 /// An applied change that has not been confirmed yet, and what it goes back
 /// to when the clock runs out.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Pending {
+    generation: u64,
     gpu: String,
     revert_to: Target,
     deadline: Instant,
@@ -152,6 +153,17 @@ struct State {
     /// zero, because zero would be a claim about hardware we never read.
     applied: BTreeMap<String, Target>,
     pending: Option<Pending>,
+    next_pending_generation: u64,
+    /// Generation currently being written back by a revert. Confirm is
+    /// refused only during that external write; once it completes, the
+    /// normal identity check decides whether its logical result still owns
+    /// the pending request.
+    reverting: Option<u64>,
+    completed_revert: Option<u64>,
+    /// Serialises GPU writes without holding the state mutex across driver
+    /// calls. Apply/reset/revert may still update state independently once
+    /// their external operation has completed.
+    hardware_operation: Arc<Mutex<()>>,
     /// Open for exactly as long as `pending` is: the driver's own
     /// "this GPU just faulted" signal, asked once per watchdog tick so a
     /// card that starts failing at second 2 of the hold is not left on a
@@ -228,6 +240,10 @@ impl OverclockModule {
                 config,
                 applied: BTreeMap::new(),
                 pending: None,
+                next_pending_generation: 0,
+                reverting: None,
+                completed_revert: None,
+                hardware_operation: Arc::new(Mutex::new(())),
                 fault_watch: None,
                 unconfirmed_at_start,
                 last_error: None,
@@ -445,6 +461,10 @@ impl OverclockModule {
 
     /// Applies a target, in steps, and arms the timer that will undo it.
     fn apply(&self, params: &Value) -> ModuleResult {
+        let hardware_operation = Arc::clone(&lock(&self.state).hardware_operation);
+        let _hardware = hardware_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let gpu = self.requested_gpu(params)?;
         let hold = self.hold_from(params)?;
 
@@ -505,9 +525,12 @@ impl OverclockModule {
                     state.config.targets.insert(gpu.id.clone(), clamped.target);
                     state.config.armed_gpu = None;
                 } else {
+                    let revert_to = self.confirmed(&state, &gpu.id);
+                    state.next_pending_generation = state.next_pending_generation.wrapping_add(1);
                     state.pending = Some(Pending {
+                        generation: state.next_pending_generation,
                         gpu: gpu.id.clone(),
-                        revert_to: self.confirmed(&state, &gpu.id),
+                        revert_to,
                         deadline: Instant::now() + Duration::from_secs(hold),
                     });
                     state.fault_watch = fault_watch(&gpu);
@@ -532,6 +555,15 @@ impl OverclockModule {
 
     fn confirm(&self) -> ModuleResult {
         let mut state = lock(&self.state);
+        if state.reverting.is_some() {
+            return Err(ModuleError::localised(
+                ErrorKind::Busy,
+                msg!(
+                    "overclock.err.reverting",
+                    "the pending overclock is already being reverted"
+                ),
+            ));
+        }
         let Some(pending) = state.pending.take() else {
             return Err(ModuleError::localised(
                 ErrorKind::InvalidParams,
@@ -593,6 +625,10 @@ impl OverclockModule {
     /// hardware it was not asked about - the same rule the fan module
     /// follows at startup (`dev/TODO.md` §3).
     fn reset(&self, gpu_id: Option<String>) -> ModuleResult {
+        let hardware_operation = Arc::clone(&lock(&self.state).hardware_operation);
+        let _hardware = hardware_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let probe = lock(&self.probe).clone();
         let ids: Vec<String> = match gpu_id {
             Some(id) => vec![id],
@@ -925,6 +961,37 @@ fn revert(
     pending: Pending,
     reason: RevertReason,
 ) -> Result<(), ModuleError> {
+    revert_after_hardware(state, probe, store, pending, reason, || {})
+}
+
+/// The callback is a test seam at the real scheduling boundary: hardware
+/// I/O has completed and the state mutex has not yet been reacquired.
+fn revert_after_hardware(
+    state: &Arc<Mutex<State>>,
+    probe: &Arc<Mutex<Probe>>,
+    store: &ConfigStore,
+    pending: Pending,
+    reason: RevertReason,
+    after_hardware: impl FnOnce(),
+) -> Result<(), ModuleError> {
+    let hardware_operation = Arc::clone(&lock(state).hardware_operation);
+    let hardware = hardware_operation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    {
+        let mut guard = lock(state);
+        if guard
+            .pending
+            .as_ref()
+            .is_none_or(|current| current.generation != pending.generation)
+            || guard.reverting.is_some()
+            || guard.completed_revert == Some(pending.generation)
+        {
+            return Ok(());
+        }
+        guard.reverting = Some(pending.generation);
+    }
+
     let gpu = lock(probe).gpu(&pending.gpu).cloned();
     let outcome = match &gpu {
         Some(gpu) => write_target(gpu, pending.revert_to),
@@ -934,8 +1001,30 @@ fn revert(
         )),
     };
 
+    {
+        let mut guard = lock(state);
+        if guard.reverting == Some(pending.generation) {
+            guard.reverting = None;
+            guard.completed_revert = Some(pending.generation);
+        }
+    }
+    drop(hardware);
+
+    after_hardware();
+
     let mut guard = lock(state);
+    // `pending` is a snapshot taken by the watchdog/cancel caller before
+    // hardware I/O. While that I/O was in flight the request may have been
+    // confirmed and a later apply may have armed a different watchdog. The
+    // completed revert owns only the pending value it started with.
+    if guard.pending.as_ref().map(|current| current.generation) != Some(pending.generation) {
+        if guard.completed_revert == Some(pending.generation) {
+            guard.completed_revert = None;
+        }
+        return outcome;
+    }
     guard.pending = None;
+    guard.completed_revert = None;
     guard.fault_watch = None;
     guard.config.armed_gpu = None;
     match &outcome {
@@ -1189,6 +1278,7 @@ mod tests {
     /// `apply()` would have put there.
     fn armed(hold: Duration) -> Pending {
         Pending {
+            generation: 1,
             gpu: "nvidia:0".to_string(),
             revert_to: Target::default(),
             deadline: Instant::now() + hold,
@@ -1521,6 +1611,7 @@ mod tests {
     fn a_revert_disarms_what_it_undid_so_the_next_tick_finds_nothing() {
         let module = OverclockModule::with_store(store("revert-disarms"));
         let pending = Pending {
+            generation: 1,
             gpu: "absent:0".to_string(),
             revert_to: Target::default(),
             deadline: Instant::now() + Duration::from_secs(20),
@@ -1553,6 +1644,76 @@ mod tests {
             watchdog_tick(state.pending.as_ref(), true, Instant::now()).is_none(),
             "the tick after a revert must not ask for a second one"
         );
+    }
+
+    #[test]
+    fn an_old_revert_cannot_disarm_a_newer_pending_change() {
+        let module = OverclockModule::with_store(store("stale-revert"));
+        let old = Pending {
+            generation: 1,
+            gpu: "absent:old".to_string(),
+            revert_to: Target::default(),
+            deadline: Instant::now() + Duration::from_secs(20),
+        };
+        {
+            let mut state = lock(&module.state);
+            state.pending = Some(old.clone());
+            state.config.armed_gpu = Some(old.gpu.clone());
+        }
+
+        let state = Arc::clone(&module.state);
+        let probe = Arc::clone(&module.probe);
+        let store = module.store.clone();
+        let (hardware_done_tx, hardware_done_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            revert_after_hardware(
+                &state,
+                &probe,
+                &store,
+                old,
+                RevertReason::FaultReported,
+                || {
+                    hardware_done_tx.send(()).unwrap();
+                    continue_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("release the stale revert");
+                },
+            )
+        });
+
+        hardware_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the revert reaches its post-hardware boundary");
+        // A real caller can confirm the old request while the watchdog is
+        // outside the state lock doing hardware I/O. That removes the old
+        // pending value, so the next apply is allowed to complete.
+        module.confirm().expect("old request can be confirmed");
+        assert!(lock(&module.state).pending.is_none());
+        let newer = Pending {
+            generation: 2,
+            gpu: "nvidia:new".to_string(),
+            revert_to: Target::default(),
+            deadline: Instant::now() + Duration::from_secs(20),
+        };
+        {
+            // This is the state commit performed by a successful newer
+            // apply after its own hardware climb. The test need not invent
+            // an NVIDIA driver merely to reach this already-tested commit.
+            let mut state = lock(&module.state);
+            state.pending = Some(newer.clone());
+            state.config.armed_gpu = Some(newer.gpu.clone());
+        }
+        continue_tx.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+
+        let state = lock(&module.state);
+        assert_eq!(
+            state.pending.as_ref().map(|pending| pending.gpu.as_str()),
+            Some(newer.gpu.as_str()),
+            "the stale revert cleared a newer request installed while hardware I/O was in flight"
+        );
+        assert_eq!(state.config.armed_gpu.as_deref(), Some(newer.gpu.as_str()));
     }
 
     /// The whole reason `FaultReported` is a variant of its own and not a

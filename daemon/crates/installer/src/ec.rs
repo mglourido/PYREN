@@ -17,7 +17,6 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -64,7 +63,7 @@ impl EcProbe {
             if !load_module {
                 return Self::ModuleNotLoaded;
             }
-            match Command::new("modprobe").arg("ec_sys").output() {
+            match pyren_core::process::command("modprobe").arg("ec_sys").output() {
                 Ok(output) if output.status.success() => {}
                 Ok(output) => {
                     return Self::Unavailable {

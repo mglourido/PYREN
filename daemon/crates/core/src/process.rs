@@ -8,6 +8,8 @@
 //! [`output_within`] puts a ceiling on that and kills the child at it.
 
 use std::io::{self, Read};
+use std::ffi::OsStr;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,6 +19,27 @@ use std::time::{Duration, Instant};
 /// a healthy system; three is a stall, not a slow machine.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Constructs a child command with the daemon's private termination mask
+/// removed immediately before exec. The parent thread's mask is untouched.
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    // SAFETY: the hook runs after fork in the child. It calls only the
+    // async-signal-safe sigprocmask syscall and uses stack-local storage.
+    unsafe {
+        command.pre_exec(|| {
+            let mut signals: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut signals);
+            libc::sigaddset(&mut signals, libc::SIGINT);
+            libc::sigaddset(&mut signals, libc::SIGTERM);
+            if libc::sigprocmask(libc::SIG_UNBLOCK, &signals, std::ptr::null_mut()) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
 /// `command.output()`, but killed and reported as [`io::ErrorKind::TimedOut`]
 /// once `timeout` has passed.
 ///
@@ -25,6 +48,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 /// nothing called this way is interactive, and one that prompted would
 /// otherwise sit there until the deadline.
 pub fn output_within(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+    // Keep descendants of a helper in its own group, so a timed-out shell
+    // cannot leave a grandchild holding stdout or stderr open.
+    command.process_group(0);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -35,9 +61,17 @@ pub fn output_within(command: &mut Command, timeout: Duration) -> io::Result<Out
     let stderr = drain(child.stderr.take());
 
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+    let mut status = None;
+    loop {
+        match child.try_wait() {
+            Ok(current) => status = current.or(status),
+            Err(error) => {
+                kill(&mut child);
+                return Err(error);
+            }
+        }
+        if status.is_some() && stdout.is_finished() && stderr.is_finished() {
+            break;
         }
         if Instant::now() >= deadline {
             kill(&mut child);
@@ -47,10 +81,10 @@ pub fn output_within(command: &mut Command, timeout: Duration) -> io::Result<Out
             ));
         }
         thread::sleep(Duration::from_millis(10));
-    };
+    }
 
     Ok(Output {
-        status,
+        status: status.expect("child has exited"),
         stdout: stdout.join().unwrap_or_default(),
         stderr: stderr.join().unwrap_or_default(),
     })
@@ -77,6 +111,9 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>
 /// can keep them open past the kill, and waiting on it would be the very
 /// hang this module exists to prevent. They finish when the pipe closes.
 fn kill(child: &mut Child) {
+    // SAFETY: this child was spawned as its own process-group leader above.
+    // A group kill also closes pipes inherited by ordinary grandchildren.
+    unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -98,6 +135,18 @@ mod tests {
         let started = Instant::now();
         let error = output_within(
             Command::new("sh").args(["-c", "exec sleep 30"]),
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_descendant_cannot_hold_the_output_pipe_open_past_the_deadline() {
+        let started = Instant::now();
+        let error = output_within(
+            Command::new("sh").args(["-c", "sleep 30 & exit 0"]),
             Duration::from_millis(200),
         )
         .unwrap_err();

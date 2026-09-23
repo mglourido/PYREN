@@ -42,7 +42,6 @@
 
 mod raw;
 
-use std::collections::HashMap;
 use std::io::ErrorKind as IoErrorKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -108,6 +107,9 @@ impl Unavailable {
 
 struct State {
     config: KeymapConfig,
+    /// A worker has been spawned and is still opening/grabbing devices.
+    /// Kept separate from `running`, which means forwarding is live.
+    starting: bool,
     running: bool,
     unavailable: Option<Unavailable>,
     devices: Vec<String>,
@@ -159,6 +161,7 @@ impl KeymapModule {
 
         let state = State {
             config: loaded.value,
+            starting: false,
             running: false,
             unavailable: None,
             devices: Vec::new(),
@@ -233,10 +236,26 @@ impl KeymapModule {
     /// error if it cannot: an unprivileged development daemon cannot open
     /// `/dev/input`, and that belongs in `getStatus`, not a refusal to run.
     fn start(&self) {
-        if self.lock().running {
-            return;
+        {
+            let mut state = self.lock();
+            // Re-enabling while the existing worker is between poll
+            // wakeups keeps it. This update is made while validating the
+            // desired state, so a teardown racing with a later disable
+            // cannot resurrect a worker after enabled became false.
+            if !state.config.enabled {
+                return;
+            }
+            if state.running {
+                self.stop.store(false, Ordering::SeqCst);
+                return;
+            }
+            if state.starting {
+                self.stop.store(false, Ordering::SeqCst);
+                return;
+            }
+            self.stop.store(false, Ordering::SeqCst);
+            state.starting = true;
         }
-        self.stop.store(false, Ordering::SeqCst);
         let module = self.clone();
         let spawned = std::thread::Builder::new()
             .name("pyren-keymap".into())
@@ -244,6 +263,7 @@ impl KeymapModule {
             .is_ok();
         if !spawned {
             let mut state = self.lock();
+            state.starting = false;
             state.unavailable = Some(Unavailable::Io(
                 "could not start the remapper thread".into(),
             ));
@@ -251,7 +271,15 @@ impl KeymapModule {
     }
 
     fn stop(&self) {
+        let state = self.lock();
+        // A later enable may have won after an older disabling caller
+        // released the state lock. Revalidate the desired state beside the
+        // stop flag, just as `start` does before cancelling it.
+        if state.config.enabled {
+            return;
+        }
         self.stop.store(true, Ordering::SeqCst);
+        drop(state);
         // The thread notices on its next poll timeout (see `run`) and
         // clears `running` itself after ungrabbing everything - there is
         // no join here because the caller is holding the IPC socket open
@@ -286,6 +314,7 @@ impl KeymapModule {
 
         if grabbed.is_empty() {
             let mut state = self.lock();
+            state.starting = false;
             state.unavailable = Some(if saw_permission_denied {
                 Unavailable::NeedsRoot
             } else {
@@ -302,6 +331,7 @@ impl KeymapModule {
                     let _ = raw::grab(file, false);
                 }
                 let mut state = self.lock();
+                state.starting = false;
                 state.unavailable = Some(if e.kind() == IoErrorKind::NotFound {
                     Unavailable::NoUinput
                 } else if e.kind() == IoErrorKind::PermissionDenied {
@@ -316,9 +346,10 @@ impl KeymapModule {
 
         {
             let mut state = self.lock();
+            state.starting = false;
             state.running = true;
             state.unavailable = None;
-            state.devices = names;
+            state.devices = names.clone();
         }
 
         let mut buffer = [0u8; raw::EVENT_SIZE * 32];
@@ -347,7 +378,7 @@ impl KeymapModule {
                 };
                 for mut event in events {
                     if event.kind == raw::EV_KEY {
-                        if let Some(&to) = table.get(&event.code) {
+                        if let Some(to) = mapped_key(&table, &names[index], event.code) {
                             event.code = to;
                         }
                     }
@@ -360,23 +391,33 @@ impl KeymapModule {
             let _ = raw::grab(file, false);
         }
         raw::destroy_uinput(&uinput);
+        self.finish_run_after_handoff(|| {});
+    }
+
+    /// Clears the old worker and, if re-enable cancelled its stop, hands
+    /// off to one replacement. `after_decision` exposes only the real
+    /// teardown scheduling boundary to the regression test.
+    fn finish_run_after_handoff(&self, after_decision: impl FnOnce()) {
         let mut state = self.lock();
         state.running = false;
         state.devices = Vec::new();
+        // `start` may have cancelled the stop request after this worker had
+        // already observed it and left the loop. In that interleaving the
+        // old worker cannot be rescued; hand off to a replacement after
+        // cleanup instead of leaving enabled=true with no worker.
+        let restart = state.config.enabled && !self.stop.load(Ordering::SeqCst);
+        drop(state);
+        after_decision();
+        if restart {
+            self.start();
+        }
     }
 
-    /// The live substitution table: device-scoped mappings are not
-    /// distinguished here, because every grabbed keyboard shares one
-    /// virtual output and `hotkey`'s own experience is that a laptop with
-    /// two keyboards is the exception - a device-specific entry still
-    /// round-trips through config and `getStatus`, for when it is not.
-    fn table(&self) -> HashMap<u16, u16> {
-        self.lock()
-            .config
-            .mappings
-            .iter()
-            .map(|m| (m.from.keycode, m.to))
-            .collect()
+    /// A snapshot for one poll batch. Keeping the full key specification
+    /// is essential: two physical keyboards may map the same keycode in
+    /// different ways.
+    fn table(&self) -> Vec<KeyMapping> {
+        self.lock().config.mappings.clone()
     }
 
     fn set_mapping(&self, mapping: KeyMapping) -> ModuleResult {
@@ -411,6 +452,23 @@ impl KeymapModule {
         }
         Ok(self.status())
     }
+}
+
+/// A mapping scoped to the input device wins over an unscoped fallback.
+/// Device names are the same strings stored in `State::devices` and shown
+/// to callers, so config and the live lookup use one identity.
+fn mapped_key(table: &[KeyMapping], device: &str, keycode: u16) -> Option<u16> {
+    table
+        .iter()
+        .find(|mapping| {
+            mapping.from.keycode == keycode && mapping.from.device.as_deref() == Some(device)
+        })
+        .or_else(|| {
+            table
+                .iter()
+                .find(|mapping| mapping.from.keycode == keycode && mapping.from.device.is_none())
+        })
+        .map(|mapping| mapping.to)
 }
 
 impl Module for KeymapModule {
@@ -482,6 +540,7 @@ impl Module for KeymapModule {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn store() -> ConfigStore {
         let dir = std::env::temp_dir().join(format!(
@@ -546,6 +605,125 @@ mod tests {
     }
 
     #[test]
+    fn live_table_keeps_device_scoped_mappings_independent() {
+        let module = KeymapModule::with_store(store());
+        module
+            .call(
+                "setMapping",
+                json!({ "from": { "device": "kbd A", "keycode": 1 }, "to": 2 }),
+            )
+            .unwrap();
+        module
+            .call(
+                "setMapping",
+                json!({ "from": { "device": "kbd B", "keycode": 1 }, "to": 3 }),
+            )
+            .unwrap();
+
+        let table = module.table();
+        assert_eq!(
+            table.len(),
+            2,
+            "the live remapping table collapsed two independently stored device mappings"
+        );
+    }
+
+    #[test]
+    fn enabling_while_the_old_worker_is_stopping_cancels_its_stop_request() {
+        let module = KeymapModule::with_store(store());
+        // This is the observable interval after a stop was requested and a
+        // later enable has recorded its intent: the old worker is still
+        // marked running until its next poll iteration.
+        {
+            let mut state = module.lock();
+            state.config.enabled = false;
+            state.running = true;
+        }
+        module.stop();
+        assert!(module.stop.load(Ordering::SeqCst));
+
+        module.lock().config.enabled = true;
+
+        module.start();
+
+        assert!(
+            !module.stop.load(Ordering::SeqCst),
+            "the re-enable returned early and left the only worker committed to exit"
+        );
+    }
+
+    #[test]
+    fn a_stale_start_cannot_cancel_stop_after_disable_wins() {
+        let module = KeymapModule::with_store(store());
+        {
+            let mut state = module.lock();
+            state.config.enabled = false;
+            state.running = true;
+        }
+        module.stop.store(true, Ordering::SeqCst);
+
+        module.start();
+
+        assert!(module.stop.load(Ordering::SeqCst));
+        assert!(!module.lock().starting);
+    }
+
+    #[test]
+    fn a_stale_stop_cannot_override_a_later_enable() {
+        let module = KeymapModule::with_store(store());
+        module.lock().config.enabled = true;
+        module.stop.store(false, Ordering::SeqCst);
+
+        module.stop();
+
+        assert!(
+            !module.stop.load(Ordering::SeqCst),
+            "an older disable set stop after the newer enable owned config"
+        );
+    }
+
+    #[test]
+    fn disable_between_teardown_and_handoff_cannot_restart_the_worker() {
+        let module = KeymapModule::with_store(store());
+        {
+            let mut state = module.lock();
+            state.config.enabled = true;
+            state.running = true;
+        }
+        module.stop.store(false, Ordering::SeqCst);
+
+        let (restart_decided_tx, restart_decided_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let worker_module = module.clone();
+        let worker = std::thread::spawn(move || {
+            worker_module.finish_run_after_handoff(|| {
+                restart_decided_tx.send(()).unwrap();
+                continue_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("release the worker handoff");
+            });
+        });
+        restart_decided_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("teardown decides whether to hand off");
+
+        module
+            .set_enabled(false)
+            .expect("the later disable is recorded");
+        continue_tx.send(()).unwrap();
+        worker.join().unwrap();
+
+        let state = module.lock();
+        assert!(!state.config.enabled);
+        assert!(!state.running);
+        assert!(!state.starting);
+        assert!(
+            module.stop.load(Ordering::SeqCst),
+            "the stale handoff cancelled the later disable's stop request"
+        );
+    }
+
+    #[test]
     fn removing_a_mapping_drops_only_that_key() {
         let module = KeymapModule::with_store(store());
         module
@@ -572,9 +750,9 @@ mod tests {
             .call("setMapping", json!({ "from": { "keycode": 3 }, "to": 4 }))
             .unwrap();
         let table = module.table();
-        assert_eq!(table.get(&1), Some(&2));
-        assert_eq!(table.get(&3), Some(&4));
-        assert_eq!(table.get(&99), None);
+        assert_eq!(mapped_key(&table, "keyboard", 1), Some(2));
+        assert_eq!(mapped_key(&table, "keyboard", 3), Some(4));
+        assert_eq!(mapped_key(&table, "keyboard", 99), None);
     }
 
     #[test]

@@ -14,8 +14,8 @@
 //! thread inherits the mask it was started with - hence two calls, and
 //! the order matters.
 //!
-//! Children are unaffected: the standard library empties the signal mask
-//! of every process it spawns.
+//! External children must be constructed through `process::command`, which
+//! removes this private mask in the child immediately before exec.
 
 const SIGNALS: [libc::c_int; 2] = [libc::SIGTERM, libc::SIGINT];
 
@@ -86,10 +86,63 @@ pub fn name(signal: libc::c_int) -> &'static str {
 /// Asked rather than inferred from the signal: SIGTERM is the same signal
 /// either way.
 pub fn system_is_stopping() -> bool {
-    std::process::Command::new("systemctl")
+    crate::process::command("systemctl")
         .arg("is-system-running")
         .stderr(std::process::Stdio::null())
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "stopping")
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct RestoreMask(libc::sigset_t);
+
+    impl Drop for RestoreMask {
+        fn drop(&mut self) {
+            // SAFETY: the mask was populated by pthread_sigmask below and
+            // remains valid for the duration of this test thread.
+            unsafe {
+                libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut());
+            }
+        }
+    }
+
+    #[test]
+    fn spawned_processes_do_not_inherit_the_daemons_termination_mask() {
+        // Record and restore the test thread's mask so this regression test
+        // cannot affect other tests in the same process.
+        let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+        let empty: libc::sigset_t = unsafe {
+            let mut value = std::mem::zeroed();
+            libc::sigemptyset(&mut value);
+            value
+        };
+        let rc = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &empty, &mut old) };
+        assert_eq!(rc, 0);
+        let _restore = RestoreMask(old);
+
+        block_termination();
+        let output = crate::process::command("sh")
+            .args(["-c", "grep '^SigBlk:' /proc/self/status"])
+            .output()
+            .expect("spawn child process");
+        assert!(output.status.success());
+
+        let line = String::from_utf8(output.stdout).expect("SigBlk is ASCII");
+        let mask = u64::from_str_radix(
+            line.split_whitespace().nth(1).expect("SigBlk value"),
+            16,
+        )
+        .expect("hexadecimal SigBlk value");
+        let termination = (1_u64 << (libc::SIGINT - 1)) | (1_u64 << (libc::SIGTERM - 1));
+
+        assert_eq!(
+            mask & termination,
+            0,
+            "an exec'd child inherited blocked SIGINT/SIGTERM"
+        );
+    }
 }

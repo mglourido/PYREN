@@ -208,7 +208,7 @@ pub fn is_module_installed() -> bool {
             return answer;
         }
     }
-    let answer = std::process::Command::new("modinfo")
+    let answer = crate::process::command("modinfo")
         .args(["-n", "acpi_call"])
         .output()
         .map(|out| out.status.success())
@@ -231,7 +231,7 @@ pub fn ensure_loaded() -> Result<(), AcpiError> {
     if is_loaded() {
         return Ok(());
     }
-    let _ = std::process::Command::new("modprobe")
+    let _ = crate::process::command("modprobe")
         .arg("acpi_call")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

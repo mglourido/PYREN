@@ -49,7 +49,6 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -61,6 +60,11 @@ use crate::PowerMode;
 
 const PLATFORM_PROFILE: &str = "/sys/firmware/acpi/platform_profile";
 const CPU_ROOT: &str = "/sys/devices/system/cpu";
+
+/// One transaction at a time may snapshot, apply and (if necessary) roll
+/// back the machine-wide power controls. This protects external state, not
+/// the module's in-memory state; no module mutex is acquired here.
+static APPLY_TRANSACTION: Mutex<()> = Mutex::new(());
 
 /// The two names the power-profiles API answers to, newest first.
 /// power-profiles-daemon 0.20+ serves both; tuned-ppd and tlp-pd are
@@ -329,11 +333,16 @@ pub(crate) fn plan(
 /// is?". Both answers are legitimate, which is why it is a question and
 /// not a fixed order of preference.
 ///
-/// `before` is the machine as read *before* the caller took its lock (the
-/// read starts processes, and must not stall everyone else behind it). It
-/// doubles as the snapshot a refused firmware profile is rolled back to.
-pub fn apply(before: &BackendState, mode: PowerMode, os_profile: bool) -> ApplyReport {
-    let (steps, problems) = plan(before, mode, os_profile);
+/// The caller's `before` value is retained as an API hint, but the rollback
+/// snapshot is refreshed after acquiring the machine-wide transaction.
+/// A snapshot taken before another request committed must never be used to
+/// undo that later request.
+pub fn apply(_before: &BackendState, mode: PowerMode, os_profile: bool) -> ApplyReport {
+    let _transaction = APPLY_TRANSACTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = read_state();
+    let (steps, problems) = plan(&before, mode, os_profile);
     let mut report = ApplyReport {
         applied: Vec::new(),
         failed: problems,
@@ -361,7 +370,7 @@ pub fn apply(before: &BackendState, mode: PowerMode, os_profile: bool) -> ApplyR
                     report.failed.push(format!("platform_profile: {e}"));
                     report
                         .failed
-                        .extend(roll_back(before, auto_cpufreq_before.as_deref(), &done));
+                        .extend(roll_back(&before, auto_cpufreq_before.as_deref(), &done));
                     report.applied.clear();
                     report.rolled_back = true;
                     break;
@@ -571,7 +580,7 @@ const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 /// which is why reads go through `Properties.Get` by hand.
 fn busctl(args: &[&str]) -> std::io::Result<std::process::Output> {
     process::output(
-        Command::new(tool("busctl"))
+        pyren_core::process::command(tool("busctl"))
             .args(["--system", "--auto-start=no"])
             .args(args),
     )
@@ -621,7 +630,7 @@ fn request_profile(endpoint: ProfilesEndpoint, profile: &str) -> Result<(), Stri
             profile,
         ]),
         ProfilesEndpoint::Cli => {
-            process::output(Command::new(tool("powerprofilesctl")).args(["set", profile]))
+            process::output(pyren_core::process::command(tool("powerprofilesctl")).args(["set", profile]))
         }
     }
     .map_err(|e| e.to_string())?;
@@ -629,7 +638,7 @@ fn request_profile(endpoint: ProfilesEndpoint, profile: &str) -> Result<(), Stri
 }
 
 fn read_powerprofilesctl() -> Option<String> {
-    let output = process::output(Command::new(tool("powerprofilesctl")).arg("get")).ok()?;
+    let output = process::output(pyren_core::process::command(tool("powerprofilesctl")).arg("get")).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -647,7 +656,7 @@ fn read_powerprofilesctl() -> Option<String> {
 /// and a TLP that has not run this boot has no saved profile to print;
 /// neither is something `tlp <profile>` could be asked to change.
 fn read_tlp() -> Option<String> {
-    let output = process::output(Command::new(tool("tlp-stat")).arg("-m")).ok()?;
+    let output = process::output(pyren_core::process::command(tool("tlp-stat")).arg("-m")).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -667,7 +676,7 @@ fn parse_tlp_mode(output: &str) -> Option<String> {
 fn set_tlp(profile: &str) -> Result<(), String> {
     set_and_confirm("TLP", profile, read_tlp, || {
         let output =
-            process::output(Command::new(tool("tlp")).arg(profile)).map_err(|e| e.to_string())?;
+            process::output(pyren_core::process::command(tool("tlp")).arg(profile)).map_err(|e| e.to_string())?;
         succeeded(&output)
     })
 }
@@ -681,7 +690,7 @@ fn set_tlp(profile: &str) -> Result<(), String> {
 /// status read, on every machine that merely has it installed.
 fn auto_cpufreq_running() -> bool {
     cached(&AUTO_CPUFREQ_CACHE, || {
-        process::output(Command::new(tool("pgrep")).args(["-f", "auto-cpufreq.* --daemon"]))
+        process::output(pyren_core::process::command(tool("pgrep")).args(["-f", "auto-cpufreq.* --daemon"]))
             .is_ok_and(|output| output.status.success())
     })
 }
@@ -689,7 +698,7 @@ fn auto_cpufreq_running() -> bool {
 /// auto-cpufreq's current override as `--get-state` prints it
 /// (`default`, `powersave`, `performance`).
 fn read_auto_cpufreq() -> Option<String> {
-    let output = process::output(Command::new(tool("auto-cpufreq")).arg("--get-state")).ok()?;
+    let output = process::output(pyren_core::process::command(tool("auto-cpufreq")).arg("--get-state")).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -719,7 +728,7 @@ const OTHER_MANAGER_UNITS: [&str; 3] = ["tlp.service", "tuned.service", "system7
 fn other_managers() -> Vec<String> {
     cached(&OTHER_MANAGERS_CACHE, || {
         let Ok(output) = process::output(
-            Command::new(tool("systemctl"))
+            pyren_core::process::command(tool("systemctl"))
                 .arg("is-active")
                 .args(OTHER_MANAGER_UNITS),
         ) else {
@@ -779,7 +788,7 @@ fn set_auto_cpufreq(force: &str) -> Result<(), String> {
     let expected = if force == "reset" { "default" } else { force };
     set_and_confirm("auto-cpufreq", expected, read_auto_cpufreq, || {
         let output =
-            process::output(Command::new(tool("auto-cpufreq")).arg(format!("--force={force}")))
+            process::output(pyren_core::process::command(tool("auto-cpufreq")).arg(format!("--force={force}")))
                 .map_err(|e| e.to_string())?;
         succeeded(&output)
     })
@@ -972,6 +981,7 @@ fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn choices(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
@@ -1026,6 +1036,111 @@ mod tests {
             other_managers: Vec::new(),
             available: vec!["platform_profile", "power-profiles-daemon"],
         }
+    }
+
+    struct BackendFixture {
+        root: PathBuf,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl BackendFixture {
+        fn new(tag: &str) -> Self {
+            let guard = crate::POWER_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "pyren-power-stale-snapshot-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(root.join("acpi")).unwrap();
+            fs::create_dir_all(root.join("bin")).unwrap();
+            fs::write(root.join("acpi/platform_profile"), "balanced").unwrap();
+            fs::write(
+                root.join("acpi/platform_profile_choices"),
+                "low-power balanced performance",
+            )
+            .unwrap();
+            fs::write(root.join("os_profile"), "balanced").unwrap();
+            let busctl = root.join("bin/busctl");
+            fs::write(
+                &busctl,
+                "#!/bin/sh\nroot=$(dirname \"$0\")/..\nfor profile; do :; done\ncase \" $* \" in\n  *\" Get \"*) printf 'v s \"%s\"\\n' \"$(cat \"$root/os_profile\")\" ;;\n  *\" Set \"*) printf '%s' \"$profile\" > \"$root/os_profile\" ;;\n  *) exit 2 ;;\nesac\n",
+            )
+            .unwrap();
+            fs::set_permissions(&busctl, fs::Permissions::from_mode(0o755)).unwrap();
+
+            std::env::set_var("PYREN_PLATFORM_PROFILE", root.join("acpi/platform_profile"));
+            std::env::set_var("PYREN_CPU_ROOT", root.join("cpu"));
+            std::env::set_var("PYREN_TOOLS_DIR", root.join("bin"));
+            Self {
+                root,
+                _guard: guard,
+            }
+        }
+
+        fn os_profile(&self) -> String {
+            fs::read_to_string(self.root.join("os_profile"))
+                .unwrap()
+                .trim()
+                .to_string()
+        }
+    }
+
+    impl Drop for BackendFixture {
+        fn drop(&mut self) {
+            for name in [
+                "PYREN_PLATFORM_PROFILE",
+                "PYREN_CPU_ROOT",
+                "PYREN_TOOLS_DIR",
+            ] {
+                std::env::remove_var(name);
+            }
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn a_stale_failed_apply_cannot_roll_back_a_later_successful_request() {
+        let machine = BackendFixture::new("rollback");
+        let (snapshot_taken_tx, snapshot_taken_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+
+        // This models the exact pre-lock window in PowerModule::set_mode:
+        // caller A has read its rollback snapshot and is then descheduled.
+        let stale = std::thread::spawn(move || {
+            let before = read_state();
+            snapshot_taken_tx.send(()).unwrap();
+            continue_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("release the stale apply");
+            apply(&before, PowerMode::Performance, true)
+        });
+        snapshot_taken_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the stale caller captures its snapshot");
+
+        // Caller B arrives later, applies Eco completely, and returns.
+        let later_before = read_state();
+        let later = apply(&later_before, PowerMode::Eco, true);
+        assert!(!later.is_empty());
+        assert_eq!(machine.os_profile(), "power-saver");
+        assert_eq!(read_platform_profile().as_deref(), Some("low-power"));
+
+        // The firmware disappears/refuses before A resumes. A's rollback
+        // must not restore its stale Balanced snapshot over B's Eco state.
+        let profile = machine.root.join("acpi/platform_profile");
+        fs::remove_file(&profile).unwrap();
+        std::os::unix::fs::symlink("/dev/null", &profile).unwrap();
+        continue_tx.send(()).unwrap();
+        let stale_report = stale.join().unwrap();
+        assert!(stale_report.rolled_back);
+
+        assert_eq!(
+            machine.os_profile(),
+            "power-saver",
+            "the failed older request restored its stale Balanced snapshot over the later Eco request"
+        );
     }
 
     /// The OS step is planned - and applied - before the firmware step,

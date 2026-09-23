@@ -1013,7 +1013,7 @@ fn check_kernel_log() -> Check {
     // Via `dmesg` rather than /dev/kmsg: reading that device directly can
     // block waiting for new messages, and it is root-only wherever
     // kernel.dmesg_restrict is set.
-    let Ok(output) = std::process::Command::new("dmesg").output() else {
+    let Ok(output) = pyren_core::process::command("dmesg").output() else {
         return Check::new(
             ID,
             title(),

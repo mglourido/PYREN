@@ -26,7 +26,7 @@
 //!   ever became a per-widget subscription.
 
 use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -76,7 +76,7 @@ struct Ring {
 }
 
 /// An in-process listener. See [`EventBus::subscribe`].
-type Listener = Box<dyn Fn(&str, &Value) + Send + Sync>;
+type Listener = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
 /// The daemon's published events. Cheap to clone the `Arc` around; every
 /// publisher and every reader shares one.
@@ -151,14 +151,14 @@ impl EventBus {
     /// lives in the daemon binary, which is the one place that legitimately
     /// knows about both.
     ///
-    /// **A listener must be quick and must not publish.** It runs on the
-    /// publishing thread with no ring lock held, so publishing from inside
-    /// one would recurse rather than deadlock - still not something to do.
+    /// A listener must be quick. It runs on the publishing thread with no
+    /// EventBus lock held, so it may publish a follow-up event without
+    /// deadlocking the bus.
     pub fn subscribe(&self, listener: impl Fn(&str, &Value) + Send + Sync + 'static) {
         self.listeners
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(Box::new(listener));
+            .push(Arc::new(listener));
     }
 
     /// Publishes one event and wakes every waiting poll. Returns its
@@ -190,8 +190,12 @@ impl EventBus {
 
         // After the ring lock is released, so a listener that reaches back
         // into the bus cannot deadlock against it. See `subscribe`.
-        let listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
-        for listener in listeners.iter() {
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for listener in &listeners {
             listener(&topic, &payload);
         }
         seq

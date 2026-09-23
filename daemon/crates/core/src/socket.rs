@@ -7,10 +7,13 @@
 //! the kernel enforces for us — rather than by anything in the protocol.
 
 use std::ffi::CString;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::log_warn;
@@ -94,7 +97,20 @@ pub(crate) fn chown_group(path: &Path, gid: u32) -> std::io::Result<()> {
 /// The window between `bind` and `chmod` is closed by setting the umask
 /// first, so the socket is never briefly world-writable: it is created
 /// `0600` and only widened to `0660` once it belongs to the right group.
-fn bind_restricted(path: &Path, group: &str) -> std::io::Result<(UnixListener, Audience)> {
+struct BoundListener {
+    listener: UnixListener,
+    _lock: File,
+}
+
+impl Deref for BoundListener {
+    type Target = UnixListener;
+
+    fn deref(&self) -> &Self::Target {
+        &self.listener
+    }
+}
+
+fn bind_restricted(path: &Path, group: &str) -> std::io::Result<(BoundListener, Audience)> {
     let gid = lookup_gid(group);
 
     if let Some(parent) = path.parent() {
@@ -111,8 +127,38 @@ fn bind_restricted(path: &Path, group: &str) -> std::io::Result<(UnixListener, A
         }
     }
 
-    // A stale socket file from an unclean shutdown would make bind() fail
-    // with "address in use".
+    // The lock is a separate persistent inode: unlinking a socket after a
+    // crash is safe only when no other instance still owns this endpoint.
+    // Never remove the lock file, including at shutdown, or waiters could
+    // acquire different inodes and both believe they own the path.
+    let lock_path = path.with_extension(format!(
+        "{}lock",
+        path.extension().map_or(String::new(), |ext| format!("{}.", ext.to_string_lossy()))
+    ));
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(lock_path)?;
+    let metadata = lock.metadata()?;
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "socket lock must be a regular file owned by the daemon user",
+        ));
+    }
+    // SAFETY: lock is a live file descriptor. The kernel releases the flock
+    // when BoundListener (and its file) is dropped.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "another daemon owns the socket endpoint",
+        ));
+    }
+
+    // A stale socket file from an unclean shutdown would make bind() fail.
     let _ = std::fs::remove_file(path);
 
     // umask is process-wide, so this briefly tightens any file another
@@ -136,7 +182,7 @@ fn bind_restricted(path: &Path, group: &str) -> std::io::Result<(UnixListener, A
         _ => Audience::OwnerOnly,
     };
 
-    Ok((listener, audience))
+    Ok((BoundListener { listener, _lock: lock }, audience))
 }
 
 /// Runs the daemon's IPC server: binds `path` as a Unix domain socket and
@@ -304,5 +350,35 @@ mod tests {
         std::fs::write(&path, "left over from a crash").unwrap();
 
         assert!(bind_restricted(&path, "pyren").is_ok());
+    }
+
+    #[test]
+    fn a_second_instance_cannot_replace_a_live_socket() {
+        let path = fixture("live-owner").join("daemon.sock");
+        let (first, _) = bind_restricted(&path, "pyren").expect("first instance binds");
+
+        // A separate test-harness process has the same effective uid as
+        // this one, just as two privileged service instances do.
+        let second = crate::process::command(std::env::current_exe().unwrap())
+            .arg("second_instance_bind_helper")
+            .arg("--nocapture")
+            .env("PYREN_TEST_LIVE_SOCKET", &path)
+            .status()
+            .expect("run second instance");
+
+        assert!(first.local_addr().is_ok(), "the first listener is still alive");
+        assert!(
+            second.success(),
+            "a second process with the same effective uid unlinked and rebound the live path"
+        );
+    }
+
+    #[test]
+    fn second_instance_bind_helper() {
+        let Some(path) = std::env::var_os("PYREN_TEST_LIVE_SOCKET") else {
+            return;
+        };
+        let rebound = bind_restricted(Path::new(&path), "pyren").is_ok();
+        std::process::exit(if rebound { 42 } else { 0 });
     }
 }

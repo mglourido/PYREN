@@ -6,7 +6,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -334,7 +333,7 @@ fn initramfs_tool(distro_id: &str) -> Option<String> {
 }
 
 fn dkms_status() -> Option<String> {
-    let output = Command::new("dkms").arg("status").output().ok()?;
+    let output = pyren_core::process::command("dkms").arg("status").output().ok()?;
     if !output.status.success() {
         return None;
     }

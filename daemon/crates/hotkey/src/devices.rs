@@ -519,6 +519,19 @@ pub fn open_all() -> Result<Vec<Device>, Unavailable> {
     Ok(devices)
 }
 
+#[cfg(test)]
+pub(crate) fn fake_keyboard() -> Device {
+    Device {
+        path: PathBuf::from("/dev/input/event-test"),
+        name: "test keyboard".into(),
+        file: File::open("/dev/null").expect("/dev/null must be openable"),
+        pending_scan: None,
+        pending_key: None,
+        held: Modifiers::default(),
+        pending_modifier: false,
+    }
+}
+
 fn open_nonblocking(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()

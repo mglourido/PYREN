@@ -676,7 +676,7 @@ mod wire_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let fifo = dir.join("call");
-        let status = std::process::Command::new("mkfifo")
+        let status = pyren_core::process::command("mkfifo")
             .arg(&fifo)
             .status()
             .unwrap();
