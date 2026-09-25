@@ -300,7 +300,8 @@ impl RgbModule {
         // Before the restore, so its first write lands on a lit keyboard.
         // Independent of it: somebody with restore off still asked for the
         // keyboard to come on.
-        if config.force_backlight_on && probe.lighting.present && probe.lighting.acpi_call {
+        let keyboard = backlight::drives_keyboard(config.dialect.resolve(&probe.lighting.dialects));
+        if config.force_backlight_on && keyboard && probe.lighting.acpi_call {
             match backlight::turn_on() {
                 Ok(true) => log_info!("keyboard backlight was off; switched it on"),
                 Ok(false) => {}
@@ -769,6 +770,10 @@ impl RgbModule {
         };
         let running = lock_animator(&self.animator).is_running();
         if unsupported || !running || conditions.lid_closed {
+            return false;
+        }
+        // A `stat`, not a firmware call: the probe is cached.
+        if !backlight::drives_keyboard(self.chosen_dialect(&self.current_probe())) {
             return false;
         }
         match backlight::read() {

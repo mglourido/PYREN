@@ -51,7 +51,7 @@
 
 use pyren_core::acpi;
 
-use crate::dialect::DialectError;
+use crate::dialect::{Dialect, DialectError};
 use crate::fourzone::COMMAND;
 use crate::reply;
 
@@ -68,6 +68,15 @@ pub const ON: u8 = 0xE4;
 /// Byte 0 OmenMon writes to switch it off. Not written by this daemon;
 /// kept so the protocol is written down in one place.
 pub const OFF: u8 = 0x64;
+
+/// Whether `dialect` lights the four-zone keyboard this switch belongs to.
+///
+/// The lightbar is a separate light strip: the keyboard's switch says
+/// nothing about whether it is visible, so an effect on it must not pause
+/// when the keyboard goes dark, and forcing the keyboard on does not help it.
+pub fn drives_keyboard(dialect: Option<Dialect>) -> bool {
+    matches!(dialect, Some(Dialect::FourZone | Dialect::KernelZones))
+}
 
 /// Whether the firmware reports the backlight on.
 pub fn read() -> Result<bool, DialectError> {
@@ -135,6 +144,15 @@ mod tests {
         assert!(!is_on(&[0x00, 0, 0, 0]).unwrap(), "Fn-key off");
         assert!(!is_on(&[0x64, 0, 0, 0]).unwrap(), "OmenMon's off");
         assert!(matches!(is_on(&[]), Err(DialectError::Unreadable(_))));
+    }
+
+    /// Only the keyboard dialects are governed by the keyboard's switch.
+    #[test]
+    fn the_lightbar_is_not_the_keyboard() {
+        assert!(drives_keyboard(Some(Dialect::FourZone)));
+        assert!(drives_keyboard(Some(Dialect::KernelZones)));
+        assert!(!drives_keyboard(Some(Dialect::Lightbar)));
+        assert!(!drives_keyboard(None));
     }
 
     /// Switching on keeps a level the firmware remembers, and picks 100
