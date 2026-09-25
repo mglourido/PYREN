@@ -88,9 +88,43 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// The shortest time between the end of one call and the start of the next.
 pub const MIN_GAP: Duration = Duration::from_millis(8);
 
-/// Set while a call has outlived its deadline and is still inside the
+/// The deadline of the exchange the worker is inside right now, if any.
+///
+/// "Stuck" is derived from this - an exchange still running past its
+/// deadline - rather than kept as a flag of its own. It used to be a flag
+/// that a caller set when it gave up and the worker cleared when an
+/// exchange finished, and two writers on two threads could leave it set
+/// with nothing in the kernel at all: a caller whose job was still queued
+/// gave up just after the worker's last clear, the worker then dropped
+/// that job for being late without touching the flag, and every call from
+/// then on was refused before reaching the worker. Only the worker writes
+/// this, and only around an exchange, so it cannot outlive one.
+static IN_FLIGHT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Whether an exchange has outlived its deadline and is still inside the
 /// kernel. See the module docs.
-static STUCK: AtomicBool = AtomicBool::new(false);
+fn stuck() -> bool {
+    let in_flight = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    matches!(*in_flight, Some(deadline) if Instant::now() >= deadline)
+}
+
+/// Marks an exchange as in flight for as long as it is held. Cleared on
+/// drop, so a worker that panics mid-exchange does not leave every later
+/// call refused behind it.
+struct InFlight;
+
+impl InFlight {
+    fn begin(deadline: Instant) -> Self {
+        *IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner()) = Some(deadline);
+        Self
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        *IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
 
 /// The worker's inbox. Replaced if the worker ever goes away.
 static WORKER: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
@@ -254,7 +288,7 @@ pub fn call(method: &str, args: &str) -> Result<String, AcpiError> {
 }
 
 fn call_at(path: &str, method: &str, args: &str, timeout: Duration) -> Result<String, AcpiError> {
-    if STUCK.load(Ordering::SeqCst) {
+    if stuck() {
         return Err(AcpiError::Io(
             "an earlier firmware call has not come back yet, so no new one was sent".into(),
         ));
@@ -269,13 +303,13 @@ fn call_at(path: &str, method: &str, args: &str, timeout: Duration) -> Result<St
     submit(job)?;
     match answer.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            STUCK.store(true, Ordering::SeqCst);
-            Err(AcpiError::Io(format!(
-                "the firmware call did not finish within {} ms",
-                timeout.as_millis()
-            )))
-        }
+        // Nothing to record: if the exchange is still in the kernel, the
+        // worker's own in-flight marker already says so, and if the job was
+        // still queued, it will be dropped unsent.
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(AcpiError::Io(format!(
+            "the firmware call did not finish within {} ms",
+            timeout.as_millis()
+        ))),
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             Err(AcpiError::Io("the firmware call worker went away".into()))
         }
@@ -323,9 +357,11 @@ fn work(inbox: mpsc::Receiver<Job>) {
             )));
             continue;
         }
-        let result = exchange(&job.path, &job.request, job.deadline);
+        let result = {
+            let _in_flight = InFlight::begin(job.deadline);
+            exchange(&job.path, &job.request, job.deadline)
+        };
         last_done = Some(Instant::now());
-        STUCK.store(false, Ordering::SeqCst);
         let _ = job.reply.send(result);
     }
 }
@@ -658,11 +694,16 @@ mod tests {
 
     use super::*;
 
+    /// The worker is shared by the whole process, so a test that parks it
+    /// on a FIFO holds up every other test's calls. They take turns.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
     /// One test, not three: `PYREN_ACPI_CALL` is process-global and the
     /// test harness runs threads in parallel, so cases that set it have to
     /// be cases that cannot run at the same time as each other.
     #[test]
     fn the_request_framing_and_the_absent_interface() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("pyren-acpi-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("call");
@@ -720,10 +761,67 @@ mod tests {
         assert_eq!(request, "\\_SB 0");
         std::fs::write(&fifo, "PASS").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while STUCK.load(Ordering::SeqCst) && Instant::now() < deadline {
+        while stuck() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!STUCK.load(Ordering::SeqCst), "the worker recovers");
+        assert!(!stuck(), "the worker recovers");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A caller that gives up while its job is still *queued* says nothing
+    /// about the firmware: the exchange ahead of it is slow, not stuck.
+    ///
+    /// Such a caller used to set the shared "stuck" flag itself, so every
+    /// call after it was refused at the door while the exchange in front
+    /// was still well inside its budget - and when the worker later
+    /// dropped the late job unsent, nothing cleared the flag again, which
+    /// left the lightbar, WMI and the fan cleaner's emergency stop refused
+    /// until the daemon restarted.
+    #[test]
+    fn a_caller_that_gives_up_while_queued_does_not_wedge_the_interface() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("pyren-acpi-queued-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("call").to_str().unwrap().to_string();
+        let fifo = dir.join("slow");
+        let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        // A slow exchange, still inside its deadline: the FIFO holds the
+        // worker until this test opens it.
+        let fifo_path = fifo.to_str().unwrap().to_string();
+        let slow =
+            std::thread::spawn(move || call_at(&fifo_path, "\\_SB", "0", Duration::from_secs(5)));
+        let wait = Instant::now() + Duration::from_secs(2);
+        while IN_FLIGHT.lock().unwrap().is_none() && Instant::now() < wait {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            IN_FLIGHT.lock().unwrap().is_some(),
+            "the slow call reached the worker"
+        );
+
+        let queued = call_at(&file, "\\_SB", "1", Duration::from_millis(100));
+        assert!(
+            matches!(&queued, Err(AcpiError::Io(e)) if e.contains("did not finish")),
+            "a caller stuck in the queue gives up on time: {queued:?}"
+        );
+        let behind = call_at(&file, "\\_SB", "2", Duration::from_millis(100));
+        assert!(
+            matches!(&behind, Err(AcpiError::Io(e)) if e.contains("did not finish")),
+            "a slow exchange is not a stuck one, so the next call still queues: {behind:?}"
+        );
+
+        // Let the slow exchange finish. The two late jobs behind it are
+        // then dropped unsent - and must leave nothing refusing.
+        assert_eq!(std::fs::read_to_string(&fifo).unwrap(), "\\_SB 0");
+        std::fs::write(&fifo, "PASS").unwrap();
+        assert_eq!(slow.join().unwrap().unwrap(), "PASS");
+        let after = call_at(&file, "\\_SB", "3", Duration::from_secs(2));
+        assert_eq!(after.expect("the interface answers again"), "\\_SB 3");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
