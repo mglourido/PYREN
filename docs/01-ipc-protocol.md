@@ -1633,14 +1633,21 @@ keyboard switched off from the keypad stays dark whatever colours are
 written. With `forceBacklightOn` on (off by default), the daemon reads the
 flag at start (`0x20009` type 4) and, if it is not `0xE4`, writes `0xE4`
 (type 5) before restoring the lights. Only at start: switching it off from
-the keypad afterwards is left alone. `getStatus` reports the setting as
+the keypad afterwards is left alone - but see the next paragraph. `getStatus` reports the setting as
 `forceBacklightOn`. The numbers are OmenMon's; see
 `daemon/crates/rgb/src/backlight.rs`.
 
+**Backlight off pauses effects.** While an effect runs with the lid open,
+the daemon's two-second conditions watcher also reads that flag. Off, the
+effect pauses exactly as with the lid shut: `throttled: "backlight"`,
+`effectiveFps: 0`, `backlightOff: true`, no writes. Back on, it resumes
+within two seconds. No effect running, nothing is read. A firmware that
+refuses the read is not asked again until the daemon restarts.
+
 **Throttling.** On battery an effect runs at `batteryFps` (default 15; 0
 pauses it) and with the lid shut it pauses; paused, nothing is written and
-the keyboard keeps its last frame. `getStatus.throttled` is `"lid"`,
-`"battery"` or `null`. The daemon reads the charger and the lid every two
+the keyboard keeps its last frame. `getStatus.throttled` is `"brightness"`,
+`"lid"`, `"backlight"`, `"battery"`, `"dialect"` or `null`. The daemon reads the charger and the lid every two
 seconds.
 
 A colour `c` goes **out** as `"#rrggbb"` and is accepted **in** as either

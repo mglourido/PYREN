@@ -28,8 +28,14 @@
 //!
 //! On the OMEN 16-am0xxx (board 8D2F), with the keyboard switched off by
 //! the Fn key: a read gave `0x00`, not `0x64`; a write of `0xE4` lit the
-//! keyboard; the read after it gave `0xE4`. So "on" is exactly `0xE4` and
-//! anything else is treated as off - see [`is_on`].
+//! keyboard; the read after it gave `0xE4`. Switched on again by the Fn
+//! key, it reads `0xE4` too. Only those two states: the key cycles
+//! off/on on this machine, with no levels in between.
+//!
+//! [`is_on`] tests bit 7 - the one bit `0xE4` and `0x64` differ in - rather
+//! than the whole byte. A firmware with levels the driver's keymap hints at
+//! would then still read as on, and a lit keyboard is never taken for a
+//! dark one: that mistake would pause an effect somebody is looking at.
 //!
 //! The flag is a switch, not a level. Brightness stays in software, as
 //! [`crate::scale`] explains.
@@ -60,11 +66,15 @@ pub fn read() -> Result<bool, DialectError> {
     is_on(&reply::payload(&reply)?)
 }
 
-/// Reads the flag from a `BACKLIGHT_GET` payload. Only [`ON`] is on: the
-/// test laptop reads `0x00` when the Fn key has put it out, not [`OFF`].
+/// The bit that is set in [`ON`] and clear in [`OFF`].
+pub const ON_BIT: u8 = 0x80;
+
+/// Reads the flag from a `BACKLIGHT_GET` payload: on when bit 7 is set.
+/// The test laptop reads `0x00` when the Fn key has put it out, not
+/// [`OFF`]; both are off.
 pub fn is_on(payload: &[u8]) -> Result<bool, DialectError> {
     match payload.first() {
-        Some(&byte) => Ok(byte == ON),
+        Some(&byte) => Ok(byte & ON_BIT != 0),
         None => Err(DialectError::Unreadable(
             "the backlight reply had no data".into(),
         )),
@@ -88,10 +98,12 @@ pub fn turn_on() -> Result<bool, DialectError> {
 mod tests {
     use super::*;
 
-    /// The three payloads seen on the test laptop.
+    /// The three payloads seen on the test laptop, and a level nobody has
+    /// seen, which must not read as off.
     #[test]
-    fn only_e4_reads_as_on() {
+    fn bit_7_is_on() {
         assert!(is_on(&[0xE4, 0, 0, 0]).unwrap());
+        assert!(is_on(&[0xA4, 0, 0, 0]).unwrap(), "an unseen level");
         assert!(!is_on(&[0x00, 0, 0, 0]).unwrap(), "Fn-key off");
         assert!(!is_on(&[0x64, 0, 0, 0]).unwrap(), "OmenMon's off");
         assert!(matches!(is_on(&[]), Err(DialectError::Unreadable(_))));

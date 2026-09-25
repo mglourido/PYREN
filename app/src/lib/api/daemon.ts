@@ -390,10 +390,14 @@ export type RgbStatus = {
   writeMode: "full" | "truncated" | null;
   /** Put out by `powerOff` and not yet brought back. */
   dark: boolean;
+  /** The Fn key has the keyboard backlight off; a running effect is
+   *  paused until it comes back on. Polled every 2 s, only while an
+   *  effect runs. */
+  backlightOff: boolean;
   /** An effect's frame rate on battery; 0 pauses it there. */
   batteryFps: number;
   /** Why an effect is running slower than `fps`, or not at all. */
-  throttled: "brightness" | "lid" | "battery" | "dialect" | null;
+  throttled: "brightness" | "lid" | "backlight" | "battery" | "dialect" | null;
 };
 
 export type RgbEffectKind = "breathing" | "spectrum" | "rainbowWave" | "wave" | "fade";

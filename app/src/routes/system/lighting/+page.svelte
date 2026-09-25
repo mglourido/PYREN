@@ -575,6 +575,8 @@
       <p class="notice">{t("lighting.throttledBrightness")}</p>
     {:else if mode === "effect" && status?.throttled === "lid"}
       <p class="notice">{t("lighting.throttledLid")}</p>
+    {:else if mode === "effect" && status?.throttled === "backlight"}
+      <p class="notice">{t("lighting.throttledBacklight")}</p>
     {:else if mode === "effect" && status?.throttled === "battery"}
       <p class="notice">
         {status.batteryFps === 0

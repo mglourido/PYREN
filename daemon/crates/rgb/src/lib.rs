@@ -204,6 +204,14 @@ struct State {
     /// Put out by `powerOff`. What `powerOn` with `ifEnabled` checks, so a
     /// resume only lights a keyboard that a suspend darkened.
     dark: bool,
+    /// The firmware's backlight switch reads off - the Fn key put it out -
+    /// while an effect runs. Pauses the effect like a shut lid: every frame
+    /// would be an EC transaction nobody can see. See
+    /// [`RgbModule::poll_backlight`].
+    backlight_off: bool,
+    /// The firmware answered the backlight read with a refusal, so it does
+    /// not have the switch. Not asked again until the daemon restarts.
+    backlight_unsupported: bool,
     last_error: Option<Msg>,
     last_save_error: Option<String>,
 }
@@ -308,6 +316,8 @@ impl RgbModule {
                 conditions: Conditions::default(),
                 owned: restoring,
                 dark: false,
+                backlight_off: false,
+                backlight_unsupported: false,
                 last_error: None,
                 last_save_error: None,
             })),
@@ -448,6 +458,8 @@ impl RgbModule {
             "writeMode": write_mode,
             // Put out by `powerOff` and not yet back.
             "dark": state.dark,
+            // The Fn key has the backlight off; a running effect is paused.
+            "backlightOff": state.backlight_off,
             "batteryFps": state.config.battery_fps,
             // Why an effect is running slower than `fps`, or not at all:
             // "brightness" (nothing drawn at 0 %), "lid" (paused),
@@ -714,16 +726,60 @@ impl RgbModule {
         Ok(self.status())
     }
 
-    /// The daemon's watcher reports the charger and the lid here. Cheap
-    /// enough to call every few seconds; only a change does anything.
+    /// The daemon's watcher reports the charger and the lid here, every
+    /// two seconds. Also where the backlight switch is polled, which is
+    /// this module's own hardware; see [`Self::poll_backlight`]. Only a
+    /// change does anything.
     pub fn set_conditions(&self, conditions: Conditions) {
+        let backlight_off = self.poll_backlight(conditions);
         let mut state = lock(&self.state);
-        if state.conditions == conditions {
+        if state.conditions == conditions && state.backlight_off == backlight_off {
             return;
         }
+        if state.backlight_off != backlight_off {
+            log_info!(
+                "keyboard backlight {}; lighting effect {}",
+                if backlight_off { "off" } else { "on" },
+                if backlight_off { "paused" } else { "resumed" }
+            );
+        }
         state.conditions = conditions;
+        state.backlight_off = backlight_off;
         drop(state);
         self.apply_throttle();
+    }
+
+    /// Whether the Fn key has the backlight off, asked only when the answer
+    /// can save something: an effect running, with the lid open. The key
+    /// never reaches Linux - the driver drops its WMI event - so asking is
+    /// the only way to know.
+    ///
+    /// One ACPI call per watcher tick while an effect runs, against the
+    /// thirty a second it stops while the keyboard is dark. Nothing at all
+    /// with no effect, where the lights cost nothing to leave alone.
+    ///
+    /// Not asked means not off: an effect started later runs until the
+    /// next tick says otherwise. A call that never reached the firmware
+    /// keeps the last answer; a refusal means this firmware has no switch,
+    /// and it is not asked again.
+    fn poll_backlight(&self, conditions: Conditions) -> bool {
+        let (previous, unsupported) = {
+            let state = lock(&self.state);
+            (state.backlight_off, state.backlight_unsupported)
+        };
+        let running = lock_animator(&self.animator).is_running();
+        if unsupported || !running || conditions.lid_closed {
+            return false;
+        }
+        match backlight::read() {
+            Ok(on) => !on,
+            Err(e) if e.reached_the_firmware() => {
+                log_info!("not watching the keyboard backlight switch: {e}");
+                lock(&self.state).backlight_unsupported = true;
+                false
+            }
+            Err(_) => previous,
+        }
     }
 
     /// Hands the animator the limits that follow from the conditions and
@@ -738,11 +794,16 @@ impl RgbModule {
     /// returns before the one black frame that actually puts the keyboard
     /// out, so the last lit frame would stay on the keys.
     fn apply_throttle(&self) {
-        let (conditions, battery_fps) = {
+        let (conditions, battery_fps, backlight_off) = {
             let state = lock(&self.state);
-            (state.conditions, state.config.battery_fps)
+            (
+                state.conditions,
+                state.config.battery_fps,
+                state.backlight_off,
+            )
         };
-        let paused = conditions.lid_closed || (conditions.on_battery && battery_fps == 0);
+        let paused =
+            conditions.lid_closed || backlight_off || (conditions.on_battery && battery_fps == 0);
         let limit = (conditions.on_battery && battery_fps > 0).then_some(battery_fps);
         let animator = lock_animator(&self.animator);
         animator.set_paused(paused);
@@ -1211,6 +1272,8 @@ fn throttle_reason(state: &State, active: Option<Dialect>) -> Option<&'static st
         Some("brightness")
     } else if state.conditions.lid_closed {
         Some("lid")
+    } else if state.backlight_off {
+        Some("backlight")
     } else if state.conditions.on_battery && state.config.battery_fps < state.config.fps {
         Some("battery")
     } else if active.is_some_and(|d| d.max_fps() < state.config.fps) {
@@ -1225,7 +1288,7 @@ fn throttle_reason(state: &State, active: Option<Dialect>) -> Option<&'static st
 /// the lid shut or the brightness at zero. Mirrors what [`Animator`] does
 /// with the same numbers.
 fn effective_fps(state: &State, active: Option<Dialect>) -> u8 {
-    if state.config.brightness == 0 || state.conditions.lid_closed {
+    if state.config.brightness == 0 || state.conditions.lid_closed || state.backlight_off {
         return 0;
     }
     let mut fps = state.config.fps;
@@ -1647,6 +1710,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// With no effect running the switch is not asked: the watcher's tick
+    /// must cost nothing where there is nothing to save.
+    #[test]
+    fn the_backlight_is_only_asked_while_an_effect_runs() {
+        let dir = std::env::temp_dir().join(format!("pyren-rgb-bl-poll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let call = dir.join("call");
+        let _acpi = crate::testenv::redirect(&call);
+        let module = RgbModule::with_store(ConfigStore::at(&dir));
+        let _ = std::fs::remove_file(&call);
+
+        module.set_conditions(Conditions::default());
+        assert!(
+            !call.exists(),
+            "no effect, and the firmware was asked anyway"
+        );
+        assert_eq!(module.status()["backlightOff"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Fn key's off pauses an effect like a shut lid, and says so.
+    #[test]
+    fn a_dark_backlight_pauses_the_effect_and_says_so() {
+        let _acpi = crate::testenv::real();
+        let module = module();
+        lock(&module.state).backlight_off = true;
+        module.apply_throttle();
+        let status = module.status();
+        assert_eq!(status["throttled"], "backlight");
+        assert_eq!(status["effectiveFps"], 0);
+        assert_eq!(status["backlightOff"], true);
+    }
+
     /// Off by default, saved, reported - and saving it touches nothing:
     /// the switch only happens at daemon start.
     #[test]
@@ -1681,6 +1778,8 @@ mod tests {
             conditions: Conditions::default(),
             owned: false,
             dark: false,
+            backlight_off: false,
+            backlight_unsupported: false,
             last_error: None,
             last_save_error: None,
         };

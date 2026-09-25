@@ -18,6 +18,12 @@ the IPC protocol and on-disk config.
   never show. It uses the firmware's own backlight flag (`0x20009`, command
   types 4 and 5), confirmed on the OMEN 16-am0xxx. Only at start; off by
   default.
+- **Effects pause while the Fn key has the keyboard light off.** Every
+  frame of an effect is an EC transaction, and with the backlight switched
+  off from the keypad none of them showed. While an effect runs, the
+  daemon now reads the backlight switch every two seconds and pauses the
+  effect while it is off (`throttled: "backlight"`), resuming when it
+  comes back on. Nothing is read while no effect runs.
 - **`tools/release.sh --dev`** for test builds: skips the version prompt
   (keeps whatever the manifests currently say), implies `--allow-dirty`,
   and names the archive `pyren-<version>-dev+<commit>-...` so it can't be

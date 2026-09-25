@@ -357,6 +357,7 @@
     "pause": "Pausar",
     "throttledBrightness": "El brillo está al 0 %: el efecto mantiene su sitio pero no se dibuja nada.",
     "throttledLid": "El efecto está en pausa: la tapa está cerrada.",
+    "throttledBacklight": "El efecto está en pausa: la luz del teclado está apagada con la tecla Fn. Se reanuda en menos de dos segundos al volver a encenderla.",
     "throttledBattery": "Con batería: el efecto va a {fps} fps.",
     "throttledBatteryPaused": "Con batería: el efecto está en pausa."
   },

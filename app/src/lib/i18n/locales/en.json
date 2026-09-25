@@ -357,6 +357,7 @@
     "pause": "Pause",
     "throttledBrightness": "Brightness is at 0 %: the effect keeps its place but nothing is drawn.",
     "throttledLid": "The effect is paused: the lid is shut.",
+    "throttledBacklight": "The effect is paused: the keyboard light is switched off with the Fn key. It resumes within two seconds of switching it back on.",
     "throttledBattery": "On battery: the effect runs at {fps} fps.",
     "throttledBatteryPaused": "On battery: the effect is paused."
   },
