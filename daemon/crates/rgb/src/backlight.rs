@@ -20,25 +20,34 @@
 //!              5         BACKLIGHT_SET   in 4, out 0
 //!
 //! byte 0 of the 4-byte payload
-//!   0xE4   on   (what OmenMon writes, and what a read gives back after it)
-//!   0x64   off  (what OmenMon writes)
+//!   bit 7      on
+//!   bits 0-6   the firmware's own level, a percentage
+//!   0xE4   on at 100   (what OmenMon writes, and what a read gives back after it)
+//!   0x64   off at 100  (what OmenMon writes)
 //! ```
+//!
+//! The level half is inferred, not documented, from two sources that agree:
+//! a read on this laptop on 2026-09-11 gave `0xB2` - on at 50 - with the
+//! keyboard lit (`dev/FINDINGS.md` §"Lighting effects"), and the driver's
+//! keymap names the Fn key's WMI events `0x30021aa`, `0x33221aa` and
+//! `0x36421aa` "off", "level 1" and "level 2" - `0x00`, `0x32` and `0x64` in
+//! the byte above the event code.
 //!
 //! ## Confirmed against the hardware (2026-09-25)
 //!
 //! On the OMEN 16-am0xxx (board 8D2F), with the keyboard switched off by
 //! the Fn key: a read gave `0x00`, not `0x64`; a write of `0xE4` lit the
 //! keyboard; the read after it gave `0xE4`. Switched on again by the Fn
-//! key, it reads `0xE4` too. Only those two states: the key cycles
-//! off/on on this machine, with no levels in between.
+//! key, it reads `0xE4` too.
 //!
-//! [`is_on`] tests bit 7 - the one bit `0xE4` and `0x64` differ in - rather
-//! than the whole byte. A firmware with levels the driver's keymap hints at
-//! would then still read as on, and a lit keyboard is never taken for a
-//! dark one: that mistake would pause an effect somebody is looking at.
+//! [`is_on`] tests bit 7 only, never the whole byte: `0xB2` is as lit as
+//! `0xE4`, and a lit keyboard taken for a dark one would pause an effect
+//! somebody is looking at.
 //!
-//! The flag is a switch, not a level. Brightness stays in software, as
-//! [`crate::scale`] explains.
+//! The firmware level is left as it is. Brightness stays in software, as
+//! [`crate::scale`] explains; whether the firmware would take any
+//! percentage there, rather than only the Fn key's 50 and 100, has not
+//! been tried.
 
 use pyren_core::acpi;
 
@@ -81,15 +90,34 @@ pub fn is_on(payload: &[u8]) -> Result<bool, DialectError> {
     }
 }
 
-/// Switches the backlight on if it is off. Returns whether it had to.
+/// The byte that switches the backlight on from `current`: the same level
+/// with bit 7 set, or [`ON`] where the level reads 0 - as it does after the
+/// Fn key has put the keyboard out on the test laptop.
+pub fn on_from(current: u8) -> u8 {
+    match current & !ON_BIT {
+        0 => ON,
+        level => level | ON_BIT,
+    }
+}
+
+/// Switches the backlight on if it is off, keeping the firmware's level
+/// where it has one. Returns whether it had to.
 ///
 /// Read first so a keyboard that is already lit costs one call, and so
 /// the log can say whether this did anything.
 pub fn turn_on() -> Result<bool, DialectError> {
-    if read()? {
+    let reply = acpi::wmi_call(COMMAND, GET, &[0u8; PAYLOAD_LEN], PAYLOAD_LEN, PAYLOAD_LEN)?;
+    let payload = reply::payload(&reply)?;
+    if is_on(&payload)? {
         return Ok(false);
     }
-    let reply = acpi::wmi_call(COMMAND, SET, &[ON, 0, 0, 0], PAYLOAD_LEN, 0)?;
+    let reply = acpi::wmi_call(
+        COMMAND,
+        SET,
+        &[on_from(payload[0]), 0, 0, 0],
+        PAYLOAD_LEN,
+        0,
+    )?;
     reply::payload(&reply)?;
     Ok(true)
 }
@@ -107,6 +135,15 @@ mod tests {
         assert!(!is_on(&[0x00, 0, 0, 0]).unwrap(), "Fn-key off");
         assert!(!is_on(&[0x64, 0, 0, 0]).unwrap(), "OmenMon's off");
         assert!(matches!(is_on(&[]), Err(DialectError::Unreadable(_))));
+    }
+
+    /// Switching on keeps a level the firmware remembers, and picks 100
+    /// where it remembers none.
+    #[test]
+    fn switching_on_keeps_the_level() {
+        assert_eq!(on_from(0x00), ON, "Fn-key off on the test laptop");
+        assert_eq!(on_from(OFF), ON);
+        assert_eq!(on_from(0x32), 0xB2, "off at 50 comes back at 50");
     }
 
     /// The exact buffers the hardware test sent, byte for byte.

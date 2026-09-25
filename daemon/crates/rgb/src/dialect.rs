@@ -377,9 +377,19 @@ pub const MAX_FPS_KERNEL_ZONES: u8 = 15;
 
 /// See [`Dialect::frames`]. Skips a frame identical to the last one it
 /// wrote - most of a slow effect, and all of a paused or black one.
+///
+/// "Identical" is judged on what reaches the hardware, so after the
+/// brightness scaling on the two dialects that scale in software. Below
+/// full brightness many consecutive frames round to the same bytes: over a
+/// minute at 20 fps and 20 % brightness, a slow breathing effect repeats
+/// 893 of its 1200 frames once scaled and only 191 before, a slow fade 995
+/// against 279, a slow spectrum 744 against none. Each is an EC
+/// transaction not made.
 pub struct FrameSink {
     writer: Writer,
-    /// What was last written, as it went to the hardware.
+    /// What was last written, as it went to the hardware: the scaled
+    /// colours and 100, or on the lightbar - which scales in firmware - the
+    /// colours and the brightness beside them.
     last: Option<(Vec<Rgb>, u8)>,
 }
 
@@ -403,15 +413,16 @@ impl FrameSink {
 
 impl crate::effects::Sink for FrameSink {
     fn show(&mut self, colors: &[Rgb], brightness: u8) -> Result<(), DialectError> {
-        let frame = (colors.to_vec(), brightness);
+        let frame = match self.writer {
+            Writer::Lightbar => (colors.to_vec(), brightness),
+            _ => (crate::scale(colors, brightness), 100),
+        };
         if self.last.as_ref() == Some(&frame) {
             return Ok(());
         }
         let result = match &mut self.writer {
-            Writer::FourZone(writer) => writer.write(&crate::scale(colors, brightness)),
-            Writer::KernelZones(written) => {
-                kernel_zones::write_changed(&crate::scale(colors, brightness), written)
-            }
+            Writer::FourZone(writer) => writer.write(&frame.0),
+            Writer::KernelZones(written) => kernel_zones::write_changed(&frame.0, written),
             Writer::Lightbar => lightbar::write_colors(colors, brightness),
         };
         // Only a frame that landed counts as written: after a failure the
@@ -579,16 +590,23 @@ mod tests {
         );
     }
 
-    /// A frame the hardware already shows is a firmware call for nothing.
+    /// A frame the hardware already shows is a firmware call for nothing -
+    /// judged after scaling, so two frames that round to the same bytes at
+    /// this brightness are one write.
     #[test]
     fn a_frame_identical_to_the_last_is_not_written_again() {
         use crate::effects::Sink;
+        let shown = crate::scale(&[Rgb::new(10, 20, 30); crate::ZONES], 20);
         let mut sink = FrameSink {
             writer: Writer::KernelZones([Some(Rgb::BLACK); crate::ZONES]),
-            last: Some((vec![Rgb::new(1, 2, 3); crate::ZONES], 50)),
+            last: Some((shown, 100)),
         };
-        // Would fail if it reached the (absent) zone files.
-        assert!(sink.show(&[Rgb::new(1, 2, 3); crate::ZONES], 50).is_ok());
+        // Each would fail if it reached the (absent) zone files.
+        assert!(sink.show(&[Rgb::new(10, 20, 30); crate::ZONES], 20).is_ok());
+        assert!(
+            sink.show(&[Rgb::new(12, 21, 33); crate::ZONES], 20).is_ok(),
+            "a different frame that scales to the same bytes"
+        );
         assert_eq!(sink.max_fps(), MAX_FPS_KERNEL_ZONES);
     }
 
