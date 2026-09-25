@@ -362,21 +362,68 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         ));
     }
 
-    steps.push(Step::internal(
-        "backup-driver",
-        msg!(
-            "installer.step.backup-driver",
-            "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so \
-             depmod picks the new one unambiguously"
-        ),
-    ));
+    // Build first, and only then take anything away. Every step up to and
+    // including the build writes nothing outside /usr/src and DKMS's own
+    // tree, so a compiler that fails, or headers that do not match, stop
+    // the run with the module that was loaded still on disk and still the
+    // one `depmod` knows about. Backing the stock module up (which removes
+    // it) and retiring the other strategy's leftovers used to come before
+    // the build, and a failed build then left a machine with no hp-wmi at
+    // all after the next reboot.
+    //
+    // The one removal that cannot wait is re-registering with DKMS: `dkms
+    // add` refuses a module/version it already has, so a reinstall over a
+    // DKMS install still deregisters the old one before building.
+    match strategy {
+        Strategy::Dkms => {
+            if env.dkms_installed {
+                steps.push(
+                    Step::command(
+                        "dkms-remove-old",
+                        msg!(
+                            "installer.step.dkms-remove-old",
+                            "Remove the previously registered DKMS module"
+                        ),
+                        &[
+                            "dkms",
+                            "remove",
+                            &format!("{DKMS_NAME}/{DKMS_VERSION}"),
+                            "--all",
+                        ],
+                    )
+                    .optional(),
+                );
+            }
+            steps.push(Step::command(
+                "dkms-add",
+                msg!("installer.step.dkms-add", "Register the module with DKMS"),
+                &["dkms", "add", "-m", DKMS_NAME, "-v", DKMS_VERSION],
+            ));
+            steps.push(Step::command(
+                "dkms-build",
+                msg!("installer.step.dkms-build", "Build the module"),
+                &["dkms", "build", "-m", DKMS_NAME, "-v", DKMS_VERSION],
+            ));
+        }
+        Strategy::Hooks => {
+            steps.push(Step::command(
+                "make",
+                msg!(
+                    "installer.step.make",
+                    "Build the module for the running kernel"
+                ),
+                &["make", "-C", &format!("{dkms_src}/src/hp-wmi-omen")],
+            ));
+        }
+    }
 
     // A machine that was installed one way and is being installed the
     // other keeps working either way - both mechanisms rebuild from the
     // same patched source - but it ends up with two things claiming the
     // module across a kernel upgrade, in two different directories. That
     // is how the stock backup got overwritten with a patched module once
-    // already, so the strategy being left behind is retired here.
+    // already, so the strategy being left behind is retired here, once
+    // there is a built module to replace it with.
     match strategy {
         Strategy::Dkms if env.hook_installed => steps.push(
             Step::internal(
@@ -409,36 +456,17 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         _ => {}
     }
 
+    steps.push(Step::internal(
+        "backup-driver",
+        msg!(
+            "installer.step.backup-driver",
+            "Back up the stock hp-wmi.ko next to itself as .bak, then remove it so \
+             depmod picks the new one unambiguously"
+        ),
+    ));
+
     match strategy {
         Strategy::Dkms => {
-            if env.dkms_installed {
-                steps.push(
-                    Step::command(
-                        "dkms-remove-old",
-                        msg!(
-                            "installer.step.dkms-remove-old",
-                            "Remove the previously registered DKMS module"
-                        ),
-                        &[
-                            "dkms",
-                            "remove",
-                            &format!("{DKMS_NAME}/{DKMS_VERSION}"),
-                            "--all",
-                        ],
-                    )
-                    .optional(),
-                );
-            }
-            steps.push(Step::command(
-                "dkms-add",
-                msg!("installer.step.dkms-add", "Register the module with DKMS"),
-                &["dkms", "add", "-m", DKMS_NAME, "-v", DKMS_VERSION],
-            ));
-            steps.push(Step::command(
-                "dkms-build",
-                msg!("installer.step.dkms-build", "Build the module"),
-                &["dkms", "build", "-m", DKMS_NAME, "-v", DKMS_VERSION],
-            ));
             steps.push(Step::command(
                 "dkms-install",
                 msg!("installer.step.dkms-install", "Install the built module"),
@@ -446,14 +474,6 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
             ));
         }
         Strategy::Hooks => {
-            steps.push(Step::command(
-                "make",
-                msg!(
-                    "installer.step.make",
-                    "Build the module for the running kernel"
-                ),
-                &["make", "-C", &format!("{dkms_src}/src/hp-wmi-omen")],
-            ));
             steps.push(Step::internal(
                 "install-module",
                 msg!(
@@ -1107,6 +1127,54 @@ mod tests {
         );
     }
 
+    /// Backing up removes the stock module, so it must wait for a module
+    /// to replace it with. Before a build that can fail, it left a machine
+    /// with no hp-wmi at all after a reboot.
+    #[test]
+    fn nothing_is_removed_until_the_replacement_is_built() {
+        for (env, options, build) in [
+            (ready_env(), PlanOptions::default(), "dkms-build"),
+            (
+                Environment {
+                    hook_installed: true,
+                    ..ready_env()
+                },
+                PlanOptions::default(),
+                "dkms-build",
+            ),
+            (
+                Environment {
+                    dkms_installed: true,
+                    ..ready_env()
+                },
+                PlanOptions {
+                    prefer_hooks: true,
+                    ..PlanOptions::default()
+                },
+                "make",
+            ),
+        ] {
+            let plan = plan(&env, Action::InstallDriver, options);
+            let steps = ids(&plan);
+            let built = steps.iter().position(|id| *id == build).unwrap();
+            for removal in ["backup-driver", "remove-hooks"] {
+                if let Some(at) = steps.iter().position(|id| *id == removal) {
+                    assert!(built < at, "{removal} runs before {build}: {steps:?}");
+                }
+            }
+            if plan.strategy == Some(Strategy::Hooks) {
+                let retired = steps
+                    .iter()
+                    .position(|id| *id == "dkms-remove-old")
+                    .unwrap();
+                assert!(
+                    built < retired,
+                    "dkms-remove-old runs before make: {steps:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn an_existing_dkms_registration_is_removed_first() {
         let env = Environment {
@@ -1138,8 +1206,8 @@ mod tests {
         assert_eq!(plan.strategy, Some(Strategy::Dkms));
         assert!(steps.contains(&"remove-hooks"));
         assert!(
-            steps.iter().position(|id| *id == "remove-hooks")
-                < steps.iter().position(|id| *id == "dkms-add")
+            steps.iter().position(|id| *id == "dkms-build")
+                < steps.iter().position(|id| *id == "remove-hooks")
         );
         // Failing to delete a hook must not abort an otherwise good
         // install: the module is built and loaded either way.
@@ -1168,9 +1236,15 @@ mod tests {
 
         assert_eq!(plan.strategy, Some(Strategy::Hooks));
         assert!(steps.contains(&"dkms-remove-old"));
+        // Retired only once the hook strategy has a module of its own, and
+        // before the backup clears `updates/` for it.
+        assert!(
+            steps.iter().position(|id| *id == "make")
+                < steps.iter().position(|id| *id == "dkms-remove-old")
+        );
         assert!(
             steps.iter().position(|id| *id == "dkms-remove-old")
-                < steps.iter().position(|id| *id == "make")
+                < steps.iter().position(|id| *id == "backup-driver")
         );
         assert!(
             plan.steps
