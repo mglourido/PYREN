@@ -1487,6 +1487,8 @@ mod tests {
     /// zone four black rather than saying anything.
     #[test]
     fn a_config_with_the_wrong_number_of_zones_is_squared_up_on_load() {
+        // Probes the real machine on load: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = std::env::temp_dir().join(format!("pyren-rgb-resize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = ConfigStore::at(&dir);
@@ -1867,6 +1869,8 @@ mod tests {
     /// the setting survives does not.
     #[test]
     fn the_brightness_slider_does_not_throw_away_a_stopped_effect() {
+        // Probes the real machine on load: no redirection may run under it.
+        let _acpi = crate::testenv::real();
         let dir = std::env::temp_dir().join(format!("pyren-rgb-slider-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = ConfigStore::at(&dir);
