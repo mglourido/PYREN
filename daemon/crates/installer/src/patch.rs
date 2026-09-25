@@ -174,6 +174,33 @@ pub enum PatchError {
     },
     #[error("could not find `{0}` in the driver source; it may have changed shape upstream")]
     AnchorMissing(String),
+    #[error(
+        "{0:?} is not a board id: expected 1 to 16 ASCII letters or digits, like the 8D2F \
+         in /sys/class/dmi/id/board_name"
+    )]
+    InvalidBoardName(String),
+}
+
+/// Longest board id accepted. HP's are four hex digits; the headroom is for
+/// other vendors' DMI names, not for anything that needs punctuation.
+pub const MAX_BOARD_NAME_LEN: usize = 16;
+
+/// Refuses anything that is not plainly a DMI board id.
+///
+/// The name is pasted between double quotes in `hp-wmi.c`, which is then
+/// compiled into a kernel module and loaded as root. A quote, backslash or
+/// newline in it would let whoever sent it write C of their choosing into
+/// the kernel, so the only safe answer is an allow-list that cannot close
+/// a string literal: every id in the driver's tables is alphanumeric.
+pub fn validate_board_name(board_name: &str) -> Result<(), PatchError> {
+    let plausible = !board_name.is_empty()
+        && board_name.len() <= MAX_BOARD_NAME_LEN
+        && board_name.bytes().all(|b| b.is_ascii_alphanumeric());
+    if plausible {
+        Ok(())
+    } else {
+        Err(PatchError::InvalidBoardName(board_name.to_string()))
+    }
 }
 
 /// The board-parameter variants `hp_wmi_feature_boards` entries point at.
@@ -494,6 +521,10 @@ pub fn inject_board(
     table: BoardTable,
     board_name: &str,
 ) -> Result<String, PatchError> {
+    // Checked here as well as at the IPC boundary, because this is the one
+    // place the name turns into C: an autodetected DMI name, or any future
+    // caller, gets the same guarantee as a request off the socket.
+    validate_board_name(board_name)?;
     let (open, close) = table_body(source, table)?;
 
     if board_in_table(source, table, board_name)? {
@@ -758,6 +789,41 @@ static const struct dmi_system_id hp_wmi_feature_boards[] __initconst = {
             .next()
             .unwrap();
         assert!(array.contains("\"8D41\""));
+    }
+
+    /// The board name ends up between quotes in C that is built into a
+    /// kernel module, so anything that could close the literal must be
+    /// refused rather than pasted in.
+    #[test]
+    fn a_board_name_that_could_escape_its_string_literal_is_refused() {
+        for hostile in [
+            "x\"}; evil(); //",
+            "8D2F\\",
+            "8D2F\n",
+            "8D 2F",
+            "",
+            "0123456789ABCDEFG",
+            "8D2F\u{e9}",
+        ] {
+            for table in [
+                BoardTable::OmenThermalProfile,
+                BoardTable::Features(BoardParams::VictusS),
+            ] {
+                assert!(
+                    matches!(
+                        inject_board(SOURCE, table, hostile),
+                        Err(PatchError::InvalidBoardName(_))
+                    ),
+                    "{hostile:?} should have been refused"
+                );
+            }
+        }
+        for real in ["8D2F", "8BAD", "8A14", "0123456789ABCDEF"] {
+            assert!(
+                validate_board_name(real).is_ok(),
+                "{real} is a real-shaped id"
+            );
+        }
     }
 
     #[test]

@@ -228,6 +228,14 @@ impl Module for InstallerModule {
                     ModuleError::InvalidParams(format!("invalid apply request: {e}"))
                 })?;
 
+                // Before anything else looks at the machine: this string is
+                // compiled into a kernel module, and a caller only has to be
+                // in the socket's group to send it.
+                if let Some(board) = &request.experimental_board {
+                    patch::validate_board_name(board)
+                        .map_err(|e| ModuleError::InvalidParams(e.to_string()))?;
+                }
+
                 let env = Environment::detect();
                 let options = PlanOptions {
                     prefer_hooks: request.prefer_hooks,
@@ -359,6 +367,33 @@ impl Module for InstallerModule {
             }
 
             other => Err(ModuleError::UnknownMethod(other.to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A board name that could break out of its C string literal is
+    /// refused at the IPC boundary, before a plan is even drawn up - even
+    /// on a dry run, and even with a table given.
+    #[test]
+    fn apply_refuses_a_board_name_that_is_not_a_board_id() {
+        let result = InstallerModule::new().call(
+            "apply",
+            json!({
+                "action": "installDriver",
+                "confirm": false,
+                "experimentalBoard": "x\"}; evil(); //",
+                "boardTable": { "table": "omenThermalProfile" },
+            }),
+        );
+        match result {
+            Err(ModuleError::InvalidParams(message)) => {
+                assert!(message.contains("not a board id"), "{message}")
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
         }
     }
 }
