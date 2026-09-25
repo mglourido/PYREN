@@ -1579,6 +1579,7 @@ hp-wmi hwmon reports `[]`.
 | `rgb.powerOn` | `{ "ifEnabled"?: bool }` | the status object, once the sweep in is over | ✅ implemented, needs root |
 | `rgb.powerOff` | `{ "ifEnabled"?: bool }` | the status object, once the sweep out is over | ✅ implemented, needs root |
 | `rgb.setPowerAnimation` | `{ "enabled": bool }` | the status object | ✅ implemented |
+| `rgb.setForceBacklightOn` | `{ "enabled": bool }` | the status object; takes effect at the next daemon start | ✅ implemented |
 | `rgb.setBatteryFps` | `{ "fps": 0-60 }` | the status object | ✅ implemented |
 
 ### Effects
@@ -1625,6 +1626,16 @@ lights at start, and sweeps out on SIGTERM **when systemd says the machine
 is `stopping`**. A SIGTERM that is only the service stopping puts the
 static zones back if an effect was running, so the keys are not left on a
 half-drawn frame.
+
+**Forced backlight.** The firmware keeps a backlight on/off flag apart
+from the zone colours, and the Fn backlight key flips only that flag: a
+keyboard switched off from the keypad stays dark whatever colours are
+written. With `forceBacklightOn` on (off by default), the daemon reads the
+flag at start (`0x20009` type 4) and, if it is not `0xE4`, writes `0xE4`
+(type 5) before restoring the lights. Only at start: switching it off from
+the keypad afterwards is left alone. `getStatus` reports the setting as
+`forceBacklightOn`. The numbers are OmenMon's; see
+`daemon/crates/rgb/src/backlight.rs`.
 
 **Throttling.** On battery an effect runs at `batteryFps` (default 15; 0
 pauses it) and with the lid shut it pauses; paused, nothing is written and

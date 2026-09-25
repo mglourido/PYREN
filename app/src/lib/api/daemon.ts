@@ -382,6 +382,9 @@ export type RgbStatus = {
   powerAnimation: boolean;
   /** Whether fourZone may write through a reply `acpi_call` cut short. */
   allowTruncatedFourZone: boolean;
+  /** Switch the keyboard backlight on at daemon start, in case the Fn key
+   *  left it off. Only at start. */
+  forceBacklightOn: boolean;
   /** How the active dialect writes: `"truncated"` means the setting above
    *  is in use right now. Null where the dialect has only one way. */
   writeMode: "full" | "truncated" | null;
@@ -1251,6 +1254,7 @@ const DAEMON_ROUTES: Record<
   rgb_power_on: { module: "rgb", method: "powerOn" },
   rgb_power_off: { module: "rgb", method: "powerOff" },
   rgb_set_power_animation: { module: "rgb", method: "setPowerAnimation" },
+  rgb_set_force_backlight_on: { module: "rgb", method: "setForceBacklightOn" },
   rgb_set_battery_fps: { module: "rgb", method: "setBatteryFps" },
   installer_inspect: { module: "installer", method: "inspect" },
   installer_autodetect: {
@@ -1584,6 +1588,9 @@ export const daemon = {
   rgbPowerOff: () => call<RgbStatus>("rgb_power_off"),
   setRgbPowerAnimation: (enabled: boolean) =>
     call<RgbStatus>("rgb_set_power_animation", { enabled }),
+  /** Saved only: takes effect at the next daemon start. */
+  setRgbForceBacklightOn: (enabled: boolean) =>
+    call<RgbStatus>("rgb_set_force_backlight_on", { enabled }),
   setRgbAllowTruncatedFourZone: (enabled: boolean) =>
     call<RgbStatus>("rgb_set_allow_truncated_four_zone", { enabled }),
   setRgbBatteryFps: (fps: number) => call<RgbStatus>("rgb_set_battery_fps", { fps }),

@@ -347,6 +347,8 @@
     "powerOn": "Encender",
     "powerOff": "Apagar",
     "powerAnimation": "Animación de encendido",
+    "forceBacklightOn": "Forzar luz del teclado",
+    "forceBacklightOnHint": "Enciende la retroiluminación del teclado cuando arranca el demonio, por si la tecla Fn la dejó apagada: los colores no se ven en un teclado apagado así. Solo al arrancar: después se puede seguir apagando desde el teclado. Desactivado por defecto.",
     "powerAnimationHint": "Enciende las luces con un barrido cuando el demonio las restaura al arrancar, y las apaga con otro cuando el equipo se apaga o se suspende. Desactivado por defecto. Los botones la reproducen ahora.",
     "fps": "Fotogramas del efecto",
     "fpsHint": "Cada fotograma es una llamada al firmware. 30 fps se ve fluido en cuatro zonas y cuesta cerca de un 3 % de un núcleo; 60 cuesta más o menos el doble.",

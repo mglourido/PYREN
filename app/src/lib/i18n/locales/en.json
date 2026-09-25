@@ -347,6 +347,8 @@
     "powerOn": "Power on",
     "powerOff": "Power off",
     "powerAnimation": "Power animation",
+    "forceBacklightOn": "Force keyboard light on",
+    "forceBacklightOnHint": "Switches the keyboard backlight on when the daemon starts, in case the Fn key left it off - colours written to a keyboard switched off that way do not show. Only at start: switching it off from the keyboard afterwards still works. Off by default.",
     "powerAnimationHint": "Sweeps the lights in when the daemon restores them at start, and out when the machine shuts down or suspends. Off by default. The buttons play it now.",
     "fps": "Effect frame rate",
     "fpsHint": "Every frame is a call to the firmware. 30 fps is smooth on four zones and costs about 3 % of one core; 60 costs about twice that.",

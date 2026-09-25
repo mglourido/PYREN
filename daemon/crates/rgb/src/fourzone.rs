@@ -76,12 +76,12 @@
 //!
 //! ## Brightness is not in here
 //!
-//! There is a `SET_BRIGHTNESS = 5` command type, and this dialect does not
-//! use it: nobody has published its payload, and the reference driver
-//! scales the colours in software instead. So does this - see
-//! [`crate::scale`] - which means brightness works identically on every
-//! dialect rather than working on one and silently doing nothing on
-//! another.
+//! The reference driver calls command type 5 `SET_BRIGHTNESS`, and it is
+//! not a brightness: it is the on/off switch the Fn backlight key flips
+//! (`0xE4` on, `0x64` off), driven by [`crate::backlight`]. Brightness is
+//! scaled in the colours instead, as the reference driver does - see
+//! [`crate::scale`] - which means it works identically on every dialect
+//! rather than working on one and silently doing nothing on another.
 
 use std::ops::Range;
 

@@ -11,6 +11,13 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **Force the keyboard light on at start.** A new switch at the bottom of
+  the lighting page (`rgb.setForceBacklightOn`) makes the daemon switch
+  the keyboard backlight on when it starts, in case the Fn key left it
+  off - colours and effects written to a keyboard switched off that way
+  never show. It uses the firmware's own backlight flag (`0x20009`, command
+  types 4 and 5), confirmed on the OMEN 16-am0xxx. Only at start; off by
+  default.
 - **`tools/release.sh --dev`** for test builds: skips the version prompt
   (keeps whatever the manifests currently say), implies `--allow-dirty`,
   and names the archive `pyren-<version>-dev+<commit>-...` so it can't be

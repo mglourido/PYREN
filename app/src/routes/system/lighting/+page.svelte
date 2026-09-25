@@ -320,6 +320,15 @@
     }
   }
 
+  async function setForceBacklightOn(enabled: boolean) {
+    try {
+      status = await daemon.setRgbForceBacklightOn(enabled);
+      error = null;
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
   async function setBatteryFps(value: number) {
     try {
       status = await daemon.setRgbBatteryFps(value);
@@ -948,6 +957,19 @@
             ariaLabel={t("lighting.powerAnimation")}
           />
         </div>
+      </div>
+
+      <div class="setting">
+        <span class="label">
+          {t("lighting.forceBacklightOn")}
+          <InfoTip>{t("lighting.forceBacklightOnHint")}</InfoTip>
+        </span>
+        <Toggle
+          checked={status?.forceBacklightOn ?? false}
+          disabled={!available}
+          onchange={(v) => void setForceBacklightOn(v)}
+          ariaLabel={t("lighting.forceBacklightOn")}
+        />
       </div>
 
       {#if effectList}

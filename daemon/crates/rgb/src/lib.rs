@@ -21,6 +21,7 @@
 //! | `rgb.setPowerAnimation` | `{ "enabled": bool }` | the new status |
 //! | `rgb.setBatteryFps` | `{ "fps": 0-60 }` | the new status; 0 pauses effects on battery |
 //! | `rgb.setAllowTruncatedFourZone` | `{ "enabled": bool }` | the new status, after a fresh probe |
+//! | `rgb.setForceBacklightOn` | `{ "enabled": bool }` | the new status; takes effect at the next daemon start |
 //!
 //! An effect `e` is `{ "kind", "colors"?, "speed"?: 1-10, "direction"? }`;
 //! see [`effects`]. `setZones`, `setStatic` and `off` stop a running effect.
@@ -70,6 +71,7 @@ use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub mod backlight;
 pub mod color;
 pub mod dialect;
 pub mod effects;
@@ -153,6 +155,11 @@ pub struct RgbConfig {
     /// runs on gets its colours without a kernel module. Off, only a whole
     /// buffer is ever written back. See `fourzone::Layout::truncated_len`.
     pub allow_truncated_four_zone: bool,
+    /// Switch the keyboard backlight on when the daemon starts, in case
+    /// the Fn key left it off - colours written to a keyboard switched off
+    /// that way do not show. Only at start: turning it off from the keypad
+    /// afterwards is left alone. Off by default. See [`backlight`].
+    pub force_backlight_on: bool,
 }
 
 impl Default for RgbConfig {
@@ -167,6 +174,7 @@ impl Default for RgbConfig {
             power_animation: false,
             battery_fps: DEFAULT_BATTERY_FPS,
             allow_truncated_four_zone: true,
+            force_backlight_on: false,
         }
     }
 }
@@ -281,6 +289,16 @@ impl RgbModule {
         // out a keyboard the firmware had lit. Nothing to restore until
         // there is a file to restore from.
         let stored = matches!(loaded.outcome, LoadOutcome::Loaded);
+        // Before the restore, so its first write lands on a lit keyboard.
+        // Independent of it: somebody with restore off still asked for the
+        // keyboard to come on.
+        if config.force_backlight_on && probe.lighting.present && probe.lighting.acpi_call {
+            match backlight::turn_on() {
+                Ok(true) => log_info!("keyboard backlight was off; switched it on"),
+                Ok(false) => {}
+                Err(e) => log_warn!("could not switch the keyboard backlight on: {e}"),
+            }
+        }
         let restoring = config.restore_on_start && stored && probe.lighting.present;
         let module = Self {
             probe: Arc::new(Mutex::new(probe)),
@@ -424,6 +442,7 @@ impl RgbModule {
             "effectiveFps": effective_fps(&state, active),
             "powerAnimation": state.config.power_animation,
             "allowTruncatedFourZone": state.config.allow_truncated_four_zone,
+            "forceBacklightOn": state.config.force_backlight_on,
             // "full", "truncated" (four-zone writes through a cut-short
             // reply), or null where the active dialect has only one way.
             "writeMode": write_mode,
@@ -896,6 +915,15 @@ impl RgbModule {
         Ok(self.status())
     }
 
+    /// Saved only. The switch happens at daemon start, not here.
+    fn set_force_backlight_on(&self, enabled: bool) -> ModuleResult {
+        let mut state = lock(&self.state);
+        state.config.force_backlight_on = enabled;
+        persist(&self.store, &mut state);
+        drop(state);
+        Ok(self.status())
+    }
+
     fn set_restore_on_start(&self, enabled: bool) -> ModuleResult {
         let mut state = lock(&self.state);
         state.config.restore_on_start = enabled;
@@ -1096,6 +1124,16 @@ impl Module for RgbModule {
                         ModuleError::InvalidParams("params.enabled must be a boolean".into())
                     })?;
                 self.set_power_animation(enabled)
+            }
+
+            "setForceBacklightOn" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ModuleError::InvalidParams("params.enabled must be a boolean".into())
+                    })?;
+                self.set_force_backlight_on(enabled)
             }
 
             "setAllowTruncatedFourZone" => {
@@ -1359,6 +1397,7 @@ mod tests {
             ),
             ("setBrightness", json!({})),
             ("setPowerAnimation", json!({ "enabled": "yes" })),
+            ("setForceBacklightOn", json!({ "enabled": "yes" })),
             ("setBatteryFps", json!({ "fps": "fast" })),
         ] {
             let error = module
@@ -1605,6 +1644,29 @@ mod tests {
         assert_eq!(status["allowTruncatedFourZone"], false);
         let stored = ConfigStore::at(&dir).load::<RgbConfig>("rgb").value;
         assert!(!stored.allow_truncated_four_zone);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Off by default, saved, reported - and saving it touches nothing:
+    /// the switch only happens at daemon start.
+    #[test]
+    fn the_force_backlight_setting_is_off_by_default_and_saved() {
+        let dir = std::env::temp_dir().join(format!("pyren-rgb-backlight-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _acpi = crate::testenv::redirect(&dir.join("no-acpi-call/call"));
+        let module = RgbModule::with_store(ConfigStore::at(&dir));
+        assert_eq!(module.status()["forceBacklightOn"], false);
+
+        let status = module
+            .call("setForceBacklightOn", json!({ "enabled": true }))
+            .expect("a setting");
+        assert_eq!(status["forceBacklightOn"], true);
+        assert!(
+            status["error"].is_null(),
+            "saving it is not a hardware call"
+        );
+        let stored = ConfigStore::at(&dir).load::<RgbConfig>("rgb").value;
+        assert!(stored.force_backlight_on);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

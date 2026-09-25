@@ -465,6 +465,12 @@ fn rgb_set_power_animation(enabled: bool) -> Result<Value, String> {
     call_daemon("rgb", "setPowerAnimation", json!({ "enabled": enabled }))
 }
 
+/// Saved only; the daemon switches the backlight on at its next start.
+#[tauri::command(async)]
+fn rgb_set_force_backlight_on(enabled: bool) -> Result<Value, String> {
+    call_daemon("rgb", "setForceBacklightOn", json!({ "enabled": enabled }))
+}
+
 #[tauri::command(async)]
 fn rgb_set_allow_truncated_four_zone(enabled: bool) -> Result<Value, String> {
     call_daemon("rgb", "setAllowTruncatedFourZone", json!({ "enabled": enabled }))
@@ -1151,6 +1157,7 @@ pub fn run() {
             rgb_power_off,
             rgb_set_power_animation,
             rgb_set_allow_truncated_four_zone,
+            rgb_set_force_backlight_on,
             rgb_set_battery_fps,
             installer_inspect,
             installer_autodetect,
