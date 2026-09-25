@@ -23,7 +23,15 @@ use std::path::{Path, PathBuf};
 
 pub const EV_SYN: u16 = 0x00;
 pub const EV_KEY: u16 = 0x01;
+pub const EV_REL: u16 = 0x02;
+pub const EV_ABS: u16 = 0x03;
+pub const EV_SW: u16 = 0x05;
+pub const EV_MAX: u16 = 0x1f;
 pub const KEY_MAX: u16 = 0x2ff;
+
+/// `KEY_A` to `KEY_Z`, in the three runs `linux/input-event-codes.h` lays
+/// them out in (the QWERTY rows, not the alphabet).
+const LETTER_KEYS: [std::ops::RangeInclusive<u16>; 3] = [16..=25, 30..=38, 44..=50];
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -74,6 +82,18 @@ const fn ioc(dir: u32, kind: u8, nr: u8, size: usize) -> u32 {
 
 const IOC_NONE: u32 = 0;
 const IOC_WRITE: u32 = 1;
+const IOC_READ: u32 = 2;
+
+/// Bytes in a bitmask of `max + 1` bits, as `EVIOCGBIT` fills it.
+const fn mask_len(max: u16) -> usize {
+    max as usize / 8 + 1
+}
+
+/// `EVIOCGBIT(ev, len)`: the bitmask of codes a device can send for event
+/// type `ev`, or with `ev == 0`, of the event types themselves.
+const fn eviocgbit(ev: u16, len: usize) -> u32 {
+    ioc(IOC_READ, b'E', 0x20 + ev as u8, len)
+}
 
 /// `EVIOCGRAB`: makes this fd the only one the kernel delivers this
 /// device's events to. Every other reader - the compositor included - sees
@@ -164,6 +184,49 @@ pub fn create_uinput(name: &str, keys: &[u16]) -> std::io::Result<File> {
     Ok(file)
 }
 
+/// Whether a device is a keyboard, and nothing but a keyboard - the only
+/// kind this module may grab.
+///
+/// A grab takes *every* event a device sends away from everybody else, and
+/// the virtual device those events are forwarded through only declares
+/// `EV_KEY` and `EV_SYN`, so anything else a grabbed device reports is
+/// lost: a touchpad's or mouse's motion (`EV_REL`/`EV_ABS`), and the lid
+/// switch logind suspends on (`EV_SW`). A grab succeeds on all of those,
+/// so this has to be asked before it rather than learned from it.
+///
+/// "A keyboard" means every letter key, not merely some key: a mouse's
+/// buttons, a power button or the video bus's brightness keys all report
+/// `EV_KEY` too, and none of them is what a keymap is for.
+pub fn is_plain_keyboard(file: &File) -> bool {
+    let mut types = [0u8; mask_len(EV_MAX)];
+    let mut keys = [0u8; mask_len(KEY_MAX)];
+    ioctl_read(file, eviocgbit(0, types.len()), &mut types).is_ok()
+        && ioctl_read(file, eviocgbit(EV_KEY, keys.len()), &mut keys).is_ok()
+        && keyboard_only(&types, &keys)
+}
+
+/// [`is_plain_keyboard`] over the two bitmasks, so the decision can be
+/// tested without a device.
+fn keyboard_only(types: &[u8], keys: &[u8]) -> bool {
+    has_bit(types, EV_KEY)
+        && ![EV_REL, EV_ABS, EV_SW]
+            .iter()
+            .any(|&kind| has_bit(types, kind))
+        && LETTER_KEYS
+            .iter()
+            .cloned()
+            .flatten()
+            .all(|key| has_bit(keys, key))
+}
+
+/// Bit `bit` of a kernel bitmask. `EVIOCGBIT` fills an array of `long`s;
+/// on a little-endian machine - every one this daemon targets - that is the
+/// same as numbering its bytes in order.
+fn has_bit(mask: &[u8], bit: u16) -> bool {
+    mask.get(bit as usize / 8)
+        .is_some_and(|byte| byte & (1 << (bit % 8)) != 0)
+}
+
 pub fn destroy_uinput(file: &File) {
     let _ = ioctl_none(file, UI_DEV_DESTROY);
 }
@@ -172,6 +235,16 @@ fn ioctl_arg<T>(file: &File, request: u32, arg: &T) -> std::io::Result<()> {
     // SAFETY: `request` names an ioctl this module derived and size-checked
     // against `arg`'s own type, and `arg` outlives the call.
     let rc = unsafe { libc::ioctl(file.as_raw_fd(), request as _, arg as *const T) };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn ioctl_read(file: &File, request: u32, buffer: &mut [u8]) -> std::io::Result<()> {
+    // SAFETY: `request` encodes `buffer.len()` as its size, so the kernel
+    // writes at most that many bytes into it.
+    let rc = unsafe { libc::ioctl(file.as_raw_fd(), request as _, buffer.as_mut_ptr()) };
     if rc < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -228,6 +301,72 @@ mod tests {
         assert_eq!(UI_SET_EVBIT, 0x40045564);
         assert_eq!(UI_SET_KEYBIT, 0x40045565);
         assert_eq!(UI_DEV_SETUP, 0x405c5503);
+        assert_eq!(eviocgbit(0, mask_len(EV_MAX)), 0x80044520);
+        assert_eq!(eviocgbit(EV_KEY, mask_len(KEY_MAX)), 0x80604521);
+    }
+
+    /// A bitmask with exactly these bits set, sized for `max`.
+    fn mask(max: u16, bits: impl IntoIterator<Item = u16>) -> Vec<u8> {
+        let mut mask = vec![0u8; mask_len(max)];
+        for bit in bits {
+            mask[bit as usize / 8] |= 1 << (bit % 8);
+        }
+        mask
+    }
+
+    fn letters() -> Vec<u16> {
+        LETTER_KEYS.iter().cloned().flatten().collect()
+    }
+
+    /// What enabling the keymap used to grab: every event node that took
+    /// the grab, which is all of them. The capabilities are the test
+    /// laptop's own, from `/sys/class/input/event*/device/capabilities`.
+    #[test]
+    fn only_a_keyboard_is_grabbed_never_a_pointer_or_a_switch() {
+        const EV_MSC: u16 = 0x04;
+        const EV_LED: u16 = 0x11;
+        const EV_REP: u16 = 0x14;
+        const BTN_LEFT: u16 = 0x110;
+        const BTN_TOUCH: u16 = 0x14a;
+        const KEY_POWER: u16 = 116;
+
+        // AT Translated Set 2 keyboard.
+        let keyboard_types = mask(EV_MAX, [EV_SYN, EV_KEY, EV_MSC, EV_LED, EV_REP]);
+        assert!(keyboard_only(&keyboard_types, &mask(KEY_MAX, letters())));
+
+        let not_keyboards = [
+            (
+                "touchpad",
+                vec![EV_SYN, EV_KEY, EV_ABS],
+                vec![BTN_LEFT, BTN_TOUCH],
+            ),
+            (
+                "mouse",
+                vec![EV_SYN, EV_KEY, EV_REL, EV_MSC],
+                vec![BTN_LEFT],
+            ),
+            ("lid switch", vec![EV_SYN, EV_SW], vec![]),
+            ("power button", vec![EV_SYN, EV_KEY], vec![KEY_POWER]),
+            // Keys and a switch on one node: grabbing it would swallow the
+            // switch, however keyboard-like its keys are.
+            ("keys with a switch", vec![EV_SYN, EV_KEY, EV_SW], letters()),
+            (
+                "keys with a pointer",
+                vec![EV_SYN, EV_KEY, EV_REL],
+                letters(),
+            ),
+        ];
+        for (name, types, keys) in not_keyboards {
+            assert!(
+                !keyboard_only(&mask(EV_MAX, types), &mask(KEY_MAX, keys)),
+                "a {name} must not be grabbed"
+            );
+        }
+
+        assert!(
+            !keyboard_only(&[], &[]),
+            "a device whose capabilities could not be read is left alone"
+        );
     }
 
     #[test]

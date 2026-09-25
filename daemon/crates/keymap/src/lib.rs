@@ -298,14 +298,18 @@ impl KeymapModule {
         for path in &paths {
             let name = raw::device_name(path).unwrap_or_else(|| path.display().to_string());
             match raw::open_nonblocking(path) {
+                // Only keyboards. The grab succeeds on anything, and the
+                // virtual device forwards only keys, so grabbing a touchpad,
+                // a mouse or the lid switch would silence it outright.
+                Ok(file) if !raw::is_plain_keyboard(&file) => {}
                 Ok(file) => {
                     if raw::grab(&file, true).is_ok() {
                         names.push(name);
                         grabbed.push(file);
                     }
-                    // A device that refuses the grab (a mouse under a
-                    // generic /dev/input entry, say) is left alone rather
-                    // than aborting the whole run over one unrelated node.
+                    // A keyboard that refuses the grab - already grabbed by
+                    // another remapper, say - is left alone rather than
+                    // aborting the whole run over one node.
                 }
                 Err(e) if e.kind() == IoErrorKind::PermissionDenied => saw_permission_denied = true,
                 Err(_) => {}
