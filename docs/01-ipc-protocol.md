@@ -1455,6 +1455,18 @@ working fans.
   still turning forwards is a mechanical step, not protocol ceremony. It
   returns with the countdown running; the cycle itself is not held open on
   the connection.
+- **A fan that will not stop is not reversed.** If either tachometer still
+  reads 300 RPM or more when the braking step runs out (7 seconds),
+  `startCleaning` releases the brake and fails with
+  `fan.cleaner.err.brakeFailed` instead of engaging reverse.
+- **A stop ramps down only what is turning backwards.** The starting speed
+  is the firmware's commanded reverse speed, or failing that a tachometer
+  reporting reverse; with neither, the override is released with no ramp,
+  so a stop never commands reverse spin itself. After the release it waits
+  for both tachometers to report forwards (up to 3 seconds) before the
+  fans go back to the configured mode.
+  The third fan's byte is ramped only where the firmware claims a third
+  fan.
 - **The clock starts when reverse spin begins**, not when the call
   arrives. Braking is setup, and charging it against a 30-second cycle
   would make a cycle shorter on the machines whose fans take longest to

@@ -231,6 +231,24 @@ the IPC protocol and on-disk config.
 
 ### Fixed
 
+- **The fan cleaner no longer reverses fans that did not stop.** The
+  braking step used to run out of time and engage reverse anyway; it now
+  waits up to 7 seconds (was 4), and if either fan still reads 300 RPM or
+  more it releases the brake and refuses the cycle
+  (`fan.cleaner.err.brakeFailed`).
+- **Stopping the fan cleaner no longer commands reverse spin by itself.**
+  When the firmware did not report a reverse speed, the ramp down started
+  from an assumed 3700 RPM - on the paths that stop fans nobody confirmed
+  were reversed (a failed start, daemon exit), that briefly reversed them.
+  The ramp now starts from the firmware's speed or a tachometer reporting
+  reverse, and is skipped when there is neither.
+- **The fans are handed back only once they turn forwards again.** After
+  releasing the override the cleaner watches the tachometers for up to 3
+  seconds rather than waiting a fixed 2, so the control loop does not write
+  a forward speed onto blades still coasting backwards.
+- **The fan cleaner's ramp down no longer writes a third fan's speed on a
+  machine with two.** The byte is commanded only where the firmware's
+  capability mask claims a third fan, as the start sequence already did.
 - **Manual and curve fan modes did nothing on boards in the driver's
   feature table** (8D2F among them, once the installer adds it). On those
   boards `pwm1_enable = 1` replaces both setpoints with the speed the fans

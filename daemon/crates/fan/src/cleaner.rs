@@ -102,7 +102,7 @@ pub const MAX_START_TEMP_C: i64 = 70;
 /// How long to wait for the blades to stop before reversing them, and how
 /// often to look. Reversing a fan that is still spinning forwards is the
 /// mechanical step this exists to avoid.
-const BRAKE_TIMEOUT: Duration = Duration::from_secs(4);
+const BRAKE_TIMEOUT: Duration = Duration::from_secs(7);
 const BRAKE_POLL: Duration = Duration::from_millis(300);
 /// What counts as stopped. Not zero: a tachometer on a coasting fan
 /// reports single-digit hundreds long after the blades are done.
@@ -113,7 +113,54 @@ const STOPPED_RPM: i64 = 300;
 const DECEL_STEP: u8 = 5;
 const DECEL_PAUSE: Duration = Duration::from_millis(150);
 const EMERGENCY_PAUSE: Duration = Duration::from_millis(120);
-const RELEASE_SETTLE: Duration = Duration::from_secs(2);
+/// After the release the firmware gets a fixed moment to act on it, and
+/// then the tachometers are watched until neither fan reports reverse.
+/// The caller writes a forward speed as soon as a stop returns, so
+/// returning while the blades still turn backwards is the same mechanical
+/// step [`BRAKE_TIMEOUT`] exists to avoid, from the other side.
+const RELEASE_SETTLE: Duration = Duration::from_millis(1500);
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+const SETTLE_POLL: Duration = Duration::from_millis(250);
+
+/// Every wait in a cycle, in one place - so the sequence can be run
+/// against a stand-in firmware in a test without taking the seconds the
+/// real blades need.
+#[derive(Debug, Clone, Copy)]
+struct Pace {
+    brake_timeout: Duration,
+    brake_poll: Duration,
+    decel_pause: Duration,
+    release_settle: Duration,
+    settle_timeout: Duration,
+    settle_poll: Duration,
+}
+
+impl Pace {
+    const NORMAL: Self = Self {
+        brake_timeout: BRAKE_TIMEOUT,
+        brake_poll: BRAKE_POLL,
+        decel_pause: DECEL_PAUSE,
+        release_settle: RELEASE_SETTLE,
+        settle_timeout: SETTLE_TIMEOUT,
+        settle_poll: SETTLE_POLL,
+    };
+
+    /// The same sequence with the ramp hurried.
+    fn hurried(self) -> Self {
+        Self {
+            decel_pause: self.decel_pause.min(EMERGENCY_PAUSE),
+            ..self
+        }
+    }
+}
+
+/// One fan's tachometer, as the driver reports it: a speed and the
+/// direction bit (see `parse_hwmon_rpm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tach {
+    pub rpm: i64,
+    pub reversed: bool,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CleanerError {
@@ -136,6 +183,11 @@ pub enum CleanerError {
     /// safe to remove the cooling. `force` is the way past this one.
     #[error("no temperature sensor could be read, so it is not safe to reverse the fans")]
     NoTemperature,
+    /// The blades were still turning forwards when the braking step ran
+    /// out of time. Reversing them anyway is what braking is there to
+    /// prevent, so the cycle is called off instead.
+    #[error("the fans did not stop in time ({fan1} and {fan2} RPM), so they were not reversed")]
+    BrakeFailed { fan1: i64, fan2: i64 },
 }
 
 impl CleanerError {
@@ -165,6 +217,11 @@ impl CleanerError {
             Self::NoTemperature => msg!(
                 "fan.cleaner.err.noTemperature",
                 "no temperature sensor could be read, so it is not safe to reverse the fans"
+            ),
+            Self::BrakeFailed { fan1, fan2 } => msg!(
+                "fan.cleaner.err.brakeFailed",
+                { "fan1" => *fan1, "fan2" => *fan2 },
+                "the fans did not stop in time ({fan1} and {fan2} RPM), so they were not reversed"
             ),
         }
     }
@@ -457,17 +514,9 @@ fn write_modern(payload: &[u8; MODERN_LEN]) -> Result<(), CleanerError> {
     call(ID_MODERN, CMD_MODERN, TYPE_WRITE, MODERN_LEN, payload).map(|_| ())
 }
 
-/// The speed the firmware is currently commanding, when it is commanding a
+/// The speed a query reply says the firmware is commanding, when it is a
 /// reverse one. Used by the stop sequence to know where to ramp down from.
-fn current_reverse_speed() -> Option<u8> {
-    let data = call(
-        ID_MODERN,
-        CMD_MODERN,
-        TYPE_QUERY,
-        MODERN_LEN,
-        &[0u8; MODERN_LEN],
-    )
-    .ok()?;
+pub(crate) fn reverse_speed_in(data: &[u8]) -> Option<u8> {
     let first = data.first().copied()?;
     (first & REVERSE != 0).then_some(first & !REVERSE)
 }
@@ -545,13 +594,13 @@ pub struct Request {
 /// before it would be reporting a cycle that has not begun. It does *not*
 /// block for the cycle's duration; the caller arms the watchdog.
 ///
-/// `rpm` is polled for the braking step. It is a closure rather than a
+/// `tach` is polled for the braking step. It is a closure rather than a
 /// path because the sysfs discovery lives in the parent module, and a
 /// second copy of it here would be a second thing to keep in step.
 pub fn start(
     probe: &Probe,
     request: &Request,
-    rpm: impl Fn() -> (i64, i64),
+    tach: impl Fn() -> [Tach; 2],
 ) -> Result<Cycle, CleanerError> {
     if let Some(temp) = request.temp_c {
         if temp > MAX_START_TEMP_C {
@@ -581,7 +630,7 @@ pub fn start(
                 gpu_speed: 0,
             })
         }
-        Generation::Modern => start_modern(probe, request, duration, rpm),
+        Generation::Modern => start_modern(probe, request, duration, tach, Pace::NORMAL),
     }
 }
 
@@ -589,7 +638,8 @@ fn start_modern(
     probe: &Probe,
     request: &Request,
     duration: Duration,
-    rpm: impl Fn() -> (i64, i64),
+    tach: impl Fn() -> [Tach; 2],
+    pace: Pace,
 ) -> Result<Cycle, CleanerError> {
     let caps = probe.capabilities;
     let (cpu_speed, gpu_speed, fan3_speed) = target_speeds(caps, request.speed);
@@ -601,26 +651,29 @@ fn start_modern(
     if let Err(e) = write_modern(&braked) {
         // Nothing is spinning backwards yet, but something was commanded;
         // release it rather than leaving a half-written override.
-        let _ = emergency_stop(Generation::Modern);
+        let _ = ramp_down(pace.hurried(), &tach);
         return Err(e);
     }
 
-    let braking_started = Instant::now();
-    while braking_started.elapsed() < BRAKE_TIMEOUT {
-        let (fan1, fan2) = rpm();
-        if fan1 < STOPPED_RPM && fan2 < STOPPED_RPM {
-            break;
-        }
-        std::thread::sleep(BRAKE_POLL);
+    if !wait_until(pace.brake_timeout, pace.brake_poll, || stopped(tach())) {
+        // Out of time with the blades still turning. Engaging now would
+        // reverse a fan at speed, so the brake is released and the cycle
+        // refused - a clean that did not happen costs nothing.
+        let [fan1, fan2] = tach();
+        let _ = ramp_down(pace.hurried(), &tach);
+        return Err(CleanerError::BrakeFailed {
+            fan1: fan1.rpm,
+            fan2: fan2.rpm,
+        });
     }
-    std::thread::sleep(BRAKE_POLL);
+    std::thread::sleep(pace.brake_poll);
 
     // Step 2: engage. The clock starts *here* - braking is setup, and
     // charging it against a 30-second cycle would make short cycles
     // shorter still on a machine whose fans take longer to stop.
     let started = Instant::now();
     if let Err(e) = write_modern(&reverse_payload(cpu_speed, gpu_speed, fan3)) {
-        let _ = emergency_stop(Generation::Modern);
+        let _ = ramp_down(pace.hurried(), &tach);
         return Err(e);
     }
 
@@ -669,39 +722,61 @@ pub(crate) fn target_speeds(caps: Capabilities, requested: Option<u8>) -> (u8, u
 /// halfway would leave the fans reversed, which is the one outcome this
 /// whole file is arranged to prevent - so a failure is reported *after*
 /// the remaining steps have been tried, not instead of them.
-pub fn stop(generation: Generation) -> Result<(), CleanerError> {
+///
+/// `tach` is the same closure [`start`] takes: it says where to ramp down
+/// from when the firmware will not, and when the blades have come round.
+pub fn stop(generation: Generation, tach: impl Fn() -> [Tach; 2]) -> Result<(), CleanerError> {
     match generation {
         Generation::Legacy => toggle_legacy(false),
-        Generation::Modern => ramp_down(DECEL_PAUSE),
+        Generation::Modern => ramp_down(Pace::NORMAL, tach),
     }
 }
 
 /// The stop sequence, hurried, for a failure partway through starting and
 /// for a cycle found still running at startup.
-pub fn emergency_stop(generation: Generation) -> Result<(), CleanerError> {
+pub fn emergency_stop(
+    generation: Generation,
+    tach: impl Fn() -> [Tach; 2],
+) -> Result<(), CleanerError> {
     match generation {
         Generation::Legacy => toggle_legacy(false),
-        Generation::Modern => ramp_down(EMERGENCY_PAUSE),
+        Generation::Modern => ramp_down(Pace::NORMAL.hurried(), tach),
     }
 }
 
-fn ramp_down(pause: Duration) -> Result<(), CleanerError> {
-    let from = current_reverse_speed().unwrap_or(DEFAULT_CPU_SPEED);
+fn ramp_down(pace: Pace, tach: impl Fn() -> [Tach; 2]) -> Result<(), CleanerError> {
     let mut first_error = None;
 
-    let mut speed = from;
-    loop {
-        // Still a *reverse* payload: the fans are slowed in the direction
-        // they are turning and only then released. Commanding forward
-        // motion here would be asking the blades to reverse at speed.
-        if let Err(e) = write_modern(&reverse_payload(speed, speed, Some(speed))) {
-            first_error.get_or_insert(e);
+    // One query answers both questions the ramp has: what speed is being
+    // commanded, and whether there is a third fan to command. Unanswered,
+    // the third byte stays zero - it means something else on a machine
+    // with two fans (see `reverse_payload`).
+    let answer = send(ID_MODERN, &modern_query_request()).ok();
+    let commanded = answer.as_deref().and_then(reverse_speed_in);
+    let fan3 = answer
+        .as_deref()
+        .is_some_and(|data| decode_capabilities(data).fan3);
+
+    // No reverse speed anywhere means there is nothing to ramp: this is
+    // also the stop for a start that failed while braking, and for fans
+    // somebody only suspected. Ramping from an assumed speed there would
+    // *command* reverse spin on fans that were turning forwards.
+    if let Some(from) = ramp_start(commanded, tach()) {
+        let mut speed = from;
+        loop {
+            // Still a *reverse* payload: the fans are slowed in the
+            // direction they are turning and only then released.
+            // Commanding forward motion here would be asking the blades to
+            // reverse at speed.
+            if let Err(e) = write_modern(&reverse_payload(speed, speed, fan3.then_some(speed))) {
+                first_error.get_or_insert(e);
+            }
+            if speed == 0 {
+                break;
+            }
+            speed = speed.saturating_sub(DECEL_STEP);
+            std::thread::sleep(pace.decel_pause);
         }
-        if speed == 0 {
-            break;
-        }
-        speed = speed.saturating_sub(DECEL_STEP);
-        std::thread::sleep(pause);
     }
 
     // All zero: the override is released and the firmware has the fans
@@ -709,11 +784,50 @@ fn ramp_down(pause: Duration) -> Result<(), CleanerError> {
     if let Err(e) = write_modern(&[0u8; MODERN_LEN]) {
         first_error.get_or_insert(e);
     }
-    std::thread::sleep(RELEASE_SETTLE);
+    std::thread::sleep(pace.release_settle);
+    // Best-effort: a tachometer that never clears the bit must not keep
+    // the fans from being handed back, so running out of time here is not
+    // an error.
+    wait_until(pace.settle_timeout, pace.settle_poll, || {
+        tach().iter().all(|fan| !fan.reversed)
+    });
 
     match first_error {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+/// Where a ramp down starts, or `None` when nothing is turning backwards.
+///
+/// The firmware's own commanded speed wins. When it does not answer, the
+/// tachometers stand in: a fan the driver reports as reversed is ramped
+/// from the speed it reads, in the firmware's hundreds of RPM.
+pub(crate) fn ramp_start(commanded: Option<u8>, tach: [Tach; 2]) -> Option<u8> {
+    commanded.filter(|speed| *speed > 0).or_else(|| {
+        tach.iter()
+            .filter(|fan| fan.reversed)
+            .map(|fan| (fan.rpm / 100).clamp(0, MAX_SPEED as i64) as u8)
+            .max()
+    })
+}
+
+/// Whether both fans have stopped, for the braking step.
+fn stopped(tach: [Tach; 2]) -> bool {
+    tach.iter().all(|fan| fan.rpm < STOPPED_RPM)
+}
+
+/// Polls `done` until it holds or `timeout` passes, and says which.
+fn wait_until(timeout: Duration, poll: Duration, done: impl Fn() -> bool) -> bool {
+    let started = Instant::now();
+    loop {
+        if done() {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(poll);
     }
 }
 
@@ -874,6 +988,319 @@ mod tests {
             sorted.len(),
             "a stale watchdog must not match a new cycle"
         );
+    }
+
+    /// The stop sequence runs for fans nobody has confirmed are reversed -
+    /// a start that failed while braking, a daemon on its way out. With
+    /// nothing reporting reverse it must not ramp at all: ramping from an
+    /// assumed speed is a reverse command.
+    #[test]
+    fn a_ramp_down_starts_from_what_is_turning_backwards_or_not_at_all() {
+        let forwards = Tach {
+            rpm: 2400,
+            reversed: false,
+        };
+        let backwards = Tach {
+            rpm: 3700,
+            reversed: true,
+        };
+
+        assert_eq!(ramp_start(None, [forwards, forwards]), None);
+        assert_eq!(ramp_start(Some(0), [forwards, forwards]), None);
+
+        // The firmware's own answer wins over the tachometers.
+        assert_eq!(ramp_start(Some(30), [backwards, backwards]), Some(30));
+
+        // A firmware that will not say, and a fan that is reversed anyway:
+        // ramp from what it reads, the faster of the two.
+        assert_eq!(ramp_start(None, [forwards, backwards]), Some(37));
+        let runaway = Tach {
+            rpm: 9900,
+            reversed: true,
+        };
+        assert_eq!(ramp_start(None, [runaway, backwards]), Some(MAX_SPEED));
+    }
+
+    #[test]
+    fn braking_is_done_only_when_both_fans_have_stopped() {
+        let still = Tach {
+            rpm: 200,
+            reversed: true,
+        };
+        let coasting = Tach {
+            rpm: STOPPED_RPM,
+            reversed: false,
+        };
+        assert!(stopped([still, still]));
+        assert!(!stopped([still, coasting]));
+    }
+
+    /// Running out of time has to be *reported*: it is the difference
+    /// between reversing stopped blades and reversing spinning ones.
+    #[test]
+    fn a_wait_says_whether_it_ended_by_the_condition_or_the_clock() {
+        let tick = Duration::from_millis(1);
+        assert!(wait_until(Duration::from_millis(50), tick, || true));
+        assert!(!wait_until(Duration::from_millis(5), tick, || false));
+
+        // Checked before the first sleep and once more at the deadline.
+        let calls = std::cell::Cell::new(0);
+        assert!(wait_until(Duration::from_secs(5), tick, || {
+            calls.set(calls.get() + 1);
+            calls.get() == 3
+        }));
+        assert_eq!(calls.get(), 3);
+        assert!(wait_until(Duration::ZERO, tick, || true));
+    }
+
+    #[test]
+    fn a_reverse_speed_is_read_only_off_a_byte_with_the_direction_bit() {
+        assert_eq!(reverse_speed_in(&[37 | REVERSE, 0]), Some(37));
+        assert_eq!(reverse_speed_in(&[37, 0]), None, "forwards is not a ramp");
+        assert_eq!(reverse_speed_in(&[]), None);
+    }
+
+    /// A stand-in for the firmware behind `acpi_call`: a FIFO that hands
+    /// every request to a thread, which records it and answers `PASS` with
+    /// a fixed query reply. Enough to run a whole start or stop sequence
+    /// and read back what was commanded, in order.
+    struct Firmware {
+        dir: std::path::PathBuf,
+        fifo: std::path::PathBuf,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        _env: crate::testenv::NoAcpiCall,
+    }
+
+    impl Firmware {
+        /// `data` is what a query is answered with, after the `PASS` and
+        /// the zero return code.
+        fn answering(name: &str, data: &[u8]) -> Self {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::{Arc, Mutex};
+
+            let dir =
+                std::env::temp_dir().join(format!("pyren-firmware-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let fifo = dir.join("call");
+            let made = std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .expect("mkfifo runs");
+            assert!(made.success());
+
+            let reply = [b"PASS".as_slice(), &[0u8; 4], data]
+                .concat()
+                .iter()
+                .map(|byte| format!("0x{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let reply = format!("{{{reply}}}");
+
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let done = Arc::new(AtomicBool::new(false));
+            {
+                let (fifo, seen, done) = (fifo.clone(), Arc::clone(&seen), Arc::clone(&done));
+                std::thread::spawn(move || {
+                    while let Ok(request) = std::fs::read_to_string(&fifo) {
+                        if done.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        seen.lock().unwrap().push(request);
+                        if std::fs::write(&fifo, &reply).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            let env = crate::testenv::at(&fifo);
+            Self {
+                dir,
+                fifo,
+                seen,
+                done,
+                _env: env,
+            }
+        }
+
+        /// The payload bytes of every *write* sent so far, in order - the
+        /// queries are the firmware being asked, not told.
+        fn writes(&self) -> Vec<Vec<u8>> {
+            let write = modern_write_header();
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|request| {
+                    let hex = request.rsplit(' ').next()?;
+                    hex.starts_with(&write)
+                        .then(|| acpi::parse_bytes(hex))
+                        .flatten()
+                        .map(|bytes| bytes[acpi::HEADER_LEN..].to_vec())
+                })
+                .collect()
+        }
+    }
+
+    impl Drop for Firmware {
+        fn drop(&mut self) {
+            // Opening the write end and closing it is an empty request,
+            // which is what lets the thread see the flag and leave.
+            self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = std::fs::OpenOptions::new().write(true).open(&self.fifo);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    const QUICK: Pace = Pace {
+        brake_timeout: Duration::from_millis(60),
+        brake_poll: Duration::from_millis(5),
+        decel_pause: Duration::from_millis(1),
+        release_settle: Duration::from_millis(1),
+        settle_timeout: Duration::from_millis(20),
+        settle_poll: Duration::from_millis(5),
+    };
+
+    fn two_fan_probe() -> Probe {
+        Probe {
+            supported: true,
+            generation: Some(Generation::Modern),
+            capabilities: Capabilities {
+                cpu: true,
+                gpu: true,
+                ..Default::default()
+            },
+            answered: true,
+            unreachable: None,
+            acpi_call_loaded: true,
+            acpi_call_installed: true,
+            detail: msg!("test", "test"),
+        }
+    }
+
+    fn request() -> Request {
+        Request {
+            speed: None,
+            duration: Duration::from_secs(30),
+            temp_c: Some(40),
+        }
+    }
+
+    fn both(rpm: i64, reversed: bool) -> [Tach; 2] {
+        [Tach { rpm, reversed }; 2]
+    }
+
+    /// The whole start, as the firmware sees it: brake, then engage - and
+    /// nothing else, on fans that stopped.
+    #[test]
+    fn a_start_brakes_and_then_engages() {
+        // Two fans, nothing commanded.
+        let mut data = [0u8; 16];
+        data[8] = 0b011;
+        let firmware = Firmware::answering("start", &data);
+
+        let cycle = start_modern(
+            &two_fan_probe(),
+            &request(),
+            Duration::from_secs(30),
+            || both(0, false),
+            QUICK,
+        )
+        .expect("stopped fans are reversed");
+        assert_eq!((cycle.cpu_speed, cycle.gpu_speed), (37, 39));
+
+        let writes = firmware.writes();
+        assert_eq!(writes.len(), 2, "brake and engage: {writes:?}");
+        assert_eq!(writes[0][..3], [REVERSE, REVERSE, 0]);
+        assert_eq!(writes[1][..3], [37 | REVERSE, 39 | REVERSE, 0]);
+    }
+
+    /// Fans that keep turning are never engaged: the brake is released and
+    /// the caller told. No write in the whole exchange carries a reverse
+    /// speed, which is the property this exists for.
+    #[test]
+    fn fans_that_do_not_stop_are_released_and_never_reversed() {
+        let mut data = [0u8; 16];
+        data[8] = 0b011;
+        let firmware = Firmware::answering("brake", &data);
+
+        let refused = start_modern(
+            &two_fan_probe(),
+            &request(),
+            Duration::from_secs(30),
+            || both(2400, false),
+            QUICK,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(CleanerError::BrakeFailed {
+                    fan1: 2400,
+                    fan2: 2400
+                })
+            ),
+            "got: {refused:?}"
+        );
+
+        let writes = firmware.writes();
+        assert_eq!(writes.len(), 2, "brake and release: {writes:?}");
+        assert_eq!(writes[0][..3], [REVERSE, REVERSE, 0]);
+        assert!(
+            writes[1].iter().all(|byte| *byte == 0),
+            "the override is released"
+        );
+        assert!(
+            writes
+                .iter()
+                .all(|w| w[..3].iter().all(|b| b & !REVERSE == 0)),
+            "no reverse speed was ever commanded: {writes:?}"
+        );
+    }
+
+    /// The ramp down follows the firmware's own speed, leaves the third
+    /// byte alone on a machine with two fans, and ends on a release.
+    #[test]
+    fn a_stop_ramps_down_from_the_commanded_speed_and_releases() {
+        let mut data = [0u8; 16];
+        data[0] = 12 | REVERSE;
+        data[1] = 12 | REVERSE;
+        data[8] = 0b011;
+        let firmware = Firmware::answering("stop", &data);
+
+        ramp_down(QUICK, || both(0, false)).expect("every write was accepted");
+
+        let speeds: Vec<[u8; 3]> = firmware
+            .writes()
+            .iter()
+            .map(|w| [w[0], w[1], w[2]])
+            .collect();
+        assert_eq!(
+            speeds,
+            vec![
+                [12 | REVERSE, 12 | REVERSE, 0],
+                [7 | REVERSE, 7 | REVERSE, 0],
+                [2 | REVERSE, 2 | REVERSE, 0],
+                [REVERSE, REVERSE, 0],
+                [0, 0, 0],
+            ]
+        );
+    }
+
+    /// A third fan the firmware claims is ramped with the other two.
+    #[test]
+    fn a_stop_ramps_the_third_fan_only_where_there_is_one() {
+        let mut data = [0u8; 16];
+        data[0] = 5 | REVERSE;
+        data[8] = 0b111;
+        let firmware = Firmware::answering("fan3", &data);
+
+        ramp_down(QUICK, || both(0, false)).expect("every write was accepted");
+
+        let writes = firmware.writes();
+        assert_eq!(writes[0][..3], [5 | REVERSE; 3]);
+        assert_eq!(writes[1][..3], [REVERSE; 3]);
     }
 
     /// With no `acpi_call`, the probe must say so and offer the remedy -

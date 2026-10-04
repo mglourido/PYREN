@@ -891,6 +891,7 @@
         "busy": "a fan-cleaning cycle is already in progress",
         "tooHot": "{temp} °C is too hot to reverse the fans (the limit is {limit} °C)",
         "noTemperature": "no temperature sensor could be read, so it is not safe to reverse the fans",
+        "brakeFailed": "the fans did not stop in time ({fan1} and {fan2} RPM), so they were not reversed",
         "endedHot": "the cycle was ended early: {temp} °C is over the {limit} °C limit"
       },
       "probe": {

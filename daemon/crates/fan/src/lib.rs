@@ -934,7 +934,7 @@ impl FanModule {
             let generation = cleaner::probe()
                 .generation
                 .unwrap_or(cleaner::Generation::Modern);
-            let result = cleaner::emergency_stop(generation);
+            let result = cleaner::emergency_stop(generation, module.tach());
             if let Err(e) = &result {
                 log_warn!("could not end the interrupted cleaning cycle: {e}");
             }
@@ -1010,7 +1010,7 @@ impl FanModule {
                     .generation
                     .unwrap_or(cleaner::Generation::Modern)
             });
-            if let Err(e) = cleaner::emergency_stop(generation) {
+            if let Err(e) = cleaner::emergency_stop(generation, self.tach()) {
                 log_warn!("on exit: could not end the fan-cleaning cycle: {e}");
             }
         }
@@ -1908,13 +1908,19 @@ impl FanModule {
             temp_c,
         };
 
-        let fan1 = self.paths().fan1_input.clone();
-        let fan2 = self.paths().fan2_input.clone();
-        cleaner::start(&probe, &request, || {
-            let (rpm1, _) = parse_hwmon_rpm(read_raw_rpm(fan1.as_deref()));
-            let (rpm2, _) = parse_hwmon_rpm(read_raw_rpm(fan2.as_deref()));
-            (rpm1, rpm2)
-        })
+        cleaner::start(&probe, &request, self.tach())
+    }
+
+    /// Both tachometers, for the cleaner's braking and settling steps. A
+    /// closure because [`cleaner`] does not own the sysfs paths.
+    fn tach(&self) -> impl Fn() -> [cleaner::Tach; 2] {
+        let paths = self.paths();
+        move || {
+            [&paths.fan1_input, &paths.fan2_input].map(|path| {
+                let (rpm, reversed) = parse_hwmon_rpm(read_raw_rpm(path.as_deref()));
+                cleaner::Tach { rpm, reversed }
+            })
+        }
     }
 
     /// Ends the cycle now, ramps the fans back down out of reverse and
@@ -1947,7 +1953,7 @@ impl FanModule {
         };
 
         if let Some(generation) = generation {
-            let result = cleaner::stop(generation);
+            let result = cleaner::stop(generation, self.tach());
             self.finish_cycle(result);
         }
         Ok(self.cleaner_status(false))
@@ -1990,7 +1996,7 @@ impl FanModule {
                 }
             }
 
-            let result = cleaner::stop(generation);
+            let result = cleaner::stop(generation, module.tach());
             module.finish_cycle(result);
         });
     }
@@ -2027,7 +2033,7 @@ impl FanModule {
                 safety::CLEANER_ABORT_C
             );
         }
-        let result = cleaner::stop(generation);
+        let result = cleaner::stop(generation, self.tach());
         self.finish_cycle(result);
         if let Some(temp) = too_hot {
             lock(&self.state).last_cleaner_error = Some(msg!(
@@ -3078,7 +3084,7 @@ fn cleaner_error(e: cleaner::CleanerError) -> ModuleError {
         E::Busy => ErrorKind::Busy,
         // Not `invalidParams`: the caller asked for something reasonable
         // and the machine is in no state for it *right now*.
-        E::TooHot(_) | E::NoTemperature => ErrorKind::Failed,
+        E::TooHot(_) | E::NoTemperature | E::BrakeFailed { .. } => ErrorKind::Failed,
         E::Refused(_) => ErrorKind::Failed,
     };
     ModuleError::localised(kind, e.to_msg())
@@ -3410,8 +3416,14 @@ pub(crate) mod testenv {
     /// returned guard lives. `dir` is the test's own temp directory, so
     /// two tests never share the name.
     pub(crate) fn without_acpi_call(dir: &Path) -> NoAcpiCall {
+        at(&dir.join("definitely-not-here"))
+    }
+
+    /// Points `acpi_call` at `path` for as long as the returned guard
+    /// lives - a stand-in firmware, where a test has one.
+    pub(crate) fn at(path: &Path) -> NoAcpiCall {
         let mut env = real();
-        std::env::set_var("PYREN_ACPI_CALL", dir.join("definitely-not-here"));
+        std::env::set_var("PYREN_ACPI_CALL", path);
         env.redirected = true;
         env
     }

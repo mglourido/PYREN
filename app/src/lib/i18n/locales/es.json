@@ -891,6 +891,7 @@
         "busy": "ya hay un ciclo de limpieza en curso",
         "tooHot": "{temp} °C es demasiado para invertir los ventiladores (el límite son {limit} °C)",
         "noTemperature": "no se pudo leer ningún sensor de temperatura, así que no es seguro invertir los ventiladores",
+        "brakeFailed": "los ventiladores no se detuvieron a tiempo ({fan1} y {fan2} RPM), así que no se invirtieron",
         "endedHot": "el ciclo terminó antes de tiempo: {temp} °C supera el límite de {limit} °C"
       },
       "probe": {
