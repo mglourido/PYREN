@@ -234,6 +234,7 @@ fn run_step(step: &Step, env: &Environment, context: &ExecuteContext) -> Result<
         "stage-source" => stage_source(env),
         "backup-driver" => backup_stock_driver(&env.kernel.release),
         "install-module" => install_module(&env.kernel.release),
+        "record-driver-version" => record_driver_version(),
         id if id.starts_with("install-hook") => install_hook(env),
         "write-modprobe-conf" => write_modprobe_conf(context),
         "remove-modprobe-conf" => remove_modprobe_conf(),
@@ -299,7 +300,18 @@ fn patch_source(_env: &Environment, context: &ExecuteContext) -> Result<String, 
 }
 
 fn dkms_src_dir() -> PathBuf {
-    PathBuf::from(format!("/usr/src/{DKMS_NAME}-{DKMS_VERSION}"))
+    crate::version::stage_dir()
+}
+
+/// Leaves a stamp in the staged tree naming the driver revision that was
+/// just built from it. See `version.rs` for why it lives there and what it
+/// identifies.
+fn record_driver_version() -> Result<String, String> {
+    let identity = crate::version::record_installed(&dkms_src_dir())?;
+    Ok(match identity.label {
+        Some(label) => format!("recorded {label}, sha256 {}", identity.sha256),
+        None => format!("recorded sha256 {}", identity.sha256),
+    })
 }
 
 /// Copies the driver tree into `/usr/src`, filling in `dkms.conf`'s
@@ -320,6 +332,9 @@ fn stage_source(env: &Environment) -> Result<String, String> {
     fs::copy(source.join("src/Makefile"), dest.join("src/Makefile"))
         .map_err(|e| format!("copying src/Makefile: {e}"))?;
     copy_tree(&source.join("hp-wmi-omen"), &dest.join("src/hp-wmi-omen"))?;
+    // These sources are not the installed driver until a module has been
+    // built from them; `record-driver-version` takes the marker away.
+    crate::version::mark_pending(&dest)?;
 
     Ok(format!("staged to {}", dest.display()))
 }

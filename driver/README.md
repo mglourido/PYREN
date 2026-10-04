@@ -87,7 +87,16 @@ output. `daemon/crates/installer/src/detect.rs` finds it via
 `REPO_DRIVER_DIR` for a development build; a package must install it to
 `/usr/share/pyren/driver` (or point `PYREN_DRIVER_DIR` at a copy).
 
-Updating it means replacing the files wholesale from a newer upstream, then
-running `cargo test -p pyren-installer` — the patcher's tests check every
-anchor it relies on against the real file here, so a table renamed upstream
-fails a test rather than an install.
+Updating it means replacing the files wholesale from a newer upstream,
+updating the provenance table above, then running
+`cargo test -p pyren-installer` — the patcher's tests check every anchor it
+relies on against the real file here, so a table renamed upstream fails a
+test rather than an install.
+
+The provenance table is not only for readers. The installer compiles this
+file in and reads the `Taken from`, `hp-wmi.c sha256` and `Copied on` rows
+out of it (`daemon/crates/installer/src/version.rs`): the commit and date
+become the label shown beside the driver's hash, and the hash is what lets
+Pyren tell a user that the driver they installed is no longer the one it
+ships. Keep those three rows in the shape they have; a test fails when the
+table cannot be read or when its sha256 is not that of `hp-wmi.c.orig`.

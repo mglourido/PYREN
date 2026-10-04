@@ -790,7 +790,7 @@ plan is also something that pastes into a bug report.
 
 | method | params | result | status |
 |---|---|---|---|
-| `installer.inspect` | none | what this machine has, and whether the patch is needed | ✅ implemented |
+| `installer.inspect` | none | `{ environment, patchNeeded, driverVersion }`: what this machine has, whether the patch is needed, and whether the installed driver is the one this build ships | ✅ implemented |
 | `installer.autodetect` | none | the install's inputs, worked out from the machine | ✅ implemented, read-only |
 | `installer.plan` | `{ action, preferHooks?, force? }` | ordered steps, blockers, warnings | ✅ implemented |
 | `installer.apply` | as above plus `confirm`, `auto`, `skipSteps`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | `{ plan, report, autodetected? }` | ✅ implemented; `installDriver` and `pinFanCeiling` both run for real on 8D2F |
@@ -922,11 +922,77 @@ under `pkexec`.
 `action` is one of `installDriver`, `restoreDriver`, `installService`,
 `removeService`.
 
+### `driverVersion`: is the installed driver the one this build ships
+
+Updating Pyren replaces the driver *sources* (`/usr/share/pyren/driver`) and
+leaves the module that is already built alone — nothing rebuilds a kernel
+module on its own. `inspect` therefore also says which revision is installed
+and which one an install started now would use:
+
+```json
+"driverVersion": {
+  "state": "outdated",
+  "outdated": true,
+  "installed": { "sha256": "2eab8333…", "label": null },
+  "installedFrom": "source",
+  "bundled": { "sha256": "4d82cbb6…", "label": "2d3f2a4 (2026-10-04)" }
+}
+```
+
+A revision is identified by the **sha256 of the pristine `hp-wmi.c.orig`**,
+never of `hp-wmi.c`: the patcher writes this machine's fan ceilings and
+board id into `hp-wmi.c`, so that file differs between two installs of the
+same revision, while `.orig` does not. `label` is the upstream commit and
+vendoring date from `driver/README.md`'s provenance table, for people; it is
+never compared, and is `null` for a revision this build has no record of.
+
+| `state` | meaning |
+|---|---|
+| `notInstalled` | the patched driver is not installed (`environment.patchedDriverInstalled` is false). Not "outdated": this is the existing "driver not installed" case |
+| `current` | installed, and the same revision as the bundled one |
+| `outdated` | installed, and a **different** revision from the bundled one. A hash has no order, so this is "differs", which after an update of Pyren means older; reinstalling brings them in line either way |
+| `unknown` | installed, but the installed revision or the bundled one could not be established. Deliberately neither `current` nor `outdated` |
+
+`outdated` is `state == "outdated"` as a boolean, for a client that only
+wants to know whether to offer a reinstall.
+
+`bundled` is hashed from the source tree `inspect` found
+(`environment.driverSource`), not compiled into the daemon — it describes
+what `apply` would actually copy. It is `null` when no sources were found.
+
+`installed` comes from one of two places, named by `installedFrom`:
+
+- **`stamp`** — `/usr/src/hp-wmi-omen-1.0/pyren-driver.json`, written by the
+  install's `record-driver-version` step once the module is in place:
+  `{ "sha256", "label", "installedBy" }` (`installedBy` is the Pyren version,
+  for a person reading the file). It lives inside the staged tree on
+  purpose: an update of Pyren never touches `/usr/src`, the next install
+  wipes it with the tree and writes a new one only after its own module is
+  installed, and `restoreDriver`'s `remove-sources` deletes it with the
+  sources it describes. The step is not `optional`: it is also what ends
+  the "staged, not yet installed" state below.
+- **`source`** — no usable stamp, so the staged `hp-wmi.c.orig` was hashed
+  instead. This is every install made before the stamp existed, and one
+  whose stamp is missing or unreadable. With no `.orig` either, `installed`
+  is `null` and the state is `unknown`.
+
+An install that did not finish is neither. `stage-source` leaves
+`pyren-driver.pending` in the tree and the stamp removes it, so sources
+staged by an install whose build then failed are never read as the
+installed driver: while the marker is there `installed` is `null` and the
+state is `unknown`.
+
+The app asks once per connection to the daemon and shows a dismissible
+notice while the state is `outdated`, linking to the wizard on `/drivers`.
+The notice can be switched off for good in Settings
+(`hideDriverOutdatedNotice`).
+
 ### `skipSteps`: opting out of the optional ones
 
 A step the plan marks `optional` is one whose *failure* it tolerates —
 regenerating the initramfs (known to break on odd EFI layouts), unloading a
-module that may not be loaded, cleaning a build tree. Those are also the
+module that may not be loaded, cleaning a build tree, recording the
+installed driver's version. Those are also the
 only steps it can do without, so they are the only ones `skipSteps` accepts:
 
 ```json

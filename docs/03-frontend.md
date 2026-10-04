@@ -80,6 +80,15 @@ Three stores, deliberately separate:
 - **`settings`** — app preferences (language, units, poll interval,
   dismissed notices).
 
+`telemetry.driverVersion` is `installer.inspect`'s `driverVersion`, asked
+once each time the daemon becomes reachable (and refreshed by the driver
+wizard after it runs). While its state is `outdated` the shell shows a
+"driver update available" notice linking to `/drivers`. Closing it is
+component state in `+layout.svelte`, so it stays closed for the session
+and returns on the next launch while the driver is still out of date. The
+`hideDriverOutdatedNotice` setting - the notice's "don't show again" box,
+and a switch under Settings → Advanced - silences it for good.
+
 `settings` and `hardware` persist to `~/.config/pyren/app.json` and
 `ui.json`, written by the Tauri shell through the same `pyren-config`
 crate the daemon uses - so app settings get the same atomic writes,

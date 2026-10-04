@@ -11,6 +11,21 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **Pyren says when the installed driver is older than the one it ships.**
+  Updating the app replaces the driver sources but never rebuilds the
+  kernel module already installed, so a machine could keep an old `hp-wmi`
+  indefinitely. An install now records which driver revision it built -
+  the sha256 of the pristine `hp-wmi.c.orig`, with the upstream commit and
+  date from `driver/README.md` - in
+  `/usr/src/hp-wmi-omen-1.0/pyren-driver.json`, and `installer.inspect`
+  reports it beside the bundled one as `driverVersion`. When they differ,
+  the app shows a "driver update available" notice on opening, leading to
+  the driver wizard; closing it lasts for that session, and its "don't
+  show again" box (also a switch under Settings → Advanced) silences it
+  for good. Installs made before this are identified by hashing their
+  staged `.orig`, and one that cannot be identified - or whose build
+  failed after its sources were staged - is reported as unknown rather
+  than as up to date.
 - **Force the keyboard light on at start.** A new switch at the bottom of
   the lighting page (`rgb.setForceBacklightOn`) makes the daemon switch
   the keyboard backlight on when it starts, in case the Fn key left it

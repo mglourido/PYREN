@@ -957,6 +957,15 @@
     </div>
 
     <div class="row">
+      <span>{t("settings.driverOutdatedNotice")}</span>
+      <Toggle
+        checked={!settings.current.hideDriverOutdatedNotice}
+        onchange={(v) => settings.set("hideDriverOutdatedNotice", !v)}
+        ariaLabel={t("settings.driverOutdatedNotice")}
+      />
+    </div>
+
+    <div class="row">
       <span>{t("settings.resetSettings")}</span>
       <button
         class="danger"

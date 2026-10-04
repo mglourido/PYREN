@@ -31,6 +31,10 @@ export type Settings = {
   autostart: boolean;
   /** TODO item: the "driver missing" notice has a don't-show-again box. */
   hideDriverNotice: boolean;
+  /** Same, for the "installed driver is not the one this version ships"
+   *  notice. Its own switch: someone who silenced the first has not been
+   *  asked about the second. */
+  hideDriverOutdatedNotice: boolean;
   vitalsAdvancedView: boolean;
   /** Animate the vitals gauges toward each new reading instead of snapping. */
   gaugeAnimations: boolean;
@@ -76,6 +80,7 @@ function defaults(): Settings {
     closeToTray: false,
     autostart: false,
     hideDriverNotice: false,
+    hideDriverOutdatedNotice: false,
     vitalsAdvancedView: false,
     gaugeAnimations: true,
     // On by default: it is a read-only detail, costs nothing when the

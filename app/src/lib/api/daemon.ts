@@ -897,9 +897,41 @@ export type InstallerEnvironment = {
   driverAcceptsMeasuredRpm: boolean;
 };
 
+/** One revision of the patched hp-wmi. */
+export type DriverIdentity = {
+  /** sha256 of the pristine `hp-wmi.c.orig`: the identity that is compared. */
+  sha256: string;
+  /** Upstream commit and vendoring date, when known. Never compared. */
+  label: string | null;
+};
+
+/**
+ * Whether the installed driver is the one this build of Pyren ships.
+ *
+ * `outdated` means "differs from the bundled one" - a hash has no order -
+ * and is false for `notInstalled` (the stock driver, which the "driver not
+ * installed" notice already covers) and for `unknown` (an install nothing
+ * could identify, which must not be reported either way).
+ */
+export type DriverVersion = {
+  state: "notInstalled" | "current" | "outdated" | "unknown";
+  outdated: boolean;
+  installed: DriverIdentity | null;
+  /** `stamp`: recorded by the install. `source`: hashed from /usr/src. */
+  installedFrom: "stamp" | "source" | null;
+  /** What installing now would put on the machine. */
+  bundled: DriverIdentity | null;
+};
+
+/** How a driver revision is shown: its label, or a short hash without one. */
+export function driverIdentityName(identity: DriverIdentity): string {
+  return identity.label ?? identity.sha256.slice(0, 12);
+}
+
 export type InstallerInspection = {
   environment: InstallerEnvironment;
   patchNeeded: boolean;
+  driverVersion: DriverVersion;
 };
 
 /** An empty `command` is a step the daemon carries out itself. */

@@ -21,6 +21,7 @@ import {
   DaemonUnavailable,
   daemon,
   type DiskUsage,
+  type DriverVersion,
   type GpuMetrics,
   type ProcessUsage,
   type SystemInfo,
@@ -71,6 +72,12 @@ export class Telemetry {
   /** Whether the patched hp-wmi driver is present (HP machines only). */
   driverInstalled = $state(false);
   systemInfo = $state<SystemInfo | null>(null);
+  /**
+   * Whether the installed hp-wmi is the one this build ships. `null` until
+   * the daemon has been asked, and again whenever it cannot be: no verdict
+   * is not a verdict, and the shell shows no notice for it.
+   */
+  driverVersion = $state<DriverVersion | null>(null);
 
   cpuTempC = $state(52);
   gpuTempC = $state<number | null>(null);
@@ -221,6 +228,19 @@ export class Telemetry {
     if (active && !wasActive) {
       void this.poll();
       void this.pollProcesses();
+    }
+  }
+
+  /**
+   * Asked once per connection to the daemon rather than on every poll:
+   * the answer only changes when a driver is installed (the wizard reports
+   * that itself) or when Pyren is updated, which restarts both sides.
+   */
+  async loadDriverVersion() {
+    try {
+      this.driverVersion = (await daemon.installerInspect()).driverVersion ?? null;
+    } catch {
+      this.driverVersion = null;
     }
   }
 

@@ -20,11 +20,18 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { debugLog } from "$lib/api/debug";
+  import { driverIdentityName } from "$lib/api/daemon";
 
   let { children }: { children: Snippet } = $props();
 
   let daemonNoticeDismissed = $state(false);
   let unsupportedNoticeDismissed = $state(false);
+  // Component state, so closing the notice silences it for this run of the
+  // app and the next launch shows it again while the driver is still out of
+  // date. Silencing it for good is a separate, deliberate choice - the
+  // "don't show again" box, `hideDriverOutdatedNotice` - because that one
+  // hides every later driver update as well.
+  let driverOutdatedNoticeDismissed = $state(false);
 
   // Cache first so the very first frame already has the user's language,
   // then the files on disk, which are authoritative.
@@ -40,6 +47,14 @@
   // `Telemetry`'s in-flight guard would silently drop.
   $effect(() => {
     telemetry.setDetailActive(isDetailRoute(page.url.pathname));
+  });
+
+  // Asked when the daemon becomes reachable rather than once in `onMount`:
+  // an app opened before its daemon would otherwise never learn the answer.
+  // `demo` is the only thing read here - `loadDriverVersion` touches no
+  // state before its first `await` - so this runs once per connection.
+  $effect(() => {
+    if (!telemetry.demo) void telemetry.loadDriverVersion();
   });
 
   // Deliberately `onMount` and not `$effect`: this block reads settings
@@ -93,6 +108,22 @@
       !settings.current.hideDriverNotice,
   );
 
+  // The installed driver is not the one this version of Pyren ships -
+  // which is what updating the app leaves behind, since nothing rebuilds a
+  // kernel module on its own. Only `outdated`: a stock driver is the notice
+  // above's business, and an install that could not be identified is not
+  // something to send anybody to reinstall over.
+  const outdatedDriver = $derived(
+    !telemetry.demo && telemetry.driverVersion?.state === "outdated"
+      ? telemetry.driverVersion
+      : null,
+  );
+  const showDriverOutdatedNotice = $derived(
+    outdatedDriver !== null &&
+      !driverOutdatedNoticeDismissed &&
+      !settings.current.hideDriverOutdatedNotice,
+  );
+
   const showUnsupportedNotice = $derived(
     !telemetry.demo &&
       telemetry.systemInfo?.compatibility === "unsupported" &&
@@ -134,6 +165,33 @@
               <input
                 type="checkbox"
                 onchange={(e) => settings.set("hideDriverNotice", e.currentTarget.checked)}
+              />
+              {t("notices.dontShowAgain")}
+            </label>
+          {/snippet}
+        </Banner>
+      {/if}
+
+      {#if showDriverOutdatedNotice && outdatedDriver?.installed && outdatedDriver.bundled}
+        <Banner
+          kind="info"
+          title={t("notices.driverOutdatedTitle")}
+          dismissible
+          ondismiss={() => (driverOutdatedNoticeDismissed = true)}
+        >
+          {t("notices.driverOutdatedBody", {
+            installed: driverIdentityName(outdatedDriver.installed),
+            bundled: driverIdentityName(outdatedDriver.bundled),
+          })}
+          {#snippet actions()}
+            <button class="link on-info" onclick={() => goto("/drivers")}>
+              {t("notices.goToDriverUpdate")}
+            </button>
+            <label class="dismiss">
+              <input
+                type="checkbox"
+                onchange={(e) =>
+                  settings.set("hideDriverOutdatedNotice", e.currentTarget.checked)}
               />
               {t("notices.dontShowAgain")}
             </label>
@@ -202,6 +260,12 @@
     text-decoration: underline;
     padding: 0;
     font-size: 13px;
+  }
+
+  /* The amber above is picked for the warning strip; on the blue one it
+     reads as a second, unrelated status. */
+  .link.on-info {
+    color: inherit;
   }
 
   .dismiss {

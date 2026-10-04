@@ -500,6 +500,22 @@ fn plan_install_driver(env: &Environment, options: PlanOptions) -> Plan {
         }
     }
 
+    // Only now, with the new module installed: `stage-source` already
+    // wiped the previous install's stamp along with its tree, so a build
+    // that failed above leaves no stamp claiming a driver that was never
+    // installed. Not optional: it is also what clears the marker
+    // `stage-source` left, and an install that skipped it would read as
+    // one that never finished (see `version.rs`).
+    steps.push(Step::internal(
+        "record-driver-version",
+        msg!(
+            "installer.step.record-driver-version",
+            { "path" => format!("{dkms_src}/{}", crate::version::STAMP_FILE) },
+            "Record which driver version was installed in {path}, so a later Pyren \
+             update can tell when it ships a newer one"
+        ),
+    ));
+
     steps.push(Step::command(
         "depmod",
         msg!("installer.step.depmod", "Rebuild module dependencies"),
@@ -1323,6 +1339,67 @@ mod tests {
         assert!(optional("initramfs"));
         assert!(optional("modprobe-remove"));
         assert!(!optional("modprobe"));
+    }
+
+    /// The stamp says "this is what is installed", so it may only be
+    /// written once that is true - and under either strategy, since both
+    /// build from the same staged tree.
+    #[test]
+    fn the_driver_version_is_recorded_only_after_the_module_is_installed() {
+        for (options, installs) in [
+            (PlanOptions::default(), "dkms-install"),
+            (
+                PlanOptions {
+                    prefer_hooks: true,
+                    ..PlanOptions::default()
+                },
+                "install-module",
+            ),
+        ] {
+            let plan = plan(&ready_env(), Action::InstallDriver, options);
+            let position = |id: &str| {
+                ids(&plan)
+                    .iter()
+                    .position(|step| *step == id)
+                    .unwrap_or_else(|| panic!("no {id} step in {:?}", ids(&plan)))
+            };
+            assert!(position("stage-source") < position(installs));
+            assert!(position(installs) < position("record-driver-version"));
+        }
+    }
+
+    /// The stamp is what ends the "staged, not yet installed" state, so it
+    /// is not a step somebody may untick.
+    #[test]
+    fn recording_the_driver_version_is_not_a_step_that_can_be_skipped() {
+        let plan = plan(&ready_env(), Action::InstallDriver, PlanOptions::default());
+        let record = plan
+            .steps
+            .iter()
+            .find(|s| s.id == "record-driver-version")
+            .unwrap();
+        assert!(!record.optional);
+        assert_eq!(
+            record.description.key,
+            "installer.step.record-driver-version"
+        );
+        assert!(record.description.params["path"]
+            .as_str()
+            .unwrap()
+            .ends_with(crate::version::STAMP_FILE));
+    }
+
+    /// The stamp lives inside the staged tree precisely so that restoring
+    /// needs no step of its own for it: deleting the sources deletes the
+    /// record of them, and a stock driver is never left "installed" on
+    /// paper.
+    #[test]
+    fn restoring_removes_the_recorded_version_along_with_the_sources() {
+        let plan = plan(&ready_env(), Action::RestoreDriver, PlanOptions::default());
+        assert!(ids(&plan).contains(&"remove-sources"));
+        assert!(crate::version::stage_dir()
+            .join(crate::version::STAMP_FILE)
+            .starts_with(format!("/usr/src/{DKMS_NAME}-{DKMS_VERSION}")));
     }
 
     #[test]

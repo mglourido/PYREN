@@ -47,6 +47,7 @@
   import { debugLog } from "$lib/api/debug";
   import {
     daemon,
+    driverIdentityName,
     type Autodetected,
     type BoardParams,
     type BoardTable,
@@ -61,6 +62,7 @@
     onDaemonEvent,
   } from "$lib/api/daemon";
   import { hardware } from "$lib/stores/hardware.svelte";
+  import { telemetry } from "$lib/stores/telemetry.svelte";
   import { t, tm } from "$lib/i18n/index.svelte";
 
   let open = $state(false);
@@ -298,6 +300,10 @@
     inspectError = null;
     try {
       inspection = await daemon.installerInspect();
+      // The shell's "driver update available" notice reads this, and an
+      // install that has just finished is exactly when it stops being true.
+      // `?? null`: a daemon older than this app has no such field.
+      telemetry.driverVersion = inspection.driverVersion ?? null;
     } catch (e) {
       inspectError = String(e);
       inspection = null;
@@ -566,6 +572,24 @@
             {env.driverSource ?? t("installer.sourceMissing")}
           </dd>
         </div>
+        {#if inspection.driverVersion}
+          {@const version = inspection.driverVersion}
+          <div>
+            <dt>{t("installer.driverVersion")}</dt>
+            <dd class:missing={version.outdated}>
+              {#if version.installed}
+                {driverIdentityName(version.installed)}
+                <span class="sub">
+                  {t(`installer.driverVersionState.${version.state}`, {
+                    bundled: version.bundled ? driverIdentityName(version.bundled) : "",
+                  })}
+                </span>
+              {:else}
+                {t(`installer.driverVersionState.${version.state}`)}
+              {/if}
+            </dd>
+          </div>
+        {/if}
         <div>
           <dt>{t("installer.headers")}</dt>
           <dd class:missing={!env.headers.usable}>

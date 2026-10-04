@@ -11,7 +11,7 @@
 //!
 //! | method | params | result |
 //! |---|---|---|
-//! | `installer.inspect` | none | what this machine has, and whether the patch is needed |
+//! | `installer.inspect` | none | what this machine has, whether the patch is needed, and whether the installed driver is the one this build ships ([`version`]) |
 //! | `installer.autodetect` | `{ probeEc? }` | the install's inputs, worked out from the machine |
 //! | `installer.plan` | `{ action, preferHooks?, force?, skipPatches? }` | ordered steps, blockers, warnings |
 //! | `installer.apply` | as above plus `confirm`, `auto`, `skipSteps`, `cpuMaxRpm`, `gpuMaxRpm`, `experimentalBoard`, `boardTable` | what was done (dry run unless `confirm`) |
@@ -49,6 +49,7 @@ pub mod ec;
 pub mod execute;
 pub mod patch;
 pub mod plan;
+pub mod version;
 
 use pyren_core::{Module, ModuleError, ModuleResult};
 use serde::Deserialize;
@@ -60,6 +61,7 @@ pub use ec::EcProbe;
 pub use execute::{execute, pin_measured_ceiling, ExecuteContext, ExecutionReport};
 pub use patch::{BoardParams, BoardTable, MaxRpm};
 pub use plan::{plan, Action, Plan, PlanOptions, Strategy};
+pub use version::{DriverIdentity, DriverVersion, DriverVersionState, IdentitySource};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,6 +179,10 @@ impl Module for InstallerModule {
                 Ok(json!({
                     "environment": env,
                     "patchNeeded": env.patch_needed(),
+                    // Beside the environment rather than inside it: this
+                    // is a verdict about an install that already happened,
+                    // not one of the facts a plan is worked out from.
+                    "driverVersion": DriverVersion::detect(&env),
                 }))
             }
 
