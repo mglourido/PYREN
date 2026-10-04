@@ -629,16 +629,17 @@ fn request_profile(endpoint: ProfilesEndpoint, profile: &str) -> Result<(), Stri
             "s",
             profile,
         ]),
-        ProfilesEndpoint::Cli => {
-            process::output(pyren_core::process::command(tool("powerprofilesctl")).args(["set", profile]))
-        }
+        ProfilesEndpoint::Cli => process::output(
+            pyren_core::process::command(tool("powerprofilesctl")).args(["set", profile]),
+        ),
     }
     .map_err(|e| e.to_string())?;
     succeeded(&output)
 }
 
 fn read_powerprofilesctl() -> Option<String> {
-    let output = process::output(pyren_core::process::command(tool("powerprofilesctl")).arg("get")).ok()?;
+    let output =
+        process::output(pyren_core::process::command(tool("powerprofilesctl")).arg("get")).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -675,8 +676,8 @@ fn parse_tlp_mode(output: &str) -> Option<String> {
 /// nothing, which is exactly the kind of miss the second attempt is for.
 fn set_tlp(profile: &str) -> Result<(), String> {
     set_and_confirm("TLP", profile, read_tlp, || {
-        let output =
-            process::output(pyren_core::process::command(tool("tlp")).arg(profile)).map_err(|e| e.to_string())?;
+        let output = process::output(pyren_core::process::command(tool("tlp")).arg(profile))
+            .map_err(|e| e.to_string())?;
         succeeded(&output)
     })
 }
@@ -690,15 +691,19 @@ fn set_tlp(profile: &str) -> Result<(), String> {
 /// status read, on every machine that merely has it installed.
 fn auto_cpufreq_running() -> bool {
     cached(&AUTO_CPUFREQ_CACHE, || {
-        process::output(pyren_core::process::command(tool("pgrep")).args(["-f", "auto-cpufreq.* --daemon"]))
-            .is_ok_and(|output| output.status.success())
+        process::output(
+            pyren_core::process::command(tool("pgrep")).args(["-f", "auto-cpufreq.* --daemon"]),
+        )
+        .is_ok_and(|output| output.status.success())
     })
 }
 
 /// auto-cpufreq's current override as `--get-state` prints it
 /// (`default`, `powersave`, `performance`).
 fn read_auto_cpufreq() -> Option<String> {
-    let output = process::output(pyren_core::process::command(tool("auto-cpufreq")).arg("--get-state")).ok()?;
+    let output =
+        process::output(pyren_core::process::command(tool("auto-cpufreq")).arg("--get-state"))
+            .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -787,9 +792,10 @@ fn cached<T: Clone>(cache: &'static Cache<T>, compute: impl FnOnce() -> T) -> T 
 fn set_auto_cpufreq(force: &str) -> Result<(), String> {
     let expected = if force == "reset" { "default" } else { force };
     set_and_confirm("auto-cpufreq", expected, read_auto_cpufreq, || {
-        let output =
-            process::output(pyren_core::process::command(tool("auto-cpufreq")).arg(format!("--force={force}")))
-                .map_err(|e| e.to_string())?;
+        let output = process::output(
+            pyren_core::process::command(tool("auto-cpufreq")).arg(format!("--force={force}")),
+        )
+        .map_err(|e| e.to_string())?;
         succeeded(&output)
     })
 }

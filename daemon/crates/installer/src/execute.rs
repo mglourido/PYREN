@@ -837,7 +837,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let script = dir.join("pyren");
         fs::write(&script, &text).unwrap();
-        let checked = pyren_core::process::command("sh").arg("-n").arg(&script).status().unwrap();
+        let checked = pyren_core::process::command("sh")
+            .arg("-n")
+            .arg(&script)
+            .status()
+            .unwrap();
         assert!(checked.success(), "sh -n rejected:\n{text}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -905,11 +909,7 @@ mod tests {
                 Step {
                     id: "modprobe-remove".into(),
                     description: Msg::literal("remove old hp-wmi"),
-                    command: vec![
-                        command.display().to_string(),
-                        "-r".into(),
-                        "hp-wmi".into(),
-                    ],
+                    command: vec![command.display().to_string(), "-r".into(), "hp-wmi".into()],
                     optional: true,
                 },
                 Step {
@@ -924,12 +924,7 @@ mod tests {
             needs_root: true,
         };
 
-        let report = execute(
-            &plan,
-            &ready_env(),
-            &ExecuteContext::default(),
-            false,
-        );
+        let report = execute(&plan, &ready_env(), &ExecuteContext::default(), false);
 
         assert_eq!(report.results[0].status, StepStatus::Warned);
         assert_eq!(report.results[1].status, StepStatus::Ok);

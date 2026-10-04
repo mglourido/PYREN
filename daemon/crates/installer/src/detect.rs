@@ -333,7 +333,10 @@ fn initramfs_tool(distro_id: &str) -> Option<String> {
 }
 
 fn dkms_status() -> Option<String> {
-    let output = pyren_core::process::command("dkms").arg("status").output().ok()?;
+    let output = pyren_core::process::command("dkms")
+        .arg("status")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

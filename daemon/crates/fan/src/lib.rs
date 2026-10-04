@@ -1189,7 +1189,10 @@ impl FanModule {
         {
             let mut state = lock(&self.state);
             if let Some(generation) = generation {
-                if state.last_power_generation.is_some_and(|last| generation <= last) {
+                if state
+                    .last_power_generation
+                    .is_some_and(|last| generation <= last)
+                {
                     return;
                 }
                 state.last_power_generation = Some(generation);
@@ -2148,8 +2151,13 @@ impl FanModule {
                 state.hysteresis = before.hysteresis;
                 state.smoother = before.smoother;
                 state.pending_mode = Some(request);
-                Err(ModuleError::localised(ErrorKind::Busy,
-                    msg!("fan.err.modeDeferred", "the requested fan mode is pending until it can be applied")))
+                Err(ModuleError::localised(
+                    ErrorKind::Busy,
+                    msg!(
+                        "fan.err.modeDeferred",
+                        "the requested fan mode is pending until it can be applied"
+                    ),
+                ))
             }
             Err(error) => {
                 state.config.mode = before.config_mode;
@@ -4151,7 +4159,11 @@ mod tests {
         fs::create_dir(dir.join("pwm1_enable")).unwrap();
         assert!(module.set_mode(FanMode::Auto, None).is_err());
 
-        assert_eq!(read_file(&dir, "pwm1"), "0", "the first physical write landed");
+        assert_eq!(
+            read_file(&dir, "pwm1"),
+            "0",
+            "the first physical write landed"
+        );
         let status = module.status();
         assert_eq!(status["mode"], "manual");
         assert_eq!(status["hardwareState"], "unknown");
@@ -4160,9 +4172,15 @@ mod tests {
         assert_eq!(state.config.mode, FanMode::Manual);
         assert_eq!(state.hysteresis.last_written(), Some(128));
         drop(state);
-        assert_eq!(module.store.load::<FanConfig>("fan").value.mode, FanMode::Manual);
+        assert_eq!(
+            module.store.load::<FanConfig>("fan").value.mode,
+            FanMode::Manual
+        );
 
-        assert!(module.tick_once().is_err(), "a failed retry must remain pending");
+        assert!(
+            module.tick_once().is_err(),
+            "a failed retry must remain pending"
+        );
         assert_eq!(module.status()["hardwareState"], "unknown");
         assert_eq!(module.status()["pendingMode"], "auto");
         fs::remove_dir(dir.join("pwm1_enable")).unwrap();
@@ -4173,7 +4191,10 @@ mod tests {
         assert_eq!(recovered["mode"], "auto");
         assert!(recovered["pendingMode"].is_null());
         assert_eq!(read_file(&dir, "pwm1_enable"), "2");
-        assert_eq!(module.store.load::<FanConfig>("fan").value.mode, FanMode::Auto);
+        assert_eq!(
+            module.store.load::<FanConfig>("fan").value.mode,
+            FanMode::Auto
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -4233,14 +4254,20 @@ mod tests {
         fs::write(dir.join("pwm1_enable"), "0").unwrap();
         fs::remove_file(dir.join("temp1_input")).unwrap();
         let result = module.set_mode(FanMode::Curve, None);
-        assert!(result.is_err(), "an unwritten curve was reported as applied");
+        assert!(
+            result.is_err(),
+            "an unwritten curve was reported as applied"
+        );
         assert_eq!(read_file(&dir, "pwm1_enable"), "0");
         let state = lock(&module.state);
         assert_eq!(state.mode, FanMode::Max);
         assert_eq!(state.config.mode, FanMode::Max);
         assert_eq!(state.pending_mode.map(|p| p.mode), Some(FanMode::Curve));
         drop(state);
-        assert_eq!(module.store.load::<FanConfig>("fan").value.mode, FanMode::Max);
+        assert_eq!(
+            module.store.load::<FanConfig>("fan").value.mode,
+            FanMode::Max
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

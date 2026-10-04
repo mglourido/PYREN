@@ -9,12 +9,12 @@
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::ops::Deref;
 use std::os::fd::AsRawFd;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::path::Path;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::log_warn;
@@ -38,12 +38,17 @@ fn acquire_instance_lock_named(name: &[u8]) -> std::io::Result<DaemonInstanceLoc
     // PID, and is released when the final listener descriptor closes.
     let listener = UnixListener::bind_addr(&address).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
-            std::io::Error::new(e.kind(), "another PYREN daemon already controls this system")
+            std::io::Error::new(
+                e.kind(),
+                "another PYREN daemon already controls this system",
+            )
         } else {
             e
         }
     })?;
-    Ok(DaemonInstanceLock { _listener: listener })
+    Ok(DaemonInstanceLock {
+        _listener: listener,
+    })
 }
 
 /// Acquire this before constructing hardware modules or starting threads.
@@ -162,7 +167,8 @@ fn bind_restricted(path: &Path, group: &str) -> std::io::Result<(BoundListener, 
     // acquire different inodes and both believe they own the path.
     let lock_path = path.with_extension(format!(
         "{}lock",
-        path.extension().map_or(String::new(), |ext| format!("{}.", ext.to_string_lossy()))
+        path.extension()
+            .map_or(String::new(), |ext| format!("{}.", ext.to_string_lossy()))
     ));
     let lock = OpenOptions::new()
         .create(true)
@@ -211,7 +217,13 @@ fn bind_restricted(path: &Path, group: &str) -> std::io::Result<(BoundListener, 
         _ => Audience::OwnerOnly,
     };
 
-    Ok((BoundListener { listener, _lock: lock }, audience))
+    Ok((
+        BoundListener {
+            listener,
+            _lock: lock,
+        },
+        audience,
+    ))
 }
 
 /// Runs the daemon's IPC server: binds `path` as a Unix domain socket and
@@ -395,7 +407,10 @@ mod tests {
             .status()
             .expect("run second instance");
 
-        assert!(first.local_addr().is_ok(), "the first listener is still alive");
+        assert!(
+            first.local_addr().is_ok(),
+            "the first listener is still alive"
+        );
         assert!(
             second.success(),
             "a second process with the same effective uid unlinked and rebound the live path"
@@ -408,7 +423,8 @@ mod tests {
         let instance_name = format!("pyren-test-different-endpoints-{}", std::process::id());
         let first_path = dir.join("first.sock");
         let second_path = dir.join("second.sock");
-        let _instance = acquire_instance_lock_named(instance_name.as_bytes()).expect("first daemon owns hardware");
+        let _instance = acquire_instance_lock_named(instance_name.as_bytes())
+            .expect("first daemon owns hardware");
         let (first, _) = bind_restricted(&first_path, "pyren").expect("first daemon binds");
         let second = crate::process::command(std::env::current_exe().unwrap())
             .arg("alternate_socket_bind_helper")
@@ -418,7 +434,10 @@ mod tests {
             .status()
             .expect("run second daemon process");
         assert!(first.local_addr().is_ok());
-        assert!(second.success(), "a second daemon acquired a distinct endpoint in the same control domain");
+        assert!(
+            second.success(),
+            "a second daemon acquired a distinct endpoint in the same control domain"
+        );
     }
 
     #[test]
@@ -442,7 +461,8 @@ mod tests {
             .status()
             .expect("run owner process");
         assert!(child.success(), "owner process could not acquire lock");
-        let _new_owner = acquire_instance_lock_named(name.as_bytes()).expect("kernel must release lock after process death");
+        let _new_owner = acquire_instance_lock_named(name.as_bytes())
+            .expect("kernel must release lock after process death");
     }
 
     #[test]
@@ -450,7 +470,8 @@ mod tests {
         let Some(name) = std::env::var_os("PYREN_TEST_LOCK_AND_EXIT") else {
             return;
         };
-        let _instance = acquire_instance_lock_named(name.as_encoded_bytes()).expect("child owns lock");
+        let _instance =
+            acquire_instance_lock_named(name.as_encoded_bytes()).expect("child owns lock");
         std::process::exit(0);
     }
 
@@ -467,7 +488,10 @@ mod tests {
         let mut output = BufReader::new(child.stdout.take().unwrap());
         let mut ready = String::new();
         loop {
-            assert_ne!(output.read_line(&mut ready).expect("owner readiness line"), 0);
+            assert_ne!(
+                output.read_line(&mut ready).expect("owner readiness line"),
+                0
+            );
             if ready.contains("INSTANCE_LOCK_READY") {
                 break;
             }
@@ -476,7 +500,8 @@ mod tests {
         assert!(acquire_instance_lock_named(name.as_bytes()).is_err());
         child.kill().expect("kill lock owner");
         child.wait().expect("reap lock owner");
-        let _new_owner = acquire_instance_lock_named(name.as_bytes()).expect("SIGKILL must release lock");
+        let _new_owner =
+            acquire_instance_lock_named(name.as_bytes()).expect("SIGKILL must release lock");
     }
 
     #[test]
@@ -484,7 +509,8 @@ mod tests {
         let Some(name) = std::env::var_os("PYREN_TEST_LOCK_UNTIL_KILLED") else {
             return;
         };
-        let _instance = acquire_instance_lock_named(name.as_encoded_bytes()).expect("child owns lock");
+        let _instance =
+            acquire_instance_lock_named(name.as_encoded_bytes()).expect("child owns lock");
         println!("INSTANCE_LOCK_READY");
         std::io::stdout().flush().unwrap();
         loop {

@@ -335,7 +335,10 @@ fn record_ipc(
             }
             with_ts_mut(&mut opening);
             if let Err(e) = write_entry(root, Category::Ipc, &opening) {
-                crate::log_warn!("debug log: could not write {}: {e}", Category::Ipc.filename());
+                crate::log_warn!(
+                    "debug log: could not write {}: {e}",
+                    Category::Ipc.filename()
+                );
             }
             streaks.insert(
                 key,
@@ -371,7 +374,10 @@ fn flush_ipc_streak(root: &Path, streak: &IpcStreak, now: u64) {
         map.insert("ts".to_string(), Value::from(now));
     }
     if let Err(e) = write_entry(root, Category::Ipc, &summary) {
-        crate::log_warn!("debug log: could not write {}: {e}", Category::Ipc.filename());
+        crate::log_warn!(
+            "debug log: could not write {}: {e}",
+            Category::Ipc.filename()
+        );
     }
 }
 
@@ -502,7 +508,10 @@ mod tests {
 
         rotate_if_needed(&path).unwrap();
 
-        assert!(!path.exists(), "the oversized file should have been moved aside");
+        assert!(
+            !path.exists(),
+            "the oversized file should have been moved aside"
+        );
         let backup = dir.join("ipc.jsonl.1");
         assert!(backup.exists());
         assert_eq!(fs::metadata(backup).unwrap().len(), MAX_BYTES + 1);
@@ -533,7 +542,10 @@ mod tests {
     #[test]
     fn last_line_matches_is_false_for_a_file_that_does_not_exist_yet() {
         let dir = tmp("missing");
-        assert!(!last_line_matches(&dir.join("driver-kernel.jsonl"), &json!({ "a": 1 })));
+        assert!(!last_line_matches(
+            &dir.join("driver-kernel.jsonl"),
+            &json!({ "a": 1 })
+        ));
     }
 
     #[test]
@@ -552,20 +564,38 @@ mod tests {
 
     #[test]
     fn category_for_routes_the_rich_methods_to_their_own_file() {
-        assert_eq!(category_for("fan", "calibrate"), Some(Category::Calibration));
+        assert_eq!(
+            category_for("fan", "calibrate"),
+            Some(Category::Calibration)
+        );
         assert_eq!(category_for("fan", "diagnose"), Some(Category::Calibration));
         assert_eq!(
             category_for("fan", "probeSpeedControl"),
             Some(Category::Calibration)
         );
-        assert_eq!(category_for("fan", "startCleaning"), Some(Category::Cleaner));
+        assert_eq!(
+            category_for("fan", "startCleaning"),
+            Some(Category::Cleaner)
+        );
         assert_eq!(category_for("fan", "stopCleaning"), Some(Category::Cleaner));
-        assert_eq!(category_for("fan", "cleanerStatus"), Some(Category::Cleaner));
+        assert_eq!(
+            category_for("fan", "cleanerStatus"),
+            Some(Category::Cleaner)
+        );
         assert_eq!(category_for("rgb", "setStatic"), Some(Category::Lighting));
-        assert_eq!(category_for("rgb", "setBrightness"), Some(Category::Lighting));
-        assert_eq!(category_for("installer", "apply"), Some(Category::Installer));
+        assert_eq!(
+            category_for("rgb", "setBrightness"),
+            Some(Category::Lighting)
+        );
+        assert_eq!(
+            category_for("installer", "apply"),
+            Some(Category::Installer)
+        );
         assert_eq!(category_for("installer", "plan"), Some(Category::Installer));
-        assert_eq!(category_for("installer", "inspect"), Some(Category::Installer));
+        assert_eq!(
+            category_for("installer", "inspect"),
+            Some(Category::Installer)
+        );
     }
 
     #[test]
@@ -593,7 +623,11 @@ mod tests {
 
         let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 1, "the two repeats should be suppressed, not appended");
+        assert_eq!(
+            lines.len(),
+            1,
+            "the two repeats should be suppressed, not appended"
+        );
         let line: Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(line["module"], module);
         assert_eq!(line["durationMs"], 34);
@@ -605,11 +639,26 @@ mod tests {
         let dir = tmp("record-ipc-no-repeat");
         let module = "test-record-ipc-no-repeat";
         record_ipc(&dir, module, "getStatus", None, true, None, 30);
-        record_ipc(&dir, module, "getStatus", Some(json!({"x": 1})), true, None, 40);
+        record_ipc(
+            &dir,
+            module,
+            "getStatus",
+            Some(json!({"x": 1})),
+            true,
+            None,
+            40,
+        );
 
         let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
-        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert_eq!(lines.len(), 2, "just the two distinct opening lines, no summary between them");
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "just the two distinct opening lines, no summary between them"
+        );
         assert!(lines.iter().all(|l| l.get("repeat").is_none()));
     }
 
@@ -619,16 +668,30 @@ mod tests {
         let module = "test-record-ipc-flush-on-change";
         record_ipc(&dir, module, "getStatus", None, true, None, 30); // opening
         record_ipc(&dir, module, "getStatus", None, true, None, 32); // suppressed repeat
-        record_ipc(&dir, module, "getStatus", Some(json!({"x": 1})), true, None, 40); // new value: flush + opening
+        record_ipc(
+            &dir,
+            module,
+            "getStatus",
+            Some(json!({"x": 1})),
+            true,
+            None,
+            40,
+        ); // new value: flush + opening
 
         let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
-        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
         assert_eq!(lines.len(), 3, "opening, summary, new opening");
 
         assert_eq!(lines[0]["durationMs"], 30);
         assert!(lines[0].get("repeat").is_none());
 
-        assert_eq!(lines[1]["repeat"], 1, "one call was suppressed before the run ended");
+        assert_eq!(
+            lines[1]["repeat"], 1,
+            "one call was suppressed before the run ended"
+        );
         assert_eq!(lines[1]["durationMsMin"], 30);
         assert_eq!(lines[1]["durationMsMax"], 32);
         assert_eq!(lines[1]["module"], module);
@@ -652,7 +715,10 @@ mod tests {
 
         let text = fs::read_to_string(dir.join("ipc.jsonl")).unwrap();
         let line: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        assert_eq!(line["repeat"], 4, "count includes the already-written opening line");
+        assert_eq!(
+            line["repeat"], 4,
+            "count includes the already-written opening line"
+        );
         assert_eq!(line["durationMsMin"], 30);
         assert_eq!(line["durationMsMax"], 50);
         assert_eq!(line["durationMsAvg"], 38);

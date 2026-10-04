@@ -7,8 +7,8 @@
 //! module holds its state lock, one of those stalls every request behind it.
 //! [`output_within`] puts a ceiling on that and kills the child at it.
 
-use std::io::{self, Read};
 use std::ffi::OsStr;
+use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;

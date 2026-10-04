@@ -618,7 +618,10 @@ fn read_ram_info() -> RamInfo {
     if !which("dmidecode") {
         return RamInfo::default();
     }
-    let Ok(output) = pyren_core::process::command("dmidecode").args(["-t", "memory"]).output() else {
+    let Ok(output) = pyren_core::process::command("dmidecode")
+        .args(["-t", "memory"])
+        .output()
+    else {
         return RamInfo::default();
     };
     if !output.status.success() {
@@ -660,10 +663,10 @@ fn parse_dmidecode_memory(text: &str) -> RamInfo {
     let mut part_number: Option<String> = None;
 
     let flush_module = |locator: &str,
-                         size_gb: Option<f64>,
-                         manufacturer: &Option<String>,
-                         part_number: &Option<String>,
-                         modules: &mut Vec<RamModule>| {
+                        size_gb: Option<f64>,
+                        manufacturer: &Option<String>,
+                        part_number: &Option<String>,
+                        modules: &mut Vec<RamModule>| {
         if let Some(size_gb) = size_gb {
             modules.push(RamModule {
                 locator: locator.to_string(),

@@ -807,7 +807,14 @@ fn check_write(paths: &FanPaths, allow_writes: bool) -> Check {
     // The pwm1 write is best-effort either way - e.g. a read-only pwm1
     // during a permission-denied test - so only the enable write, the one
     // that actually changes mode, decides whether restoration succeeded.
-    let _ = fs::write(pwm, if original_mode == "2" { "0" } else { original_pwm });
+    let _ = fs::write(
+        pwm,
+        if original_mode == "2" {
+            "0"
+        } else {
+            original_pwm
+        },
+    );
     let restored = fs::write(enable, original_mode);
 
     let (status, detail) = match result {

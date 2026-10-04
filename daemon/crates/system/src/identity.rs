@@ -290,7 +290,10 @@ fn detect_gpus() -> Vec<String> {
 }
 
 fn gpus_from_lspci() -> Option<Vec<String>> {
-    let output = pyren_core::process::command("lspci").arg("-mm").output().ok()?;
+    let output = pyren_core::process::command("lspci")
+        .arg("-mm")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

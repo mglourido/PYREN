@@ -249,17 +249,11 @@ impl HotkeyModule {
     }
 
     #[cfg(test)]
-    fn with_store_and_opener(
-        store: ConfigStore,
-        opener: DeviceOpener,
-    ) -> Self {
+    fn with_store_and_opener(store: ConfigStore, opener: DeviceOpener) -> Self {
         Self::with_store_inner(store, Some(opener))
     }
 
-    fn with_store_inner(
-        store: ConfigStore,
-        #[cfg(test)] opener: Option<DeviceOpener>,
-    ) -> Self {
+    fn with_store_inner(store: ConfigStore, #[cfg(test)] opener: Option<DeviceOpener>) -> Self {
         let loaded = store.load::<HotkeyConfig>("hotkey");
         match &loaded.outcome {
             LoadOutcome::Loaded | LoadOutcome::Missing => {}
@@ -284,7 +278,9 @@ impl HotkeyModule {
         // can tell "this machine has no keyboard" apart from "this daemon
         // is not root" - which are a hidden feature and a fixable error.
         #[cfg(test)]
-        let probe = opener.as_ref().map_or_else(devices::open_all, |open| open());
+        let probe = opener
+            .as_ref()
+            .map_or_else(devices::open_all, |open| open());
         #[cfg(not(test))]
         let probe = devices::open_all();
         let unavailable = probe.as_ref().err().cloned();

@@ -351,12 +351,15 @@ impl OverclockModule {
                         .is_some_and(nvml::EventWatch::poll);
                 let now = Instant::now();
                 let retry_ready = guard.next_revert_retry.is_none_or(|at| now >= at);
-                retry_ready.then(|| watchdog_tick(guard.pending.as_ref(), fault, now)).flatten().map(|reason| {
-                    (
-                        guard.pending.clone().expect("a reason implies a pending"),
-                        reason,
-                    )
-                })
+                retry_ready
+                    .then(|| watchdog_tick(guard.pending.as_ref(), fault, now))
+                    .flatten()
+                    .map(|reason| {
+                        (
+                            guard.pending.clone().expect("a reason implies a pending"),
+                            reason,
+                        )
+                    })
             };
             let Some((pending, reason)) = due else {
                 continue;
@@ -469,13 +472,20 @@ impl OverclockModule {
         Ok(self.status())
     }
 
-    fn refresh_probe_with(&self, allow_writes: bool, refresh: impl FnOnce() -> Probe) -> ModuleResult {
+    fn refresh_probe_with(
+        &self,
+        allow_writes: bool,
+        refresh: impl FnOnce() -> Probe,
+    ) -> ModuleResult {
         let operation = Arc::clone(&lock(&self.state).hardware_operation);
         let _hardware = allow_writes.then(|| operation.lock().unwrap_or_else(|p| p.into_inner()));
         if allow_writes && lock(&self.state).pending.is_some() {
             return Err(ModuleError::localised(
                 ErrorKind::Busy,
-                msg!("overclock.err.pendingProbe", "a writable probe cannot run while an overclock is pending"),
+                msg!(
+                    "overclock.err.pendingProbe",
+                    "a writable probe cannot run while an overclock is pending"
+                ),
             ));
         }
         let fresh = refresh();
@@ -589,7 +599,11 @@ impl OverclockModule {
 
     fn confirm(&self) -> ModuleResult {
         let mut state = lock(&self.state);
-        if state.pending.as_ref().is_some_and(|pending| pending.phase != PendingPhase::Coherent) {
+        if state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.phase != PendingPhase::Coherent)
+        {
             return Err(ModuleError::localised(
                 ErrorKind::Busy,
                 msg!(
@@ -692,9 +706,13 @@ impl OverclockModule {
 
             let should_write = {
                 let mut state = lock(&self.state);
-                let pending_for_gpu = state.pending.as_ref().is_some_and(|pending| pending.gpu == id);
+                let pending_for_gpu = state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.gpu == id);
                 if pending_for_gpu {
-                    state.pending.as_mut().expect("pending for this GPU").phase = PendingPhase::Reverting;
+                    state.pending.as_mut().expect("pending for this GPU").phase =
+                        PendingPhase::Reverting;
                 }
                 pending_for_gpu || needs_undoing(state.applied.get(&id).copied())
             };
@@ -703,8 +721,13 @@ impl OverclockModule {
                     Ok(()) => written += 1,
                     Err(e) => {
                         let mut state = lock(&self.state);
-                        if state.pending.as_ref().is_some_and(|pending| pending.gpu == id) {
-                            state.pending.as_mut().expect("pending for this GPU").phase = PendingPhase::RevertFailed;
+                        if state
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| pending.gpu == id)
+                        {
+                            state.pending.as_mut().expect("pending for this GPU").phase =
+                                PendingPhase::RevertFailed;
                             state.next_revert_retry = Some(Instant::now() + Duration::from_secs(3));
                         }
                         failures.push((id, e));
@@ -1046,11 +1069,18 @@ fn revert_after_hardware(
             .pending
             .as_ref()
             .is_none_or(|current| current.generation != pending.generation)
-            || guard.pending.as_ref().is_some_and(|current| current.phase == PendingPhase::Reverting)
+            || guard
+                .pending
+                .as_ref()
+                .is_some_and(|current| current.phase == PendingPhase::Reverting)
         {
             return Ok(());
         }
-        guard.pending.as_mut().expect("matching pending generation").phase = PendingPhase::Reverting;
+        guard
+            .pending
+            .as_mut()
+            .expect("matching pending generation")
+            .phase = PendingPhase::Reverting;
     }
 
     let gpu = lock(probe).gpu(&pending.gpu).cloned();
@@ -1079,7 +1109,11 @@ fn revert_after_hardware(
             guard.last_note = Some(reason.note(&pending.gpu));
         }
         Err(e) => {
-            guard.pending.as_mut().expect("matching pending generation").phase = PendingPhase::RevertFailed;
+            guard
+                .pending
+                .as_mut()
+                .expect("matching pending generation")
+                .phase = PendingPhase::RevertFailed;
             guard.next_revert_retry = Some(Instant::now() + Duration::from_secs(3));
             guard.last_error = Some(msg!(
                 "overclock.err.couldNotUndo",
@@ -1356,30 +1390,41 @@ mod tests {
     fn writable_probe_cannot_restore_an_offset_read_before_apply() {
         let module = Arc::new(OverclockModule::with_store(store("probe-stale-write")));
         let gpu = "nvidia:0".to_string();
-        lock(&module.probe).gpus.push(gpu_probe(&gpu, Vendor::Nvidia));
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&gpu, Vendor::Nvidia));
         let physical = Arc::new(Mutex::new(0_i32));
         let (read_tx, read_rx) = std::sync::mpsc::channel();
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
         let probe_module = Arc::clone(&module);
         let probe_physical = Arc::clone(&physical);
-        let probe_worker = std::thread::spawn(move || probe_module.refresh_probe_with(true, || {
-            let stale = *lock(&probe_physical);
-            read_tx.send(()).unwrap();
-            resume_rx.recv().unwrap();
-            *lock(&probe_physical) = stale;
-            lock(&probe_module.probe).clone()
-        }));
+        let probe_worker = std::thread::spawn(move || {
+            probe_module.refresh_probe_with(true, || {
+                let stale = *lock(&probe_physical);
+                read_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                *lock(&probe_physical) = stale;
+                lock(&probe_module.probe).clone()
+            })
+        });
         read_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
         let operation = Arc::clone(&lock(&module.state).hardware_operation);
         let apply_target = || {
             *lock(&physical) = 75;
             let mut state = lock(&module.state);
-            let target = Target { core_offset_mhz: 75, ..Target::default() };
+            let target = Target {
+                core_offset_mhz: 75,
+                ..Target::default()
+            };
             state.applied.insert(gpu.clone(), target);
-            state.pending = Some(Pending { generation: 1, gpu: gpu.clone(),
-                revert_to: Target::default(), deadline: Instant::now() + Duration::from_secs(20),
-                phase: PendingPhase::Coherent });
+            state.pending = Some(Pending {
+                generation: 1,
+                gpu: gpu.clone(),
+                revert_to: Target::default(),
+                deadline: Instant::now() + Duration::from_secs(20),
+                phase: PendingPhase::Coherent,
+            });
             state.config.armed_gpu = Some(gpu.clone());
             persist(&module.store, &mut state);
         };
@@ -1402,7 +1447,10 @@ mod tests {
         module.confirm().unwrap();
         let saved = module.store.load::<OverclockConfig>("overclock").value;
         assert_eq!(*lock(&physical), saved.targets[&gpu].core_offset_mhz);
-        assert!(!applied_before_probe_write, "apply finished while a writable probe was paused between read and write");
+        assert!(
+            !applied_before_probe_write,
+            "apply finished while a writable probe was paused between read and write"
+        );
     }
 
     #[test]
@@ -1416,7 +1464,10 @@ mod tests {
         });
         assert_eq!(result.unwrap_err().kind(), ErrorKind::Busy);
         assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(lock(&module.state).pending.as_ref().map(|p| p.phase), Some(PendingPhase::Coherent));
+        assert_eq!(
+            lock(&module.state).pending.as_ref().map(|p| p.phase),
+            Some(PendingPhase::Coherent)
+        );
     }
 
     /// The whole safety story starts here: a machine nobody has spoken to
@@ -1767,7 +1818,9 @@ mod tests {
             state.pending = Some(old.clone());
             state.config.armed_gpu = Some(old.gpu.clone());
         }
-        lock(&module.probe).gpus.push(gpu_probe(&old.gpu, Vendor::Nvidia));
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&old.gpu, Vendor::Nvidia));
 
         let state = Arc::clone(&module.state);
         let probe = Arc::clone(&module.probe);
@@ -1813,11 +1866,23 @@ mod tests {
             state.pending = Some(newer.clone());
             state.config.armed_gpu = Some(newer.gpu.clone());
         }
-        let stale = Pending { generation: 1, gpu: "fake:old".into(),
-            revert_to: Target::default(), deadline: Instant::now(), phase: PendingPhase::Coherent };
-        revert_after_hardware(&module.state, &module.probe, &module.store,
-            stale, RevertReason::FaultReported,
-            |_, _| panic!("stale generation reached hardware"), || {}).unwrap();
+        let stale = Pending {
+            generation: 1,
+            gpu: "fake:old".into(),
+            revert_to: Target::default(),
+            deadline: Instant::now(),
+            phase: PendingPhase::Coherent,
+        };
+        revert_after_hardware(
+            &module.state,
+            &module.probe,
+            &module.store,
+            stale,
+            RevertReason::FaultReported,
+            |_, _| panic!("stale generation reached hardware"),
+            || {},
+        )
+        .unwrap();
 
         let state = lock(&module.state);
         assert_eq!(
@@ -1832,11 +1897,18 @@ mod tests {
     fn a_completed_physical_revert_cannot_be_confirmed_as_applied() {
         let module = OverclockModule::with_store(store("confirm-after-revert"));
         let gpu = "fake:confirm".to_string();
-        lock(&module.probe).gpus.push(gpu_probe(&gpu, Vendor::Nvidia));
-        let changed = Target { core_offset_mhz: 75, ..Target::default() };
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&gpu, Vendor::Nvidia));
+        let changed = Target {
+            core_offset_mhz: 75,
+            ..Target::default()
+        };
         let physical = Arc::new(Mutex::new(changed));
         let pending = Pending {
-            generation: 1, gpu: gpu.clone(), revert_to: Target::default(),
+            generation: 1,
+            gpu: gpu.clone(),
+            revert_to: Target::default(),
             deadline: Instant::now() - Duration::from_secs(1),
             phase: PendingPhase::Coherent,
         };
@@ -1854,14 +1926,28 @@ mod tests {
         let store = module.store.clone();
         let physical_for_write = Arc::clone(&physical);
         let worker = std::thread::spawn(move || {
-            revert_after_hardware(&state, &probe, &store, pending,
+            revert_after_hardware(
+                &state,
+                &probe,
+                &store,
+                pending,
                 RevertReason::NotConfirmed,
-                move |_, target| { *lock(&physical_for_write) = target; Ok(()) },
-                || { written_tx.send(()).unwrap(); continue_rx.recv().unwrap(); })
+                move |_, target| {
+                    *lock(&physical_for_write) = target;
+                    Ok(())
+                },
+                || {
+                    written_tx.send(()).unwrap();
+                    continue_rx.recv().unwrap();
+                },
+            )
         });
         written_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(*lock(&physical), Target::default());
-        assert!(module.confirm().is_err(), "a physically reverted target was confirmed");
+        assert!(
+            module.confirm().is_err(),
+            "a physically reverted target was confirmed"
+        );
         continue_tx.send(()).unwrap();
         worker.join().unwrap().unwrap();
         let state = lock(&module.state);
@@ -1878,11 +1964,18 @@ mod tests {
     fn failed_physical_revert_remains_armed_and_retries_after_recovery() {
         let module = OverclockModule::with_store(store("revert-retry"));
         let gpu = "fake:retry".to_string();
-        lock(&module.probe).gpus.push(gpu_probe(&gpu, Vendor::Nvidia));
-        let changed = Target { core_offset_mhz: 75, ..Target::default() };
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&gpu, Vendor::Nvidia));
+        let changed = Target {
+            core_offset_mhz: 75,
+            ..Target::default()
+        };
         let physical = Arc::new(Mutex::new(changed));
         let pending = Pending {
-            generation: 1, gpu: gpu.clone(), revert_to: Target::default(),
+            generation: 1,
+            gpu: gpu.clone(),
+            revert_to: Target::default(),
             deadline: Instant::now() - Duration::from_secs(1),
             phase: PendingPhase::Coherent,
         };
@@ -1893,71 +1986,153 @@ mod tests {
             state.config.armed_gpu = Some(gpu.clone());
             persist(&module.store, &mut state);
         }
-        assert!(revert_after_hardware(&module.state, &module.probe, &module.store,
-            pending.clone(), RevertReason::NotConfirmed,
-            |_, _| Err(ModuleError::Failed("temporary driver failure".into())), || {}).is_err());
+        assert!(revert_after_hardware(
+            &module.state,
+            &module.probe,
+            &module.store,
+            pending.clone(),
+            RevertReason::NotConfirmed,
+            |_, _| Err(ModuleError::Failed("temporary driver failure".into())),
+            || {}
+        )
+        .is_err());
         {
             let state = lock(&module.state);
-            assert_eq!(state.pending.as_ref().map(|p| p.generation), Some(pending.generation));
-            assert_eq!(state.pending.as_ref().map(|p| p.phase), Some(PendingPhase::RevertFailed));
+            assert_eq!(
+                state.pending.as_ref().map(|p| p.generation),
+                Some(pending.generation)
+            );
+            assert_eq!(
+                state.pending.as_ref().map(|p| p.phase),
+                Some(PendingPhase::RevertFailed)
+            );
             assert_eq!(state.config.armed_gpu.as_deref(), Some(gpu.as_str()));
             assert!(watchdog_tick(state.pending.as_ref(), false, Instant::now()).is_some());
         }
-        assert_eq!(module.store.load::<OverclockConfig>("overclock").value.armed_gpu.as_deref(), Some(gpu.as_str()));
+        assert_eq!(
+            module
+                .store
+                .load::<OverclockConfig>("overclock")
+                .value
+                .armed_gpu
+                .as_deref(),
+            Some(gpu.as_str())
+        );
         let physical_for_write = Arc::clone(&physical);
-        revert_after_hardware(&module.state, &module.probe, &module.store,
-            pending, RevertReason::NotConfirmed,
-            move |_, target| { *lock(&physical_for_write) = target; Ok(()) }, || {}).unwrap();
+        revert_after_hardware(
+            &module.state,
+            &module.probe,
+            &module.store,
+            pending,
+            RevertReason::NotConfirmed,
+            move |_, target| {
+                *lock(&physical_for_write) = target;
+                Ok(())
+            },
+            || {},
+        )
+        .unwrap();
         assert_eq!(*lock(&physical), Target::default());
         let state = lock(&module.state);
         assert_eq!(state.applied.get(&gpu), Some(&Target::default()));
         assert!(state.pending.is_none());
         assert!(state.config.armed_gpu.is_none());
-        assert!(module.store.load::<OverclockConfig>("overclock").value.armed_gpu.is_none());
+        assert!(module
+            .store
+            .load::<OverclockConfig>("overclock")
+            .value
+            .armed_gpu
+            .is_none());
     }
 
     #[test]
     fn partially_written_revert_cannot_confirm_the_old_target() {
         let module = OverclockModule::with_store(store("partial-revert-confirm"));
         let gpu = "fake:partial".to_string();
-        lock(&module.probe).gpus.push(gpu_probe(&gpu, Vendor::Nvidia));
-        let changed = Target { core_offset_mhz: 75, mem_offset_mhz: 150, ..Target::default() };
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&gpu, Vendor::Nvidia));
+        let changed = Target {
+            core_offset_mhz: 75,
+            mem_offset_mhz: 150,
+            ..Target::default()
+        };
         let physical = Arc::new(Mutex::new(changed));
-        let pending = Pending { generation: 1, gpu: gpu.clone(), revert_to: Target::default(),
-            deadline: Instant::now() + Duration::from_secs(20), phase: PendingPhase::Coherent };
+        let pending = Pending {
+            generation: 1,
+            gpu: gpu.clone(),
+            revert_to: Target::default(),
+            deadline: Instant::now() + Duration::from_secs(20),
+            phase: PendingPhase::Coherent,
+        };
         {
             let mut state = lock(&module.state);
             state.applied.insert(gpu.clone(), changed);
             state.pending = Some(pending.clone());
             state.config.armed_gpu = Some(gpu.clone());
-            state.config.consent = Some(Consent { accepted_at: 0, version: CONSENT_VERSION });
+            state.config.consent = Some(Consent {
+                accepted_at: 0,
+                version: CONSENT_VERSION,
+            });
             persist(&module.store, &mut state);
         }
         let physical_for_write = Arc::clone(&physical);
-        let result = revert_after_hardware(&module.state, &module.probe, &module.store,
-            pending.clone(), RevertReason::Undone,
+        let result = revert_after_hardware(
+            &module.state,
+            &module.probe,
+            &module.store,
+            pending.clone(),
+            RevertReason::Undone,
             move |_, target| {
                 lock(&physical_for_write).core_offset_mhz = target.core_offset_mhz;
                 Err(ModuleError::Failed("memory offset write failed".into()))
-            }, || {});
+            },
+            || {},
+        );
         assert!(result.is_err());
         assert_eq!(lock(&physical).core_offset_mhz, 0);
         assert_eq!(lock(&physical).mem_offset_mhz, 150);
-        assert!(module.confirm().is_err(), "partially reverted hardware was confirmed");
-        assert_eq!(module.apply(&json!({"gpu": gpu, "coreOffsetMhz": 10})).unwrap_err().kind(), ErrorKind::Busy);
+        assert!(
+            module.confirm().is_err(),
+            "partially reverted hardware was confirmed"
+        );
+        assert_eq!(
+            module
+                .apply(&json!({"gpu": gpu, "coreOffsetMhz": 10}))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Busy
+        );
         assert!(module.status()["gpus"][0]["applied"].is_null());
         let state = lock(&module.state);
         assert!(state.pending.is_some());
-        assert_eq!(state.pending.as_ref().map(|p| p.phase), Some(PendingPhase::RevertFailed));
+        assert_eq!(
+            state.pending.as_ref().map(|p| p.phase),
+            Some(PendingPhase::RevertFailed)
+        );
         assert_eq!(state.config.armed_gpu.as_deref(), Some(gpu.as_str()));
         assert!(!state.config.targets.contains_key(&gpu));
         drop(state);
-        assert!(!module.store.load::<OverclockConfig>("overclock").value.targets.contains_key(&gpu));
+        assert!(!module
+            .store
+            .load::<OverclockConfig>("overclock")
+            .value
+            .targets
+            .contains_key(&gpu));
         let physical_for_retry = Arc::clone(&physical);
-        revert_after_hardware(&module.state, &module.probe, &module.store,
+        revert_after_hardware(
+            &module.state,
+            &module.probe,
+            &module.store,
             pending,
             RevertReason::Undone,
-            move |_, target| { *lock(&physical_for_retry) = target; Ok(()) }, || {}).unwrap();
+            move |_, target| {
+                *lock(&physical_for_retry) = target;
+                Ok(())
+            },
+            || {},
+        )
+        .unwrap();
         assert_eq!(*lock(&physical), Target::default());
         let state = lock(&module.state);
         assert!(state.pending.is_none());
@@ -1969,17 +2144,30 @@ mod tests {
     fn partially_written_reset_cannot_confirm_the_pending_target() {
         let module = OverclockModule::with_store(store("partial-reset-confirm"));
         let gpu = "fake:reset".to_string();
-        lock(&module.probe).gpus.push(gpu_probe(&gpu, Vendor::Nvidia));
-        let changed = Target { core_offset_mhz: 75, mem_offset_mhz: 150, ..Target::default() };
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&gpu, Vendor::Nvidia));
+        let changed = Target {
+            core_offset_mhz: 75,
+            mem_offset_mhz: 150,
+            ..Target::default()
+        };
         let physical = Arc::new(Mutex::new(changed));
         {
             let mut state = lock(&module.state);
             state.applied.insert(gpu.clone(), changed);
-            state.pending = Some(Pending { generation: 1, gpu: gpu.clone(),
-                revert_to: Target::default(), deadline: Instant::now() + Duration::from_secs(20),
-                phase: PendingPhase::Coherent });
+            state.pending = Some(Pending {
+                generation: 1,
+                gpu: gpu.clone(),
+                revert_to: Target::default(),
+                deadline: Instant::now() + Duration::from_secs(20),
+                phase: PendingPhase::Coherent,
+            });
             state.config.armed_gpu = Some(gpu.clone());
-            state.config.consent = Some(Consent { accepted_at: 0, version: CONSENT_VERSION });
+            state.config.consent = Some(Consent {
+                accepted_at: 0,
+                version: CONSENT_VERSION,
+            });
             persist(&module.store, &mut state);
         }
         let physical_for_reset = Arc::clone(&physical);
@@ -1990,37 +2178,79 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(lock(&physical).core_offset_mhz, 0);
         assert_eq!(lock(&physical).mem_offset_mhz, 150);
-        assert!(module.confirm().is_err(), "reset left a partially changed target confirmable");
+        assert!(
+            module.confirm().is_err(),
+            "reset left a partially changed target confirmable"
+        );
         let state = lock(&module.state);
-        assert_eq!(state.pending.as_ref().map(|p| p.phase), Some(PendingPhase::RevertFailed));
+        assert_eq!(
+            state.pending.as_ref().map(|p| p.phase),
+            Some(PendingPhase::RevertFailed)
+        );
         assert!(watchdog_tick(state.pending.as_ref(), false, Instant::now()).is_some());
         assert!(!state.config.targets.contains_key(&gpu));
         drop(state);
-        assert!(!module.store.load::<OverclockConfig>("overclock").value.targets.contains_key(&gpu));
-        assert_eq!(module.apply(&json!({"gpu": gpu, "coreOffsetMhz": 10})).unwrap_err().kind(), ErrorKind::Busy);
+        assert!(!module
+            .store
+            .load::<OverclockConfig>("overclock")
+            .value
+            .targets
+            .contains_key(&gpu));
+        assert_eq!(
+            module
+                .apply(&json!({"gpu": gpu, "coreOffsetMhz": 10}))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Busy
+        );
         let pending = lock(&module.state).pending.clone().unwrap();
         let physical_for_retry = Arc::clone(&physical);
-        revert_after_hardware(&module.state, &module.probe, &module.store,
-            pending, RevertReason::NotConfirmed,
-            move |_, target| { *lock(&physical_for_retry) = target; Ok(()) }, || {}).unwrap();
+        revert_after_hardware(
+            &module.state,
+            &module.probe,
+            &module.store,
+            pending,
+            RevertReason::NotConfirmed,
+            move |_, target| {
+                *lock(&physical_for_retry) = target;
+                Ok(())
+            },
+            || {},
+        )
+        .unwrap();
         assert_eq!(*lock(&physical), Target::default());
         assert!(lock(&module.state).pending.is_none());
-        assert_ne!(module.apply(&json!({"gpu": gpu, "coreOffsetMhz": 10})).unwrap_err().kind(), ErrorKind::Busy);
+        assert_ne!(
+            module
+                .apply(&json!({"gpu": gpu, "coreOffsetMhz": 10}))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Busy
+        );
     }
 
     #[test]
     fn complete_reset_blocks_concurrent_confirm_and_clears_pending() {
         let module = Arc::new(OverclockModule::with_store(store("reset-confirm-race")));
         let gpu = "fake:reset-race".to_string();
-        lock(&module.probe).gpus.push(gpu_probe(&gpu, Vendor::Nvidia));
-        let changed = Target { core_offset_mhz: 75, ..Target::default() };
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&gpu, Vendor::Nvidia));
+        let changed = Target {
+            core_offset_mhz: 75,
+            ..Target::default()
+        };
         let physical = Arc::new(Mutex::new(changed));
         {
             let mut state = lock(&module.state);
             state.applied.insert(gpu.clone(), changed);
-            state.pending = Some(Pending { generation: 1, gpu: gpu.clone(),
-                revert_to: Target::default(), deadline: Instant::now() + Duration::from_secs(20),
-                phase: PendingPhase::Coherent });
+            state.pending = Some(Pending {
+                generation: 1,
+                gpu: gpu.clone(),
+                revert_to: Target::default(),
+                deadline: Instant::now() + Duration::from_secs(20),
+                phase: PendingPhase::Coherent,
+            });
             state.config.armed_gpu = Some(gpu.clone());
             persist(&module.store, &mut state);
         }
@@ -2029,17 +2259,21 @@ mod tests {
         let worker_module = Arc::clone(&module);
         let physical_for_reset = Arc::clone(&physical);
         let worker_gpu = gpu.clone();
-        let worker = std::thread::spawn(move || worker_module.reset_with_write(Some(worker_gpu),
-            move |_, target| {
+        let worker = std::thread::spawn(move || {
+            worker_module.reset_with_write(Some(worker_gpu), move |_, target| {
                 *lock(&physical_for_reset) = target;
                 written_tx.send(()).unwrap();
                 resume_rx.recv().unwrap();
                 Ok(())
-            }));
+            })
+        });
         written_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(*lock(&physical), Target::default());
         assert!(module.confirm().is_err());
-        assert_eq!(lock(&module.state).pending.as_ref().map(|p| p.phase), Some(PendingPhase::Reverting));
+        assert_eq!(
+            lock(&module.state).pending.as_ref().map(|p| p.phase),
+            Some(PendingPhase::Reverting)
+        );
         resume_tx.send(()).unwrap();
         worker.join().unwrap().unwrap();
         let state = lock(&module.state);
@@ -2053,11 +2287,26 @@ mod tests {
     fn reset_cannot_write_after_revert_hardware_before_revert_commit() {
         let module = Arc::new(OverclockModule::with_store(store("reset-revert-order")));
         let gpu = "fake:reset-revert".to_string();
-        lock(&module.probe).gpus.push(gpu_probe(&gpu, Vendor::Nvidia));
-        let confirmed = Target { core_offset_mhz: 25, mem_offset_mhz: 50, ..Target::default() };
-        let applied = Target { core_offset_mhz: 75, mem_offset_mhz: 150, ..Target::default() };
-        let pending = Pending { generation: 1, gpu: gpu.clone(), revert_to: confirmed,
-            deadline: Instant::now() + Duration::from_secs(20), phase: PendingPhase::Coherent };
+        lock(&module.probe)
+            .gpus
+            .push(gpu_probe(&gpu, Vendor::Nvidia));
+        let confirmed = Target {
+            core_offset_mhz: 25,
+            mem_offset_mhz: 50,
+            ..Target::default()
+        };
+        let applied = Target {
+            core_offset_mhz: 75,
+            mem_offset_mhz: 150,
+            ..Target::default()
+        };
+        let pending = Pending {
+            generation: 1,
+            gpu: gpu.clone(),
+            revert_to: confirmed,
+            deadline: Instant::now() + Duration::from_secs(20),
+            phase: PendingPhase::Coherent,
+        };
         let physical = Arc::new(Mutex::new(applied));
         {
             let mut state = lock(&module.state);
@@ -2069,21 +2318,34 @@ mod tests {
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
         let worker_module = Arc::clone(&module);
         let physical_for_revert = Arc::clone(&physical);
-        let revert_worker = std::thread::spawn(move || revert_after_hardware(
-            &worker_module.state, &worker_module.probe, &worker_module.store,
-            pending, RevertReason::Undone,
-            move |_, target| { *lock(&physical_for_revert) = target; Ok(()) },
-            || { reverted_tx.send(()).unwrap(); resume_rx.recv().unwrap(); },
-        ));
+        let revert_worker = std::thread::spawn(move || {
+            revert_after_hardware(
+                &worker_module.state,
+                &worker_module.probe,
+                &worker_module.store,
+                pending,
+                RevertReason::Undone,
+                move |_, target| {
+                    *lock(&physical_for_revert) = target;
+                    Ok(())
+                },
+                || {
+                    reverted_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                },
+            )
+        });
         reverted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let reset_module = Arc::clone(&module);
         let physical_for_reset = Arc::clone(&physical);
         let (reset_tx, reset_rx) = std::sync::mpsc::channel();
         let reset_worker = std::thread::spawn(move || {
-            reset_tx.send(reset_module.reset_with_write(Some(gpu), move |_, target| {
-                lock(&physical_for_reset).core_offset_mhz = target.core_offset_mhz;
-                Err(ModuleError::Failed("memory offset write failed".into()))
-            })).unwrap();
+            reset_tx
+                .send(reset_module.reset_with_write(Some(gpu), move |_, target| {
+                    lock(&physical_for_reset).core_offset_mhz = target.core_offset_mhz;
+                    Err(ModuleError::Failed("memory offset write failed".into()))
+                }))
+                .unwrap();
         });
         let reset_finished_before_commit = reset_rx.recv_timeout(Duration::from_millis(100)).ok();
         let reset_finished_early = reset_finished_before_commit.is_some();
@@ -2095,7 +2357,10 @@ mod tests {
         };
         reset_worker.join().unwrap();
         assert!(reset_result.is_err());
-        assert!(!reset_finished_early, "reset wrote after revert hardware but before its state commit");
+        assert!(
+            !reset_finished_early,
+            "reset wrote after revert hardware but before its state commit"
+        );
     }
 
     /// The whole reason `FaultReported` is a variant of its own and not a

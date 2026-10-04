@@ -198,7 +198,10 @@ pub struct Announcer(Arc<OnceLock<Arc<EventBus>>>);
 impl Announcer {
     fn publish(&self, mode: PowerMode, source: &str, generation: u64) {
         if let Some(bus) = self.0.get() {
-            bus.publish("power.mode", json!({ "mode": mode, "source": source, "generation": generation }));
+            bus.publish(
+                "power.mode",
+                json!({ "mode": mode, "source": source, "generation": generation }),
+            );
         }
     }
 
@@ -506,7 +509,10 @@ impl PowerModule {
         let took_effect = !report.is_empty();
         if took_effect {
             state.mode = mode;
-            state.mode_generation = state.mode_generation.checked_add(1).expect("power generation exhausted");
+            state.mode_generation = state
+                .mode_generation
+                .checked_add(1)
+                .expect("power generation exhausted");
             state.config.mode = Some(mode);
         }
         let generation = state.mode_generation;
@@ -985,7 +991,10 @@ fn supervise_once(
         guard.record_apply(&report);
         if !report.is_empty() {
             guard.mode = mode;
-            guard.mode_generation = guard.mode_generation.checked_add(1).expect("power generation exhausted");
+            guard.mode_generation = guard
+                .mode_generation
+                .checked_add(1)
+                .expect("power generation exhausted");
             let generation = guard.mode_generation;
             log_info!("power auto-switch -> {mode:?} ({})", decision.reason);
             guard.last_auto_switch = Some(decision.reason);
@@ -1096,7 +1105,10 @@ fn watch_once(
     // is left alone - see `watch` for why pushing it back is a loop.
     let envelope = apply_envelope(mode, &mut guard.config, paths);
     guard.mode = mode;
-    guard.mode_generation = guard.mode_generation.checked_add(1).expect("power generation exhausted");
+    guard.mode_generation = guard
+        .mode_generation
+        .checked_add(1)
+        .expect("power generation exhausted");
     let generation = guard.mode_generation;
     guard.config.mode = Some(mode);
     guard.expected = watch::Knobs {
@@ -1589,11 +1601,16 @@ mod tests {
     #[test]
     fn a_late_old_power_event_cannot_restore_an_old_fan_profile() {
         let _guard = POWER_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let root = std::env::temp_dir().join(format!("pyren-power-event-order-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pyren-power-event-order-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("platform_profile"), "balanced").unwrap();
-        std::fs::write(root.join("platform_profile_choices"), "low-power balanced performance").unwrap();
+        std::fs::write(
+            root.join("platform_profile_choices"),
+            "low-power balanced performance",
+        )
+        .unwrap();
         for (name, path) in [
             ("PYREN_PLATFORM_PROFILE", root.join("platform_profile")),
             ("PYREN_CPU_ROOT", root.join("cpu")),
@@ -1601,7 +1618,9 @@ mod tests {
             ("PYREN_TOOLS_DIR", root.join("bin")),
             ("PYREN_POWER_SUPPLY", root.join("supply")),
             ("PYREN_MSR_ROOT", root.join("msr")),
-        ] { std::env::set_var(name, path); }
+        ] {
+            std::env::set_var(name, path);
+        }
         let power = PowerModule::with_store(ConfigStore::at(root.join("power-config")));
         let fan = FanModule::with_store(ConfigStore::at(root.join("fan-config")));
         let bus = Arc::new(EventBus::new());
@@ -1610,7 +1629,9 @@ mod tests {
         bus.subscribe(move |topic, payload| {
             if topic == "power.mode" {
                 fan_listener.set_active_profile_versioned(
-                    payload["mode"].as_str().unwrap(), payload["generation"].as_u64().unwrap());
+                    payload["mode"].as_str().unwrap(),
+                    payload["generation"].as_u64().unwrap(),
+                );
             }
         });
         let (initial_mode, initial_generation) = power.mode_snapshot();
@@ -1627,14 +1648,32 @@ mod tests {
         let first = power.clone();
         let worker = std::thread::spawn(move || first.call("setMode", json!({"mode":"eco"})));
         committed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        power.call("setMode", json!({"mode":"performance"})).unwrap();
-        assert_eq!(power.call("getState", Value::Null).unwrap()["generation"], 2);
-        assert_eq!(fan.call("getStatus", Value::Null).unwrap()["activeProfile"], "performance");
+        power
+            .call("setMode", json!({"mode":"performance"}))
+            .unwrap();
+        assert_eq!(
+            power.call("getState", Value::Null).unwrap()["generation"],
+            2
+        );
+        assert_eq!(
+            fan.call("getStatus", Value::Null).unwrap()["activeProfile"],
+            "performance"
+        );
         release_tx.send(()).unwrap();
         worker.join().unwrap().unwrap();
         assert_eq!(power.mode(), PowerMode::Performance);
-        assert_eq!(fan.call("getStatus", Value::Null).unwrap()["activeProfile"], power.mode().as_str());
-        for name in ["PYREN_PLATFORM_PROFILE", "PYREN_CPU_ROOT", "PYREN_POWERCAP", "PYREN_TOOLS_DIR", "PYREN_POWER_SUPPLY", "PYREN_MSR_ROOT"] {
+        assert_eq!(
+            fan.call("getStatus", Value::Null).unwrap()["activeProfile"],
+            power.mode().as_str()
+        );
+        for name in [
+            "PYREN_PLATFORM_PROFILE",
+            "PYREN_CPU_ROOT",
+            "PYREN_POWERCAP",
+            "PYREN_TOOLS_DIR",
+            "PYREN_POWER_SUPPLY",
+            "PYREN_MSR_ROOT",
+        ] {
             std::env::remove_var(name);
         }
     }

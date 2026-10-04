@@ -63,7 +63,10 @@ impl EcProbe {
             if !load_module {
                 return Self::ModuleNotLoaded;
             }
-            match pyren_core::process::command("modprobe").arg("ec_sys").output() {
+            match pyren_core::process::command("modprobe")
+                .arg("ec_sys")
+                .output()
+            {
                 Ok(output) if output.status.success() => {}
                 Ok(output) => {
                     return Self::Unavailable {

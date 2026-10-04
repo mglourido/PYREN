@@ -132,11 +132,8 @@ mod tests {
         assert!(output.status.success());
 
         let line = String::from_utf8(output.stdout).expect("SigBlk is ASCII");
-        let mask = u64::from_str_radix(
-            line.split_whitespace().nth(1).expect("SigBlk value"),
-            16,
-        )
-        .expect("hexadecimal SigBlk value");
+        let mask = u64::from_str_radix(line.split_whitespace().nth(1).expect("SigBlk value"), 16)
+            .expect("hexadecimal SigBlk value");
         let termination = (1_u64 << (libc::SIGINT - 1)) | (1_u64 << (libc::SIGTERM - 1));
 
         assert_eq!(

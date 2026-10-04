@@ -26,7 +26,9 @@ mod socket;
 pub use debug_module::DebugModule;
 pub use events::{Batch, Event, EventBus};
 pub use msg::Msg;
-pub use socket::{acquire_daemon_instance, serve_unix_socket, socket_group, Audience, DaemonInstanceLock};
+pub use socket::{
+    acquire_daemon_instance, serve_unix_socket, socket_group, Audience, DaemonInstanceLock,
+};
 
 /// What kind of failure this is, as it appears on the wire.
 ///
@@ -347,7 +349,13 @@ impl Registry {
                 Err(e) => Response::err_msg(req.id, e.kind(), e.into_msg()),
             },
         };
-        debuglog::on_ipc(&req.module, &req.method, logged_params, &response, started.elapsed());
+        debuglog::on_ipc(
+            &req.module,
+            &req.method,
+            logged_params,
+            &response,
+            started.elapsed(),
+        );
         response
     }
 
@@ -672,8 +680,10 @@ mod tests {
         let _guard = crate::debuglog::test_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-core-dispatch-debuglog-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-core-dispatch-debuglog-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         crate::debuglog::init(dir.clone());
         crate::debuglog::set_enabled(true);
@@ -703,8 +713,10 @@ mod tests {
         let _guard = crate::debuglog::test_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir()
-            .join(format!("pyren-core-dispatch-nodebuglog-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-core-dispatch-nodebuglog-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         // `debuglog::init` was already called by the previous test in this
         // binary (or will be by a later one) - `ROOT` sticks to whichever

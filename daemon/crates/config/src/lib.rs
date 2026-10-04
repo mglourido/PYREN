@@ -174,7 +174,11 @@ impl ConfigStore {
     /// that isn't a clean read. Never fails: a daemon that cannot read its
     /// config must still start.
     pub fn load<T: DeserializeOwned + Default>(&self, name: &str) -> Loaded<T> {
-        self.load_inner(name, #[cfg(test)] || {})
+        self.load_inner(
+            name,
+            #[cfg(test)]
+            || {},
+        )
     }
 
     fn load_inner<T: DeserializeOwned + Default>(
@@ -230,38 +234,60 @@ impl ConfigStore {
                 // and classify it again while holding that lock.
                 let _writer = match lock_for_save(&path) {
                     Ok(guard) => guard,
-                    Err(lock_error) => return Loaded {
-                        value: T::default(),
-                        outcome: LoadOutcome::Recovered {
-                            backup: None,
-                            reason: lock_error.to_string(),
-                        },
-                    },
+                    Err(lock_error) => {
+                        return Loaded {
+                            value: T::default(),
+                            outcome: LoadOutcome::Recovered {
+                                backup: None,
+                                reason: lock_error.to_string(),
+                            },
+                        }
+                    }
                 };
                 let current = match fs::read_to_string(&path) {
                     Ok(text) => text,
-                    Err(read_error) if read_error.kind() == std::io::ErrorKind::NotFound => return Loaded {
-                        value: T::default(), outcome: LoadOutcome::Missing,
-                    },
-                    Err(read_error) => return Loaded {
-                        value: T::default(),
-                        outcome: LoadOutcome::Recovered { backup: None, reason: read_error.to_string() },
-                    },
+                    Err(read_error) if read_error.kind() == std::io::ErrorKind::NotFound => {
+                        return Loaded {
+                            value: T::default(),
+                            outcome: LoadOutcome::Missing,
+                        }
+                    }
+                    Err(read_error) => {
+                        return Loaded {
+                            value: T::default(),
+                            outcome: LoadOutcome::Recovered {
+                                backup: None,
+                                reason: read_error.to_string(),
+                            },
+                        }
+                    }
                 };
                 if let Ok(probe) = serde_json::from_str::<VersionProbe>(&current) {
                     if probe.version > CURRENT_VERSION {
-                        return Loaded { value: T::default(), outcome: LoadOutcome::TooNew { found: probe.version } };
+                        return Loaded {
+                            value: T::default(),
+                            outcome: LoadOutcome::TooNew {
+                                found: probe.version,
+                            },
+                        };
                     }
                 }
                 match serde_json::from_str::<Versioned<T>>(&current) {
-                    Ok(parsed) => Loaded { value: parsed.inner, outcome: LoadOutcome::Loaded },
+                    Ok(parsed) => Loaded {
+                        value: parsed.inner,
+                        outcome: LoadOutcome::Loaded,
+                    },
                     Err(current_error) => {
                         let backup = self.preserve_broken(&path);
                         Loaded {
                             value: T::default(),
                             outcome: LoadOutcome::Recovered {
                                 backup,
-                                reason: if current == text { e.to_string() } else { current_error.to_string() },
+                                reason: if current == text {
+                                    e.to_string()
+                                } else {
+                                    current_error.to_string()
+                                },
                             },
                         }
                     }
@@ -272,7 +298,12 @@ impl ConfigStore {
 
     /// Writes one namespace atomically.
     pub fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<(), ConfigError> {
-        self.save_inner(name, value, #[cfg(test)] || {})
+        self.save_inner(
+            name,
+            value,
+            #[cfg(test)]
+            || {},
+        )
     }
 
     fn save_inner<T: Serialize>(
@@ -303,7 +334,11 @@ impl ConfigStore {
         if let Some(text) = text {
             if let Ok(probe) = serde_json::from_str::<VersionProbe>(&text) {
                 if probe.version > CURRENT_VERSION {
-                    return Err(ConfigError::FutureVersion { path, found: probe.version, supported: CURRENT_VERSION });
+                    return Err(ConfigError::FutureVersion {
+                        path,
+                        found: probe.version,
+                        supported: CURRENT_VERSION,
+                    });
                 }
             }
         }
@@ -361,16 +396,28 @@ fn lock_for_save(path: &Path) -> Result<File, ConfigError> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(&lock_path)
-        .map_err(|source| ConfigError::Io { path: lock_path.clone(), source })?;
-    let metadata = lock.metadata().map_err(|source| ConfigError::Io { path: lock_path.clone(), source })?;
+        .map_err(|source| ConfigError::Io {
+            path: lock_path.clone(),
+            source,
+        })?;
+    let metadata = lock.metadata().map_err(|source| ConfigError::Io {
+        path: lock_path.clone(),
+        source,
+    })?;
     if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
         return Err(ConfigError::Io {
             path: lock_path,
-            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "config lock must be a regular file owned by this user"),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "config lock must be a regular file owned by this user",
+            ),
         });
     }
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(ConfigError::Io { path: lock_path, source: std::io::Error::last_os_error() });
+        return Err(ConfigError::Io {
+            path: lock_path,
+            source: std::io::Error::last_os_error(),
+        });
     }
     Ok(lock)
 }
@@ -507,7 +554,10 @@ mod tests {
         fs::create_dir_all(first.root()).unwrap();
         fs::write(first.path_for("thing"), "{ broken").unwrap();
         let second = ConfigStore::at(first.root());
-        let replacement = Sample { name: "new save".into(), ..Sample::default() };
+        let replacement = Sample {
+            name: "new save".into(),
+            ..Sample::default()
+        };
         let (read_tx, read_rx) = std::sync::mpsc::channel();
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
@@ -516,7 +566,9 @@ mod tests {
                 resume_rx.recv().unwrap();
             })
         });
-        read_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        read_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         second.save("thing", &replacement).unwrap();
         resume_tx.send(()).unwrap();
         let loaded = worker.join().unwrap();
@@ -539,12 +591,16 @@ mod tests {
 
     #[test]
     fn lock_holder_subprocess() {
-        let Ok(root) = std::env::var("PYREN_CONFIG_LOCK_CHILD_ROOT") else { return };
+        let Ok(root) = std::env::var("PYREN_CONFIG_LOCK_CHILD_ROOT") else {
+            return;
+        };
         let root = PathBuf::from(root);
         let path = root.join("thing.json");
         let _lock = lock_for_save(&path).unwrap();
         fs::write(root.join("lock-ready"), "ready").unwrap();
-        loop { std::thread::park(); }
+        loop {
+            std::thread::park();
+        }
     }
 
     #[test]
@@ -554,7 +610,8 @@ mod tests {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "tests::lock_holder_subprocess"])
             .env("PYREN_CONFIG_LOCK_CHILD_ROOT", store.root())
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         let ready = store.root().join("lock-ready");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !ready.exists() && std::time::Instant::now() < deadline {
@@ -567,7 +624,10 @@ mod tests {
         }
         let lock_path = store.path_for("thing").with_extension("json.lock");
         let other = OpenOptions::new().write(true).open(lock_path).unwrap();
-        assert_ne!(unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert_ne!(
+            unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
         child.kill().unwrap();
         child.wait().unwrap();
         store.save("thing", &Sample::default()).unwrap();
@@ -613,7 +673,10 @@ mod tests {
             matches!(saved, Err(ConfigError::FutureVersion { .. })),
             "saving fallback defaults silently downgraded a newer config"
         );
-        assert_eq!(fs::read_to_string(store.path_for("thing")).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(store.path_for("thing")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -627,7 +690,12 @@ mod tests {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let writer_path = path.clone();
         let writer = std::thread::spawn(move || {
-            let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(lock_path).unwrap();
+            let lock = fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(lock_path)
+                .unwrap();
             let fd = std::os::fd::AsRawFd::as_raw_fd(&lock);
             let blocked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0;
             if blocked {
@@ -640,12 +708,17 @@ mod tests {
             }
         });
         let result = store.save_inner("thing", &Sample::default(), || {
-            done_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
         });
         writer.join().unwrap();
         assert!(result.is_ok() || matches!(result, Err(ConfigError::FutureVersion { .. })));
         let text = fs::read_to_string(path).unwrap();
-        assert!(text.contains("\"newField\":\"keep\""), "future config was overwritten: {text}");
+        assert!(
+            text.contains("\"newField\":\"keep\""),
+            "future config was overwritten: {text}"
+        );
     }
 
     #[test]
