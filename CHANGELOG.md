@@ -243,6 +243,11 @@ the IPC protocol and on-disk config.
 
 ### Changed
 
+- **The vendored `hp-wmi` is updated to upstream `2d3f2a4`** (was the
+  2026-09-04 copy). It adds `fan*_max`, a `keyboard_type` attribute, and
+  multicolour LEDs for the keyboard zones (`hp::kbd_*`) and the light
+  strip (`hp::lightbar-N`); a driver reinstall picks it up.
+
 - **Unplugging now lands on Eco by default rather than Balanced**, the new
   battery preference; set it to Balanced to keep the old behaviour.
 

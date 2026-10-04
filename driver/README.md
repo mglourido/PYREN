@@ -37,9 +37,9 @@ still the option that removes the maintenance burden entirely).
 | | |
 |---|---|
 | Upstream | `github.com/arfelious/omen-fan-control` |
-| Taken from | upstream `main`, **not** a tagged release |
-| `hp-wmi.c` sha256 | `2eab833344d4ff7ca52a07d7fc5a6124c2285028ac0cdf7defc772fbad833d62` |
-| Copied on | 2026-09-04 |
+| Taken from | upstream `main` at `2d3f2a4`, **not** a tagged release |
+| `hp-wmi.c` sha256 | `4d82cbb635a25670ccd2946f573f2c45070bf7542f5a2a294cce06dab809db85` |
+| Copied on | 2026-10-04 |
 
 `hp-wmi.c` and `hp-wmi.c.orig` are byte-identical here, which is the state
 upstream ships: `.orig` is the pristine snapshot the patcher always works
