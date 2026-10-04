@@ -684,15 +684,25 @@ fn set_tlp(profile: &str) -> Result<(), String> {
 
 // --- auto-cpufreq ---
 
+/// See [`auto_cpufreq_running`]. `tools/pyren-check.sh` uses the same one.
+const AUTO_CPUFREQ_PATTERN: &str = "[a]uto-cpufreq.* --daemon";
+
 /// Whether auto-cpufreq's daemon is running.
 ///
 /// A process check rather than `auto-cpufreq --get-state`, which answers
 /// the same question but is a Python start-up - most of a second, on every
 /// status read, on every machine that merely has it installed.
+///
+/// The `[a]` is what keeps the check from finding itself. `pgrep -f`
+/// leaves its own process out and nobody else's, so a second `pgrep` with
+/// this pattern on its command line - `pyren-check`, the shell script, a
+/// second daemon call - is a match for the plain spelling, and a machine
+/// with no auto-cpufreq reports one. A bracketed letter matches the same
+/// processes and not the pattern's own text.
 fn auto_cpufreq_running() -> bool {
     cached(&AUTO_CPUFREQ_CACHE, || {
         process::output(
-            pyren_core::process::command(tool("pgrep")).args(["-f", "auto-cpufreq.* --daemon"]),
+            pyren_core::process::command(tool("pgrep")).args(["-f", AUTO_CPUFREQ_PATTERN]),
         )
         .is_ok_and(|output| output.status.success())
     })

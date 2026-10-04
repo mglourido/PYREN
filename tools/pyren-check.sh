@@ -608,7 +608,9 @@ elif command -v tlp-stat >/dev/null 2>&1 &&
 	tlp-stat -m 2>/dev/null | grep -Eq '^(performance|balanced|power-saver)/'; then
 	add_mechanism tlp
 fi
-if command -v pgrep >/dev/null 2>&1 && pgrep -f 'auto-cpufreq.* --daemon' >/dev/null 2>&1; then
+# [a], so that the pattern does not match another pgrep running this same
+# check: pgrep -f leaves only itself out. Same pattern as the daemon's.
+if command -v pgrep >/dev/null 2>&1 && pgrep -f '[a]uto-cpufreq.* --daemon' >/dev/null 2>&1; then
 	add_mechanism auto-cpufreq
 fi
 if [ -r "$CPU_ROOT/cpu0/cpufreq/energy_performance_preference" ]; then
@@ -664,10 +666,8 @@ fi
 if [ -e "$CPU_ROOT/intel_pstate/no_turbo" ] || [ -e "$CPU_ROOT/cpufreq/boost" ]; then
 	record pass power-turbo "Turbo / boost switch" \
 		"exposed, so turbo can be switched per mode"
-	HAS_TURBO=1
 else
 	record warn power-turbo "Turbo / boost switch" "not exposed; modes leave turbo alone"
-	HAS_TURBO=0
 fi
 
 if [ -z "$MECHANISMS" ]; then
@@ -718,12 +718,6 @@ LIGHTBAR_GET="b53454355080002000400000080000000$(printf '%0256d' 0)"
 
 RGB_ZONES_DIR="${PYREN_RGB_ZONES_DIR:-/sys/devices/platform/hp-wmi/rgb_zones}"
 
-ACPI_CALL_INSTALLED=0
-if [ -e "$ACPI_CALL" ]; then
-	ACPI_CALL_INSTALLED=1
-elif command -v modinfo >/dev/null 2>&1 && modinfo -n acpi_call >/dev/null 2>&1; then
-	ACPI_CALL_INSTALLED=1
-fi
 
 # Why a WMI dialect could not even be asked, or "" when it could. Shared by
 # both of them, because they need the same two things.
@@ -851,7 +845,6 @@ WRITE_TESTED=0
 
 if [ "$CAN_WRITE" -eq 1 ]; then
 	VERDICT="fullControl"
-	VERDICT_TEXT="Fan control works"
 	if [ "$WRITE_TESTED" -eq 1 ]; then
 		SUMMARY="Fan control works: speeds can be read and the PWM channel accepted a write."
 	else
@@ -861,7 +854,6 @@ if [ "$CAN_WRITE" -eq 1 ]; then
 	EXIT_CODE=0
 elif [ "$CAN_READ" -eq 1 ]; then
 	VERDICT="monitoringOnly"
-	VERDICT_TEXT="Monitoring only"
 	SUMMARY="Fan speeds can be read, but this driver exposes no PWM channel, so speed cannot be set."
 	if [ "$HAS_HP_WMI" -eq 1 ]; then
 		NOTICE="The kernel's hp-wmi has no pwm1 for this board. Recent kernels ship manual fan control upstream, so upgrading the kernel is the first thing to try. Failing that, a patched out-of-tree driver exists: https://github.com/arfelious/omen-fan-control. Installing it replaces a kernel module, so it is a deliberate step."
@@ -871,7 +863,6 @@ elif [ "$CAN_READ" -eq 1 ]; then
 	EXIT_CODE=1
 else
 	VERDICT="unsupported"
-	VERDICT_TEXT="No fan-control interface"
 	if [ -n "$CPU_TEMP" ]; then
 		SUMMARY="This machine exposes no HP fan-control interface. Temperature can still be read, so monitoring works."
 	else

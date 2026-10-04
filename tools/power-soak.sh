@@ -23,7 +23,7 @@
 
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 MINUTES=5
 QUICK=no
 FAILURES=0
@@ -270,4 +270,5 @@ if [ "$FAILURES" -eq 0 ]; then
 else
     bold "$CHECKS checks, $FAILURES FAILED"
 fi
-exit $([ "$FAILURES" -eq 0 ] && echo 0 || echo 1)
+[ "$FAILURES" -eq 0 ] || exit 1
+exit 0
