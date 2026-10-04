@@ -137,7 +137,12 @@ describe("Telemetry polling gate", () => {
 
     telemetry.setDetailActive(true);
 
-    await vi.waitFor(() => expect(daemon.systemMetrics).toHaveBeenCalledTimes(1));
+    // Two calls, not one: the readings without the process table, and the
+    // process table on its own - which otherwise would stay empty until its
+    // slower timer came round.
+    await vi.waitFor(() => expect(daemon.systemMetrics).toHaveBeenCalledTimes(2));
+    expect(daemon.systemMetrics).toHaveBeenCalledWith(false);
+    expect(daemon.systemMetrics).toHaveBeenCalledWith(true);
   });
 
   it("stays reachable off a fulfilled fanStatus while detail is inactive", async () => {
