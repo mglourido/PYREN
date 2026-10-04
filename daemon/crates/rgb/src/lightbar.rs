@@ -219,6 +219,58 @@ pub fn read_colors() -> Result<Vec<Rgb>, DialectError> {
     Ok(colors)
 }
 
+/// `HPWMI_GET_KEYBOARD_TYPE_QUERY`, under the same `0x20008` the read
+/// above goes to. Unlike that read, the mainline driver sends this one.
+pub const TYPE_KEYBOARD: u32 = 0x2b;
+
+/// `HP_KEYBOARD_TYPE_RGB_PER_KEY`: the keyboard is lit over USB HID, not
+/// over WMI.
+pub const KEYBOARD_PER_KEY: u8 = 0x03;
+
+/// The buffer for a keyboard-type read, as the hex argument `acpi_call`
+/// takes.
+pub fn keyboard_type_request() -> String {
+    acpi::wmi_request(COMMAND_READ, TYPE_KEYBOARD, 4, &[0u8; 4])
+}
+
+/// The keyboard type in a reply: the first data byte after the `PASS`
+/// header, and only when that header says it worked.
+pub fn keyboard_type_from(reply: &str) -> Result<u8, DialectError> {
+    let data = crate::reply::payload(reply)?;
+    data.first()
+        .copied()
+        .ok_or_else(|| DialectError::Unreadable(reply.trim().to_string()))
+}
+
+/// What kind of keyboard the firmware says this is.
+///
+/// On 8D2F it answers `01 00 00 00` - four zones with a numpad
+/// (`dev/FINDINGS.md` §"It is not a per-key keyboard, and the firmware
+/// says so").
+pub fn keyboard_type() -> Result<u8, DialectError> {
+    let reply = acpi::wmi_call(COMMAND_READ, TYPE_KEYBOARD, &[0u8; 4], 4, 4)?;
+    keyboard_type_from(&reply)
+}
+
+/// Whether a keyboard-type answer rules the light strip out.
+///
+/// Upstream's driver (`omen-fan-control` 2d3f2a4) registers the strip only
+/// beside a per-key keyboard: the single-zone and four-zone machines light
+/// their keyboard over WMI and have no strip, yet their firmware answers
+/// this dialect's read with `PASS` all the same - which is what 8D2F does
+/// (`dev/FINDINGS.md` §"This machine is `fourZone`, and `lightbar` is a
+/// false positive").
+///
+/// A question that could not be put rules nothing out. Upstream treats a
+/// failed query as "no strip"; here that would take the lights away over a
+/// read that failed for its own reasons.
+pub fn ruled_out_by_keyboard(keyboard: &Result<u8, DialectError>) -> Option<u8> {
+    match keyboard {
+        Ok(kind) if *kind != KEYBOARD_PER_KEY => Some(*kind),
+        _ => None,
+    }
+}
+
 pub fn hp_wmi_present() -> bool {
     std::path::Path::new("/sys/devices/platform/hp-wmi").exists()
 }
@@ -242,6 +294,55 @@ mod tests {
     fn bytes_of(request: &str) -> Vec<u8> {
         assert!(request.starts_with('b'), "acpi_call buffers start with b");
         parse_bytes(request).expect("the request must be plain hex")
+    }
+
+    /// The keyboard-type read is the kernel's own query: `0x20008`, type
+    /// `0x2b`, four bytes each way.
+    #[test]
+    fn the_keyboard_type_read_is_the_kernels_query() {
+        let bytes = bytes_of(&keyboard_type_request());
+        assert_eq!(&bytes[0..4], b"SECU");
+        assert_eq!(&bytes[4..8], &0x0002_0008u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &0x2bu32.to_le_bytes());
+        assert_eq!(&bytes[12..16], &4u32.to_le_bytes());
+        assert_eq!(bytes.len(), 20);
+    }
+
+    /// 8D2F's own answer, `01 00 00 00`, and the two ways a reply is not
+    /// an answer.
+    #[test]
+    fn the_keyboard_type_is_the_first_data_byte_of_a_pass() {
+        let four_zone = "{0x50, 0x41, 0x53, 0x53, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00}";
+        assert_eq!(keyboard_type_from(four_zone).unwrap(), 0x01);
+        let refused = "{0x50, 0x41, 0x53, 0x53, 0x04, 0x00, 0x00, 0x00, 0x03}";
+        assert!(matches!(
+            keyboard_type_from(refused),
+            Err(DialectError::ReturnCode(4))
+        ));
+        let empty = "{0x50, 0x41, 0x53, 0x53, 0x00, 0x00, 0x00, 0x00}";
+        assert!(matches!(
+            keyboard_type_from(empty),
+            Err(DialectError::Unreadable(_))
+        ));
+    }
+
+    /// Only a keyboard the firmware *named* as something other than
+    /// per-key rules the strip out. A read that failed is not an answer,
+    /// and must leave the lightbar asked the way it was before.
+    #[test]
+    fn only_a_named_non_per_key_keyboard_rules_the_strip_out() {
+        assert_eq!(ruled_out_by_keyboard(&Ok(KEYBOARD_PER_KEY)), None);
+        for kind in [0x00, 0x01, 0x02, 0x04, 0x05] {
+            assert_eq!(ruled_out_by_keyboard(&Ok(kind)), Some(kind));
+        }
+        assert_eq!(
+            ruled_out_by_keyboard(&Err(DialectError::ReturnCode(4))),
+            None
+        );
+        assert_eq!(
+            ruled_out_by_keyboard(&Err(DialectError::Refused("no".into()))),
+            None
+        );
     }
 
     /// The header is the part no test on hardware could isolate: if it is

@@ -232,6 +232,14 @@ the IPC protocol and on-disk config.
   notes that `allowWrites` briefly spins the fans (a `fan.probeSpeedControl`
   run `diagnose` fires itself), and spells out how the verdict follows the
   check results.
+- **The light strip is no longer auto-picked on a machine that has none.**
+  Its read answers `PASS` on four-zone keyboards that have no strip (8D2F
+  is one), so when no other lighting protocol answered, `lightbar` was
+  chosen and lit nothing. The firmware is now asked its keyboard type
+  first (`0x20008` / `0x2b`), and any type but per-key leaves the strip
+  unasked - the rule upstream's driver adopted in `2d3f2a4`. Pinning
+  `lightbar` by hand still asks it, and a keyboard-type read that fails
+  changes nothing.
 
 ### Changed
 

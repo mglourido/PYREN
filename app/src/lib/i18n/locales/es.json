@@ -650,7 +650,8 @@
         "notHp": "esta máquina no indica HP como fabricante, así que no se envía ninguna orden de firmware de HP"
       },
       "skipped": {
-        "lightbar": "no se preguntó: otro protocolo ya respondió, y la lectura de este no la confirma ningún driver publicado"
+        "lightbar": "no se preguntó: otro protocolo ya respondió, y la lectura de este no la confirma ningún driver publicado",
+        "lightbarKeyboard": "no se preguntó: el firmware indica teclado de tipo {kind}, y la tira de luz solo viene con un teclado por tecla (tipo 3)"
       },
       "fourZone": {
         "truncatedOff": "la respuesta del firmware se cortó a {got} de {need} bytes ({layout}), y escribir con respuestas cortadas está desactivado, así que no se escribió nada",

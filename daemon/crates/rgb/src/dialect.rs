@@ -39,6 +39,12 @@
 //! Its read (`0x20008` type 4) is upstream's alone; no published driver
 //! sends it. So it is only sent when nothing earlier answered, or when the
 //! lightbar is the dialect somebody pinned.
+//!
+//! And when nothing earlier answered, the firmware is first asked what
+//! keyboard it has. The strip only comes with a per-key keyboard, while
+//! the read answers `PASS` on four-zone machines that have no strip, so
+//! any other keyboard type leaves the lightbar unasked - unless it is
+//! pinned. See [`crate::lightbar::ruled_out_by_keyboard`].
 
 use pyren_core::{msg, Msg};
 use serde::{Deserialize, Serialize};

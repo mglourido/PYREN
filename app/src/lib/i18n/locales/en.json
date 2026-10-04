@@ -650,7 +650,8 @@
         "notHp": "this machine does not report HP as its maker, so no HP firmware command is sent"
       },
       "skipped": {
-        "lightbar": "not asked: another protocol already answered, and this one's read is not confirmed by any published driver"
+        "lightbar": "not asked: another protocol already answered, and this one's read is not confirmed by any published driver",
+        "lightbarKeyboard": "not asked: the firmware reports keyboard type {kind}, and the light strip only comes with a per-key keyboard (type 3)"
       },
       "fourZone": {
         "truncatedOff": "the firmware's reply was cut short to {got} of {need} bytes ({layout}), and writing through a cut-short reply is turned off, so nothing was written",

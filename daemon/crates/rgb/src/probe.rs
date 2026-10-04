@@ -178,16 +178,33 @@ fn probe_lighting(pinned: Option<Dialect>, policy: Policy) -> Lighting {
     // dialect missing from the list would be indistinguishable from a
     // dialect that failed, and the whole point of the list is that a
     // person can see which of them was even asked.
+    let wmi_reachable = hp_wmi && acpi_call && lightbar::is_hp();
     let mut dialects: Vec<DialectProbe> = Vec::with_capacity(dialect::ORDER.len());
     for d in dialect::ORDER {
         let answered = dialects.iter().any(|p| p.available);
-        if d == Dialect::Lightbar && answered && pinned != Some(Dialect::Lightbar) {
-            dialects.push(d.not_asked(pyren_core::msg!(
-                "rgb.dialect.skipped.lightbar",
-                "not asked: another protocol already answered, and this one's read is not \
-                 confirmed by any published driver"
-            )));
-            continue;
+        if d == Dialect::Lightbar && pinned != Some(Dialect::Lightbar) {
+            if answered {
+                dialects.push(d.not_asked(pyren_core::msg!(
+                    "rgb.dialect.skipped.lightbar",
+                    "not asked: another protocol already answered, and this one's read is not \
+                     confirmed by any published driver"
+                )));
+                continue;
+            }
+            // Only here, where the lightbar would otherwise be picked on
+            // the strength of its read alone - and that read answers on
+            // machines with no strip. A pinned lightbar is still asked:
+            // the override is for when this rule is the thing that is wrong.
+            let keyboard = wmi_reachable.then(lightbar::keyboard_type);
+            if let Some(kind) = keyboard.as_ref().and_then(lightbar::ruled_out_by_keyboard) {
+                dialects.push(d.not_asked(pyren_core::msg!(
+                    "rgb.dialect.skipped.lightbarKeyboard",
+                    { "kind" => kind },
+                    "not asked: the firmware reports keyboard type {kind}, and the light \
+                     strip only comes with a per-key keyboard (type 3)"
+                )));
+                continue;
+            }
         }
         dialects.push(d.probe(policy));
     }
@@ -195,8 +212,7 @@ fn probe_lighting(pinned: Option<Dialect>, policy: Policy) -> Lighting {
 
     // Asked only when it can be, and only once: it is one ACPI round trip
     // and it answers a question none of the dialect probes do.
-    let command_answers =
-        (hp_wmi && acpi_call && lightbar::is_hp()).then(|| fourzone::platform_info().is_ok());
+    let command_answers = wmi_reachable.then(|| fourzone::platform_info().is_ok());
 
     // "Nothing could be asked" is not "the firmware said no". A dialect
     // whose interfaces are here and which still could not put the question
