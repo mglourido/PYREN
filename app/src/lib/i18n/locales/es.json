@@ -702,6 +702,7 @@
     "calibrationRecalibrate": "Recalibrar",
     "ceilingLow": "El driver trabaja con un techo de ventilador de {rpm} rpm que nadie ha medido en este equipo. Una cifra tan baja suele ser la entrada más rápida de la tabla de ventiladores del firmware y no lo que alcanzan a máxima velocidad, lo que hace que cada curva y cada velocidad manual sea más lenta de lo que indica. Ejecuta la calibración para medir el techo real.",
     "ceilingPending": "El techo calibrado no ha llegado al driver cargado, que sigue convirtiendo velocidades contra {rpm} rpm. Se aplica la próxima vez que se cargue hp-wmi: tras reiniciar, o de inmediato reinstalando el driver más abajo.",
+    "ceilingNotWritten": "El techo calibrado no se guardó donde el driver lo lee, así que el driver sigue convirtiendo velocidades contra {rpm} rpm y reiniciar no lo cambiará. Reinstalar el driver más abajo lo escribe y lo carga.",
     "ceilingUnsupported": "El driver instalado no puede recibir un techo medido, así que la calibración solo la usa la curva de Pyren. Instalar el driver de Pyren más abajo permite que el driver también la use.",
     "blockedByCalibration": "Deshabilitado mientras se ejecuta la comprobación de calibración de abajo: ambas usan los ventiladores, y solo una puede hacerlo a la vez.",
     "blockedByWriteCheck": "Deshabilitado mientras se ejecuta la comprobación del driver de arriba con escrituras activadas: ambas usan los ventiladores, y solo una puede hacerlo a la vez.",

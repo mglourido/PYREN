@@ -1278,6 +1278,7 @@ fn paths_for_testing(hwmon_dir: PathBuf, cpu_temp: Option<PathBuf>) -> FanPaths 
         cpu_temp,
         gpu_temp: None,
         driver_params: None,
+        ceiling_conf: None,
     }
 }
 

@@ -1131,6 +1131,7 @@ mod tests {
             cpu_temp: None,
             gpu_temp: None,
             driver_params: None,
+            ceiling_conf: None,
         }
     }
 

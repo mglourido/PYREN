@@ -119,6 +119,9 @@ pub(crate) struct FanPaths {
     /// `hp_wmi`'s module parameters, where Pyren's driver reports the fan
     /// table's floor and takes a replacement for it. See `control`.
     pub(crate) driver_params: Option<PathBuf>,
+    /// The `modprobe.d` file a measured ceiling waits in until `hp-wmi`
+    /// next loads. The path is set whether or not the file exists.
+    pub(crate) ceiling_conf: Option<PathBuf>,
 }
 
 /// Which temperature the curve follows.
@@ -1326,8 +1329,9 @@ impl FanModule {
             // fan table's fastest entry rather than the fans' real limit.
             "driverCeilingLow": control::ceiling_looks_low(&self.paths(), state.config.fan_max_rpm),
             // Whether the loaded driver is using what calibration measured:
-            // "applied", "pending" (next load of hp-wmi), "unsupported", or
-            // null when there is nothing to compare.
+            // "applied", "pending" (next load of hp-wmi), "notWritten" (no
+            // load will bring it), "unsupported", or null when there is
+            // nothing to compare.
             "ceilingPin": control::ceiling_pin(
                 &self.paths(),
                 state.config.fan1_max_rpm,
@@ -3245,7 +3249,17 @@ fn discover_paths() -> FanPaths {
     paths.cpu_temp = find_cpu_temp_path();
     paths.gpu_temp = find_gpu_temp_path();
     paths.driver_params = find_driver_params();
+    paths.ceiling_conf = Some(find_ceiling_conf());
     paths
+}
+
+/// Where the pinned ceiling is read back from. Beside the fixture under
+/// `PYREN_HWMON_DIR`, for the reason [`find_driver_params`] gives.
+fn find_ceiling_conf() -> PathBuf {
+    match std::env::var("PYREN_HWMON_DIR") {
+        Ok(fixture) => PathBuf::from(fixture).join("pyren-hp-wmi.conf"),
+        Err(_) => PathBuf::from(pyren_installer::MODPROBE_CONF_PATH),
+    }
 }
 
 /// `hp_wmi`'s module parameters. Under `PYREN_HWMON_DIR` they are looked
@@ -3757,6 +3771,7 @@ mod tests {
             cpu_temp: None,
             gpu_temp: None,
             driver_params: None,
+            ceiling_conf: None,
         };
         *lock_hw(&module.hardware) = Hardware {
             caps: Capabilities::detect(&paths),
@@ -3814,6 +3829,7 @@ mod tests {
             cpu_temp: None,
             gpu_temp: None,
             driver_params: None,
+            ceiling_conf: None,
         };
         *lock_hw(&module.hardware) = Hardware {
             caps: Capabilities::detect(&paths),
@@ -4076,6 +4092,7 @@ mod tests {
             fan1_input: Some(dir.join("fan1_input")),
             cpu_temp: Some(dir.join("temp1_input")),
             driver_params: Some(dir.join("parameters")),
+            ceiling_conf: Some(dir.join("pyren-hp-wmi.conf")),
             ..Default::default()
         };
         *lock_hw(&module.hardware) = Hardware {
@@ -4124,7 +4141,14 @@ mod tests {
         }
         let status = module.status();
         assert_eq!(status["driverCeilingLow"], json!(false));
-        assert_eq!(status["ceilingPin"], json!("pending"));
+        // Nothing on disk for the next load: a reboot would change nothing.
+        assert_eq!(status["ceilingPin"], json!("notWritten"));
+        fs::write(
+            dir.join("pyren-hp-wmi.conf"),
+            "options hp-wmi cpu_max_rpm_measured=53 gpu_max_rpm_measured=51\n",
+        )
+        .unwrap();
+        assert_eq!(module.status()["ceilingPin"], json!("pending"));
 
         // The reload that makes the driver report the pinned hundreds.
         fs::write(dir.join("fan1_max"), "5300\n").unwrap();

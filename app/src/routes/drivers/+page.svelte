@@ -82,6 +82,14 @@
     const rpm = Math.max(hardware.fan?.driverFan1MaxRpm ?? 0, hardware.fan?.driverFan2MaxRpm ?? 0);
     return rpm > 0 ? String(rpm) : "?";
   });
+  /** Both of the driver's ceilings, for a notice about one of them being
+   *  the wrong one: the faster alone could be the fan that is already right. */
+  const driverCeilingsText = $derived.by(() => {
+    const ceilings = [hardware.fan?.driverFan1MaxRpm, hardware.fan?.driverFan2MaxRpm].filter(
+      (rpm): rpm is number => rpm != null && rpm > 0,
+    );
+    return ceilings.length > 0 ? [...new Set(ceilings)].join(" / ") : "?";
+  });
   let calibrating = $state(false);
   let calibration = $state<FanCalibration | null>(null);
   let calibrationError = $state<string | null>(null);
@@ -542,7 +550,11 @@
           })}</p>
       {:else if hardware.fan?.ceilingPin === "pending"}
         <p class="notice warn">{t("diagnostics.ceilingPending", {
-            rpm: driverCeilingText,
+            rpm: driverCeilingsText,
+          })}</p>
+      {:else if hardware.fan?.ceilingPin === "notWritten"}
+        <p class="notice warn">{t("diagnostics.ceilingNotWritten", {
+            rpm: driverCeilingsText,
           })}</p>
       {:else if hardware.fan?.ceilingPin === "unsupported"}
         <p class="hint">{t("diagnostics.ceilingUnsupported")}</p>

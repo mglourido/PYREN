@@ -58,9 +58,12 @@ use serde_json::{json, Value};
 pub use autodetect::{Autodetected, ParamsEffect, RpmSource};
 pub use detect::Environment;
 pub use ec::EcProbe;
-pub use execute::{execute, pin_measured_ceiling, ExecuteContext, ExecutionReport};
+pub use execute::{
+    execute, measured_param_value, pin_measured_ceiling, pinned_ceiling_in, ExecuteContext,
+    ExecutionReport,
+};
 pub use patch::{BoardParams, BoardTable, MaxRpm};
-pub use plan::{plan, Action, Plan, PlanOptions, Strategy};
+pub use plan::{plan, Action, Plan, PlanOptions, Strategy, MODPROBE_CONF_PATH};
 pub use version::{DriverIdentity, DriverVersion, DriverVersionState, IdentitySource};
 
 #[derive(Debug, Deserialize)]

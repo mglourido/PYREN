@@ -352,15 +352,41 @@ pub fn ceiling_looks_low(paths: &FanPaths, measured: Option<i64>) -> bool {
 pub enum CeilingPin {
     /// The loaded driver is converting against the measurement.
     Applied,
-    /// It is not: the measurement is in this daemon's config, and at best
-    /// in `/etc/modprobe.d` waiting for the next time `hp-wmi` loads.
+    /// It is not yet: the measurement is in `/etc/modprobe.d`, waiting for
+    /// the next time `hp-wmi` loads.
     Pending,
+    /// It is not, and no load will change that: the measurement is in this
+    /// daemon's config only. Writing the file failed, or was refused.
+    NotWritten,
     /// The loaded driver has no parameter to take one through.
     Unsupported,
 }
 
 const MEASURED_CEILING_PARAM: &str = "cpu_max_rpm_measured";
 const MEASURED_GPU_CEILING_PARAM: &str = "gpu_max_rpm_measured";
+
+/// A measurement as the driver would hold it: whole hundreds of rpm.
+/// `None` for one its parameter cannot express.
+fn as_pinned(rpm: i64) -> Option<i64> {
+    let hundreds = pyren_installer::measured_param_value(u32::try_from(rpm).ok()?)?;
+    Some(i64::from(hundreds) * 100)
+}
+
+/// What the file a pin is written to holds for each fan, in rpm.
+fn read_pinned_ceiling(paths: &FanPaths) -> DriverCeiling {
+    let Some(conf) = paths
+        .ceiling_conf
+        .as_deref()
+        .and_then(|path| fs::read_to_string(path).ok())
+    else {
+        return DriverCeiling::default();
+    };
+    let pinned = pyren_installer::pinned_ceiling_in(&conf);
+    DriverCeiling {
+        cpu: pinned.cpu.map(i64::from),
+        gpu: pinned.gpu.map(i64::from),
+    }
+}
 
 /// Compares what calibration measured, per fan, with what the driver says
 /// it is using. `None` where there is nothing to compare: no per-fan
@@ -370,15 +396,8 @@ pub fn ceiling_pin(
     fan1_max_rpm: Option<i64>,
     fan2_max_rpm: Option<i64>,
 ) -> Option<CeilingPin> {
-    // What `pin_measured_ceiling` writes: whole hundreds, in a u8. A value
-    // it refuses is not one the driver was ever asked to hold.
-    let pinned = |rpm: Option<i64>| {
-        rpm.map(|rpm| rpm / 100)
-            .filter(|hundreds| (1..=i64::from(u8::MAX)).contains(hundreds))
-            .map(|hundreds| hundreds * 100)
-    };
-    let wanted = [pinned(fan1_max_rpm), pinned(fan2_max_rpm)];
-    if wanted.iter().all(Option::is_none) {
+    let measured = [fan1_max_rpm, fan2_max_rpm];
+    if measured.iter().all(Option::is_none) {
         return None;
     }
     paths.hwmon_dir.as_deref()?;
@@ -391,18 +410,37 @@ pub fn ceiling_pin(
         return Some(CeilingPin::Unsupported);
     }
 
+    // `pin_measured_ceiling` writes both fans or neither: one measurement
+    // the parameter cannot hold, and the other was not written either.
+    let wanted = measured.map(|rpm| rpm.map(as_pinned));
+    if wanted.iter().flatten().any(Option::is_none) {
+        return Some(CeilingPin::NotWritten);
+    }
+
     // On a driver that takes a measurement, a fan with no ceiling to read
     // back is one whose parameter is still zero: not pinned yet.
     let driver = read_driver_ceiling(paths);
-    let applied = wanted
-        .into_iter()
-        .zip([driver.cpu, driver.gpu])
-        .all(|(wanted, in_force)| wanted.is_none() || wanted == in_force);
-    Some(if applied {
-        CeilingPin::Applied
-    } else {
-        CeilingPin::Pending
-    })
+    let on_disk = read_pinned_ceiling(paths);
+    let mut verdict = CeilingPin::Applied;
+    for (fan, wanted) in wanted.into_iter().enumerate() {
+        let Some(wanted) = wanted.flatten() else {
+            continue;
+        };
+        let (in_force, written) = match fan {
+            0 => (driver.cpu, on_disk.cpu),
+            _ => (driver.gpu, on_disk.gpu),
+        };
+        if in_force == Some(wanted) {
+            continue;
+        }
+        if written != Some(wanted) {
+            // Not what the driver uses and not what its next load will
+            // give it: "pending" would promise a reboot that fixes nothing.
+            return Some(CeilingPin::NotWritten);
+        }
+        verdict = CeilingPin::Pending;
+    }
+    Some(verdict)
 }
 
 // --- the manual-speed floor --------------------------------------------
@@ -490,10 +528,17 @@ mod tests {
             fs::write(params.join(MEASURED_CEILING_PARAM), "0\n").unwrap();
         }
         FanPaths {
+            ceiling_conf: Some(dir.join("pyren-hp-wmi.conf")),
             hwmon_dir: Some(dir),
             driver_params: Some(params),
             ..Default::default()
         }
+    }
+
+    /// What `pin_measured_ceiling` leaves for the driver's next load.
+    fn pin_on_disk(paths: &FanPaths, options: &str) {
+        let conf = paths.ceiling_conf.as_deref().unwrap();
+        fs::write(conf, format!("options hp-wmi {options}\n")).unwrap();
     }
 
     #[test]
@@ -542,9 +587,47 @@ mod tests {
     #[test]
     fn a_pin_is_pending_while_the_driver_still_uses_its_own_ceiling() {
         let paths = ceiling_fixture("pin-pending", "4400\n", "5100\n", true);
+        pin_on_disk(&paths, "cpu_max_rpm_measured=53 gpu_max_rpm_measured=51");
         assert_eq!(
             ceiling_pin(&paths, Some(5342), Some(5199)),
             Some(CeilingPin::Pending)
+        );
+    }
+
+    #[test]
+    fn a_pin_no_load_will_deliver_is_not_called_pending() {
+        // The write failed: nothing on disk for the next load to pick up.
+        let paths = ceiling_fixture("pin-not-written", "4400\n", "5100\n", true);
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(5199)),
+            Some(CeilingPin::NotWritten)
+        );
+        // An earlier calibration's file is no better than none.
+        pin_on_disk(&paths, "cpu_max_rpm_measured=50 gpu_max_rpm_measured=51");
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(5199)),
+            Some(CeilingPin::NotWritten)
+        );
+        // Already in force: what the file says no longer matters.
+        let loaded = ceiling_fixture("pin-loaded-no-file", "5300\n", "5100\n", true);
+        assert_eq!(
+            ceiling_pin(&loaded, Some(5342), Some(5199)),
+            Some(CeilingPin::Applied)
+        );
+    }
+
+    #[test]
+    fn one_ceiling_the_parameter_cannot_hold_leaves_both_unwritten() {
+        // The pin is refused whole, so the fan that could have been pinned
+        // is not waiting for a reload either - whatever the driver uses.
+        let paths = ceiling_fixture("pin-refused", "5300\n", "5100\n", true);
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(40)),
+            Some(CeilingPin::NotWritten)
+        );
+        assert_eq!(
+            ceiling_pin(&paths, Some(40), None),
+            Some(CeilingPin::NotWritten)
         );
     }
 
@@ -570,9 +653,6 @@ mod tests {
     fn nothing_measured_or_nothing_to_read_back_is_no_verdict() {
         let paths = ceiling_fixture("pin-none", "5300\n", "5100\n", true);
         assert_eq!(ceiling_pin(&paths, None, None), None);
-        // Too slow for the parameter to hold: never pinned, so not pending.
-        assert_eq!(ceiling_pin(&paths, Some(40), None), None);
-
         assert_eq!(ceiling_pin(&FanPaths::default(), Some(5342), None), None);
     }
 
@@ -585,9 +665,11 @@ mod tests {
         fs::write(params.join(MEASURED_GPU_CEILING_PARAM), "0\n").unwrap();
         let paths = FanPaths {
             driver_params: Some(params.clone()),
+            ceiling_conf: Some(dir.join("pyren-hp-wmi.conf")),
             hwmon_dir: Some(dir),
             ..Default::default()
         };
+        pin_on_disk(&paths, "cpu_max_rpm_measured=53 gpu_max_rpm_measured=51");
         let ceiling = read_driver_ceiling(&paths);
         assert_eq!((ceiling.cpu, ceiling.gpu), (Some(5300), None));
         // The second fan's parameter was never loaded with anything.
@@ -613,6 +695,7 @@ mod tests {
             cpu_temp: None,
             gpu_temp: None,
             driver_params: Some(dir.join("parameters")),
+            ceiling_conf: None,
         }
     }
 

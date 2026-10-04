@@ -17,8 +17,9 @@ the IPC protocol and on-disk config.
   `driverFan1MaxRpm` / `driverFan2MaxRpm`, with `driverCeilingLow` (no
   calibration, and a ceiling under 5000 rpm - usually the firmware fan
   table's fastest entry rather than the fans' limit) and `ceilingPin`
-  (`applied`, `pending` or `unsupported`: whether the loaded driver is
-  using what calibration measured). The Drivers page shows a notice for
+  (`applied`, `pending`, `notWritten` or `unsupported`: whether the loaded
+  driver is using what calibration measured, and if not, whether its next
+  load will). The Drivers page shows a notice for
   each, above the calibration check. omen-fan-control answers the same
   problem by refusing to install uncalibrated; Pyren cannot bake a wrong
   ceiling into the module, so it only warns. The driver's figure also

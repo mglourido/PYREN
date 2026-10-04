@@ -1186,9 +1186,11 @@ where neither is there. `driverCeilingLow` is true when nothing has been
 measured and the driver's ceiling is under 5000 rpm - probably the table's
 entry rather than the fans' limit, so worth a calibration. `ceilingPin`
 says whether the loaded driver is using the measurement: `"applied"`,
-`"pending"` (written for the next load of `hp-wmi`, or not written at
-all), `"unsupported"` (a driver without Pyren's parameter), or null when
-there is no per-fan measurement. The
+`"pending"` (written to `/etc/modprobe.d` for the next load of `hp-wmi`),
+`"notWritten"` (that file does not hold the measurement - the write failed
+or was refused - so no load will bring it), `"unsupported"` (a driver
+without Pyren's parameter), or null when there is no per-fan measurement.
+The
 driver's ceiling is only ever reported and, for `fan.probeSpeedControl` on
 an uncalibrated machine, used to say what the commanded speed asks for; the
 curve and the thermal checker go on needing a measurement.

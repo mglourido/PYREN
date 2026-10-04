@@ -159,9 +159,10 @@ export type FanStatus = {
    *  table's fastest entry rather than the fans' real limit. */
   driverCeilingLow: boolean;
   /** Whether the loaded driver is using the calibrated ceiling. `pending`
-   *  lands the next time `hp-wmi` loads; null when there is nothing to
-   *  compare. */
-  ceilingPin: "applied" | "pending" | "unsupported" | null;
+   *  lands the next time `hp-wmi` loads; `notWritten` never does, because
+   *  the measurement was not saved where the driver reads it. Null when
+   *  there is nothing to compare. */
+  ceilingPin: "applied" | "pending" | "notWritten" | "unsupported" | null;
   /** The floor in force: the driver's or Pyren's, per `keepDriverFloor`.
    *  Null where neither is known. */
   fanMinRpm: number | null;

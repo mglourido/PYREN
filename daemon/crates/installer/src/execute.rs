@@ -650,17 +650,14 @@ pub fn pin_measured_ceiling(max_rpm: MaxRpm) -> Result<String, String> {
         (patch::CPU_RPM_PARAM, max_rpm.cpu),
         (patch::GPU_RPM_PARAM, max_rpm.gpu),
     ] {
-        // The driver counts in hundreds of RPM, and its parameters are u8,
-        // so a ceiling above 25500 rpm cannot be expressed. No fan in one
-        // of these laptops comes close, but silently truncating one would
-        // pin a ceiling nobody measured.
+        // No fan in one of these laptops comes close to either end, but
+        // silently truncating one would pin a ceiling nobody measured.
         let Some(rpm) = rpm else { continue };
-        let hundreds = rpm / 100;
-        if hundreds == 0 || hundreds > u8::MAX as u32 {
+        let Some(hundreds) = measured_param_value(rpm) else {
             return Err(format!(
                 "{rpm} rpm is outside what {name} can hold (100-25500 rpm)"
             ));
-        }
+        };
         options.push(format!("{name}={hundreds}"));
     }
     if options.is_empty() {
@@ -680,6 +677,44 @@ pub fn pin_measured_ceiling(max_rpm: MaxRpm) -> Result<String, String> {
     );
     fs::write(path, body).map_err(|e| format!("writing {}: {e}", path.display()))?;
     Ok(format!("wrote {} to {}", options.join(" "), path.display()))
+}
+
+/// What a measured ceiling becomes in the driver's parameter: the driver
+/// counts in hundreds of RPM, in a u8. `None` for a ceiling that cannot be
+/// expressed that way, which [`pin_measured_ceiling`] refuses to write.
+pub fn measured_param_value(rpm: u32) -> Option<u8> {
+    u8::try_from(rpm / 100)
+        .ok()
+        .filter(|hundreds| *hundreds > 0)
+}
+
+/// The ceilings a [`pin_measured_ceiling`] file holds, back in RPM.
+///
+/// Takes the file's text rather than reading [`MODPROBE_CONF_PATH`] so the
+/// caller decides which file is asked: the daemon's self-test must not
+/// answer from the real one.
+pub fn pinned_ceiling_in(conf: &str) -> MaxRpm {
+    let mut pinned = MaxRpm::default();
+    let options = conf
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("options hp-wmi "))
+        .flat_map(str::split_whitespace);
+    for option in options {
+        let Some((name, value)) = option.split_once('=') else {
+            continue;
+        };
+        let rpm = value
+            .parse::<u8>()
+            .ok()
+            .filter(|hundreds| *hundreds > 0)
+            .map(|hundreds| u32::from(hundreds) * 100);
+        match name {
+            patch::CPU_RPM_PARAM => pinned.cpu = rpm,
+            patch::GPU_RPM_PARAM => pinned.gpu = rpm,
+            _ => {}
+        }
+    }
+    pinned
 }
 
 fn remove_modprobe_conf() -> Result<String, String> {
@@ -850,6 +885,35 @@ mod tests {
 
     /// A machine where an install would go ahead, so the plan under test
     /// has both required and optional steps in it.
+    #[test]
+    fn a_ceiling_the_parameter_cannot_hold_has_no_value() {
+        assert_eq!(measured_param_value(5342), Some(53));
+        assert_eq!(measured_param_value(25_500), Some(255));
+        assert_eq!(measured_param_value(99), None);
+        assert_eq!(measured_param_value(25_600), None);
+    }
+
+    #[test]
+    fn a_pinned_ceiling_reads_back_in_rpm() {
+        let both = "# Written by Pyren from a fan calibration run on this machine.\n\
+                    options hp-wmi cpu_max_rpm_measured=53 gpu_max_rpm_measured=51\n";
+        let pinned = pinned_ceiling_in(both);
+        assert_eq!((pinned.cpu, pinned.gpu), (Some(5300), Some(5100)));
+
+        // One fan measured: the other is absent from the file, not zero.
+        let one = pinned_ceiling_in("options hp-wmi gpu_max_rpm_measured=51\n");
+        assert_eq!((one.cpu, one.gpu), (None, Some(5100)));
+
+        // A commented-out line, another module's options and a zero are
+        // none of them a ceiling.
+        let none = pinned_ceiling_in(
+            "# options hp-wmi cpu_max_rpm_measured=53\n\
+             options nvidia cpu_max_rpm_measured=53\n\
+             options hp-wmi gpu_max_rpm_measured=0\n",
+        );
+        assert!(none.is_empty());
+    }
+
     fn ready_env() -> Environment {
         Environment {
             kernel: KernelInfo {
