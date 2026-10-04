@@ -1227,6 +1227,7 @@ impl FanModule {
             self.paths().fan1_input.as_deref(),
             self.paths().fan2_input.as_deref(),
         );
+        let driver_ceiling = control::read_driver_ceiling(&self.paths());
         let state = lock(&self.state);
         let floor = self.floor(&state.config);
 
@@ -1316,6 +1317,22 @@ impl FanModule {
             "fanMaxRpm": state.config.fan_max_rpm,
             "fan1MaxRpm": state.config.fan1_max_rpm,
             "fan2MaxRpm": state.config.fan2_max_rpm,
+            // The ceiling the *driver* converts pwm against, which is the
+            // measured one only once a pin has taken effect. Null on a
+            // driver that does not publish `fan*_max`.
+            "driverFan1MaxRpm": driver_ceiling.cpu,
+            "driverFan2MaxRpm": driver_ceiling.gpu,
+            // No calibration, and a driver ceiling low enough to be its
+            // fan table's fastest entry rather than the fans' real limit.
+            "driverCeilingLow": control::ceiling_looks_low(&self.paths(), state.config.fan_max_rpm),
+            // Whether the loaded driver is using what calibration measured:
+            // "applied", "pending" (next load of hp-wmi), "unsupported", or
+            // null when there is nothing to compare.
+            "ceilingPin": control::ceiling_pin(
+                &self.paths(),
+                state.config.fan1_max_rpm,
+                state.config.fan2_max_rpm,
+            ),
             // The floor in force: the driver's or Pyren's, per
             // `keepDriverFloor`. Below it the firmware gets the fans.
             "fanMinRpm": floor.rpm,
@@ -1518,7 +1535,13 @@ impl FanModule {
         }
         let claim = self.claim_fans()?;
 
-        let fan_max_rpm = lock(&self.state).config.fan_max_rpm;
+        // Without a calibration the driver's own ceiling stands in: it is
+        // what the commanded pwm is converted against, so it is the right
+        // number for what this probe asks of the fans.
+        let fan_max_rpm = lock(&self.state)
+            .config
+            .fan_max_rpm
+            .or_else(|| control::read_driver_ceiling(&self.paths()).peak());
         let outcome = speed_probe::run(&self.paths(), self.caps(), fan_max_rpm, seconds, &abort);
         drop(claim);
 
@@ -4068,6 +4091,47 @@ mod tests {
         state.config.curve = points(&[(40.0, 0.0), (60.0, 50.0), (80.0, 100.0)]);
         drop(state);
         (module, dir)
+    }
+
+    #[test]
+    fn status_tells_the_drivers_ceiling_apart_from_the_measured_one() {
+        let (module, dir) = driven_on_a_fixture("status-ceiling", 50);
+
+        // The fixture's driver publishes no fan*_max and takes no measured
+        // ceiling. Its config has no per-fan measurement either, so there
+        // is nothing a pin could be about.
+        let status = module.status();
+        assert_eq!(status["driverFan1MaxRpm"], Value::Null);
+        assert_eq!(status["driverCeilingLow"], json!(false));
+        assert_eq!(status["ceilingPin"], Value::Null);
+
+        // Uncalibrated on a table-derived ceiling: flagged.
+        fs::write(dir.join("fan1_max"), "4400\n").unwrap();
+        fs::write(dir.join("fan2_max"), "4100\n").unwrap();
+        lock(&module.state).config.fan_max_rpm = None;
+        let status = module.status();
+        assert_eq!(status["driverFan1MaxRpm"], json!(4400));
+        assert_eq!(status["driverFan2MaxRpm"], json!(4100));
+        assert_eq!(status["driverCeilingLow"], json!(true));
+
+        // Calibrated, on a driver that can take it but has not loaded it.
+        fs::write(dir.join("parameters/cpu_max_rpm_measured"), "0").unwrap();
+        {
+            let mut state = lock(&module.state);
+            state.config.fan_max_rpm = Some(5342);
+            state.config.fan1_max_rpm = Some(5342);
+            state.config.fan2_max_rpm = Some(5199);
+        }
+        let status = module.status();
+        assert_eq!(status["driverCeilingLow"], json!(false));
+        assert_eq!(status["ceilingPin"], json!("pending"));
+
+        // The reload that makes the driver report the pinned hundreds.
+        fs::write(dir.join("fan1_max"), "5300\n").unwrap();
+        fs::write(dir.join("fan2_max"), "5100\n").unwrap();
+        assert_eq!(module.status()["ceilingPin"], json!("applied"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn read_file(dir: &Path, name: &str) -> String {

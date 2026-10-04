@@ -1136,6 +1136,10 @@ never has to follow a write with a read:
   "fanMaxRpm": null,
   "fan1MaxRpm": null,
   "fan2MaxRpm": null,
+  "driverFan1MaxRpm": null,
+  "driverFan2MaxRpm": null,
+  "driverCeilingLow": false,
+  "ceilingPin": null,
   "fanMinRpm": null,
   "driverMinRpm": null,
   "pyrenMinRpm": null,
@@ -1171,6 +1175,23 @@ lifted — no stall, no kick — swept for by `fan.calibrate`, and
 `fanMinRpm` is the one in force. Lifting the clamp needs Pyren's driver
 patch (`floorOverrideSupported`); the daemon then sets the driver's
 `min_rpm_override` to match, and puts it back after a driver reload.
+
+The ceiling has the same two owners. `fanMaxRpm` / `fan1MaxRpm` /
+`fan2MaxRpm` are what `fan.calibrate` measured; `driverFan1MaxRpm` /
+`driverFan2MaxRpm` are what the driver converts pwm against (its
+`fan*_max`: the firmware's answer, its fan table's fastest entry or a
+compiled-in constant, until a measurement replaces them; on a Pyren driver
+too old to publish it, the `*_max_rpm_measured` it was loaded with), null
+where neither is there. `driverCeilingLow` is true when nothing has been
+measured and the driver's ceiling is under 5000 rpm - probably the table's
+entry rather than the fans' limit, so worth a calibration. `ceilingPin`
+says whether the loaded driver is using the measurement: `"applied"`,
+`"pending"` (written for the next load of `hp-wmi`, or not written at
+all), `"unsupported"` (a driver without Pyren's parameter), or null when
+there is no per-fan measurement. The
+driver's ceiling is only ever reported and, for `fan.probeSpeedControl` on
+an uncalibrated machine, used to say what the commanded speed asks for; the
+curve and the thermal checker go on needing a measurement.
 
 While Pyren's floor is in force the daemon watches the tachometer on every
 control tick: a commanded low speed that reads near zero, or one that

@@ -700,6 +700,9 @@
     "calibrationNow": "Just measured",
     "calibrationMismatchHint": "You can recalibrate if you trust this new reading. Recalibrating matters if you've lifted the official driver's limit: the minimum RPM then sits close to the fans' real stall speed, and skipping the recalibration can make them fail.",
     "calibrationRecalibrate": "Recalibrate",
+    "ceilingLow": "The driver is working with a fan ceiling of {rpm} rpm that nobody measured on this machine. A figure that low is usually the fastest entry of the firmware's fan table rather than what the fans reach at full speed, which makes every curve and manual speed slower than it says. Run the calibration to measure the real ceiling.",
+    "ceilingPending": "The calibrated ceiling has not reached the loaded driver, which still converts speeds against {rpm} rpm. It takes effect the next time hp-wmi loads: after a reboot, or right away by reinstalling the driver below.",
+    "ceilingUnsupported": "The installed driver has no way to take a measured ceiling, so the calibration is used by Pyren's curve only. Installing Pyren's driver below lets the driver use it too.",
     "blockedByCalibration": "Disabled while the calibration check below is running: both hold the fans, and only one may at a time.",
     "blockedByWriteCheck": "Disabled while the driver check above is running with writes enabled: both hold the fans, and only one may at a time.",
     "verdict": {

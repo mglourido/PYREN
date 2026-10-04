@@ -149,8 +149,8 @@ pub struct SpeedProbe {
     pub aiming_up: bool,
     /// The 0-255 value that was commanded.
     pub target_pwm: u8,
-    /// What that implies in rpm, where a calibration has measured the
-    /// ceiling. `None` is not a failure — the verdict never needed it, it
+    /// What that implies in rpm, against the calibrated ceiling or, with
+    /// no calibration, the driver's own. `None` is not a failure — the verdict never needed it, it
     /// only makes the detail sentence concrete.
     pub expected_rpm: Option<i64>,
     /// The reading furthest in the commanded direction.

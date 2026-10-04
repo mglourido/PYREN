@@ -76,6 +76,12 @@
    * last calibration - no install step, just `fan.calibrate` against
    * whatever driver is already there.
    */
+  /** The faster of the driver's two ceilings; "?" on a driver that takes a
+   *  measurement but has none loaded and publishes nothing to read. */
+  const driverCeilingText = $derived.by(() => {
+    const rpm = Math.max(hardware.fan?.driverFan1MaxRpm ?? 0, hardware.fan?.driverFan2MaxRpm ?? 0);
+    return rpm > 0 ? String(rpm) : "?";
+  });
   let calibrating = $state(false);
   let calibration = $state<FanCalibration | null>(null);
   let calibrationError = $state<string | null>(null);
@@ -525,6 +531,21 @@
             </button>
           </div>
         {/if}
+      {/if}
+
+      <!-- What the *driver* is working with, as opposed to what was
+           measured: the two differ until a calibration has both happened
+           and reached the loaded module. -->
+      {#if hardware.fan?.driverCeilingLow}
+        <p class="notice warn">{t("diagnostics.ceilingLow", {
+            rpm: driverCeilingText,
+          })}</p>
+      {:else if hardware.fan?.ceilingPin === "pending"}
+        <p class="notice warn">{t("diagnostics.ceilingPending", {
+            rpm: driverCeilingText,
+          })}</p>
+      {:else if hardware.fan?.ceilingPin === "unsupported"}
+        <p class="hint">{t("diagnostics.ceilingUnsupported")}</p>
       {/if}
 
       <p class="hint">{t("diagnostics.calibrationHint")}</p>

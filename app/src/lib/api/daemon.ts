@@ -150,6 +150,18 @@ export type FanStatus = {
    *  detail; this is here so any page can grey out a fan control. */
   cleaning: boolean;
   fanMaxRpm: number | null;
+  /** What the driver takes for each fan's full speed - the number it
+   *  converts pwm against. The measured ceiling only once a pin has taken
+   *  effect; null on a driver that does not say. */
+  driverFan1MaxRpm: number | null;
+  driverFan2MaxRpm: number | null;
+  /** Nothing calibrated, and a driver ceiling low enough to be its fan
+   *  table's fastest entry rather than the fans' real limit. */
+  driverCeilingLow: boolean;
+  /** Whether the loaded driver is using the calibrated ceiling. `pending`
+   *  lands the next time `hp-wmi` loads; null when there is nothing to
+   *  compare. */
+  ceilingPin: "applied" | "pending" | "unsupported" | null;
   /** The floor in force: the driver's or Pyren's, per `keepDriverFloor`.
    *  Null where neither is known. */
   fanMinRpm: number | null;

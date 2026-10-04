@@ -277,6 +277,134 @@ pub fn read_pwm(paths: &FanPaths) -> Option<u8> {
     raw.trim().parse::<u8>().ok()
 }
 
+// --- the ceiling the driver works with -----------------------------------
+//
+// `fan1_max` / `fan2_max` are the number the driver converts between pwm
+// and rpm against: what the firmware's max-speed query answered, else the
+// fastest entry of its fan table, else a constant compiled in - and, on
+// Pyren's driver, a calibration's measurement over all three. It is the
+// truth about what a pwm value *asks for*, and only on the last of those a
+// truth about the fans: a table's fastest entry is routinely well short of
+// what max mode reaches. So it is reported and compared, and never fed to
+// the thermal checker or the curve's hysteresis in place of a measurement.
+
+/// What the driver takes for each fan's full speed, in rpm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DriverCeiling {
+    pub cpu: Option<i64>,
+    pub gpu: Option<i64>,
+}
+
+impl DriverCeiling {
+    /// The faster of the two, to stand beside `fan_max_rpm` - which is the
+    /// peak of both fans.
+    pub fn peak(self) -> Option<i64> {
+        self.cpu.max(self.gpu)
+    }
+}
+
+/// A driver older than the vendored source's `fan*_max` does not publish
+/// the attribute. One of Pyren's still says what it was loaded with: a
+/// non-zero `*_max_rpm_measured` is applied over everything else, so it
+/// *is* the ceiling in force. `None` where neither says anything.
+pub fn read_driver_ceiling(paths: &FanPaths) -> DriverCeiling {
+    let read = |attribute: &str, param: &str| {
+        let published = || {
+            let raw = fs::read_to_string(paths.hwmon_dir.as_deref()?.join(attribute)).ok()?;
+            raw.trim().parse::<i64>().ok().filter(|rpm| *rpm > 0)
+        };
+        let loaded_with = || {
+            read_param(paths, param)
+                .filter(|&hundreds| hundreds > 0)
+                .map(|hundreds| i64::from(hundreds) * 100)
+        };
+        published().or_else(loaded_with)
+    };
+    DriverCeiling {
+        cpu: read("fan1_max", MEASURED_CEILING_PARAM),
+        gpu: read("fan2_max", MEASURED_GPU_CEILING_PARAM),
+    }
+}
+
+/// Below this, a ceiling nobody measured is more likely the fan table's
+/// fastest entry than the speed the fans top out at. The threshold is
+/// omen-fan-control's, which refuses to install under it; here it only
+/// words a notice, since calibrating needs the driver in place first.
+pub const LOW_CEILING_RPM: i64 = 5000;
+
+/// Whether the driver is working with a ceiling that looks too low and no
+/// calibration has replaced it - neither this daemon's (`measured`) nor one
+/// the driver was loaded with, which outlives a reset of the config.
+pub fn ceiling_looks_low(paths: &FanPaths, measured: Option<i64>) -> bool {
+    let loaded_with_a_measurement = [MEASURED_CEILING_PARAM, MEASURED_GPU_CEILING_PARAM]
+        .iter()
+        .any(|param| read_param(paths, param).is_some_and(|hundreds| hundreds > 0));
+    measured.is_none()
+        && !loaded_with_a_measurement
+        && read_driver_ceiling(paths)
+            .peak()
+            .is_some_and(|rpm| rpm < LOW_CEILING_RPM)
+}
+
+/// What became of a calibration's ceiling on its way to the driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CeilingPin {
+    /// The loaded driver is converting against the measurement.
+    Applied,
+    /// It is not: the measurement is in this daemon's config, and at best
+    /// in `/etc/modprobe.d` waiting for the next time `hp-wmi` loads.
+    Pending,
+    /// The loaded driver has no parameter to take one through.
+    Unsupported,
+}
+
+const MEASURED_CEILING_PARAM: &str = "cpu_max_rpm_measured";
+const MEASURED_GPU_CEILING_PARAM: &str = "gpu_max_rpm_measured";
+
+/// Compares what calibration measured, per fan, with what the driver says
+/// it is using. `None` where there is nothing to compare: no per-fan
+/// measurement, or no hp-wmi hwmon at all.
+pub fn ceiling_pin(
+    paths: &FanPaths,
+    fan1_max_rpm: Option<i64>,
+    fan2_max_rpm: Option<i64>,
+) -> Option<CeilingPin> {
+    // What `pin_measured_ceiling` writes: whole hundreds, in a u8. A value
+    // it refuses is not one the driver was ever asked to hold.
+    let pinned = |rpm: Option<i64>| {
+        rpm.map(|rpm| rpm / 100)
+            .filter(|hundreds| (1..=i64::from(u8::MAX)).contains(hundreds))
+            .map(|hundreds| hundreds * 100)
+    };
+    let wanted = [pinned(fan1_max_rpm), pinned(fan2_max_rpm)];
+    if wanted.iter().all(Option::is_none) {
+        return None;
+    }
+    paths.hwmon_dir.as_deref()?;
+
+    let accepts = paths
+        .driver_params
+        .as_deref()
+        .is_some_and(|dir| dir.join(MEASURED_CEILING_PARAM).exists());
+    if !accepts {
+        return Some(CeilingPin::Unsupported);
+    }
+
+    // On a driver that takes a measurement, a fan with no ceiling to read
+    // back is one whose parameter is still zero: not pinned yet.
+    let driver = read_driver_ceiling(paths);
+    let applied = wanted
+        .into_iter()
+        .zip([driver.cpu, driver.gpu])
+        .all(|(wanted, in_force)| wanted.is_none() || wanted == in_force);
+    Some(if applied {
+        CeilingPin::Applied
+    } else {
+        CeilingPin::Pending
+    })
+}
+
 // --- the manual-speed floor --------------------------------------------
 //
 // Pyren's driver patch (`installer::patch::add_min_rpm_params`) reports the
@@ -348,6 +476,130 @@ mod tests {
             fs::write(dir.join(f), "2\n").unwrap();
         }
         dir
+    }
+
+    /// A hwmon directory with the driver's ceilings in it, and optionally
+    /// the parameter Pyren's driver takes a measured one through.
+    fn ceiling_fixture(tag: &str, fan1_max: &str, fan2_max: &str, accepts: bool) -> FanPaths {
+        let dir = fixture(tag, &[]);
+        fs::write(dir.join("fan1_max"), fan1_max).unwrap();
+        fs::write(dir.join("fan2_max"), fan2_max).unwrap();
+        let params = dir.join("parameters");
+        fs::create_dir_all(&params).unwrap();
+        if accepts {
+            fs::write(params.join(MEASURED_CEILING_PARAM), "0\n").unwrap();
+        }
+        FanPaths {
+            hwmon_dir: Some(dir),
+            driver_params: Some(params),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_driver_without_fan_max_reports_no_ceiling() {
+        let paths = FanPaths {
+            hwmon_dir: Some(fixture("ceiling-absent", &["fan1_input"])),
+            ..Default::default()
+        };
+        assert_eq!(read_driver_ceiling(&paths), DriverCeiling::default());
+        assert_eq!(read_driver_ceiling(&FanPaths::default()).peak(), None);
+    }
+
+    #[test]
+    fn a_zero_ceiling_is_not_a_ceiling() {
+        let paths = ceiling_fixture("ceiling-zero", "0\n", "4400\n", true);
+        let ceiling = read_driver_ceiling(&paths);
+        assert_eq!(ceiling.cpu, None);
+        assert_eq!(ceiling.peak(), Some(4400));
+    }
+
+    #[test]
+    fn only_an_unmeasured_ceiling_can_look_low() {
+        let low = ceiling_fixture("low", "4400\n", "4100\n", true);
+        assert!(ceiling_looks_low(&low, None));
+        assert!(!ceiling_looks_low(&low, Some(4400)));
+        // A slow ceiling the driver was loaded with is a measurement too.
+        let params = low.driver_params.clone().unwrap();
+        fs::write(params.join(MEASURED_CEILING_PARAM), "44\n").unwrap();
+        assert!(!ceiling_looks_low(&low, None));
+
+        // One fan at a plausible speed is enough: the peak is what counts.
+        let mixed = ceiling_fixture("low-mixed", "6000\n", "4100\n", false);
+        assert!(!ceiling_looks_low(&mixed, None));
+        assert!(!ceiling_looks_low(&FanPaths::default(), None));
+    }
+
+    #[test]
+    fn a_pin_is_applied_when_the_driver_holds_the_measurement_in_hundreds() {
+        let paths = ceiling_fixture("pin-applied", "5300\n", "5100\n", true);
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(5199)),
+            Some(CeilingPin::Applied)
+        );
+    }
+
+    #[test]
+    fn a_pin_is_pending_while_the_driver_still_uses_its_own_ceiling() {
+        let paths = ceiling_fixture("pin-pending", "4400\n", "5100\n", true);
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(5199)),
+            Some(CeilingPin::Pending)
+        );
+    }
+
+    #[test]
+    fn a_fan_calibration_did_not_measure_is_left_out_of_the_comparison() {
+        let paths = ceiling_fixture("pin-one-fan", "5300\n", "5800\n", true);
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), None),
+            Some(CeilingPin::Applied)
+        );
+    }
+
+    #[test]
+    fn a_driver_without_the_parameter_cannot_be_pinned() {
+        let paths = ceiling_fixture("pin-unsupported", "6000\n", "5800\n", false);
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(5199)),
+            Some(CeilingPin::Unsupported)
+        );
+    }
+
+    #[test]
+    fn nothing_measured_or_nothing_to_read_back_is_no_verdict() {
+        let paths = ceiling_fixture("pin-none", "5300\n", "5100\n", true);
+        assert_eq!(ceiling_pin(&paths, None, None), None);
+        // Too slow for the parameter to hold: never pinned, so not pending.
+        assert_eq!(ceiling_pin(&paths, Some(40), None), None);
+
+        assert_eq!(ceiling_pin(&FanPaths::default(), Some(5342), None), None);
+    }
+
+    #[test]
+    fn a_driver_older_than_fan_max_is_checked_through_its_parameters() {
+        let dir = fixture("pin-no-fan-max", &[]);
+        let params = dir.join("parameters");
+        fs::create_dir_all(&params).unwrap();
+        fs::write(params.join(MEASURED_CEILING_PARAM), "53\n").unwrap();
+        fs::write(params.join(MEASURED_GPU_CEILING_PARAM), "0\n").unwrap();
+        let paths = FanPaths {
+            driver_params: Some(params.clone()),
+            hwmon_dir: Some(dir),
+            ..Default::default()
+        };
+        let ceiling = read_driver_ceiling(&paths);
+        assert_eq!((ceiling.cpu, ceiling.gpu), (Some(5300), None));
+        // The second fan's parameter was never loaded with anything.
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(5199)),
+            Some(CeilingPin::Pending)
+        );
+        fs::write(params.join(MEASURED_GPU_CEILING_PARAM), "51\n").unwrap();
+        assert_eq!(
+            ceiling_pin(&paths, Some(5342), Some(5199)),
+            Some(CeilingPin::Applied)
+        );
     }
 
     fn paths(dir: &Path) -> FanPaths {
