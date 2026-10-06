@@ -581,7 +581,7 @@ impl HardwareState {
 impl State {
     fn new(config: FanConfig, mode: FanMode, owned: bool) -> Self {
         Self {
-            smoother: curve::TempSmoother::new(config.ma_window),
+            smoother: curve::TempSmoother::warming_up(config.ma_window),
             config,
             mode,
             pending_mode: None,
@@ -4118,6 +4118,8 @@ mod tests {
         state.config.fan_min_rpm = Some(1800);
         state.config.fan_max_rpm = Some(5300);
         state.config.curve = points(&[(40.0, 0.0), (60.0, 50.0), (80.0, 100.0)]);
+        // These follow a curve, not a boot: the first reading counts whole.
+        state.smoother = curve::TempSmoother::new(state.config.ma_window);
         drop(state);
         (module, dir)
     }

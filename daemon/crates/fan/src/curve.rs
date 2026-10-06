@@ -234,17 +234,48 @@ pub fn release_fans(target: u8, stop_below: u8, released: bool) -> bool {
 pub struct TempSmoother {
     window: usize,
     samples: Vec<f64>,
+    warm_up: bool,
 }
+
+/// A first reading at or above this is taken as it is, in °C.
+///
+/// A machine that starts this hot is under load, not booting, and seeding
+/// its window with an idle temperature would hold the fans back.
+const WARM_UP_SKIP_C: f64 = 80.0;
+
+/// The highest temperature a window is seeded with, in °C.
+const WARM_UP_SEED_MAX_C: f64 = 45.0;
 
 impl TempSmoother {
     pub fn new(window: usize) -> Self {
         Self {
             window: window.max(1),
             samples: Vec::new(),
+            warm_up: false,
+        }
+    }
+
+    /// A smoother whose first reading is diluted, for a daemon that starts
+    /// with the machine.
+    ///
+    /// Everything else starting at boot makes the first few readings a
+    /// burst rather than a temperature, and an empty window follows the
+    /// first one exactly. The original seeds half the window with an idle
+    /// temperature for this, and only half so a long window still catches
+    /// up. Only for a start: a window emptied because the mode or the
+    /// sensor changed is one the machine may be under load for.
+    pub fn warming_up(window: usize) -> Self {
+        Self {
+            warm_up: true,
+            ..Self::new(window)
         }
     }
 
     pub fn push(&mut self, temp_c: f64) -> f64 {
+        if std::mem::take(&mut self.warm_up) && temp_c < WARM_UP_SKIP_C {
+            let seed = temp_c.min(WARM_UP_SEED_MAX_C);
+            self.samples = vec![seed; self.window / 2];
+        }
         self.samples.push(temp_c);
         if self.samples.len() > self.window {
             self.samples.remove(0);
@@ -578,6 +609,35 @@ mod tests {
     fn a_zero_window_still_averages_something() {
         let mut s = TempSmoother::new(0);
         assert_eq!(s.push(42.0), 42.0);
+    }
+
+    #[test]
+    fn a_warming_up_smoother_dilutes_a_burst_at_the_start() {
+        let mut s = TempSmoother::warming_up(5);
+        // Two idle samples ahead of it: (45 + 45 + 75) / 3.
+        assert_eq!(s.push(75.0), 55.0);
+        // Once, not on every reading.
+        assert_eq!(s.push(75.0), 60.0);
+    }
+
+    #[test]
+    fn a_warming_up_smoother_never_seeds_above_the_first_reading() {
+        let mut s = TempSmoother::warming_up(5);
+        assert_eq!(s.push(30.0), 30.0);
+    }
+
+    #[test]
+    fn a_hot_start_is_not_diluted() {
+        let mut s = TempSmoother::warming_up(5);
+        assert_eq!(s.push(85.0), 85.0);
+        // And the seeding does not wait for a cooler reading.
+        assert_eq!(s.push(60.0), 72.5);
+    }
+
+    #[test]
+    fn a_window_of_one_has_nothing_to_seed() {
+        let mut s = TempSmoother::warming_up(1);
+        assert_eq!(s.push(75.0), 75.0);
     }
 
     #[test]
