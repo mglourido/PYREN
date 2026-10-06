@@ -446,8 +446,13 @@ class HardwareStore {
 
   /** The GPU fan's curve for one profile; the CPU fan's until one is drawn. */
   gpuCurveFor(profile: PowerMode): CurvePoint[] {
-    const own = this.state.gpuFanCurves[profile] ?? this.fan?.gpuFan?.profileCurves[profile];
-    return own && own.length > 0 ? own : this.curveFor(profile);
+    const gpuFan = this.fan?.gpuFan;
+    const own = this.state.gpuFanCurves[profile] ?? gpuFan?.profileCurves[profile];
+    if (own && own.length > 0) return own;
+    // The daemon's order, `FanConfig::gpu_curve_for`: the GPU fan's shared
+    // curve comes before the CPU fan's.
+    const shared = gpuFan?.sharedCurve;
+    return shared && shared.length > 0 ? shared : this.curveFor(profile);
   }
 
   setGpuFanCurve(curve: CurvePoint[], profile?: PowerMode) {
