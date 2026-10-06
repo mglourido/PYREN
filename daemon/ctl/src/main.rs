@@ -182,6 +182,15 @@ GPU
                                no sch_cake - system-wide, not per-app (see
                                dev/TODO.md §2 for why there is no
                                per-process priority here)
+
+USERS
+  users get                    whose settings the daemon is running, who
+                               is at the machine, and who has left
+                               settings of their own behind
+  users stand-down <on|off>    let go of the fans, the lights and the
+                               power override while somebody who is not in
+                               the daemon's group is the active user
+
   oc get                       what can be tuned on each GPU, what is set,
                                and - where nothing can be - why not
   oc probe [--write]           ask the machine again. --write finds out
@@ -718,6 +727,24 @@ fn run(command: &args::Command) -> Run {
             client::call("gpu", "setMode", json!({ "mode": mode }))?,
             print_gpu,
         ),
+
+        ["users", "get"] => show(
+            command,
+            client::call("users", "getStatus", Value::Null)?,
+            print_users,
+        ),
+        ["users", "stand-down", value] => {
+            let enabled = word_switch("users stand-down", value)?;
+            show(
+                command,
+                client::call(
+                    "users",
+                    "setStandDownForOthers",
+                    json!({ "enabled": enabled }),
+                )?,
+                print_users,
+            )
+        }
 
         ["network", "get"] => show(
             command,
@@ -2098,6 +2125,55 @@ fn print_gpu(status: &Value) {
             .get("mode")
             .and_then(Value::as_str)
             .unwrap_or("unknown - firmware answered a mode this build does not recognise"),
+    );
+}
+
+fn print_users(status: &Value) {
+    /// "ana (1000)", or the bare uid for an account that no longer exists.
+    fn who(user: &Value) -> String {
+        let uid = user.get("uid").and_then(Value::as_u64).unwrap_or(0);
+        match user.get("name").and_then(Value::as_str) {
+            Some(name) => format!("{name} ({uid})"),
+            None => format!("uid {uid}"),
+        }
+    }
+
+    let group = status.get("group").and_then(Value::as_str).unwrap_or("?");
+    row(
+        "settings",
+        match status.get("owner").filter(|owner| !owner.is_null()) {
+            Some(owner) => who(owner),
+            None => "nobody's yet - the first user to log in takes them".to_string(),
+        },
+    );
+    row(
+        "active",
+        match status.get("activeUser").filter(|user| !user.is_null()) {
+            Some(user) if user.get("member").and_then(Value::as_bool) == Some(true) => who(user),
+            Some(user) => format!("{}, not in the '{group}' group", who(user)),
+            None => "nobody is logged in at the seat".to_string(),
+        },
+    );
+    let profiles: Vec<String> = status
+        .get("profiles")
+        .and_then(Value::as_array)
+        .map(|profiles| profiles.iter().map(who).collect())
+        .unwrap_or_default();
+    row(
+        "kept for",
+        if profiles.is_empty() {
+            "nobody".to_string()
+        } else {
+            profiles.join(", ")
+        },
+    );
+    row(
+        "stand down",
+        if status.get("standDownForOthers").and_then(Value::as_bool) == Some(true) {
+            format!("on - for anyone not in the '{group}' group")
+        } else {
+            "off".to_string()
+        },
     );
 }
 

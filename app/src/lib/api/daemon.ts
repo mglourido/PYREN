@@ -1311,6 +1311,8 @@ const DAEMON_ROUTES: Record<
   keymap_set_mapping: { module: "keymap", method: "setMapping", params: (a) => a.mapping },
   keymap_remove_mapping: { module: "keymap", method: "removeMapping", params: (a) => a.from },
   keymap_set_enabled: { module: "keymap", method: "setEnabled" },
+  users_get_status: { module: "users", method: "getStatus" },
+  users_set_stand_down: { module: "users", method: "setStandDownForOthers" },
   rgb_set_static: { module: "rgb", method: "setStatic" },
   rgb_set_zones: { module: "rgb", method: "setZones" },
   rgb_off: { module: "rgb", method: "off" },
@@ -1390,6 +1392,24 @@ async function callViaDevBridge<T>(
   }
   return reply.result as T;
 }
+
+/** An account, as the daemon names it. `name` is null for a uid whose
+ *  account has since been removed. */
+export type UsersAccount = { uid: number; name: string | null };
+
+/** `users.getStatus` - see docs/01-ipc-protocol.md §"`users` module". */
+export type UsersStatus = {
+  /** Let go of the hardware while someone outside `group` is active. */
+  standDownForOthers: boolean;
+  /** The socket's group: being in it is what makes someone Pyren's user. */
+  group: string;
+  /** Who holds the seat. Null at the login screen. */
+  activeUser: { uid: number; name: string; member: boolean } | null;
+  /** Whose the settings in use are. Null until someone has logged in. */
+  owner: UsersAccount | null;
+  /** Everyone with settings kept aside for when they come back. */
+  profiles: UsersAccount[];
+};
 
 /** Which modifiers a shortcut needs held. Matched exactly by the daemon. */
 export type HotkeyModifiers = {
@@ -1711,4 +1731,9 @@ export const daemon = {
    *  session if the mapping is wrong - see `docs/01-ipc-protocol.md`
    *  §"`keymap` module". */
   setKeymapEnabled: (enabled: boolean) => call<KeymapStatus>("keymap_set_enabled", { enabled }),
+  /** Whose settings the daemon is running, and who is at the machine. */
+  usersStatus: () => call<UsersStatus>("users_get_status"),
+  /** The daemon acts on this at its next look at who is active, a few
+   *  seconds later - not before answering. */
+  setUsersStandDown: (enabled: boolean) => call<UsersStatus>("users_set_stand_down", { enabled }),
 };

@@ -17,6 +17,7 @@ pub mod client;
 pub mod debug_module;
 pub mod debuglog;
 pub mod events;
+pub mod handover;
 pub mod log;
 pub mod msg;
 pub mod process;

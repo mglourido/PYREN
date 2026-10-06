@@ -16,6 +16,7 @@ members = [
     "crates/gpu",
     "crates/network",
     "crates/overclock",
+    "crates/users",
 ]
 
 [workspace.package]

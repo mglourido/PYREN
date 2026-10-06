@@ -21,6 +21,7 @@ use pyren_overclock::OverclockModule;
 use pyren_power::{PowerModule, PowerSupplyState};
 use pyren_rgb::{Conditions, RgbModule};
 use pyren_system::{Compatibility, Controls, SystemModule};
+use pyren_users::UsersModule;
 
 /// Production (systemd, running as root) should set `PYREN_SOCKET` to
 /// `/run/pyren/daemon.sock`. This fallback keeps `cargo run` usable for
@@ -98,6 +99,42 @@ fn usage() -> ! {
         \x20                     are printed whatever this says\n"
     );
     std::process::exit(0);
+}
+
+/// Set for the daemon that replaces this one when the active user changes,
+/// so it knows it was started to hand the hardware over and not by a boot.
+const HANDOVER_ENV: &str = "PYREN_HANDOVER";
+
+/// Replaces this process with a fresh daemon, which is how a change of
+/// user takes effect - see `pyren_users`' own doc comment for why it is a
+/// restart and not a reload. The hardware has already been let go of.
+///
+/// `exec` rather than exiting and leaving it to systemd: the unit restarts
+/// on *failure*, five seconds later, and a switch between users is neither
+/// a failure nor worth five seconds of nobody driving the fans. Everything
+/// this process holds - the instance lock, the socket and its lock - is
+/// close-on-exec, so the fresh daemon finds them free.
+fn replace_self() -> ! {
+    use std::os::unix::process::CommandExt;
+
+    // The binary on disk when it is there, so an upgrade installed since
+    // this daemon started is picked up; the image this process is running
+    // when it is not (replaced mid-flight, and `current_exe` then names a
+    // path that ends in " (deleted)").
+    let binary = std::env::current_exe()
+        .ok()
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| "/proc/self/exe".into());
+    // The new image inherits this thread's signal mask, and it must be
+    // stoppable while it waits for one of Pyren's users to come back.
+    pyren_core::signals::unblock_termination();
+    let error = std::process::Command::new(binary)
+        .env(HANDOVER_ENV, "1")
+        .exec();
+    // Still here, so it did not happen. Exiting non-zero is what gets
+    // systemd to start a daemon in this one's place.
+    log_error!("could not restart for the new active user: {error}");
+    std::process::exit(1);
 }
 
 /// One press of the performance key: put the modes on screen, and change
@@ -207,6 +244,19 @@ fn main() {
         eprintln!("pyren-daemon: cannot acquire system control: {e}");
         std::process::exit(1);
     });
+
+    // Whose settings these are comes before anything reads them, and so
+    // does waiting, if the person at the machine is not one of Pyren's and
+    // the daemon was told to stand down for them: no module exists yet, so
+    // nothing is driving the hardware while it waits. Before the signals
+    // are blocked, too - there is nothing to tidy up yet, and a daemon that
+    // is only waiting has to die on SIGTERM like any other process.
+    let users = UsersModule::new();
+    let replaced = std::env::var_os(HANDOVER_ENV).is_some();
+    std::env::remove_var(HANDOVER_ENV);
+    if users.settle() || replaced {
+        pyren_core::handover::mark();
+    }
 
     // Before any module starts a thread: a thread inherits the signal mask
     // it was started with, and the handler below only works if SIGTERM is
@@ -325,10 +375,12 @@ fn main() {
     for gpu in &gpu_tuning.gpus {
         println!("    {}: {}", gpu.name, gpu.detail);
     }
+    println!("  users:  {}", users.summary());
 
     let mut registry = Registry::new();
     let events = Arc::clone(registry.events());
     debug.publish_to(Arc::clone(&events));
+    users.publish_to(Arc::clone(&events));
     // Everything that moves the power mode - the key, the app, the CLI,
     // the supervisor - is announced on this, so an open UI never sits
     // showing a mode the machine has already left.
@@ -406,6 +458,7 @@ fn main() {
     registry.register(Box::new(hotkey.clone()));
     registry.register(Box::new(keymap));
     registry.register(Box::new(debug));
+    registry.register(Box::new(users.clone()));
     // Installing the driver reloads hp-wmi, which renumbers the hwmon
     // directory the fan module found at startup. Handing it a way to look
     // again is what makes an install take effect without anyone being told
@@ -435,9 +488,30 @@ fn main() {
     // The one thing that has to happen on the way out: a lighting effect
     // is a thread rewriting the keyboard, and killing it mid-frame leaves
     // that frame on the keys - and a shutdown is when the power-off sweep
-    // plays. Whether this is a shutdown or only the service stopping is
-    // asked of systemd, because SIGTERM is the same signal either way.
+    // plays.
+    //
+    // Two things leave: a signal, and a change of active user. Both let go
+    // of the hardware the same way, and the lock is what keeps a SIGTERM
+    // that lands in the middle of a hand-over from exiting underneath it.
     let power_at_exit = power.clone();
+    let released = std::sync::Mutex::new(false);
+    let release: Arc<dyn Fn(bool) + Send + Sync> = Arc::new(move |machine_stopping: bool| {
+        let mut released = released.lock().unwrap_or_else(|e| e.into_inner());
+        if *released {
+            return;
+        }
+        *released = true;
+        rgb.on_exit(machine_stopping);
+        // No destructor runs after this: a curve's low speed or a
+        // calibration's near-stall floor would stay on the fans otherwise.
+        fan_at_exit.on_exit();
+        // auto-cpufreq keeps pyren's override in its own state otherwise.
+        power_at_exit.on_exit();
+    });
+
+    // Whether this is a shutdown or only the service stopping is asked of
+    // systemd, because SIGTERM is the same signal either way.
+    let release_on_signal = Arc::clone(&release);
     pyren_core::signals::on_termination(move |signal| {
         let stopping = pyren_core::signals::system_is_stopping();
         log_info!(
@@ -457,13 +531,23 @@ fn main() {
                 "systemStopping": stopping,
             }),
         );
-        rgb.on_exit(stopping);
-        // No destructor runs after this handler: a curve's low speed or a
-        // calibration's near-stall floor would stay on the fans otherwise.
-        fan_at_exit.on_exit();
-        // auto-cpufreq keeps pyren's override in its own state otherwise.
-        power_at_exit.on_exit();
+        release_on_signal(stopping);
     });
+
+    // From here the settings follow whoever is at the machine. A user
+    // with none of their own is dealt with where the watcher stands;
+    // anyone else's arrival ends this process, and the next one starts
+    // with their settings - or does not start, for somebody who is not
+    // one of Pyren's users.
+    users.watch(Box::new(move |reason| {
+        log_info!("{reason}");
+        pyren_core::debuglog::record(
+            pyren_core::debuglog::Category::Daemon,
+            serde_json::json!({ "event": "handover", "reason": reason }),
+        );
+        release(false);
+        replace_self();
+    }));
 
     // The shortcut, once somebody has taught the daemon which key it is.
     // One event comes out of a press - `hotkey.pressed`, which the

@@ -42,6 +42,21 @@ pub fn block_termination() {
     }
 }
 
+/// Undoes [`block_termination`] in the calling thread.
+///
+/// For the one caller that replaces the process with `exec`: the new image
+/// inherits the mask of the thread that called it, and a daemon that starts
+/// with SIGTERM already blocked cannot be stopped until it reaches its own
+/// `on_termination` - which a daemon standing down for another user never
+/// does.
+pub fn unblock_termination() {
+    let set = set();
+    // SAFETY: `set` is initialised above; the old mask is not wanted.
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+    }
+}
+
 /// Waits on a thread of its own for SIGTERM or SIGINT, runs `tidy` with
 /// the signal's number, and exits the process.
 ///

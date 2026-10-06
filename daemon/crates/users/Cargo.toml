@@ -1,0 +1,14 @@
+[package]
+name = "pyren-users"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pyren-core = { path = "../core" }
+pyren-config = { path = "../config" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# getpwuid_r(3), getgrnam_r(3) and getgrouplist(3): who a uid is and whether
+# they are in the socket's group. Nothing a crate would do better.
+libc = "0.2"

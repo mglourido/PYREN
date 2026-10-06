@@ -355,7 +355,9 @@ impl PowerModule {
             ..watch::Knobs::default()
         };
 
-        if config.restore_mode_on_start {
+        // A hand-over between users is not a boot: the mode on file is the
+        // one the person now in front of the machine was running.
+        if config.restore_mode_on_start || pyren_core::handover::in_progress() {
             if let Some(saved) = config.mode {
                 let saved = boot_mode(saved, &config, PowerSupplyState::read().on_battery);
                 let before = backend::read_state();

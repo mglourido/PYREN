@@ -18,6 +18,8 @@
     onDaemonEvent,
     type FanSensorFailureAction,
     type HotkeyStatus,
+    type UsersAccount,
+    type UsersStatus,
   } from "$lib/api/daemon";
   import { debugLog, type DebugLogStatus } from "$lib/api/debug";
 
@@ -60,14 +62,20 @@
   let debugStatus = $state<DebugLogStatus | null>(null);
   let debugStatusError = $state<string | null>(null);
 
+  /** Whose settings the daemon is running, and who it stands down for. */
+  let usersStatus = $state<UsersStatus | null>(null);
+  let usersStatusError = $state<string | null>(null);
+
   onMount(() => {
     if (!session.available()) return;
     void run(() => session.status());
     void refreshPrivileges();
     void refreshHotkey();
     void refreshDebugStatus();
+    void refreshUsersStatus();
     const stopDebugWatch = onDaemonEvent((event) => {
       if (event.topic === "debug.changed") void refreshDebugStatus();
+      if (event.topic === "users.changed") void refreshUsersStatus();
     });
     return stopDebugWatch;
   });
@@ -91,6 +99,30 @@
       debugStatus = null;
       debugStatusError = errorText(e);
     }
+  }
+
+  async function refreshUsersStatus() {
+    try {
+      usersStatus = await daemon.usersStatus();
+      usersStatusError = null;
+    } catch (e) {
+      usersStatus = null;
+      usersStatusError = errorText(e);
+    }
+  }
+
+  async function setUsersStandDown(enabled: boolean) {
+    try {
+      usersStatus = await daemon.setUsersStandDown(enabled);
+      usersStatusError = null;
+    } catch (e) {
+      usersStatusError = errorText(e);
+    }
+  }
+
+  /** "ana", or the bare uid for an account that no longer exists. */
+  function accountName(account: UsersAccount): string {
+    return account.name ?? `uid ${account.uid}`;
   }
 
   async function setDebugLogging(enabled: boolean) {
@@ -703,6 +735,48 @@
           <code>{debugStatus.daemonDir}</code>
         </div>
       {/if}
+    {/if}
+  </Panel>
+
+  <!-- One daemon, started at boot, on a machine several people may log in
+       to: whose settings it is running, and what it does for somebody
+       who never asked for it. -->
+  <Panel title={t("settings.users")}>
+    {#if usersStatus}
+      <div class="row">
+        <span>{t("settings.usersOwner")}</span>
+        <span>
+          {usersStatus.owner ? accountName(usersStatus.owner) : t("settings.usersOwnerNone")}
+        </span>
+      </div>
+      {#if usersStatus.profiles.length > 0}
+        <div class="row">
+          <span>
+            {t("settings.usersProfiles")}
+            <small class="hint-inline">{t("settings.usersProfilesHint")}</small>
+          </span>
+          <span>{usersStatus.profiles.map(accountName).join(", ")}</span>
+        </div>
+      {/if}
+    {/if}
+    <div class="row">
+      <span>
+        {t("settings.usersStandDown")}
+        <small class="hint-inline">
+          <RichText
+            text={t("settings.usersStandDownHint", { group: usersStatus?.group ?? "pyren" })}
+          />
+        </small>
+      </span>
+      <Toggle
+        checked={usersStatus?.standDownForOthers ?? false}
+        disabled={!usersStatus}
+        onchange={(v) => void setUsersStandDown(v)}
+        ariaLabel={t("settings.usersStandDown")}
+      />
+    </div>
+    {#if usersStatusError}
+      <p class="notice warn">{usersStatusError}</p>
     {/if}
   </Panel>
 

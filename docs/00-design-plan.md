@@ -91,6 +91,7 @@ one namespace, written as a single JSON file:
 
 ```
 /etc/pyren/power.json       system config, written by the root daemon
+/etc/pyren/users/<uid>/     one user's copy of it, while it is someone else's turn
 ~/.config/pyren/app.json    the desktop app's own preferences
 ~/.config/pyren/ui.json     UI state (fan curve, lighting, GPU mode)
 ```
@@ -126,6 +127,7 @@ The daemon now carries these modules, each one crate under
 | `power` | firmware profile, the OS profile (via power-profiles-daemon), and the package power envelope — three separable parts, the envelope shipped untouched |
 | `fan` | modes, the hysteresis curve loop, calibration, and the dust-cleaner |
 | `rgb` | the 4-zone lightbar, three dialects, auto-picked or pinned |
+| `users` | whose settings are in use: a copy per user, switched when the active session changes, and standing down for people who are not Pyren's users |
 | `overclock` | GPU core/memory offsets — the only feature that leaves the shipped envelope, so the only one behind a consent of its own |
 | `gpu` | the graphics MUX (`gpu_mux_mode`) |
 | `hotkey` / `keymap` | the OMEN key, and an evdev remapper |

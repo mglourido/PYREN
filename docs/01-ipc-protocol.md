@@ -205,6 +205,7 @@ Topics so far:
 | `fan.mode` | a `fan.setMode` took effect, **whoever asked** — the app, `pyren-ctl`, the widget's click | `{ mode, manualPwm, source }` — `manualPwm` is the commanded manual speed (0-255), for a client that shows a slider but not a curve |
 | `fan.floorRaised` | the stall watch nudged Pyren's fan floor up because the fans kept giving out at it | `{ fromRpm, toRpm, stalls, reachedDriverFloor }` — `reachedDriverFloor` means it is now the driver's own and a recalibration is the next step |
 | `debug.changed` | `debug.setEnabled` took effect | `{ enabled }` |
+| `users.changed` | the active user changed, the settings in use became someone else's without a restart, or `users.setStandDownForOthers` took effect | the same shape as `users.getStatus` |
 
 `power.mode` is published for *every* change that took effect, not only the
 ones this daemon was asked for by a key. `source` says who asked:
@@ -2411,6 +2412,94 @@ derived from the same `_IOC` formula the kernel headers use and checked
 against the values those headers are known to produce
 (`crates/keymap/src/raw.rs` tests); what a real grab-and-remap run on a
 spare keyboard, or over SSH, would still confirm is untested here.
+
+## `users` module
+
+Whose settings the daemon is running, on a machine more than one person
+logs in to. The daemon is one root process started at boot; this module is
+what makes its settings follow whoever is at the machine. Implemented in
+`daemon/crates/users`.
+
+| method | params | result |
+|---|---|---|
+| `users.getStatus` | none | see below |
+| `users.setStandDownForOthers` | `{ "enabled": bool }` | same shape as `getStatus` |
+
+```json
+{
+  "standDownForOthers": false,
+  "group": "pyren",
+  "activeUser": { "uid": 1000, "name": "ana", "member": true },
+  "owner": { "uid": 1000, "name": "ana" },
+  "profiles": [{ "uid": 1001, "name": "bea" }]
+}
+```
+
+- `activeUser` is whoever holds the active session on `seat0`, asked of
+  logind (`loginctl`) every three seconds. `null` at the login screen, with
+  nobody logged in, for a root session, and on a system without logind -
+  none of which changes anything.
+- `member` is whether that user is in `group`, the socket's group. **That is
+  what "one of Pyren's users" means everywhere below.** The install is
+  machine-wide, so it cannot mean the binaries; what a user has or has not
+  is the admin's `usermod -aG pyren`. It is read from the account database,
+  not from the session's credentials, so it takes effect without a re-login.
+- `owner` is whose the settings in use are. `null` until one of Pyren's
+  users has logged in. `name` is `null` for an account since removed.
+- `profiles` is everyone with settings kept aside for when they come back.
+
+### The settings in use are always somebody's
+
+The files every module reads stay where they are (`/etc/pyren/<module>.json`),
+which is also what brings the daemon up at boot, before anyone has logged
+in, with the most recently used settings. When the active user becomes one
+of Pyren's users who is not the `owner`:
+
+1. the settings in use are copied to `/etc/pyren/users/<owner uid>/`;
+2. if the new user has a directory of their own there, it is copied into
+   use and the daemon restarts itself to apply it;
+3. if they have none, nothing is restarted: the settings in use carry on
+   and are simply theirs from then on.
+
+`fan`, `power`, `rgb`, `keymap`, `hotkey` and `overclock` are per user.
+`debug` and `users` are the machine's. So are the *measurements* inside
+`fan.json` - the calibrated ceilings and floor, `speedControl`,
+`splitControl`, the floor notices - which are kept as they are when a
+profile is put back, so a user who was last here before a recalibration
+does not bring the old numbers with their curve.
+
+A user who is **not** one of Pyren's never owns the settings and never gets
+a profile: they are left with the ones in use, or with none (below).
+
+### Switching is a restart, and a restart that applies
+
+No module reloads its config while running. A switch is the daemon letting
+go of the hardware exactly as it does on SIGTERM and replacing itself with
+`exec`; the fresh process swaps the files before it builds a module. The
+socket drops for the few seconds that takes, like any daemon restart.
+
+Such a start is a **hand-over**, not a boot, and `fan`, `power` and `rgb`
+treat it differently: they apply the mode, profile and lights on file
+whether or not `restoreModeOnStart` / `restoreOnStart` is on. Those
+switches are about not imposing a remembered setting on a machine at boot;
+the person a hand-over is for was running that setting a moment ago.
+`overclock` is the exception and still needs its own `restoreOnStart`: an
+offset that crashes the card must not come back because somebody logged in.
+
+### Standing down
+
+With `standDownForOthers` on, a user who is not one of Pyren's becoming
+active makes the daemon let go of the fans, the lights and the power
+override and wait. It is the same restart, with the fresh process waiting
+instead of building anything - so **the socket is not served while it
+waits**, and the service still shows as active. It starts again when one
+of Pyren's users is the active one, or when `standDownForOthers` is set to
+`false` in `/etc/pyren/users.json`, which it re-reads while waiting because
+nothing else could reach it. Off by default.
+
+`setStandDownForOthers` only records the setting; the watcher acts on it at
+its next look. A reply can therefore still show the daemon running for
+somebody it is about to stand down for.
 
 ## Adding a new module
 

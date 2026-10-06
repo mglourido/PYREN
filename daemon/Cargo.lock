@@ -141,6 +141,7 @@ dependencies = [
  "pyren-power",
  "pyren-rgb",
  "pyren-system",
+ "pyren-users",
  "serde_json",
 ]
 
@@ -248,6 +249,17 @@ name = "pyren-system"
 version = "0.2.0"
 dependencies = [
  "libc",
+ "pyren-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pyren-users"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "pyren-config",
  "pyren-core",
  "serde",
  "serde_json",

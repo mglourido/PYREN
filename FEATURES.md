@@ -26,6 +26,7 @@
 
 - **Sync OS power profile** with the hardware power profile simultaneously
 - **App permissions manager**
+- **Per-user settings** — each member of the `pyren` group gets their own fans, power, lighting and keys back when they log in, and the daemon can stand down while someone who does not use Pyren is logged in
 - **Feature compatibility checker**
 - **Safe installer** for the patched Linux kernel driver `hp-wmi`, supporting automatic (recommended) or manual installation (for testing or as a fallback if automatic install fails)
 - **App update checker**

@@ -308,7 +308,11 @@ impl RgbModule {
                 Err(e) => log_warn!("could not switch the keyboard backlight on: {e}"),
             }
         }
-        let restoring = config.restore_on_start && stored && probe.lighting.present;
+        // A hand-over between users is not a boot: the lights on file are
+        // the ones the person now in front of the machine had.
+        let restoring = (config.restore_on_start || pyren_core::handover::in_progress())
+            && stored
+            && probe.lighting.present;
         let module = Self {
             probe: Arc::new(Mutex::new(probe)),
             store,

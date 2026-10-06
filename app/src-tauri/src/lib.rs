@@ -963,6 +963,25 @@ fn keymap_set_enabled(enabled: bool) -> Result<Value, String> {
     call_daemon("keymap", "setEnabled", json!({ "enabled": enabled }))
 }
 
+/// Whose settings the daemon is running and who is at the machine. See
+/// `docs/01-ipc-protocol.md` §"`users` module".
+#[tauri::command(async)]
+fn users_get_status() -> Result<Value, String> {
+    call_daemon("users", "getStatus", Value::Null)
+}
+
+/// Acted on by the daemon's own watcher within a few seconds, not by this
+/// call - which is why the reply can still show the daemon running for
+/// somebody it is about to stand down for.
+#[tauri::command(async)]
+fn users_set_stand_down(enabled: bool) -> Result<Value, String> {
+    call_daemon(
+        "users",
+        "setStandDownForOthers",
+        json!({ "enabled": enabled }),
+    )
+}
+
 #[tauri::command(async)]
 fn session_set_app_at_login(enabled: bool) -> Result<Value, String> {
     session::set_app_at_login(enabled)
@@ -1213,6 +1232,8 @@ pub fn run() {
             keymap_set_mapping,
             keymap_remove_mapping,
             keymap_set_enabled,
+            users_get_status,
+            users_set_stand_down,
             app_config_load,
             app_config_save
         ])

@@ -11,6 +11,24 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **The daemon's settings follow whoever is logged in.** One daemon serves
+  the whole machine, and until now whoever changed its settings last
+  changed them for everyone. It now keeps a copy per user
+  (`/etc/pyren/users/<uid>/`) and watches the active session: when another
+  of Pyren's users - a member of the `pyren` group - logs in or is switched
+  to, it restarts itself with their fans, power, lighting, keys and
+  overclock; a user with none of their own carries on with the ones in use.
+  Nobody logged in means the most recently used ones, as before. What
+  calibration measured about the fans stays the machine's. New `users`
+  module (`users.getStatus`, the `users.changed` event), a Users panel in
+  Settings, and `pyren-ctl users get`.
+- **The daemon can stand down for people who do not use Pyren.**
+  `users.setStandDownForOthers` (Settings > Users, `pyren-ctl users
+  stand-down on`): while somebody who is not in the `pyren` group is the
+  active user, the daemon lets go of the fans, the lights and the power
+  override and waits, so they are not left with another user's fan curve.
+  Off by default.
+
 - **The GPU fan can have a curve and a speed of its own.** Where the
   driver has a `pwm2`, `fan.setGpuFan { separate, curve, profile,
   manualPwm }` gives the second fan its own order: a curve per power

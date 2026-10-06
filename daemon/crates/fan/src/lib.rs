@@ -934,7 +934,10 @@ impl FanModule {
         // Believe the hardware over the file: the machine may have been
         // rebooted, or something else may have moved the fans since.
         let observed = observed_mode(&paths);
-        let restoring = config.restore_mode_on_start && caps.supports(config.mode);
+        // A hand-over between users is not a boot: the mode on file is the
+        // one the person now in front of the machine was running.
+        let restoring = (config.restore_mode_on_start || pyren_core::handover::in_progress())
+            && caps.supports(config.mode);
         let mode = if restoring {
             config.mode
         } else {
