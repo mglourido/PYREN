@@ -400,6 +400,16 @@ fi
 record skip pwm-effect "Fans follow a commanded speed" \
 	"not attempted here; run 'pyren-ctl fan probe-speed' to spin the fans and settle it"
 
+# Whether the two fans take different speeds, which is what a GPU fan with
+# a curve of its own needs. Always skipped here, for the reason above: it
+# means holding each fan at a speed of its own for several seconds.
+if [ -n "$PWM2" ] && [ -e "$PWM2" ]; then
+	record skip fan-split "Fans take separate speeds" \
+		"not attempted here; it means spinning the fans, which the daemon does"
+else
+	record skip fan-split "Fans take separate speeds" "no pwm2, so one speed drives both fans"
+fi
+
 # What the hwmon node actually exposes. Without this a missing pwm1 is a
 # dead end: the report says the file isn't there but not what is, which is
 # the first thing anyone diagnosing a partially-supported board needs.
