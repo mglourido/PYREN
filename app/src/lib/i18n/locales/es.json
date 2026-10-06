@@ -587,7 +587,7 @@
     "usersProfiles": "Guardados para",
     "usersProfilesHint": "Cada uno de estos usuarios recupera sus propios ventiladores, energía, iluminación y teclas al iniciar sesión.",
     "usersStandDown": "Detenerse con otros usuarios",
-    "usersStandDownHint": "Mientras haya iniciado sesión alguien que no está en el grupo **{group}**, Pyren suelta los ventiladores, la iluminación y los ajustes de energía y deja el equipo en manos del firmware. Vuelve a encargarse cuando regresa uno de sus usuarios.",
+    "usersStandDownHint": "Mientras haya iniciado sesión alguien que no está en el grupo **{group}**, Pyren suelta los ventiladores, los ajustes de energía y cualquier overclock, y deja el equipo en manos del firmware. El teclado sigue iluminado con sus colores; solo se detiene un efecto animado. Vuelve a encargarse cuando regresa uno de sus usuarios.",
     "storage": "Almacenamiento",
     "configFile": "Archivo de ajustes",
     "daemonConfigFile": "Archivo de ajustes del daemon",

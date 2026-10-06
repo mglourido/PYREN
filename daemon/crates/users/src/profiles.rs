@@ -112,29 +112,72 @@ impl Profiles {
         Ok(())
     }
 
-    /// Puts this user's profile in use, and says which namespaces changed
-    /// hands.
+    /// Puts this user's profile in use, and says which namespaces came from
+    /// it.
     ///
-    /// A namespace the profile has no file for keeps whatever is in use -
-    /// the same "otherwise keep the current ones" a user with no profile
-    /// at all gets, one file at a time. Safe to run twice: the profile is
-    /// only read.
+    /// A namespace the profile has no file for is one this user never set,
+    /// and it goes back to that: the file in use is removed, so the module
+    /// starts from its defaults. Leaving it would hand them whatever the
+    /// previous person set there - their key remaps, their overclock - and
+    /// then save it as this user's own the next time they leave. For a
+    /// user with no profile at all nothing is touched; keeping the settings
+    /// in use is what they are owed, and it is decided before this is
+    /// called.
+    ///
+    /// Safe to run twice: the profile is only read.
     pub fn restore(&self, uid: u32) -> io::Result<Vec<&'static str>> {
-        let dir = self.dir(uid);
         let mut restored = Vec::new();
+        if !self.exists(uid) {
+            return Ok(restored);
+        }
+        let dir = self.dir(uid);
         for namespace in NAMESPACES {
-            let bytes = match fs::read(dir.join(format!("{namespace}.json"))) {
-                Ok(bytes) => bytes,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e),
-            };
             let live = self.live(namespace);
-            let bytes = keep_machine_keys(namespace, bytes, &live);
-            write_atomic(&live, &bytes)?;
-            restored.push(namespace);
+            match fs::read(dir.join(format!("{namespace}.json"))) {
+                Ok(bytes) => {
+                    write_atomic(&live, &keep_machine_keys(namespace, bytes, &live))?;
+                    restored.push(namespace);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    match only_machine_keys(namespace, &live) {
+                        Some(bytes) => write_atomic(&live, &bytes)?,
+                        None => match fs::remove_file(&live) {
+                            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                            _ => {}
+                        },
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
         Ok(restored)
     }
+}
+
+/// What is left of the file in use once everything that was somebody's is
+/// taken out of it: its version and the machine's own keys. `None` when
+/// that is nothing, and the file can simply go.
+fn only_machine_keys(namespace: &str, live: &Path) -> Option<Vec<u8>> {
+    let (_, keys) = MACHINE_KEYS.iter().find(|(name, _)| *name == namespace)?;
+    let Value::Object(current) = serde_json::from_slice::<Value>(&fs::read(live).ok()?).ok()?
+    else {
+        return None;
+    };
+    let mut kept = serde_json::Map::new();
+    for key in *keys {
+        if let Some(value) = current.get(*key) {
+            kept.insert((*key).to_string(), value.clone());
+        }
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    if let Some(version) = current.get("version") {
+        kept.insert("version".to_string(), version.clone());
+    }
+    let mut bytes = serde_json::to_vec_pretty(&Value::Object(kept)).ok()?;
+    bytes.push(b'\n');
+    Some(bytes)
 }
 
 /// `profile` with the machine's own keys taken from the file in use.
@@ -237,17 +280,56 @@ mod tests {
     }
 
     #[test]
-    fn a_namespace_the_profile_lacks_keeps_what_is_in_use() {
+    fn a_namespace_the_profile_lacks_does_not_come_from_someone_else() {
         let profiles = profiles("partial");
         write(&profiles, "power", json!({ "version": 1, "mode": "eco" }));
         profiles.save(1000).unwrap();
 
+        // Whoever came next remapped keys and overclocked. Neither is
+        // something uid 1000 ever set.
         write(
             &profiles,
             "keymap",
             json!({ "version": 1, "enabled": true }),
         );
+        write(&profiles, "overclock", json!({ "version": 1 }));
         assert_eq!(profiles.restore(1000).unwrap(), vec!["power"]);
+        assert!(!profiles.live("keymap").exists());
+        assert!(!profiles.live("overclock").exists());
+
+        // ...and so it is not saved as theirs when they leave again.
+        profiles.save(1000).unwrap();
+        assert!(!profiles.dir(1000).join("keymap.json").exists());
+    }
+
+    #[test]
+    fn a_user_who_never_set_the_fans_still_gets_the_machines_measurements() {
+        let profiles = profiles("fan-defaults");
+        write(&profiles, "power", json!({ "version": 1, "mode": "eco" }));
+        profiles.save(1000).unwrap();
+
+        write(
+            &profiles,
+            "fan",
+            json!({ "version": 1, "mode": "max", "maWindow": 9, "fanMaxRpm": 5800 }),
+        );
+        profiles.restore(1000).unwrap();
+        let fan = read(&profiles, "fan");
+        assert_eq!(fan["fanMaxRpm"], 5800, "calibration is the machine's");
+        assert_eq!(fan["version"], 1);
+        assert!(fan.get("mode").is_none(), "the mode was someone else's");
+        assert!(fan.get("maWindow").is_none());
+    }
+
+    #[test]
+    fn restoring_for_someone_with_no_profile_touches_nothing() {
+        let profiles = profiles("no-profile");
+        write(
+            &profiles,
+            "keymap",
+            json!({ "version": 1, "enabled": true }),
+        );
+        assert!(profiles.restore(1000).unwrap().is_empty());
         assert_eq!(read(&profiles, "keymap")["enabled"], true);
     }
 

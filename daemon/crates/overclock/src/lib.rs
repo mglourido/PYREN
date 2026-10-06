@@ -196,6 +196,7 @@ struct State {
     last_save_error: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct OverclockModule {
     /// Taken once at startup, because `is_supported` is asked for every
     /// `core.capabilities` and probing shells out to nvidia-smi.
@@ -781,6 +782,53 @@ impl OverclockModule {
         });
         drop(state);
         Ok(self.status())
+    }
+
+    /// Puts every card this daemon moved back to stock, **without**
+    /// forgetting what was set.
+    ///
+    /// For a hand-over between users. An offset is not a setting that
+    /// stops when its daemon does - it stays on the card - so without this
+    /// the next person at the machine, who may never have heard of Pyren,
+    /// inherits somebody else's overclock. `reset` is the wrong tool: it
+    /// records stock as the user's choice, and what they chose is theirs
+    /// to come back to (through `restoreOnStart`, as at any start).
+    ///
+    /// A change still waiting to be confirmed is undone on the hardware
+    /// and left armed on disk, which the next start reads the way it reads
+    /// any unconfirmed change: nothing is restored.
+    pub fn on_handover(&self) {
+        self.on_handover_with_write(write_target)
+    }
+
+    fn on_handover_with_write(&self, write: impl Fn(&GpuProbe, Target) -> Result<(), ModuleError>) {
+        let hardware_operation = Arc::clone(&lock(&self.state).hardware_operation);
+        let _hardware = hardware_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let probe = lock(&self.probe).clone();
+        for gpu in probe.gpus.iter().filter(|gpu| gpu.drivable()) {
+            let moved = {
+                let state = lock(&self.state);
+                state.pending.as_ref().is_some_and(|p| p.gpu == gpu.id)
+                    || needs_undoing(state.applied.get(&gpu.id).copied())
+            };
+            if !moved {
+                continue;
+            }
+            match write(gpu, Target::default()) {
+                Ok(()) => {
+                    lock(&self.state)
+                        .applied
+                        .insert(gpu.id.clone(), Target::default());
+                    log_info!("hand-over: {} is back at stock clocks", gpu.name);
+                }
+                Err(e) => log_warn!(
+                    "hand-over: could not put {} back at stock clocks: {e}",
+                    gpu.name
+                ),
+            }
+        }
     }
 
     // --- the climb ------------------------------------------------------
@@ -2138,6 +2186,54 @@ mod tests {
         assert!(state.pending.is_none());
         assert_eq!(state.applied.get(&gpu), Some(&Target::default()));
         assert!(state.config.armed_gpu.is_none());
+    }
+
+    #[test]
+    fn a_handover_puts_the_card_at_stock_and_keeps_what_was_chosen() {
+        let module = OverclockModule::with_store(store("handover"));
+        let gpu = "fake:handover".to_string();
+        let mut card = gpu_probe(&gpu, Vendor::Nvidia);
+        card.core_offset = Some(crate::plan::Range {
+            min: -100,
+            max: 200,
+        });
+        lock(&module.probe).gpus.push(card);
+        let chosen = Target {
+            core_offset_mhz: 75,
+            ..Target::default()
+        };
+        {
+            let mut state = lock(&module.state);
+            state.applied.insert(gpu.clone(), chosen);
+            state.config.targets.insert(gpu.clone(), chosen);
+        }
+        let physical = Arc::new(Mutex::new(chosen));
+        let written = Arc::clone(&physical);
+        module.on_handover_with_write(move |_, target| {
+            *lock(&written) = target;
+            Ok(())
+        });
+
+        assert_eq!(*lock(&physical), Target::default());
+        let state = lock(&module.state);
+        assert_eq!(state.applied.get(&gpu), Some(&Target::default()));
+        assert_eq!(
+            state.config.targets.get(&gpu),
+            Some(&chosen),
+            "letting go of the card must not forget what its user chose"
+        );
+    }
+
+    #[test]
+    fn a_handover_does_not_write_to_a_card_this_daemon_never_moved() {
+        let module = OverclockModule::with_store(store("handover-untouched"));
+        let mut card = gpu_probe("fake:untouched", Vendor::Nvidia);
+        card.core_offset = Some(crate::plan::Range {
+            min: -100,
+            max: 200,
+        });
+        lock(&module.probe).gpus.push(card);
+        module.on_handover_with_write(|_, _| panic!("a card nobody moved was written to"));
     }
 
     #[test]

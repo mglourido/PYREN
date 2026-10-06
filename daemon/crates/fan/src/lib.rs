@@ -1054,6 +1054,23 @@ impl FanModule {
         let _ = self.heat_source.set(source);
     }
 
+    /// Writes the mode that is running into the config, if the file says
+    /// another.
+    ///
+    /// The two drift apart on purpose: with `restoreModeOnStart` off a
+    /// start adopts whatever the hardware is doing and leaves the file
+    /// alone. That is right for a boot and wrong for a hand-over between
+    /// users (see `pyren_core::handover`), which applies the mode on file
+    /// as "what this person was running" - so the daemon calls this before
+    /// it lets go of the fans, and before a user's settings are put aside.
+    pub fn remember_mode(&self) {
+        let mut state = lock(&self.state);
+        if state.config.mode != state.mode {
+            state.config.mode = state.mode;
+            persist(&self.store, &mut state);
+        }
+    }
+
     /// The daemon is stopping: give the fans back to the firmware.
     ///
     /// Called from the termination handler, which ends the process straight
@@ -3754,6 +3771,29 @@ mod tests {
         let mut module = FanModule::inspector();
         module.store = ConfigStore::at(root);
         module
+    }
+
+    /// With `restoreModeOnStart` off a start adopts what the hardware is
+    /// doing and leaves the file naming whatever mode was last asked for.
+    /// A hand-over between users applies the mode on file, so the file has
+    /// to be made to say what is running before the daemon lets go.
+    #[test]
+    fn remember_mode_writes_down_the_mode_that_is_running() {
+        let module = module("remember-mode");
+        {
+            let mut state = lock(&module.state);
+            state.config.mode = FanMode::Max;
+            state.mode = FanMode::Auto;
+        }
+
+        module.remember_mode();
+
+        let saved = module.store.load::<FanConfig>("fan").value;
+        assert_eq!(saved.mode, FanMode::Auto);
+        assert!(
+            !saved.restore_mode_on_start,
+            "writing the mode down must not turn restoring at boot on"
+        );
     }
 
     /// Installing the driver reloads `hp-wmi`, and the hwmon directory

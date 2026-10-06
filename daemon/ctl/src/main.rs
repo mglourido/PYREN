@@ -183,14 +183,6 @@ GPU
                                dev/TODO.md §2 for why there is no
                                per-process priority here)
 
-USERS
-  users get                    whose settings the daemon is running, who
-                               is at the machine, and who has left
-                               settings of their own behind
-  users stand-down <on|off>    let go of the fans, the lights and the
-                               power override while somebody who is not in
-                               the daemon's group is the active user
-
   oc get                       what can be tuned on each GPU, what is set,
                                and - where nothing can be - why not
   oc probe [--write]           ask the machine again. --write finds out
@@ -208,6 +200,15 @@ USERS
   oc restore-on-start <on|off> re-apply the confirmed offsets at boot. Off
                                by default, and skipped after a boot that
                                followed an unconfirmed change
+
+USERS
+  users get                    whose settings the daemon is running, who
+                               is at the machine, and who has left
+                               settings of their own behind
+  users stand-down <on|off>    let go of the fans, the power override and
+                               any overclock while somebody who is not in
+                               the daemon's group is the active user. The
+                               keyboard stays lit; only an effect stops
 
 EVENTS
   events [--seconds N]         print what the daemon publishes as it

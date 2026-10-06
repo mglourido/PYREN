@@ -2436,9 +2436,17 @@ what makes its settings follow whoever is at the machine. Implemented in
 ```
 
 - `activeUser` is whoever holds the active session on `seat0`, asked of
-  logind (`loginctl`) every three seconds. `null` at the login screen, with
-  nobody logged in, for a root session, and on a system without logind -
-  none of which changes anything.
+  logind (`loginctl`) every three seconds, and at once when the foreground
+  virtual terminal changes (`/sys/class/tty/tty0/active`), which is what a
+  switch between two people's sessions looks like. `null` at the login
+  screen, with nobody logged in and for a root session - none of which
+  changes anything.
+- **A question that got no answer is not an answer.** If `loginctl` fails or
+  times out, or the account database cannot say whether the user is in the
+  group, the daemon carries on with the last person it did see, and
+  `activeUser` goes on naming them. Otherwise one slow lookup would start a
+  daemon that is standing down, or stand one down for its own user. A
+  system with no logind never answers, so nothing there ever changes hands.
 - `member` is whether that user is in `group`, the socket's group. **That is
   what "one of Pyren's users" means everywhere below.** The install is
   machine-wide, so it cannot mean the binaries; what a user has or has not
@@ -2457,7 +2465,9 @@ of Pyren's users who is not the `owner`:
 
 1. the settings in use are copied to `/etc/pyren/users/<owner uid>/`;
 2. if the new user has a directory of their own there, it is copied into
-   use and the daemon restarts itself to apply it;
+   use and the daemon restarts itself to apply it. A module they never set
+   goes back to its defaults - the file in use is removed - rather than
+   keeping what the previous user set there;
 3. if they have none, nothing is restarted: the settings in use carry on
    and are simply theirs from then on.
 
@@ -2471,6 +2481,36 @@ does not bring the old numbers with their curve.
 A user who is **not** one of Pyren's never owns the settings and never gets
 a profile: they are left with the ones in use, or with none (below).
 
+Nothing is switched on top of settings that could not be kept. If the
+owner's copy cannot be written (a full or read-only `/etc`), the settings
+in use stay theirs and the newcomer carries on with them. If putting a
+profile back fails partway, `users.json` keeps `restoring` set, the files
+in use are treated as nobody's - not copied, not replaced - and the next
+start tries again.
+
+What somebody changes in the instant between arriving and the daemon
+noticing is still taken for the previous owner's. Watching the virtual
+terminal keeps that to a fraction of a second for a switch between
+sessions; a login on the same terminal can take up to a poll.
+
+### Before anyone has logged in
+
+The daemon starts at boot and runs the settings in use - the last owner's -
+without waiting for a person. The login screen is a session too, but the
+display manager's (`greeter`), and it counts as nobody: nothing changes
+hands and the daemon does not stand down for it.
+
+What that puts on the hardware is what each module does at any boot. The
+keyboard comes up in the saved colours (`rgb`'s `restoreOnStart`, on by
+default), the bound key and the key remaps are loaded, and the fan mode,
+power mode and overclock are applied only where their own restore-at-boot
+switch is on.
+
+The lighting is deliberately the one thing that is always there, whoever is
+or is not logged in. The keyboard's controller holds the colours it was
+last given by itself, so there is no "no lighting" for the daemon to go
+back to - only the question of whether an effect is being animated.
+
 ### Switching is a restart, and a restart that applies
 
 No module reloads its config while running. A switch is the daemon letting
@@ -2482,20 +2522,38 @@ Such a start is a **hand-over**, not a boot, and `fan`, `power` and `rgb`
 treat it differently: they apply the mode, profile and lights on file
 whether or not `restoreModeOnStart` / `restoreOnStart` is on. Those
 switches are about not imposing a remembered setting on a machine at boot;
-the person a hand-over is for was running that setting a moment ago.
-`overclock` is the exception and still needs its own `restoreOnStart`: an
+a hand-over is giving somebody back what they were running. For that to be
+true of the file, `fan` and `power` write the mode they are in to their
+config before the daemon lets go of the hardware and before a user's
+settings are copied - with restoring at boot off they otherwise never do,
+and the file would name a mode the machine left long ago.
+
+`overclock` is the exception in both directions. On the way out the cards
+this daemon moved are put back to stock, without forgetting what was set:
+an offset stays on a card after its daemon has gone, and the next person
+would inherit it. On the way in it still needs its own `restoreOnStart`: an
 offset that crashes the card must not come back because somebody logged in.
+
+A termination signal that arrives during a hand-over is not lost: the
+process dies as soon as the hardware has been let go of, before a fresh
+daemon takes it up again.
 
 ### Standing down
 
 With `standDownForOthers` on, a user who is not one of Pyren's becoming
-active makes the daemon let go of the fans, the lights and the power
-override and wait. It is the same restart, with the fresh process waiting
+active makes the daemon let go of the fans, the power override and any
+overclock, and wait. **The keyboard stays lit.** A running effect stops,
+because it is the daemon that animates it, and the static colours are
+written in its place; they stay, held by the keyboard's own controller. It is the same restart, with the fresh process waiting
 instead of building anything - so **the socket is not served while it
 waits**, and the service still shows as active. It starts again when one
 of Pyren's users is the active one, or when `standDownForOthers` is set to
 `false` in `/etc/pyren/users.json`, which it re-reads while waiting because
-nothing else could reach it. Off by default.
+nothing else could reach it - leniently: a file caught half-saved is read
+again a moment later, not moved aside as corrupt. It also starts again
+when that user logs out: with nobody at the seat the machine is in the same
+state as at boot, and the daemon runs the settings in use as it does then.
+A lookup that merely failed does not start it. Off by default.
 
 `setStandDownForOthers` only records the setting; the watcher acts on it at
 its next look. A reply can therefore still show the daemon running for

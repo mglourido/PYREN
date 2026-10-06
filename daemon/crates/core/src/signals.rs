@@ -57,6 +57,22 @@ pub fn unblock_termination() {
     }
 }
 
+/// Sends the signal to this process again.
+///
+/// For a termination signal that arrived while the daemon was already
+/// replacing itself: `sigwait` has consumed it, and a consumed signal does
+/// not follow the process through `exec`. Raised again it is pending -
+/// every thread has it blocked and nobody is waiting on it any more - and
+/// a pending signal does survive `exec`, or is delivered the moment the
+/// thread about to `exec` calls [`unblock_termination`]. Either way the
+/// request to stop is not lost.
+pub fn raise(signal: libc::c_int) {
+    // SAFETY: kill and getpid have no memory-safety preconditions.
+    unsafe {
+        libc::kill(libc::getpid(), signal);
+    }
+}
+
 /// Waits on a thread of its own for SIGTERM or SIGINT, runs `tidy` with
 /// the signal's number, and exits the process.
 ///

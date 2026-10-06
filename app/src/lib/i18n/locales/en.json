@@ -587,7 +587,7 @@
     "usersProfiles": "Kept for",
     "usersProfilesHint": "Each of these users gets their own fans, power, lighting and keys back when they log in.",
     "usersStandDown": "Stand down for other users",
-    "usersStandDownHint": "While someone who is not in the **{group}** group is logged in, Pyren lets go of the fans, the lighting and the power settings and leaves the machine to its firmware. It picks up again when one of its users is back.",
+    "usersStandDownHint": "While someone who is not in the **{group}** group is logged in, Pyren lets go of the fans, the power settings and any overclock, and leaves the machine to its firmware. The keyboard stays lit in its colours; only an animated effect stops. It picks up again when one of its users is back.",
     "storage": "Storage",
     "configFile": "Settings file",
     "daemonConfigFile": "Daemon settings file",

@@ -18,6 +18,8 @@ the IPC protocol and on-disk config.
   of Pyren's users - a member of the `pyren` group - logs in or is switched
   to, it restarts itself with their fans, power, lighting, keys and
   overclock; a user with none of their own carries on with the ones in use.
+  A GPU overclock is put back to stock when the machine changes hands and
+  returns only through its own `restoreOnStart`.
   Nobody logged in means the most recently used ones, as before. What
   calibration measured about the fans stays the machine's. New `users`
   module (`users.getStatus`, the `users.changed` event), a Users panel in
@@ -25,8 +27,9 @@ the IPC protocol and on-disk config.
 - **The daemon can stand down for people who do not use Pyren.**
   `users.setStandDownForOthers` (Settings > Users, `pyren-ctl users
   stand-down on`): while somebody who is not in the `pyren` group is the
-  active user, the daemon lets go of the fans, the lights and the power
-  override and waits, so they are not left with another user's fan curve.
+  active user, the daemon lets go of the fans, the power override and any
+  overclock and waits (the keyboard stays lit in its static colours; only
+  an animated effect stops), so they are not left with another user's fan curve.
   Off by default.
 
 - **The GPU fan can have a curve and a speed of its own.** Where the

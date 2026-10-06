@@ -608,6 +608,23 @@ impl PowerModule {
 }
 
 impl PowerModule {
+    /// Writes the mode the machine is in into the config, if the file says
+    /// another.
+    ///
+    /// With `restoreModeOnStart` off neither a start nor the auto-switcher
+    /// records the mode, so the file can name one the machine left long
+    /// ago. A hand-over between users (see `pyren_core::handover`) applies
+    /// the mode on file as "what this person was running" - so the daemon
+    /// calls this before it leaves, and before a user's settings are put
+    /// aside.
+    pub fn remember_mode(&self) {
+        let mut state = lock(&self.state);
+        if state.config.mode != Some(state.mode) {
+            state.config.mode = Some(state.mode);
+            persist(&self.store, &mut state);
+        }
+    }
+
     /// What the daemon undoes on its way out.
     ///
     /// auto-cpufreq keeps a `--force` override in its own state, so a mode
@@ -1816,6 +1833,28 @@ mod tests {
         // Enabling it should capture a mode straight away, so a reboot
         // restores what the user could see when they ticked the box.
         assert!(saved.value.mode.is_some());
+    }
+
+    #[test]
+    fn remember_mode_writes_down_a_mode_nothing_else_recorded() {
+        let store = test_store("remember-mode");
+        let module = PowerModule::with_store(store.clone());
+        {
+            // Where an auto-switch with `restoreModeOnStart` off leaves
+            // things: the machine in one mode, the file naming another.
+            let mut state = lock(&module.state);
+            state.config.mode = Some(PowerMode::Eco);
+            state.mode = PowerMode::Performance;
+        }
+
+        module.remember_mode();
+
+        let saved = store.load::<PowerConfig>("power").value;
+        assert_eq!(saved.mode, Some(PowerMode::Performance));
+        assert!(
+            !saved.restore_mode_on_start,
+            "writing the mode down must not turn restoring at boot on"
+        );
     }
 
     #[test]

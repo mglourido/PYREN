@@ -17,9 +17,11 @@
 //!    [`profiles`].
 //! 3. **When somebody who is not one of Pyren's users becomes the active
 //!    one, the daemon can stand down** (`standDownForOthers`, off by
-//!    default): it lets go of the fans, the lights and the power override
-//!    and waits, so that a person who never asked for Pyren does not get
-//!    another person's fan curve.
+//!    default): it lets go of the fans, the power override and any
+//!    overclock, and waits, so that a person who never asked for Pyren
+//!    does not get another person's fan curve. The keyboard stays lit -
+//!    its controller holds the colours by itself - and only an animated
+//!    effect, which is the daemon's doing, stops.
 //!
 //! "One of Pyren's users" is membership of the socket's group - the same
 //! line the daemon already draws around who may talk to it. The install is
@@ -37,9 +39,17 @@
 //! marks the start as a hand-over ([`pyren_core::handover`]). Standing
 //! down is the same restart, with the fresh copy waiting instead of
 //! building anything.
+//!
+//! # Not knowing is not an answer
+//!
+//! Who is active is asked of other programs, and they can fail to reply.
+//! A look that got no answer changes nothing: the daemon carries on with
+//! the last person it did see ([`directory::Unknown`]). Without that, one
+//! slow `loginctl` would start a daemon that is standing down, and one
+//! slow directory lookup would stand down a daemon for its own user.
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pyren_config::ConfigStore;
 use pyren_core::{log_info, log_warn, EventBus, Module, ModuleError, ModuleResult};
@@ -49,12 +59,21 @@ use serde_json::{json, Value};
 pub mod directory;
 pub mod profiles;
 
-pub use directory::{ActiveUser, Directory};
+pub use directory::{ActiveUser, Directory, Unknown};
 use profiles::Profiles;
 
-/// How often the active user is asked after. One `loginctl` each time; a
-/// switch noticed three seconds late is a switch nobody saw being late.
+/// How often the active user is asked after. One `loginctl` each time.
 const POLL: Duration = Duration::from_secs(3);
+
+/// How often the seat's hint is read between polls - a small sysfs file,
+/// so a switch between two people's sessions is acted on in a fraction of
+/// a second rather than up to a whole poll later.
+const GLANCE: Duration = Duration::from_millis(250);
+
+/// How many glances after the hint moved are followed by a look. logind
+/// learns of a switch from the same kernel event this does, and may not
+/// have caught up on the first.
+const EAGER_LOOKS: u8 = 4;
 
 /// What is persisted to `users.json`. The machine's, not any one user's.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +89,8 @@ pub struct UsersConfig {
     pub owner: Option<u32>,
     /// Set for the length of a restore and cleared after it, so one that
     /// was interrupted is finished rather than mistaken for the previous
-    /// owner's settings and saved over theirs.
+    /// owner's settings and saved over theirs. While it is set the files
+    /// in use are nobody's, and nothing else is done with them.
     pub restoring: Option<u32>,
 }
 
@@ -124,12 +144,24 @@ pub fn decide(
 
 struct State {
     config: UsersConfig,
+    /// The last person a look actually saw. Kept across looks that got no
+    /// answer.
     active: Option<Person>,
+    /// True while looks are getting no answer, so it is said once.
+    blind: bool,
+    /// A user whose turn could not be given them because the previous
+    /// owner's settings could not be put aside. Not tried again until
+    /// somebody else has been active: the watcher would otherwise restart
+    /// the daemon every poll for as long as the disk is full.
+    gave_up_on: Option<u32>,
 }
 
 /// Called when the daemon has to replace itself; given the reason for the
 /// log. Does not return in the daemon.
 pub type HandOver = Box<dyn Fn(&str) + Send>;
+
+/// Called before the settings in use are copied as their owner's.
+pub type Flush = Box<dyn Fn() + Send + Sync>;
 
 #[derive(Clone)]
 pub struct UsersModule {
@@ -138,6 +170,7 @@ pub struct UsersModule {
     directory: Arc<dyn Directory>,
     state: Arc<Mutex<State>>,
     events: Arc<OnceLock<Arc<EventBus>>>,
+    flush: Arc<OnceLock<Flush>>,
     poll: Duration,
 }
 
@@ -162,8 +195,11 @@ impl UsersModule {
             state: Arc::new(Mutex::new(State {
                 config,
                 active: None,
+                blind: false,
+                gave_up_on: None,
             })),
             events: Arc::new(OnceLock::new()),
+            flush: Arc::new(OnceLock::new()),
             poll: POLL,
         }
     }
@@ -171,6 +207,17 @@ impl UsersModule {
     /// Hands the module the bus to announce `users.changed` on.
     pub fn publish_to(&self, events: Arc<EventBus>) {
         let _ = self.events.set(events);
+    }
+
+    /// Hands the module a way to get the modules' files up to date before
+    /// it copies them.
+    ///
+    /// A config file is not always what its module is doing - the running
+    /// fan and power modes are only written down when something asks for
+    /// them to survive a restart - and a copy taken without asking would
+    /// put aside a mode this user left long ago as the one they were in.
+    pub fn before_setting_aside(&self, flush: Flush) {
+        let _ = self.flush.set(flush);
     }
 
     /// Makes the settings on disk the right person's, before any module
@@ -193,8 +240,7 @@ impl UsersModule {
                     break;
                 }
                 Decision::Restore(uid) => {
-                    self.restore(uid);
-                    handed_over = true;
+                    handed_over |= self.restore(uid);
                     break;
                 }
                 Decision::StandDown => {
@@ -216,7 +262,7 @@ impl UsersModule {
             }
         }
         if waiting {
-            println!("pyren-daemon: {} is back; starting", self.active_name());
+            println!("pyren-daemon: no longer standing down; starting");
         }
         handed_over
     }
@@ -230,37 +276,67 @@ impl UsersModule {
         let module = self.clone();
         let spawned = std::thread::Builder::new()
             .name("pyren-users".into())
-            .spawn(move || loop {
-                std::thread::sleep(module.poll);
-                let (decision, changed) = module.look();
-                match decision {
-                    Decision::Keep => {
-                        if changed {
+            .spawn(move || {
+                let mut hint = module.directory.seat_hint();
+                let mut eager = 0;
+                loop {
+                    module.wait(&mut hint, &mut eager);
+                    let (decision, changed) = module.look();
+                    match decision {
+                        Decision::Keep => {
+                            if changed {
+                                module.announce();
+                            }
+                        }
+                        Decision::Adopt(uid) => {
+                            module.adopt(uid);
                             module.announce();
                         }
-                    }
-                    Decision::Adopt(uid) => {
-                        module.adopt(uid);
-                        module.announce();
-                    }
-                    Decision::Restore(_) => {
-                        hand_over(&format!(
-                            "{} is now the active user; switching to their settings",
-                            module.active_name()
-                        ));
-                        return;
-                    }
-                    Decision::StandDown => {
-                        hand_over(&format!(
-                            "{} is now the active user and is not one of Pyren's; standing down",
-                            module.active_name()
-                        ));
-                        return;
+                        Decision::Restore(_) => {
+                            hand_over(&format!(
+                                "{} is now the active user; switching to their settings",
+                                module.active_name()
+                            ));
+                            return;
+                        }
+                        Decision::StandDown => {
+                            hand_over(&format!(
+                                "{} is now the active user and is not one of Pyren's; \
+                                 standing down",
+                                module.active_name()
+                            ));
+                            return;
+                        }
                     }
                 }
             });
         if let Err(e) = spawned {
             log_warn!("could not start the active-user watcher: {e}");
+        }
+    }
+
+    /// Sleeps until the next look is due: a whole poll, or less when the
+    /// seat's hint has just moved.
+    ///
+    /// The time between somebody arriving and this noticing is time in
+    /// which what they change is still taken for the previous owner's, so
+    /// it is kept short where a cheap sign of an arrival exists.
+    fn wait(&self, hint: &mut Option<String>, eager: &mut u8) {
+        let glance = GLANCE.min(self.poll);
+        if *eager > 0 {
+            *eager -= 1;
+            std::thread::sleep(glance);
+            return;
+        }
+        let due = Instant::now() + self.poll;
+        while Instant::now() < due {
+            std::thread::sleep(glance);
+            let now = self.directory.seat_hint();
+            if now != *hint {
+                *hint = now;
+                *eager = EAGER_LOOKS;
+                return;
+            }
         }
     }
 
@@ -279,43 +355,92 @@ impl UsersModule {
         format!("{owner}; {active}")
     }
 
+    /// The person at the seat, or [`Unknown`] if either question about
+    /// them went unanswered.
+    fn see(&self) -> Result<Option<Person>, Unknown> {
+        let Some(user) = self.directory.active()? else {
+            return Ok(None);
+        };
+        Ok(Some(Person {
+            member: self.directory.is_member(user.uid)?,
+            uid: user.uid,
+            name: user.name,
+        }))
+    }
+
     /// Asks who is active and what that calls for. The second value is
     /// whether it is a different answer from last time.
     fn look(&self) -> (Decision, bool) {
-        let active = self.directory.active().map(|user| Person {
-            member: self.directory.is_member(user.uid),
-            uid: user.uid,
-            name: user.name,
-        });
+        let seen = self.see();
         let mut state = lock(&self.state);
-        let changed = state.active != active;
-        state.active = active;
+        let changed = match seen {
+            Ok(active) => {
+                state.blind = false;
+                let changed = state.active != active;
+                state.active = active;
+                changed
+            }
+            Err(Unknown) => {
+                if !state.blind {
+                    log_warn!(
+                        "could not find out who is at the machine; \
+                         carrying on as if nothing has changed"
+                    );
+                }
+                state.blind = true;
+                false
+            }
+        };
+        let active_uid = state.active.as_ref().map(|person| person.uid);
+        if state.gave_up_on.is_some() && state.gave_up_on != active_uid {
+            state.gave_up_on = None;
+        }
+        // Half-restored files are nobody's to save or to restore over.
+        if state.config.restoring.is_some() {
+            return (Decision::Keep, changed);
+        }
         let decision = decide(&state.config, state.active.as_ref(), |uid| {
             self.profiles.exists(uid)
         });
+        let decision = match decision {
+            Decision::Adopt(uid) | Decision::Restore(uid) if state.gave_up_on == Some(uid) => {
+                Decision::Keep
+            }
+            other => other,
+        };
         (decision, changed)
     }
 
     /// Puts the settings in use aside as their owner's, if they have one
-    /// who is not `next`.
-    fn set_aside(&self, config: &UsersConfig, next: u32) {
+    /// who is not `next`. False when that could not be done - and then
+    /// nothing may be changed on top of them, or the owner's latest
+    /// settings exist nowhere.
+    fn set_aside(&self, config: &UsersConfig, next: u32) -> bool {
         let Some(owner) = config.owner.filter(|owner| *owner != next) else {
-            return;
+            return true;
         };
-        if let Err(e) = self.profiles.save(owner) {
-            // Carried on from: the alternative is refusing the person in
-            // front of the machine their settings over a copy of someone
-            // else's.
-            log_warn!(
-                "could not keep {}'s settings aside: {e}",
-                self.name_of(owner)
-            );
+        if let Some(flush) = self.flush.get() {
+            flush();
+        }
+        match self.profiles.save(owner) {
+            Ok(()) => true,
+            Err(e) => {
+                log_warn!(
+                    "could not keep {}'s settings aside ({e}); leaving them in use rather \
+                     than losing them",
+                    self.name_of(owner)
+                );
+                false
+            }
         }
     }
 
     fn adopt(&self, uid: u32) {
         let mut state = lock(&self.state);
-        self.set_aside(&state.config, uid);
+        if !self.set_aside(&state.config, uid) {
+            state.gave_up_on = Some(uid);
+            return;
+        }
         state.config.owner = Some(uid);
         self.persist(&state.config);
         log_info!(
@@ -324,12 +449,17 @@ impl UsersModule {
         );
     }
 
-    fn restore(&self, uid: u32) {
+    /// Returns whether the files in use changed.
+    fn restore(&self, uid: u32) -> bool {
         let mut state = lock(&self.state);
-        self.set_aside(&state.config, uid);
+        if !self.set_aside(&state.config, uid) {
+            state.gave_up_on = Some(uid);
+            return false;
+        }
         state.config.restoring = Some(uid);
         self.persist(&state.config);
         self.put_back(&mut state.config, uid);
+        true
     }
 
     /// A restore that was cut short - a power cut between two files - left
@@ -356,18 +486,20 @@ impl UsersModule {
                     self.name_of(uid),
                     restored.join(", ")
                 );
+                config.owner = Some(uid);
+                config.restoring = None;
+                self.persist(config);
             }
+            // `restoring` stays set. The files in use may be half one
+            // person's and half another's now, and with the owner left as
+            // it was they would be saved as that owner's at the next
+            // switch. Marked, they are nobody's until a later start gets
+            // the restore through.
             Err(e) => log_warn!(
-                "could not put {}'s settings back: {e}; carrying on with the ones in use",
+                "could not put {}'s settings back: {e}; it will be tried again at the next start",
                 self.name_of(uid)
             ),
         }
-        // Theirs either way: they are the one who will be changing them
-        // from here, and what they change must not be saved as the
-        // previous owner's.
-        config.owner = Some(uid);
-        config.restoring = None;
-        self.persist(config);
     }
 
     fn persist(&self, config: &UsersConfig) {
@@ -376,12 +508,25 @@ impl UsersModule {
         }
     }
 
-    /// Picks up `users.json` again. Only what a person edits by hand is
-    /// taken - the rest is this process's to know.
+    /// Picks up `standDownForOthers` from `users.json` again, while the
+    /// daemon is standing down and a person editing that file is the only
+    /// way to change it.
+    ///
+    /// Read directly, not through `ConfigStore::load`: that moves a file
+    /// it cannot parse aside as `.json.bad`, which is the right thing to
+    /// do to a corrupt file at startup and the wrong thing to do to one
+    /// somebody is halfway through saving from an editor - it would take
+    /// `owner` with it. A file that does not read is simply looked at
+    /// again in a moment.
     fn reload(&self) {
-        let loaded = self.store.load::<UsersConfig>("users");
-        if loaded.is_from_disk() {
-            lock(&self.state).config.stand_down_for_others = loaded.value.stand_down_for_others;
+        let Ok(text) = std::fs::read_to_string(self.store.path_for("users")) else {
+            return;
+        };
+        let Ok(file) = serde_json::from_str::<Value>(&text) else {
+            return;
+        };
+        if let Some(enabled) = file.get("standDownForOthers").and_then(Value::as_bool) {
+            lock(&self.state).config.stand_down_for_others = enabled;
         }
     }
 
@@ -468,6 +613,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
     /// A machine whose accounts and active user the test decides. uids
@@ -476,13 +622,17 @@ mod tests {
     struct Machine {
         active: Mutex<Option<u32>>,
         members: BTreeSet<u32>,
+        /// logind not answering.
+        seat_down: AtomicBool,
+        /// The account database not answering.
+        accounts_down: AtomicBool,
     }
 
     impl Machine {
         fn with_members(members: &[u32]) -> Arc<Self> {
             Arc::new(Self {
-                active: Mutex::new(None),
                 members: members.iter().copied().collect(),
+                ..Self::default()
             })
         }
 
@@ -496,16 +646,21 @@ mod tests {
     }
 
     impl Directory for Machine {
-        fn active(&self) -> Option<ActiveUser> {
-            let uid = (*self.active.lock().unwrap())?;
-            Some(ActiveUser {
+        fn active(&self) -> Result<Option<ActiveUser>, Unknown> {
+            if self.seat_down.load(Ordering::SeqCst) {
+                return Err(Unknown);
+            }
+            Ok((*self.active.lock().unwrap()).map(|uid| ActiveUser {
                 uid,
                 name: format!("user{uid}"),
-            })
+            }))
         }
 
-        fn is_member(&self, uid: u32) -> bool {
-            self.members.contains(&uid)
+        fn is_member(&self, uid: u32) -> Result<bool, Unknown> {
+            if self.accounts_down.load(Ordering::SeqCst) {
+                return Err(Unknown);
+            }
+            Ok(self.members.contains(&uid))
         }
 
         fn name(&self, uid: u32) -> Option<String> {
@@ -732,6 +887,15 @@ mod tests {
         let waiting = std::thread::spawn(move || done_tx.send(users.settle()).unwrap());
         assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
 
+        // An editor halfway through saving. Not a corrupt config to be
+        // moved aside - that would take the owner with it - and not a
+        // reason to start.
+        let path = store.path_for("users");
+        fs::write(&path, "{ \"standDownForOthers\": fal").unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(path.exists(), "the half-written file was moved aside");
+        assert!(!path.with_extension("json.bad").exists());
+
         config.stand_down_for_others = false;
         store.save("users", &config).unwrap();
         done_rx
@@ -851,5 +1015,183 @@ mod tests {
         assert_eq!(err.kind(), pyren_core::ErrorKind::InvalidParams);
         let err = users.call("nope", Value::Null).unwrap_err();
         assert_eq!(err.kind(), pyren_core::ErrorKind::UnknownMethod);
+    }
+
+    fn set(store: &ConfigStore, namespace: &str, value: Value) {
+        store.save(namespace, &value).unwrap();
+    }
+
+    #[test]
+    fn what_one_user_set_does_not_reach_a_user_who_never_set_it() {
+        let store = store("no-leak");
+        let machine = Machine::with_members(&[ANA, BEA]);
+
+        // Ana only ever chose a power mode.
+        set_power(&store, "eco");
+        machine.log_in(ANA);
+        module(&store, &machine).settle();
+
+        // Bea remaps a key and overclocks.
+        machine.log_in(BEA);
+        module(&store, &machine).settle();
+        set(&store, "keymap", json!({ "enabled": true }));
+        set(&store, "overclock", json!({ "restoreOnStart": true }));
+
+        machine.log_in(ANA);
+        module(&store, &machine).settle();
+        assert!(
+            !store.path_for("keymap").exists(),
+            "Ana is typing on Bea's key remaps"
+        );
+        assert!(!store.path_for("overclock").exists());
+
+        // And they are still Bea's when she is back.
+        machine.log_in(BEA);
+        module(&store, &machine).settle();
+        assert_eq!(store.load::<Value>("keymap").value["enabled"], true);
+        assert_eq!(
+            store.load::<Value>("overclock").value["restoreOnStart"],
+            true
+        );
+    }
+
+    #[test]
+    fn a_look_that_gets_no_answer_does_not_end_a_stand_down() {
+        let store = store("blind-stand-down");
+        let machine = Machine::with_members(&[ANA]);
+        store
+            .save(
+                "users",
+                &UsersConfig {
+                    stand_down_for_others: true,
+                    owner: Some(ANA),
+                    restoring: None,
+                },
+            )
+            .unwrap();
+        machine.log_in(GUEST);
+
+        let users = module(&store, &machine);
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiting = std::thread::spawn(move || done_tx.send(users.settle()).unwrap());
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+
+        // logind stops answering. The guest has not gone anywhere.
+        machine.seat_down.store(true, Ordering::SeqCst);
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "a failed lookup started the daemon on the guest's session"
+        );
+
+        machine.seat_down.store(false, Ordering::SeqCst);
+        machine.log_in(ANA);
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the daemon stayed down after its user came back");
+        waiting.join().unwrap();
+    }
+
+    #[test]
+    fn a_membership_that_cannot_be_checked_does_not_stand_the_daemon_down() {
+        let store = store("blind-membership");
+        let machine = Machine::with_members(&[ANA]);
+        store
+            .save(
+                "users",
+                &UsersConfig {
+                    stand_down_for_others: true,
+                    owner: Some(ANA),
+                    restoring: None,
+                },
+            )
+            .unwrap();
+        machine.log_in(ANA);
+        let users = module(&store, &machine);
+        assert_eq!(users.look().0, Decision::Keep);
+
+        // The directory stops answering while Ana is still sitting there.
+        machine.accounts_down.store(true, Ordering::SeqCst);
+        assert_eq!(
+            users.look(),
+            (Decision::Keep, false),
+            "the daemon stood down for its own user"
+        );
+        assert_eq!(users.status()["activeUser"]["member"], true);
+    }
+
+    #[test]
+    fn nothing_changes_hands_when_the_owners_settings_cannot_be_put_aside() {
+        let store = store("aside-fails");
+        let machine = Machine::with_members(&[ANA, BEA]);
+        set_power(&store, "eco");
+        machine.log_in(ANA);
+        module(&store, &machine).settle();
+
+        // Nowhere to keep Ana's: `users` is a file, not a directory.
+        fs::write(store.root().join("users"), "in the way").unwrap();
+
+        machine.log_in(BEA);
+        let users = module(&store, &machine);
+        assert!(!users.settle());
+        assert_eq!(
+            store.load::<UsersConfig>("users").value.owner,
+            Some(ANA),
+            "the settings became Bea's with Ana's only copy about to be overwritten"
+        );
+        // Not asked for again and again while Bea stays.
+        assert_eq!(users.look().0, Decision::Keep);
+    }
+
+    #[test]
+    fn a_restore_that_fails_leaves_the_files_marked_as_nobodys() {
+        let store = store("restore-fails");
+        let machine = Machine::with_members(&[ANA, BEA]);
+        set_power(&store, "eco");
+        machine.log_in(ANA);
+        module(&store, &machine).settle();
+        machine.log_in(BEA);
+        module(&store, &machine).settle();
+        set_power(&store, "performance");
+
+        // Ana's copy of the power settings cannot be read back.
+        let anas = store.root().join("users").join(ANA.to_string());
+        fs::remove_file(anas.join("power.json")).unwrap();
+        fs::create_dir(anas.join("power.json")).unwrap();
+        fs::write(anas.join("rgb.json"), "{}").unwrap();
+
+        machine.log_in(ANA);
+        let users = module(&store, &machine);
+        users.settle();
+        let saved = store.load::<UsersConfig>("users").value;
+        assert_eq!(
+            saved.restoring,
+            Some(ANA),
+            "the failed restore was forgotten"
+        );
+        assert_eq!(saved.owner, Some(BEA));
+        // Nothing is saved or restored on top of them in the meantime.
+        machine.log_in(BEA);
+        assert_eq!(users.look().0, Decision::Keep);
+    }
+
+    #[test]
+    fn the_modules_are_asked_to_write_down_what_is_running_before_a_copy() {
+        let store = store("flush");
+        let machine = Machine::with_members(&[ANA, BEA]);
+        set_power(&store, "eco");
+        machine.log_in(ANA);
+        module(&store, &machine).settle();
+
+        machine.log_in(BEA);
+        let users = module(&store, &machine);
+        let flushed = store.clone();
+        // What a module does when asked: the mode it is really in.
+        users.before_setting_aside(Box::new(move || set_power(&flushed, "performance")));
+        users.settle();
+
+        let anas = store.root().join("users").join(ANA.to_string());
+        let kept: Value =
+            serde_json::from_slice(&fs::read(anas.join("power.json")).unwrap()).unwrap();
+        assert_eq!(kept["mode"], "performance");
     }
 }

@@ -137,6 +137,56 @@ fn replace_self() -> ! {
     std::process::exit(1);
 }
 
+/// Claims the machine, allowing a daemon that has just replaced another
+/// a moment for the old one's claim to go.
+///
+/// The claim is a descriptor, and `exec` closes it - but a child the old
+/// daemon had forked and not yet `exec`ed (every `nvidia-smi` and
+/// `loginctl` goes through that instant) holds a copy until it does. Seen
+/// from here that is "another daemon controls this system" for a few
+/// milliseconds, and giving up on it would turn a change of user into a
+/// failed service.
+fn claim_the_machine(replaced: bool) -> std::io::Result<pyren_core::DaemonInstanceLock> {
+    let patience = if replaced {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::ZERO
+    };
+    let deadline = std::time::Instant::now() + patience;
+    loop {
+        match pyren_core::acquire_daemon_instance() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AddrInUse
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Takes the one right to end this process, or says somebody already has.
+///
+/// Two things end it - a termination signal and a change of active user -
+/// on two threads, and each lets go of the hardware and then either exits
+/// or `exec`s. Whichever is first keeps this for good (the guard is
+/// forgotten, never dropped): were it handed on, the other would be woken
+/// to race an `exit` against an `exec`.
+fn try_leave(leaving: &std::sync::Mutex<()>) -> bool {
+    match leaving.try_lock() {
+        Ok(guard) => {
+            std::mem::forget(guard);
+            true
+        }
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+            std::mem::forget(poisoned.into_inner());
+            true
+        }
+        Err(std::sync::TryLockError::WouldBlock) => false,
+    }
+}
+
 /// One press of the performance key: put the modes on screen, and change
 /// nothing.
 ///
@@ -240,7 +290,9 @@ fn main() {
 
     // Claim the hardware control domain before any module can probe, restore,
     // or start a worker. The IPC socket pathname is intentionally irrelevant.
-    let _instance_lock = pyren_core::acquire_daemon_instance().unwrap_or_else(|e| {
+    let replaced = std::env::var_os(HANDOVER_ENV).is_some();
+    std::env::remove_var(HANDOVER_ENV);
+    let _instance_lock = claim_the_machine(replaced).unwrap_or_else(|e| {
         eprintln!("pyren-daemon: cannot acquire system control: {e}");
         std::process::exit(1);
     });
@@ -252,8 +304,6 @@ fn main() {
     // are blocked, too - there is nothing to tidy up yet, and a daemon that
     // is only waiting has to die on SIGTERM like any other process.
     let users = UsersModule::new();
-    let replaced = std::env::var_os(HANDOVER_ENV).is_some();
-    std::env::remove_var(HANDOVER_ENV);
     if users.settle() || replaced {
         pyren_core::handover::mark();
     }
@@ -452,6 +502,7 @@ fn main() {
     registry.register(Box::new(fan.clone()));
     registry.register(Box::new(rgb.clone()));
     watch_conditions(rgb.clone());
+    let overclock_at_exit = overclock.clone();
     registry.register(Box::new(overclock));
     registry.register(Box::new(gpu));
     registry.register(Box::new(network));
@@ -485,34 +536,57 @@ fn main() {
     ));
     let registry = Arc::new(registry);
 
+    // What the fan and power modules are doing is not always what their
+    // files say (a mode is only written down when something asks for it to
+    // outlast a restart), and both the daemon leaving and a user's
+    // settings being put aside need the files to say it.
+    let remember: Arc<dyn Fn() + Send + Sync> = {
+        let fan = fan_at_exit.clone();
+        let power = power.clone();
+        Arc::new(move || {
+            fan.remember_mode();
+            power.remember_mode();
+        })
+    };
+    users.before_setting_aside({
+        let remember = Arc::clone(&remember);
+        Box::new(move || remember())
+    });
+
     // The one thing that has to happen on the way out: a lighting effect
     // is a thread rewriting the keyboard, and killing it mid-frame leaves
     // that frame on the keys - and a shutdown is when the power-off sweep
     // plays.
-    //
-    // Two things leave: a signal, and a change of active user. Both let go
-    // of the hardware the same way, and the lock is what keeps a SIGTERM
-    // that lands in the middle of a hand-over from exiting underneath it.
     let power_at_exit = power.clone();
-    let released = std::sync::Mutex::new(false);
-    let release: Arc<dyn Fn(bool) + Send + Sync> = Arc::new(move |machine_stopping: bool| {
-        let mut released = released.lock().unwrap_or_else(|e| e.into_inner());
-        if *released {
-            return;
-        }
-        *released = true;
+    let release = move |machine_stopping: bool| {
+        remember();
         rgb.on_exit(machine_stopping);
         // No destructor runs after this: a curve's low speed or a
         // calibration's near-stall floor would stay on the fans otherwise.
         fan_at_exit.on_exit();
         // auto-cpufreq keeps pyren's override in its own state otherwise.
         power_at_exit.on_exit();
-    });
+    };
+    let release: Arc<dyn Fn(bool) + Send + Sync> = Arc::new(release);
+    let leaving = Arc::new(std::sync::Mutex::new(()));
 
     // Whether this is a shutdown or only the service stopping is asked of
     // systemd, because SIGTERM is the same signal either way.
     let release_on_signal = Arc::clone(&release);
+    let leaving_on_signal = Arc::clone(&leaving);
     pyren_core::signals::on_termination(move |signal| {
+        if !try_leave(&leaving_on_signal) {
+            // The daemon is in the middle of replacing itself for another
+            // user, and this thread has just swallowed the request to
+            // stop. Sent again it stays pending - nobody is waiting for it
+            // now - and kills the process the moment the hand-over
+            // unblocks it, which is after the hardware has been let go of
+            // and before a fresh daemon has taken it up again.
+            pyren_core::signals::raise(signal);
+            loop {
+                std::thread::park();
+            }
+        }
         let stopping = pyren_core::signals::system_is_stopping();
         log_info!(
             "{}: leaving{}",
@@ -540,12 +614,20 @@ fn main() {
     // with their settings - or does not start, for somebody who is not
     // one of Pyren's users.
     users.watch(Box::new(move |reason| {
+        if !try_leave(&leaving) {
+            // Already stopping: the signal thread has the hardware.
+            return;
+        }
         log_info!("{reason}");
         pyren_core::debuglog::record(
             pyren_core::debuglog::Category::Daemon,
             serde_json::json!({ "event": "handover", "reason": reason }),
         );
         release(false);
+        // Not part of leaving on a signal: an offset on the card outlives
+        // the daemon on purpose there. Here the next person at the machine
+        // is somebody else.
+        overclock_at_exit.on_handover();
         replace_self();
     }));
 
