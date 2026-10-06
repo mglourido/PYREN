@@ -1100,6 +1100,7 @@ table above): `{ "enabled": bool }`.
 | `fan.diagnose` | `{ "allowWrites": bool }` | full self-test report (see below) | ✅ implemented |
 | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the status object | ✅ implemented, needs root |
 | `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu", "profile"?: string }` | the status object | ✅ implemented |
+| `fan.setGpuFan` | `{ "separate"?: bool, "curve"?: [{ "tempC": number, "percent": number }], "profile"?: string, "manualPwm"?: 0-255 }` | the status object | ✅ implemented — the GPU fan's own order; only what is sent changes, `profile` as in `fan.setCurve`. `separate: true` is refused where the fans cannot be driven apart. Status reports it as `gpuFan { supported, splitControl, separate, targetPwm, manualPwm, curve, profileCurves, sharedCurve }` |
 | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the status object | ✅ implemented |
 | `fan.setKeepDriverFloor` | `{ "enabled": bool }` | the status object | ✅ implemented, needs root — writes the driver's `min_rpm_override` |
 | `fan.clearFloorNotices` | none | the status object | ✅ implemented — drops the log of automatic floor raises |
@@ -1601,6 +1602,12 @@ and opts into the two that touch hardware:
   run that `diagnose` fires itself when writes are allowed: it commands a
   speed the fans are not at and **watches the tachometer for several
   seconds**, so with `allowWrites` the fans do briefly change speed.
+- `fan-split` follows it on a machine that passed: one fan is told slow
+  and the other fast, then the two are swapped, and both tachometers are
+  watched (up to 20 s each way, ending as soon as the gap opens). `pass`
+  is fans that followed their own order both times; `warn` is fans that
+  ran together, which is stored as `gpuFan.splitControl: "together"` and
+  takes the separate GPU fan off offer. Never a `fail`.
 
 Both report `skip` — not `fail` — when run unprivileged or not requested;
 `wroteToHardware` mirrors `allowWrites`. The verdict follows the check

@@ -91,6 +91,25 @@ export type FanTachometer = { key: "cpu" | "gpu" | (string & {}); rpm: number; i
 
 export type FanSensorFailureAction = "max" | "auto";
 
+/**
+ * Whether the GPU fan can be given a speed of its own, and what it is.
+ *
+ * `supported` false is a machine with nothing to offer - no `pwm2`, or a
+ * board the hardware check watched running both fans together - and the
+ * setting is hidden there. `separate` is whether it is in force.
+ */
+export type FanGpuStatus = {
+  supported: boolean;
+  splitControl: "untested" | "separate" | "together";
+  separate: boolean;
+  targetPwm: number | null;
+  manualPwm: number;
+  /** The curve the GPU fan follows now; the CPU fan's where none is drawn. */
+  curve: FanCurvePoint[];
+  profileCurves: Partial<Record<PowerMode, FanCurvePoint[]>>;
+  sharedCurve: FanCurvePoint[];
+};
+
 export type FanStatus = {
   driverInstalled: boolean;
   capabilities: FanCapabilities;
@@ -111,6 +130,8 @@ export type FanStatus = {
   pwm: number | null;
   targetPwm: number | null;
   manualPwm: number;
+  /** The GPU fan's own order. Absent on a daemon older than the feature. */
+  gpuFan?: FanGpuStatus;
   /** The curve actually in force — the active profile's, or the shared
    *  one where no profile applies. Read this to know what is running. */
   curve: FanCurvePoint[];
@@ -1514,6 +1535,17 @@ export const daemon = {
     referenceSensor?: FanReferenceSensor,
     profile?: PowerMode | "",
   ) => call<FanStatus>("fan_set_curve", { curve, interpolation, referenceSensor, profile }),
+  /**
+   * The GPU fan's own order: whether it has one, its curve for a profile,
+   * its manual speed. Only what is passed changes. Refused with
+   * `separate: true` on a machine whose fans cannot be driven apart.
+   */
+  setGpuFan: (change: {
+    separate?: boolean;
+    curve?: FanCurvePoint[];
+    profile?: PowerMode | "";
+    manualPwm?: number;
+  }) => call<FanStatus>("fan_set_gpu_fan", change),
   setFanRestoreOnStart: (enabled: boolean) =>
     call<FanStatus>("fan_set_restore_on_start", { enabled }),
   /** Keep the driver's floor (true) or use the lower one Pyren measured. */

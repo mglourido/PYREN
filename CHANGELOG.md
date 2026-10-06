@@ -11,6 +11,21 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **The GPU fan can have a curve and a speed of its own.** Where the
+  driver has a `pwm2`, `fan.setGpuFan { separate, curve, profile,
+  manualPwm }` gives the second fan its own order: a curve per power
+  profile that follows the GPU's temperature (the CPU's while the card is
+  asleep) and its own manual speed. Off by default, which is one curve for
+  both fans as before, and an undrawn GPU curve follows the CPU fan's.
+  The guards, the floor and the hysteresis are unchanged - they are given
+  the faster of the two orders. `fan.getStatus` reports it under `gpuFan`.
+  Performance control gets a "One curve for both / GPU fan apart" switch.
+- **A hardware check for it: `fan-split`.** With writes enabled,
+  `fan.diagnose` tells one fan slow and the other fast, swaps them, and
+  watches both tachometers. The answer is stored as `splitControl`; on a
+  board that runs both fans together the setting is hidden and one curve
+  drives everything. Board 8D2F passes: 3000 / 4500 rpm, then 4500 / 3000.
+
 - **Pyren reads the ceiling the driver is working with, and says when it
   is not the measured one.** The vendored driver publishes it as
   `fan1_max` / `fan2_max`; `fan.getStatus` now reports it as

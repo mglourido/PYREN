@@ -32,6 +32,7 @@ use serde::Serialize;
 
 use crate::control::{self, Capabilities, FanMode};
 use crate::speed_probe::{self, SpeedProbe};
+use crate::split_probe::{self, SplitProbe};
 use crate::FanPaths;
 
 /// Board ids known to work, used only to warn - never to gate anything.
@@ -140,13 +141,15 @@ impl Diagnosis {
 /// `allow_writes` enables the readback check, which touches hardware
 /// without moving anything. `probe` is a [`crate::speed_probe`] run the
 /// caller already made - the check that actually spins the fans - and
-/// `None` reports it as not attempted. Both are reported as skipped rather
+/// `None` reports it as not attempted; `split` is the same for a
+/// [`crate::split_probe`] run. All are reported as skipped rather
 /// than passed when they did not run: an untested question is not a
 /// question answered yes.
 pub(crate) fn diagnose(
     paths: &FanPaths,
     allow_writes: bool,
     probe: Option<&SpeedProbe>,
+    split: Option<&SplitProbe>,
 ) -> Diagnosis {
     let mut checks = Vec::new();
 
@@ -232,6 +235,7 @@ pub(crate) fn diagnose(
 
     checks.push(check_write(paths, allow_writes));
     checks.push(check_effect(probe));
+    checks.push(check_split(paths.pwm2.as_deref(), split));
     checks.push(check_hwmon_attributes(paths.hwmon_dir.as_deref()));
     checks.push(check_kernel_log());
     checks.push(check_platform_profile());
@@ -952,6 +956,84 @@ fn check_effect(probe: Option<&SpeedProbe>) -> Check {
     Check::new(ID, title(), status, detail)
 }
 
+/// Whether the two fans take different speeds, which is what a GPU fan
+/// with a curve of its own needs.
+///
+/// Reported from a [`crate::split_probe`] run the caller made, like
+/// [`check_effect`]. Never a failure: a board that runs its fans together
+/// is fully controllable, with one curve - so that is a warning, and the
+/// app stops offering the second one.
+fn check_split(pwm2: Option<&Path>, probe: Option<&SplitProbe>) -> Check {
+    const ID: &str = "fan-split";
+    let title = || {
+        msg!(
+            "diagnostics.checks.fan-split.title",
+            "Fans take separate speeds"
+        )
+    };
+    let no_channel = || {
+        msg!(
+            "diagnostics.checks.fan-split.noChannel",
+            "no pwm2, so one speed drives both fans"
+        )
+    };
+
+    let Some(probe) = probe else {
+        let detail = if pwm2.is_some_and(|p| p.exists()) {
+            msg!(
+                "diagnostics.checks.fan-split.notAttempted",
+                "not attempted; enable writes to spin the fans and test this"
+            )
+        } else {
+            no_channel()
+        };
+        return Check::new(ID, title(), CheckStatus::Skip, detail);
+    };
+
+    let rpm = |half: usize| {
+        probe
+            .halves
+            .get(half)
+            .map_or((0, 0), |half| (half.fan1_rpm, half.fan2_rpm))
+    };
+    let (status, detail) = match probe.verdict {
+        split_probe::Verdict::Separate => {
+            let ((a1, a2), (b1, b2)) = (rpm(0), rpm(1));
+            (
+                CheckStatus::Pass,
+                msg!(
+                    "diagnostics.checks.fan-split.separate",
+                    { "a1" => a1, "a2" => a2, "b1" => b1, "b2" => b2 },
+                    "the fans ran at {a1} / {a2} rpm and then at {b1} / {b2} rpm, each \
+                     following its own order, so the GPU fan can have its own curve"
+                ),
+            )
+        }
+        split_probe::Verdict::Together => {
+            let (fan1, fan2) = rpm(probe.halves.len().saturating_sub(1));
+            (
+                CheckStatus::Warn,
+                msg!(
+                    "diagnostics.checks.fan-split.together",
+                    { "fan1" => fan1, "fan2" => fan2 },
+                    "two different speeds were accepted and the fans ran together \
+                     ({fan1} / {fan2} rpm). One curve drives both fans on this board"
+                ),
+            )
+        }
+        split_probe::Verdict::NoReading => (
+            CheckStatus::Skip,
+            msg!(
+                "diagnostics.checks.fan-split.noReading",
+                "a fan reported no speed during the run, so there was nothing to compare"
+            ),
+        ),
+        split_probe::Verdict::NoChannel => (CheckStatus::Skip, no_channel()),
+    };
+
+    Check::new(ID, title(), status, detail)
+}
+
 /// Lists what the hwmon node actually exposes.
 ///
 /// Without this, a missing `pwm1` is a dead end: the report says the file
@@ -1374,7 +1456,7 @@ mod tests {
     fn a_machine_with_no_interface_at_all_is_unsupported() {
         // Reads the ACPI interface: no redirection may run under it.
         let _acpi = crate::testenv::real();
-        let diagnosis = diagnose(&FanPaths::default(), false, None);
+        let diagnosis = diagnose(&FanPaths::default(), false, None, None);
         assert_eq!(diagnosis.verdict, Verdict::Unsupported);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Skip);
     }
@@ -1390,7 +1472,7 @@ mod tests {
         write(&dir, "pwm1_enable", "2\n");
         // No fan2_input: the path is discovered, the file does not exist.
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(check(&diagnosis, "fan2").status, CheckStatus::Skip);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
     }
@@ -1410,7 +1492,7 @@ mod tests {
         write(&dir, "fan2_input", "2300\n");
         // No pwm1 or pwm1_enable written: the paths exist, the files don't.
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(diagnosis.verdict, Verdict::MonitoringOnly);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Pass);
         assert_eq!(check(&diagnosis, "pwm1").status, CheckStatus::Fail);
@@ -1438,7 +1520,7 @@ mod tests {
             return;
         }
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), true, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), true, None, None);
         let write_check = check(&diagnosis, "pwm-write");
         assert_eq!(write_check.status, CheckStatus::Skip);
         assert!(
@@ -1458,7 +1540,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
         // ...but it must say the write path is unverified.
         assert!(
@@ -1478,7 +1560,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
         assert_eq!(check(&diagnosis, "pwm1").status, CheckStatus::Pass);
         assert!(check(&diagnosis, "pwm1_enable")
@@ -1496,7 +1578,7 @@ mod tests {
         write(&dir, "pwm1", "100\n");
         write(&dir, "pwm1_enable", "1\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         let fan1 = check(&diagnosis, "fan1");
         assert_eq!(fan1.status, CheckStatus::Warn);
         assert!(fan1.detail.contains("2400 rpm"), "got: {}", fan1.detail);
@@ -1511,7 +1593,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Skip);
         assert!(!diagnosis.wrote_to_hardware);
     }
@@ -1524,7 +1606,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "1\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None);
+        let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None, None);
         assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Pass);
         // Manual mode, and the same speed, exactly as before.
         assert_eq!(
@@ -1549,7 +1631,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None);
+        let diagnosis = diagnose(&paths_for_testing(dir.clone(), None), true, None, None);
         assert_eq!(check(&diagnosis, "pwm-write").status, CheckStatus::Pass);
         assert_eq!(
             fs::read_to_string(dir.join("pwm1_enable")).unwrap().trim(),
@@ -1612,7 +1694,7 @@ mod tests {
         write(&dir, "pwm1_enable", "1\n");
 
         let probe = probe_with(speed_probe::Verdict::Ignored);
-        let diagnosis = diagnose(&paths_for_testing(dir, None), true, Some(&probe));
+        let diagnosis = diagnose(&paths_for_testing(dir, None), true, Some(&probe), None);
 
         assert_eq!(check(&diagnosis, "pwm-effect").status, CheckStatus::Fail);
         assert_eq!(diagnosis.verdict, Verdict::MonitoringOnly);
@@ -1628,7 +1710,7 @@ mod tests {
         write(&dir, "pwm1_enable", "1\n");
 
         let probe = probe_with(speed_probe::Verdict::Honoured);
-        let diagnosis = diagnose(&paths_for_testing(dir, None), true, Some(&probe));
+        let diagnosis = diagnose(&paths_for_testing(dir, None), true, Some(&probe), None);
 
         assert_eq!(check(&diagnosis, "pwm-effect").status, CheckStatus::Pass);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
@@ -1645,7 +1727,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(check(&diagnosis, "pwm-effect").status, CheckStatus::Skip);
         assert_eq!(diagnosis.verdict, Verdict::FullControl);
     }
@@ -1702,7 +1784,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(
             diagnosis.summary.key,
             "diagnostics.summary.fullControlUntested"
@@ -1723,7 +1805,7 @@ mod tests {
         write(&dir, "pwm1", "128\n");
         write(&dir, "pwm1_enable", "2\n");
 
-        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None);
+        let diagnosis = diagnose(&paths_for_testing(dir, None), false, None, None);
         assert_eq!(check(&diagnosis, "fan1").status, CheckStatus::Fail);
     }
 }

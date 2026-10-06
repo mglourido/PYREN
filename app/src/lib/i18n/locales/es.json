@@ -191,6 +191,12 @@
     "curveSensorHint": "Con qué temperatura se lee la curva. La GPU suele ser lo primero que se calienta en un juego; mientras la tarjeta está dormida, la curva sigue a la CPU.",
     "sensorCpu": "CPU",
     "sensorGpu": "GPU",
+    "fanSplit": "Ventiladores",
+    "fanSplitHint": "Juntos, una sola curva o velocidad controla los dos ventiladores. Por separado, el ventilador de la GPU tiene su propia curva y velocidad, y su curva sigue la temperatura de la tarjeta gráfica.",
+    "fanSplitTogether": "Una curva para todo",
+    "fanSplitSeparate": "GPU por separado",
+    "curveFan": "Curva de",
+    "gpuCurveFollows": "Esta curva sigue la temperatura de la tarjeta gráfica, y la de la CPU mientras la tarjeta está dormida. Hasta que la cambies, es igual que la del ventilador de la CPU.",
     "curveSensorAsleep": "La tarjeta gráfica no está informando de nada ahora mismo, así que la curva está siguiendo a la CPU.",
     "curveBelongsTo": "Curva del perfil:",
     "curveAppliesNow": "Es el modo en el que está la máquina, así que esta es la curva que siguen los ventiladores.",
@@ -815,6 +821,14 @@
         "noReading": "ningún ventilador informó una velocidad durante la prueba, así que no había nada que observar",
         "noChannel": "no hay canal PWM al que escribir"
       },
+      "fan-split": {
+        "title": "Los ventiladores aceptan velocidades distintas",
+        "notAttempted": "no intentado; activa las escrituras para hacer girar los ventiladores y probarlo",
+        "noChannel": "no hay pwm2, así que una sola velocidad controla ambos ventiladores",
+        "separate": "los ventiladores giraron a {a1} / {a2} rpm y luego a {b1} / {b2} rpm, cada uno siguiendo su orden, así que el ventilador de la GPU puede tener su propia curva",
+        "together": "se aceptaron dos velocidades distintas y los ventiladores giraron juntos ({fan1} / {fan2} rpm). En esta placa una sola curva controla ambos ventiladores",
+        "noReading": "un ventilador no informó de ninguna velocidad durante la prueba, así que no había nada que comparar"
+      },
       "hwmon-attrs": {
         "title": "Atributos hwmon",
         "noNode": "no hay nodo hwmon",
@@ -875,6 +889,7 @@
       "none": "ninguna interfaz de control de ventilador"
     },
     "err": {
+      "gpuFanTogether": "en este equipo no se puede dar una velocidad distinta a cada ventilador",
       "cannotDoMode": "este equipo no puede hacer '{mode}': el controlador hp-wmi expone {exposes}. Ejecuta fan.diagnose para ver los detalles.",
       "cannotCalibrate": "la calibración pone los ventiladores al máximo y los observa, lo que este equipo no puede hacer: el controlador hp-wmi expone {exposes}. Ejecuta fan.diagnose para ver los detalles.",
       "noCpuTemp": "no hay sensor de temperatura de la CPU, así que no se puede seguir una curva",

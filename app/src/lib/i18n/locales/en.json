@@ -191,6 +191,12 @@
     "curveSensorHint": "Which temperature the curve is read at. The GPU is usually what heats up first under a game; while the card is asleep the curve follows the CPU instead.",
     "sensorCpu": "CPU",
     "sensorGpu": "GPU",
+    "fanSplit": "Fans",
+    "fanSplitHint": "Together, one curve or one speed drives both fans. Apart, the GPU fan gets a curve and a speed of its own, and its curve follows the graphics card's temperature.",
+    "fanSplitTogether": "One curve for both",
+    "fanSplitSeparate": "GPU fan apart",
+    "curveFan": "Curve of",
+    "gpuCurveFollows": "This curve follows the graphics card's temperature, and the CPU's while the card is asleep. Until you change it, it is the same as the CPU fan's.",
     "curveSensorAsleep": "The graphics card is reporting nothing right now, so the curve is following the CPU.",
     "curveBelongsTo": "Curve for the profile:",
     "curveAppliesNow": "This is the mode the machine is in, so this is the curve the fans are following.",
@@ -815,6 +821,14 @@
         "noReading": "no fan reported a speed during the run, so there was nothing to watch",
         "noChannel": "no PWM channel to write to"
       },
+      "fan-split": {
+        "title": "Fans take separate speeds",
+        "notAttempted": "not attempted; enable writes to spin the fans and test this",
+        "noChannel": "no pwm2, so one speed drives both fans",
+        "separate": "the fans ran at {a1} / {a2} rpm and then at {b1} / {b2} rpm, each following its own order, so the GPU fan can have its own curve",
+        "together": "two different speeds were accepted and the fans ran together ({fan1} / {fan2} rpm). One curve drives both fans on this board",
+        "noReading": "a fan reported no speed during the run, so there was nothing to compare"
+      },
       "hwmon-attrs": {
         "title": "hwmon attributes",
         "noNode": "no hwmon node",
@@ -875,6 +889,7 @@
       "none": "no fan control interface at all"
     },
     "err": {
+      "gpuFanTogether": "the two fans cannot be given different speeds on this machine",
       "cannotDoMode": "this machine cannot do '{mode}': the hp-wmi driver exposes {exposes}. Run fan.diagnose for the details.",
       "cannotCalibrate": "calibration puts the fans at max and watches them, which this machine cannot do: the hp-wmi driver exposes {exposes}. Run fan.diagnose for the details.",
       "noCpuTemp": "no CPU temperature sensor, so a curve cannot be followed",

@@ -203,6 +203,24 @@
   const curveProfile = $derived(curveProfileChoice ?? mode);
   const editingCurve = $derived(hardware.curveFor(curveProfile));
 
+  /**
+   * The GPU fan's own order. Offered only where the daemon says the two
+   * fans can be driven apart; everywhere else one curve drives both and
+   * there is nothing to choose.
+   */
+  const gpuFanSupported = $derived(canSetSpeed && (hardware.fan?.gpuFan?.supported ?? false));
+  const gpuFanSeparate = $derived(gpuFanSupported && (hardware.fan?.gpuFan?.separate ?? false));
+  /** Which fan's curve the editor is showing while they are apart. */
+  let curveFanChoice = $state<"cpu" | "gpu">("cpu");
+  const curveFan = $derived(gpuFanSeparate ? curveFanChoice : "cpu");
+  const shownCurve = $derived(
+    curveFan === "gpu" ? hardware.gpuCurveFor(curveProfile) : editingCurve,
+  );
+  /** The GPU fan's curve reads the GPU, and the CPU while the card sleeps. */
+  const shownCurveTempC = $derived(
+    curveFan === "gpu" ? (hardware.fan?.gpuTempC ?? telemetry.cpuTempC) : curveTempC,
+  );
+
   /** The fixed-speed slider belongs to `manual` and nothing else. */
   const showManualSlider = $derived(canSetSpeed && hardware.state.fanMode === "manual");
   /** The curve editor belongs to `curve` and nothing else - in `manual`
@@ -460,8 +478,28 @@
           <p class="fan-note">{t("performance.fanStoppedByFirmware")}</p>
         {/if}
 
+        {#if gpuFanSupported && (showManualSlider || showCurve)}
+          <div class="sensor-row">
+            <span class="sensor-label">
+              {t("performance.fanSplit")}
+              <InfoTip>{t("performance.fanSplitHint")}</InfoTip>
+            </span>
+            <Segmented
+              value={gpuFanSeparate ? "separate" : "together"}
+              options={[
+                { value: "together", label: t("performance.fanSplitTogether") },
+                { value: "separate", label: t("performance.fanSplitSeparate") },
+              ]}
+              onchange={(v) => hardware.setGpuFanSeparate(v === "separate")}
+            />
+          </div>
+        {/if}
+
         {#if showManualSlider}
           <div class="manual">
+            {#if gpuFanSeparate}
+              <span class="sensor-label">{fanRoleLabel("cpu")}</span>
+            {/if}
             <div class="manual-slider">
               <Slider
                 value={hardware.state.fanPercent}
@@ -474,6 +512,21 @@
               />
               <span class="pct">{hardware.state.fanPercent}%</span>
             </div>
+            {#if gpuFanSeparate}
+              <span class="sensor-label">{fanRoleLabel("gpu")}</span>
+              <div class="manual-slider">
+                <Slider
+                  value={hardware.gpuFanPercent}
+                  min={0}
+                  max={100}
+                  minLabel="0%"
+                  maxLabel="100%"
+                  ariaLabel={fanRoleLabel("gpu")}
+                  onchange={(v) => hardware.setGpuFanPercent(v)}
+                />
+                <span class="pct">{hardware.gpuFanPercent}%</span>
+              </div>
+            {/if}
             {#if stopBelowPercent !== null}
               <p class="fan-note">
                 {t("performance.fanStopBelow", { percent: String(stopBelowPercent) })}
@@ -509,7 +562,22 @@
                   })}
             </p>
 
-            {#if gpuSensorAvailable}
+            {#if gpuFanSeparate}
+              <div class="sensor-row">
+                <span class="sensor-label">{t("performance.curveFan")}</span>
+                <Segmented
+                  value={curveFan}
+                  options={[
+                    { value: "cpu", label: fanRoleLabel("cpu") },
+                    { value: "gpu", label: fanRoleLabel("gpu") },
+                  ]}
+                  onchange={(v) => (curveFanChoice = v as "cpu" | "gpu")}
+                />
+              </div>
+            {/if}
+            {#if curveFan === "gpu"}
+              <p class="fan-note">{t("performance.gpuCurveFollows")}</p>
+            {:else if gpuSensorAvailable}
               <div class="sensor-row">
                 <span class="sensor-label">
                   {t("performance.curveSensor")}
@@ -535,11 +603,14 @@
                  while tuning a profile you are not currently in. The line
                  above already says whether it is the one in force. -->
             <FanCurve
-              curve={editingCurve}
-              currentTempC={curveTempC}
+              curve={shownCurve}
+              currentTempC={shownCurveTempC}
               {stopBelowPercent}
               stopLabel={t("performance.fanStopBand")}
-              onchange={(curve) => hardware.setFanCurve(curve, curveProfile)}
+              onchange={(curve) =>
+                curveFan === "gpu"
+                  ? hardware.setGpuFanCurve(curve, curveProfile)
+                  : hardware.setFanCurve(curve, curveProfile)}
             />
             {#if stopBelowPercent !== null}
               <p class="fan-note">

@@ -68,6 +68,10 @@ export type HardwareState = {
    *  applies, and the two have to agree or the editor shows a shape the
    *  fans are not following. */
   fanCurves: Partial<Record<PowerMode, CurvePoint[]>>;
+  /** The GPU fan's own curves and manual speed, used while the fans are
+   *  driven apart. Empty and null follow the CPU fan's. */
+  gpuFanCurves: Partial<Record<PowerMode, CurvePoint[]>>;
+  gpuFanPercent: number | null;
   /** Which sensor the curve follows; `gpu` falls back to the CPU while
    *  the card is asleep. Mirrored from the daemon, which is the
    *  authority - this copy only exists so the first frame has a value. */
@@ -118,6 +122,8 @@ function defaults(): HardwareState {
     // identical copies here would only make an untouched profile look
     // deliberately chosen.
     fanCurves: {},
+    gpuFanCurves: {},
+    gpuFanPercent: null,
     smartBoostEnabled: true,
     smartBoostW: 30,
     maxBatteryDrain: 40,
@@ -158,6 +164,9 @@ class HardwareStore {
   /** The debounced fan write waiting to go out, kept so `flush()` can send
    *  it now rather than lose it if the window closes mid-wait. */
   private pendingFanPush: (() => Promise<FanStatus>) | null = null;
+  /** Which fan the waiting write is for. A write for the other one must
+   *  not replace it. */
+  private pendingFanPushKey = "";
   private powerTuningTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Synchronous, for the first render. */
@@ -430,6 +439,41 @@ class HardwareStore {
     );
   }
 
+  /** Whether the GPU fan has an order of its own. A click, so sent now. */
+  async setGpuFanSeparate(separate: boolean) {
+    await this.pushFan(() => daemon.setGpuFan({ separate }));
+  }
+
+  /** The GPU fan's curve for one profile; the CPU fan's until one is drawn. */
+  gpuCurveFor(profile: PowerMode): CurvePoint[] {
+    const own = this.state.gpuFanCurves[profile] ?? this.fan?.gpuFan?.profileCurves[profile];
+    return own && own.length > 0 ? own : this.curveFor(profile);
+  }
+
+  setGpuFanCurve(curve: CurvePoint[], profile?: PowerMode) {
+    const target = profile ?? this.state.powerMode;
+    this.set("gpuFanCurves", { ...this.state.gpuFanCurves, [target]: curve });
+    this.pushFanSoon(
+      () => daemon.setGpuFan({ curve, profile: target }),
+      FAN_CURVE_PUSH_DEBOUNCE_MS,
+      "gpu",
+    );
+  }
+
+  /** The GPU fan's manual speed; the CPU fan's until one is set. */
+  get gpuFanPercent(): number {
+    return this.state.gpuFanPercent ?? this.state.fanPercent;
+  }
+
+  setGpuFanPercent(percent: number) {
+    this.set("gpuFanPercent", percent);
+    this.pushFanSoon(
+      () => daemon.setGpuFan({ manualPwm: percentToPwm(percent) }),
+      FAN_PUSH_DEBOUNCE_MS,
+      "gpu",
+    );
+  }
+
   /**
    * Which sensor the curve follows. Sent with the curve rather than on its
    * own, because that is the one call the daemon has for the pair - and it
@@ -613,8 +657,17 @@ class HardwareStore {
    * every pixel, and each of these is a socket round trip. `delayMs`
    * defaults to a drag's settle time; a curve edit passes a longer one.
    */
-  private pushFanSoon(send: () => Promise<FanStatus>, delayMs = FAN_PUSH_DEBOUNCE_MS) {
+  private pushFanSoon(
+    send: () => Promise<FanStatus>,
+    delayMs = FAN_PUSH_DEBOUNCE_MS,
+    key = "",
+  ) {
     if (this.fanPushTimer !== null) clearTimeout(this.fanPushTimer);
+    // An edit to the other fan is a different write, not a newer one.
+    if (this.pendingFanPush && this.pendingFanPushKey !== key) {
+      void this.pushFan(this.pendingFanPush);
+    }
+    this.pendingFanPushKey = key;
     this.pendingFanPush = send;
     this.fanPushTimer = setTimeout(() => {
       this.fanPushTimer = null;

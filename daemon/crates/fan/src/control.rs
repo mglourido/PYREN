@@ -178,12 +178,17 @@ fn write_sysfs(path: &Path, value: &str) -> Result<(), ControlError> {
 /// `pwm2` is the GPU fan. The driver keeps a setpoint per fan, and a speed
 /// written only to `pwm1` leaves the second fan wherever the mode switch
 /// put it.
+///
+/// `gpu_pwm` is that second fan's own order. It is the same number as `pwm`
+/// everywhere except a curve or manual speed the user has split in two -
+/// see [`apply_pair`].
 fn speed_writes<'a>(
     enable: &'a Path,
     pwm1: &'a Path,
     pwm2: Option<&'a Path>,
     hardware_mode: Option<u8>,
     pwm: u8,
+    gpu_pwm: u8,
 ) -> Vec<(&'a Path, String)> {
     let mut writes = Vec::with_capacity(3);
     if hardware_mode != Some(1) {
@@ -191,7 +196,7 @@ fn speed_writes<'a>(
     }
     writes.push((pwm1, pwm.to_string()));
     if let Some(pwm2) = pwm2 {
-        writes.push((pwm2, pwm.to_string()));
+        writes.push((pwm2, gpu_pwm.to_string()));
     }
     writes
 }
@@ -205,6 +210,21 @@ pub fn apply(
     caps: Capabilities,
     mode: FanMode,
     pwm: u8,
+) -> Result<(), ControlError> {
+    apply_pair(paths, caps, mode, pwm, pwm)
+}
+
+/// [`apply`], with the GPU fan given a speed of its own.
+///
+/// `gpu_pwm` goes to `pwm2` and is only consulted where `pwm` is. On a
+/// driver with no `pwm2` it is dropped and `pwm` drives both fans, which
+/// is what that driver does with any speed.
+pub fn apply_pair(
+    paths: &FanPaths,
+    caps: Capabilities,
+    mode: FanMode,
+    pwm: u8,
+    gpu_pwm: u8,
 ) -> Result<(), ControlError> {
     if !caps.supports(mode) {
         return Err(ControlError::Unsupported(
@@ -254,7 +274,8 @@ pub fn apply(
                 .as_deref()
                 .ok_or(ControlError::Unsupported(mode.as_str(), "pwm1"))?;
             let pwm2 = paths.pwm2.as_deref().filter(|p| p.exists());
-            for (path, value) in speed_writes(enable, pwm1, pwm2, read_hardware_mode(paths), pwm) {
+            let hardware_mode = read_hardware_mode(paths);
+            for (path, value) in speed_writes(enable, pwm1, pwm2, hardware_mode, pwm, gpu_pwm) {
                 write_sysfs(path, &value)?;
             }
             Ok(())
@@ -810,6 +831,18 @@ mod tests {
         assert_eq!(read(&dir, "pwm1_enable"), "1");
     }
 
+    /// The second fan's own order goes to `pwm2`, and only there.
+    #[test]
+    fn a_pair_gives_each_fan_its_own_speed() {
+        let dir = fixture("manual-pair", &["pwm1_enable", "pwm1", "pwm2"]);
+        let p = paths(&dir);
+
+        apply_pair(&p, Capabilities::detect(&p), FanMode::Curve, 90, 210).unwrap();
+
+        assert_eq!(read(&dir, "pwm1"), "90");
+        assert_eq!(read(&dir, "pwm2"), "210");
+    }
+
     /// Plenty of drivers have no second channel; that is not an error.
     #[test]
     fn a_driver_without_pwm2_is_driven_through_pwm1_alone() {
@@ -831,7 +864,7 @@ mod tests {
     fn the_mode_switch_comes_before_the_speed() {
         let (enable, pwm1, pwm2) = (Path::new("e"), Path::new("p1"), Path::new("p2"));
 
-        let from_auto = speed_writes(enable, pwm1, Some(pwm2), Some(2), 200);
+        let from_auto = speed_writes(enable, pwm1, Some(pwm2), Some(2), 200, 200);
 
         assert_eq!(
             from_auto,
@@ -849,7 +882,7 @@ mod tests {
     fn a_driver_already_in_manual_is_not_switched_again() {
         let (enable, pwm1) = (Path::new("e"), Path::new("p1"));
 
-        let writes = speed_writes(enable, pwm1, None, Some(1), 120);
+        let writes = speed_writes(enable, pwm1, None, Some(1), 120, 120);
 
         assert_eq!(writes, vec![(pwm1, "120".to_string())]);
     }
@@ -860,7 +893,7 @@ mod tests {
         let (enable, pwm1) = (Path::new("e"), Path::new("p1"));
 
         assert_eq!(
-            speed_writes(enable, pwm1, None, None, 120)[0],
+            speed_writes(enable, pwm1, None, None, 120, 120)[0],
             (enable, "1".to_string())
         );
     }

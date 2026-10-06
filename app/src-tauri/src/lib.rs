@@ -259,6 +259,27 @@ fn fan_set_curve(
     )
 }
 
+/// The GPU fan's own order. Every argument is optional and only what is
+/// sent changes; `profile` names the curve the way `fan_set_curve`'s does.
+#[tauri::command(async)]
+fn fan_set_gpu_fan(
+    separate: Option<bool>,
+    curve: Option<Value>,
+    profile: Option<String>,
+    manual_pwm: Option<u8>,
+) -> Result<Value, String> {
+    call_daemon(
+        "fan",
+        "setGpuFan",
+        json!({
+            "separate": separate,
+            "curve": curve,
+            "profile": profile,
+            "manualPwm": manual_pwm,
+        }),
+    )
+}
+
 #[tauri::command(async)]
 fn fan_set_restore_on_start(enabled: bool) -> Result<Value, String> {
     call_daemon("fan", "setRestoreOnStart", json!({ "enabled": enabled }))
@@ -1118,6 +1139,7 @@ pub fn run() {
             fan_probe_speed_control,
             fan_set_mode,
             fan_set_curve,
+            fan_set_gpu_fan,
             fan_set_restore_on_start,
             fan_set_keep_driver_floor,
             fan_set_thermal_safety_checker,

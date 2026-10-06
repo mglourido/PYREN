@@ -8,6 +8,7 @@
 //! | `fan.diagnose` | `{ "allowWrites": bool }` | the self-test, see [`diagnostics`] |
 //! | `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | the new status |
 //! | `fan.setCurve` | `{ "curve": [{ "tempC": n, "percent": n }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu" }` | the new status |
+//! | `fan.setGpuFan` | `{ "separate"?: bool, "curve"?: [...], "profile"?: string, "manualPwm"?: 0-255 }` | the new status |
 //! | `fan.setRestoreOnStart` | `{ "enabled": bool }` | the new status |
 //! | `fan.setKeepDriverFloor` | `{ "enabled": bool }` | the new status |
 //! | `fan.setThermalSafetyChecker` | `{ "enabled": bool }` | the new status |
@@ -53,6 +54,7 @@ pub mod curve;
 pub mod diagnostics;
 pub mod safety;
 pub mod speed_probe;
+pub mod split_probe;
 pub mod stall;
 
 pub use calibration::Calibration;
@@ -60,6 +62,7 @@ pub use cleaner::Cycle;
 pub use control::{Capabilities, FanMode};
 pub use curve::{CurvePoint, Interpolation};
 pub use speed_probe::{SpeedControl, SpeedProbe};
+pub use split_probe::{SplitControl, SplitProbe};
 
 const HWMON_ROOT: &str = "/sys/devices/platform/hp-wmi/hwmon";
 
@@ -258,6 +261,23 @@ pub struct FanConfig {
     /// `pwm1` do honour it, and refusing on suspicion would be worse than
     /// an occasional slider that turns out to do nothing.
     pub speed_control: SpeedControl,
+    /// Give the GPU fan an order of its own - its own curve, following the
+    /// GPU, and its own manual speed. Off by default, which is one order
+    /// for both fans. Only does anything where there is a `pwm2` and
+    /// [`FanConfig::split_control`] has not found the fans running
+    /// together; see [`FanModule::drives_gpu_fan_apart`].
+    pub separate_gpu_fan: bool,
+    /// Whether two different speeds were ever found to reach the two fans
+    /// apart. Remembered for the same reason `speed_control` is: only
+    /// [`split_probe`] can tell, and only by spinning the fans.
+    pub split_control: SplitControl,
+    /// The GPU fan's curves, shaped like `curve` and `profile_curves` and
+    /// looked up the same way. An empty one falls back to the CPU fan's, so
+    /// turning `separate_gpu_fan` on changes nothing until one is drawn.
+    pub gpu_curve: Vec<CurvePoint>,
+    pub gpu_profile_curves: BTreeMap<String, Vec<CurvePoint>>,
+    /// The GPU fan's manual speed. `None` follows `manual_pwm`.
+    pub gpu_manual_pwm: Option<u8>,
     /// Off by default, like the power module's equivalent: putting a
     /// machine's fans somewhere the user last left them, at boot, before
     /// they have asked for anything, is not a decision this should make on
@@ -301,6 +321,11 @@ impl Default for FanConfig {
             keep_driver_floor: true,
             fan_floor_notices: Vec::new(),
             speed_control: SpeedControl::default(),
+            separate_gpu_fan: false,
+            split_control: SplitControl::default(),
+            gpu_curve: Vec::new(),
+            gpu_profile_curves: BTreeMap::new(),
+            gpu_manual_pwm: None,
             restore_mode_on_start: false,
             cleaner_duration_secs: cleaner::DEFAULT_DURATION_SECS,
             cleaner_speed: None,
@@ -400,6 +425,11 @@ impl FanConfig {
         }
         self.profile_curves
             .retain(|profile, points| check(&format!("'{profile}'"), points));
+        if !check("shared GPU fan", &mut self.gpu_curve) {
+            self.gpu_curve.clear();
+        }
+        self.gpu_profile_curves
+            .retain(|profile, points| check(&format!("'{profile}' GPU fan"), points));
 
         changed
     }
@@ -417,6 +447,19 @@ impl FanConfig {
             .filter(|points| !points.is_empty())
             .map(Vec::as_slice)
             .unwrap_or(&self.curve)
+    }
+
+    /// The curve the GPU fan follows while it has an order of its own: its
+    /// curve for the profile, else its shared one, else whatever the CPU
+    /// fan is following - so a GPU fan nobody has drawn a curve for goes on
+    /// doing what it did.
+    pub fn gpu_curve_for(&self, profile: Option<&str>) -> &[CurvePoint] {
+        profile
+            .and_then(|p| self.gpu_profile_curves.get(p))
+            .filter(|points| !points.is_empty())
+            .map(Vec::as_slice)
+            .or(Some(self.gpu_curve.as_slice()).filter(|points| !points.is_empty()))
+            .unwrap_or_else(|| self.curve_for(profile))
     }
 
     /// Gives every profile a curve of its own the first time per-profile
@@ -520,6 +563,14 @@ struct State {
     /// when it keeps happening. See [`stall`]. In memory only.
     stall: stall::StallWatch,
     smoother: curve::TempSmoother,
+    /// The same smoothing for the temperature the GPU fan's own curve
+    /// reads. Only fed while `separate_gpu_fan` is driving it.
+    gpu_smoother: curve::TempSmoother,
+    /// The two orders last written while the fans had one each. The
+    /// hysteresis watches the faster order against the faster fan, so this
+    /// is what notices the slower one moving on its own.
+    split_written: Option<(u8, u8)>,
+    last_gpu_target_pwm: Option<u8>,
     /// A calibration run has the fans, and the control loop must not take
     /// them back mid-measurement - it would drop them out of max and the
     /// run would measure the ramp back down.
@@ -582,6 +633,9 @@ impl State {
     fn new(config: FanConfig, mode: FanMode, owned: bool) -> Self {
         Self {
             smoother: curve::TempSmoother::warming_up(config.ma_window),
+            gpu_smoother: curve::TempSmoother::warming_up(config.ma_window),
+            split_written: None,
+            last_gpu_target_pwm: None,
             config,
             mode,
             pending_mode: None,
@@ -616,6 +670,7 @@ impl State {
     /// firmware again, which the hardware may no longer be in.
     fn forget_writes(&mut self) {
         self.hysteresis.reset();
+        self.split_written = None;
         self.released = false;
         // The last measured speed is about to stop meaning anything; the
         // fault trail ages out by time and stays.
@@ -771,6 +826,22 @@ impl FanModule {
     /// caught that, `setSpeed` has to go false or every client goes on
     /// offering a slider that does nothing - which is the exact failure
     /// [`control`] was written to avoid, one layer further in.
+    /// Whether this machine can be offered a GPU fan with an order of its
+    /// own: a `pwm2` to write it to, a board that honours a speed at all,
+    /// and no [`split_probe`] run that watched the fans stay together.
+    fn gpu_fan_supported(&self, config: &FanConfig) -> bool {
+        self.caps().set_speed
+            && !config.speed_control.is_ignored()
+            && !config.split_control.is_together()
+            && self.paths().pwm2.as_deref().is_some_and(|p| p.exists())
+    }
+
+    /// Whether the GPU fan is being given one. False is "one order for
+    /// both fans", whatever the setting says, on a machine that cannot.
+    fn drives_gpu_fan_apart(&self, config: &FanConfig) -> bool {
+        config.separate_gpu_fan && self.gpu_fan_supported(config)
+    }
+
     fn effective_caps(&self) -> Capabilities {
         let caps = self.caps();
         let ignored = lock(&self.state).config.speed_control.is_ignored();
@@ -1143,6 +1214,16 @@ impl FanModule {
         } else {
             None
         };
+        // Asked second, and only of fans that answered the first: two
+        // speeds mean nothing on a board that ignores one.
+        let honoured = probe
+            .as_ref()
+            .is_some_and(|probe| probe.verdict == speed_probe::Verdict::Honoured);
+        let split = if honoured {
+            self.run_split_probe().ok()
+        } else {
+            None
+        };
         // The write check puts pwm1 somewhere and back, so it needs the
         // fans the way a measurement does. Busy - a calibration, a cycle -
         // means it is reported as not attempted rather than run underneath.
@@ -1151,7 +1232,12 @@ impl FanModule {
         } else {
             None
         };
-        let diagnosis = diagnostics::diagnose(&self.paths(), claim.is_some(), probe.as_ref());
+        let diagnosis = diagnostics::diagnose(
+            &self.paths(),
+            claim.is_some(),
+            probe.as_ref(),
+            split.as_ref(),
+        );
         drop(claim);
         diagnosis
     }
@@ -1264,6 +1350,20 @@ impl FanModule {
             "criticalC": safety::CRITICAL_C,
         });
 
+        // The GPU fan's own order. `supported` false is a machine where
+        // there is nothing to offer, and a client hides the setting;
+        // `separate` is whether it is in force, not only switched on.
+        let gpu_fan_status = json!({
+            "supported": self.gpu_fan_supported(&state.config),
+            "splitControl": state.config.split_control.as_str(),
+            "separate": self.drives_gpu_fan_apart(&state.config),
+            "targetPwm": state.last_gpu_target_pwm,
+            "manualPwm": state.config.gpu_manual_pwm.unwrap_or(state.config.manual_pwm),
+            "curve": state.config.gpu_curve_for(state.active_profile.as_deref()),
+            "profileCurves": state.config.gpu_profile_curves,
+            "sharedCurve": state.config.gpu_curve,
+        });
+
         json!({
             "driverInstalled": self.paths().hwmon_dir.is_some(),
             // The *effective* capabilities: `pwm1` existing is not the same
@@ -1292,6 +1392,7 @@ impl FanModule {
             "pwm": control::read_pwm(&self.paths()),
             "targetPwm": state.last_target_pwm,
             "manualPwm": state.config.manual_pwm,
+            "gpuFan": gpu_fan_status,
             // The curve actually in force. Still called `curve` and still
             // the first thing a client should read: a caller that knows
             // nothing about profiles goes on getting the right shape.
@@ -1580,6 +1681,106 @@ impl FanModule {
         // TICK later. Only does anything when this daemon owns the fans.
         let _ = self.tick_once();
         Ok(probe)
+    }
+
+    /// Asks whether the two fans take different speeds, and remembers the
+    /// answer. Same shape as [`Self::run_speed_probe`].
+    fn run_split_probe(&self) -> Result<SplitProbe, ModuleError> {
+        let abort = self.measurement_abort();
+        if let Some(e) = abort() {
+            return Err(control_error(e));
+        }
+        let claim = self.claim_fans()?;
+        let outcome = split_probe::run(&self.paths(), self.caps(), &abort);
+        drop(claim);
+
+        let mut state = lock(&self.state);
+        let probe = match outcome {
+            Ok(probe) => probe,
+            Err(e) => {
+                state.last_control_error = Some(e.to_msg());
+                drop(state);
+                self.trip_after_measurement("the split probe", &e);
+                return Err(control_error(e));
+            }
+        };
+
+        // A run that settled nothing must not erase one that did.
+        if let Some(answer) = Option::<SplitControl>::from(probe.verdict) {
+            state.config.split_control = answer;
+            // The curves and the switch are kept: `drives_gpu_fan_apart`
+            // already answers no on a board that runs the fans together,
+            // and a later run that finds otherwise gets them back.
+            state.forget_writes();
+            persist(&self.store, &mut state);
+        }
+        drop(state);
+
+        let _ = self.tick_once();
+        Ok(probe)
+    }
+
+    /// The GPU fan's own order: whether it has one, and what it is.
+    ///
+    /// Every field is optional and only what is sent is changed. `profile`
+    /// names the curve the way [`Self::set_curve`]'s does.
+    fn set_gpu_fan(
+        &self,
+        separate: Option<bool>,
+        curve: Option<Vec<CurvePoint>>,
+        profile: Option<&str>,
+        manual_pwm: Option<u8>,
+    ) -> ModuleResult {
+        if let Some(problem) = curve.as_deref().and_then(|c| curve::validate(c).err()) {
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                curve_problem(problem),
+            ));
+        }
+
+        {
+            let mut state = lock(&self.state);
+            if separate == Some(true) && !self.gpu_fan_supported(&state.config) {
+                return Err(ModuleError::localised(
+                    ErrorKind::Unsupported,
+                    msg!(
+                        "fan.err.gpuFanTogether",
+                        "the two fans cannot be given different speeds on this machine"
+                    ),
+                ));
+            }
+            if let Some(separate) = separate {
+                state.config.separate_gpu_fan = separate;
+                // Ten seconds of readings from before the switch, or none.
+                state.gpu_smoother = curve::TempSmoother::new(state.config.ma_window);
+            }
+            if let Some(curve) = curve {
+                let target = match profile {
+                    Some("") => None,
+                    Some(name) => Some(name.to_string()),
+                    None => state.active_profile.clone(),
+                };
+                match target {
+                    Some(name) => {
+                        state.config.gpu_profile_curves.insert(name, curve);
+                    }
+                    None => state.config.gpu_curve = curve,
+                }
+            }
+            if let Some(pwm) = manual_pwm {
+                state.config.gpu_manual_pwm = Some(pwm.max(curve::MIN_COMMANDED_PWM));
+            }
+            state.stalled = false;
+            state.forget_writes();
+        }
+
+        // Only touches hardware if a speed is the mode in force.
+        let tick_result = self.tick_once();
+        let mut state = lock(&self.state);
+        persist(&self.store, &mut state);
+        drop(state);
+        tick_result?;
+        Ok(self.status())
     }
 
     /// Measures what full speed is on this machine and remembers it.
@@ -2275,12 +2476,18 @@ impl FanModule {
         // read one, but a low one leans on the critical override above, and
         // that is blind without *any* reading - so a slow manual speed with
         // no usable temperature gets the same fallback.
+        let apart = self.drives_gpu_fan_apart(&state.config);
+        // Either fan held slow is a slow manual speed.
+        let slowest_manual_pwm = match state.config.gpu_manual_pwm {
+            Some(gpu) if apart => gpu.min(state.config.manual_pwm),
+            _ => state.config.manual_pwm,
+        };
         let watched = match mode {
             FanMode::Curve => Some(
                 reference_temp(cpu_temp_c, gpu_temp_c, state.config.reference_sensor)
                     .map(|(temp, _)| temp),
             ),
-            FanMode::Manual if state.config.manual_pwm < safety::MANUAL_BLIND_BELOW_PWM => {
+            FanMode::Manual if slowest_manual_pwm < safety::MANUAL_BLIND_BELOW_PWM => {
                 Some(hottest.map(|temp| temp as i64))
             }
             _ => None,
@@ -2463,6 +2670,32 @@ impl FanModule {
             state.last_target_pwm = target;
         }
 
+        // The GPU fan's own order, where it has one. Nothing below is
+        // rebuilt around it: every guard from here on reasons about one
+        // speed and the faster fan's tachometer, so each is handed the
+        // faster of the two orders, and the pair is only told apart again
+        // at the write. A fan asked for less than the floor while the other
+        // is not is held at the floor by the driver's own clamp.
+        let split = match target {
+            Some(cpu) if apart && mode.needs_pwm() => {
+                let gpu = match mode {
+                    FanMode::Manual => state.config.gpu_manual_pwm,
+                    _ => reference_temp(cpu_temp_c, gpu_temp_c, ReferenceSensor::Gpu)
+                        .filter(|(temp, _)| safety::plausible_c(*temp))
+                        .and_then(|(temp_c, _)| {
+                            let avg = state.gpu_smoother.push(temp_c as f64);
+                            let points =
+                                state.config.gpu_curve_for(state.active_profile.as_deref());
+                            curve::target_pwm(points, avg, state.config.interpolation)
+                        }),
+                };
+                Some((cpu, gpu.unwrap_or(cpu)))
+            }
+            _ => None,
+        };
+        state.last_gpu_target_pwm = split.map(|(_, gpu)| gpu);
+        let target = split.map(|(cpu, gpu)| cpu.max(gpu)).or(target);
+
         // A speed below the floor is one the fans cannot hold, so they go
         // to the firmware, which stops them when the machine is cool. Once:
         // auto needs no re-asserting, and the next write after this -
@@ -2570,16 +2803,28 @@ impl FanModule {
             }
             (_, None) => false,
         };
-        if !should {
+        // The slower fan's order can move while the faster one's stands
+        // still, and the test above cannot see that.
+        let split_moved = match (split, state.split_written) {
+            (Some((cpu, gpu)), Some((last_cpu, last_gpu))) => {
+                cpu.abs_diff(last_cpu) > curve::PWM_DEADBAND
+                    || gpu.abs_diff(last_gpu) > curve::PWM_DEADBAND
+            }
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !should && !split_moved {
             return Ok(TickOutcome::Deferred);
         }
 
         let pwm = target.unwrap_or(0);
-        let result = control::apply(&self.paths(), self.caps(), mode, pwm);
+        let (cpu_pwm, gpu_pwm) = split.unwrap_or((pwm, pwm));
+        let result = control::apply_pair(&self.paths(), self.caps(), mode, cpu_pwm, gpu_pwm);
         // Only an effect that reached the hardware can suppress a later
         // write. A failure remains immediately retryable.
         if result.is_ok() {
             state.hysteresis.applied(pwm, now_secs);
+            state.split_written = split;
         }
         record_write(state, result).map(|_| TickOutcome::Applied)
     }
@@ -2830,6 +3075,38 @@ impl Module for FanModule {
                     }
                 };
                 self.set_curve(points, interpolation, reference_sensor, profile.as_deref())
+            }
+
+            "setGpuFan" => {
+                let separate = match params.get("separate") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_bool().ok_or_else(|| {
+                        ModuleError::InvalidParams("params.separate must be a boolean".into())
+                    })?),
+                };
+                let curve: Option<Vec<CurvePoint>> =
+                    match params.get("curve") {
+                        None | Some(Value::Null) => None,
+                        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
+                            ModuleError::InvalidParams(format!("invalid curve: {e}"))
+                        })?),
+                    };
+                let profile = match params.get("profile") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(name)) => Some(name.clone()),
+                    Some(_) => {
+                        return Err(ModuleError::InvalidParams(
+                            "params.profile must be a string".into(),
+                        ))
+                    }
+                };
+                let manual_pwm = match params.get("manualPwm") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_u64().map(|v| v.min(255) as u8).ok_or_else(|| {
+                        ModuleError::InvalidParams("params.manualPwm must be 0-255".into())
+                    })?),
+                };
+                self.set_gpu_fan(separate, curve, profile.as_deref(), manual_pwm)
             }
 
             "setRestoreOnStart" => {
@@ -4120,6 +4397,7 @@ mod tests {
         state.config.curve = points(&[(40.0, 0.0), (60.0, 50.0), (80.0, 100.0)]);
         // These follow a curve, not a boot: the first reading counts whole.
         state.smoother = curve::TempSmoother::new(state.config.ma_window);
+        state.gpu_smoother = curve::TempSmoother::new(state.config.ma_window);
         drop(state);
         (module, dir)
     }
@@ -4504,6 +4782,109 @@ mod tests {
             read_file(&dir, "pwm1"),
             curve::MIN_COMMANDED_PWM.to_string()
         );
+    }
+
+    /// The GPU fan's own curve reaches `pwm2`, and the CPU fan's stays on
+    /// `pwm1`. The fixture has no GPU sensor, so both read the CPU's.
+    #[test]
+    fn a_separate_gpu_fan_follows_its_own_curve() {
+        let (module, dir) = driven_on_a_fixture("split-curve", 60);
+
+        module
+            .set_gpu_fan(
+                Some(true),
+                Some(points(&[(40.0, 0.0), (60.0, 80.0), (80.0, 100.0)])),
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1"), "128");
+        assert_eq!(read_file(&dir, "pwm2"), "204");
+        let status = module.status();
+        assert_eq!(status["gpuFan"]["separate"], json!(true));
+        assert_eq!(status["gpuFan"]["targetPwm"], json!(204));
+        assert_eq!(status["targetPwm"], json!(128));
+    }
+
+    /// Switched on with no curve drawn, the GPU fan goes on following the
+    /// CPU fan's - turning the setting on must not change the fans.
+    #[test]
+    fn a_gpu_fan_with_no_curve_of_its_own_follows_the_cpu_fans() {
+        let (module, dir) = driven_on_a_fixture("split-undrawn", 60);
+
+        module.set_gpu_fan(Some(true), None, None, None).unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1"), "128");
+        assert_eq!(read_file(&dir, "pwm2"), "128");
+    }
+
+    /// The hysteresis watches the faster order. The slower fan's moving on
+    /// its own has to be written too.
+    #[test]
+    fn the_slower_fans_order_is_written_when_only_it_moves() {
+        let (module, dir) = driven_on_a_fixture("split-slower", 60);
+        module
+            .set_gpu_fan(
+                Some(true),
+                Some(points(&[(40.0, 20.0), (80.0, 20.0)])),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(read_file(&dir, "pwm2"), "51");
+
+        // Changed under the loop, with nothing forgotten: the next tick has
+        // only the pair it last wrote to go on.
+        lock(&module.state).config.gpu_curve = points(&[(40.0, 35.0), (80.0, 35.0)]);
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1"), "128");
+        assert_eq!(read_file(&dir, "pwm2"), "89");
+    }
+
+    /// Manual has a second speed too.
+    #[test]
+    fn a_separate_gpu_fan_holds_its_own_manual_speed() {
+        let (module, dir) = driven_on_a_fixture("split-manual", 50);
+        in_manual(&module, 150);
+
+        module
+            .set_gpu_fan(Some(true), None, None, Some(110))
+            .unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1"), "150");
+        assert_eq!(read_file(&dir, "pwm2"), "110");
+    }
+
+    /// A board found to run its fans together gets one order, whatever the
+    /// stored setting says, and is not offered the other.
+    #[test]
+    fn fans_found_running_together_get_one_order() {
+        let (module, dir) = driven_on_a_fixture("split-together", 60);
+        {
+            let mut state = lock(&module.state);
+            state.config.split_control = SplitControl::Together;
+            state.config.separate_gpu_fan = true;
+            state.config.gpu_curve = points(&[(40.0, 0.0), (60.0, 80.0), (80.0, 100.0)]);
+        }
+
+        module.tick_once().unwrap();
+
+        assert_eq!(read_file(&dir, "pwm1"), "128");
+        assert_eq!(read_file(&dir, "pwm2"), "128");
+        let status = module.status();
+        assert_eq!(status["gpuFan"]["supported"], json!(false));
+        assert_eq!(status["gpuFan"]["separate"], json!(false));
+        assert!(module.set_gpu_fan(Some(true), None, None, None).is_err());
+    }
+
+    /// A config written before any of this is one order for both fans.
+    #[test]
+    fn a_config_without_the_gpu_fan_fields_is_one_curve_for_both() {
+        let config: FanConfig = serde_json::from_str(r#"{ "mode": "curve" }"#).unwrap();
+        assert!(!config.separate_gpu_fan);
+        assert_eq!(config.split_control, SplitControl::Untested);
     }
 
     #[test]
