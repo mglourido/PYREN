@@ -38,7 +38,7 @@ export type AppNotification = {
   body: string;
   /** A hint the panel turns into a shortcut, when the notification calls
    *  for a follow-up the user has to do. */
-  action?: "recalibrate";
+  action?: "recalibrate" | "openDrivers";
   read: boolean;
 };
 
@@ -71,6 +71,13 @@ const DESCRIPTORS: Record<
       action: capped ? "recalibrate" : undefined,
     };
   },
+  "app.daemonUnreachable": () => ({
+    kind: "warning",
+    icon: "warning",
+    title: t("notices.daemonDownTitle"),
+    body: t("notices.daemonDownBody"),
+    action: "openDrivers",
+  }),
   "app.updateAvailable": (data) => ({
     kind: "info",
     icon: "refresh",
@@ -180,6 +187,23 @@ class Notifications {
       topic: "app.updateAvailable",
       at,
       data: { version, url },
+    };
+    if (this.ingest(record)) void this.notifyOs(record);
+  }
+
+  /**
+   * The daemon stopped answering. Raised by the telemetry poll, which is
+   * the only thing that knows, and which decides whether to call this at
+   * all - see `settings.notifyDaemonDown`. One entry per outage: the id
+   * carries the timestamp.
+   */
+  notifyDaemonUnreachable(): void {
+    const at = Math.round(Date.now() / 1000);
+    const record: StoredEvent = {
+      id: `app.daemonUnreachable:${at}`,
+      topic: "app.daemonUnreachable",
+      at,
+      data: {},
     };
     if (this.ingest(record)) void this.notifyOs(record);
   }

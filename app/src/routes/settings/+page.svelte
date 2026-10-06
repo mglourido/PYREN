@@ -966,6 +966,15 @@
     </div>
 
     <div class="row">
+      <span>{t("settings.notifyDaemonDown")}</span>
+      <Toggle
+        checked={settings.current.notifyDaemonDown}
+        onchange={(v) => settings.set("notifyDaemonDown", v)}
+        ariaLabel={t("settings.notifyDaemonDown")}
+      />
+    </div>
+
+    <div class="row">
       <span>{t("settings.resetSettings")}</span>
       <button
         class="danger"

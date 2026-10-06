@@ -866,6 +866,13 @@ fn session_stop_osd() -> Result<Value, String> {
     Ok(session::status())
 }
 
+/// Restarts the widget if it is running, and leaves it off if it is not.
+#[tauri::command(async)]
+fn session_restart_osd() -> Result<Value, String> {
+    session::restart_osd()?;
+    Ok(session::status())
+}
+
 #[tauri::command(async)]
 fn session_set_osd_at_login(enabled: bool) -> Result<Value, String> {
     session::set_osd_at_login(enabled)
@@ -1172,6 +1179,7 @@ pub fn run() {
             session_start_osd,
             session_show_osd,
             session_stop_osd,
+            session_restart_osd,
             session_set_osd_at_login,
             session_set_app_at_login,
             hotkey_get_status,

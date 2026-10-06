@@ -70,6 +70,10 @@
                   <button class="link" onclick={recalibrate}>
                     {t("notifications.recalibrate")}
                   </button>
+                {:else if n.action === "openDrivers"}
+                  <button class="link" onclick={recalibrate}>
+                    {t("notices.diagnoseDaemon")}
+                  </button>
                 {/if}
               </div>
             </li>

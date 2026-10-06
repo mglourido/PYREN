@@ -15,6 +15,7 @@
   import Toggle from "$lib/components/Toggle.svelte";
   import { daemon, errorText, type FanDiagnosis, type CheckStatus, type FanCalibration } from "$lib/api/daemon";
   import { admin, type AdminAction, type AdminStatus } from "$lib/api/admin";
+  import { session } from "$lib/api/session";
   import { debugLog } from "$lib/api/debug";
   import { t, tm } from "$lib/i18n/index.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
@@ -171,6 +172,12 @@
       // A dismissed polkit dialog is a decision, not a failure.
       if (result.applied && action === "joinGroup") reloginNeeded = true;
       if (result.applied && action === "leaveGroup") reloginNeeded = false;
+      // The widget holds a connection to the daemon that just went away.
+      // Best effort: the daemon is back either way, and a widget that
+      // would not restart is not a reason to report the restart as failed.
+      if (result.applied && action === "restartService") {
+        await session.restartOsd().catch(() => {});
+      }
       await refreshPrivileges();
     } catch (e) {
       grantError = errorText(e);
@@ -195,6 +202,8 @@
     revoke?: AdminAction;
     /** What revoking costs, shown on hover. */
     revokeHint?: string;
+    /** Stops and starts the thing again. Only the service has one. */
+    restart?: AdminAction;
   };
 
   const rows = $derived.by<Row[]>(() => {
@@ -225,6 +234,7 @@
         // unit file stays, so granting it again is the enable above.
         revoke: p.serviceActive || p.serviceEnabled ? "disableService" : undefined,
         revokeHint: t("admin.revokeService"),
+        restart: p.serviceActive ? "restartService" : undefined,
       },
       {
         id: "group",
@@ -366,6 +376,16 @@
                   onclick={() => applyGrant(row.action!)}
                 >
                   {granting === row.action ? t("admin.applying") : t("admin.fix")}
+                </button>
+              {/if}
+              {#if row.restart}
+                <button
+                  class="fix restart"
+                  title={t("admin.restartHint")}
+                  disabled={granting !== null || !privileges?.canElevate}
+                  onclick={() => applyGrant(row.restart!)}
+                >
+                  {granting === row.restart ? t("admin.restarting") : t("admin.restart")}
                 </button>
               {/if}
               {#if row.revoke}
@@ -618,9 +638,15 @@
   }
 
   /* Quieter than a fix: it is the way back, not the thing the row asks for. */
-  .fix.revoke {
+  .fix.revoke,
+  .fix.restart {
     border-color: var(--line);
     color: var(--text-dim);
+  }
+
+  .fix.restart:not(:disabled):hover {
+    border-color: var(--accent-2);
+    color: var(--text);
   }
 
   .fix.revoke:not(:disabled):hover {

@@ -22,14 +22,15 @@ vi.mock("$lib/stores/hardware.svelte", () => ({
 }));
 
 vi.mock("$lib/stores/notifications.svelte", () => ({
-  notifications: { observeFanStatus: vi.fn() },
+  notifications: { observeFanStatus: vi.fn(), notifyDaemonUnreachable: vi.fn() },
 }));
 
 vi.mock("$lib/stores/settings.svelte", () => ({
-  settings: { current: { pollIntervalMs: 2000 } },
+  settings: { current: { pollIntervalMs: 2000, notifyDaemonDown: true } },
 }));
 
 import { daemon } from "$lib/api/daemon";
+import { notifications } from "$lib/stores/notifications.svelte";
 import { DETAIL_ROUTES, isDetailRoute, Telemetry } from "$lib/stores/telemetry.svelte";
 
 // Partial fixtures cast past their real (much larger) daemon types - these
@@ -163,5 +164,28 @@ describe("Telemetry polling gate", () => {
     await (telemetry as unknown as { pollOnce(): Promise<void> }).pollOnce();
 
     expect(telemetry.demo).toBe(true);
+  });
+
+  it("announces an outage once, on the second missed poll", async () => {
+    const telemetry = new Telemetry();
+    (telemetry as unknown as { detailActive: boolean }).detailActive = false;
+    const poll = () => (telemetry as unknown as { pollOnce(): Promise<void> }).pollOnce();
+    const announce = vi.mocked(notifications.notifyDaemonUnreachable);
+    announce.mockClear();
+    vi.mocked(daemon.fanStatus).mockRejectedValue(new Error("daemon unreachable"));
+
+    await poll();
+    expect(announce).not.toHaveBeenCalled();
+    await poll();
+    await poll();
+    expect(announce).toHaveBeenCalledTimes(1);
+
+    // Back and gone again is a second outage.
+    vi.mocked(daemon.fanStatus).mockResolvedValue(fanFixture);
+    await poll();
+    vi.mocked(daemon.fanStatus).mockRejectedValue(new Error("daemon unreachable"));
+    await poll();
+    await poll();
+    expect(announce).toHaveBeenCalledTimes(2);
   });
 });

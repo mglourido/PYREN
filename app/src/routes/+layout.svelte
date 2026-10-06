@@ -21,6 +21,7 @@
   import { page } from "$app/state";
   import { debugLog } from "$lib/api/debug";
   import { driverIdentityName } from "$lib/api/daemon";
+  import { admin, type AdminStatus } from "$lib/api/admin";
 
   let { children }: { children: Snippet } = $props();
 
@@ -32,6 +33,43 @@
   // "don't show again" box, `hideDriverOutdatedNotice` - because that one
   // hides every later driver update as well.
   let driverOutdatedNoticeDismissed = $state(false);
+
+  // What the "cannot reach the daemon" notice can offer. Asked of the shell
+  // each time the daemon goes away, because the answer is the reason it
+  // went: a stopped unit is one button from fixed, and anything else - no
+  // unit, no group, a unit that is up and still not answering - is the
+  // drivers page's checklist.
+  let daemonService = $state<AdminStatus | null>(null);
+  let startingDaemon = $state(false);
+
+  $effect(() => {
+    if (!telemetry.demo || !admin.available()) return;
+    void admin
+      .status()
+      .then((status) => (daemonService = status))
+      .catch(() => (daemonService = null));
+  });
+
+  const canStartDaemon = $derived(
+    daemonService !== null &&
+      daemonService.unitPath !== null &&
+      !daemonService.serviceActive &&
+      daemonService.canElevate,
+  );
+
+  async function startDaemon() {
+    startingDaemon = true;
+    try {
+      const result = await admin.grant("startService");
+      // A dismissed polkit dialog is a decision, not a failure. Anything
+      // else that did not work is explained on the drivers page.
+      if (!result.applied && !result.cancelled) void goto("/drivers");
+    } catch {
+      void goto("/drivers");
+    } finally {
+      startingDaemon = false;
+    }
+  }
 
   // Cache first so the very first frame already has the user's language,
   // then the files on disk, which are authoritative.
@@ -151,6 +189,17 @@
           ondismiss={() => (daemonNoticeDismissed = true)}
         >
           {t("notices.daemonDownBody")}
+          {#snippet actions()}
+            {#if canStartDaemon}
+              <button class="link on-info" disabled={startingDaemon} onclick={startDaemon}>
+                {startingDaemon ? t("notices.startingDaemon") : t("notices.startDaemon")}
+              </button>
+            {:else if admin.available()}
+              <button class="link on-info" onclick={() => goto("/drivers")}>
+                {t("notices.diagnoseDaemon")}
+              </button>
+            {/if}
+          {/snippet}
         </Banner>
       {/if}
 

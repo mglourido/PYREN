@@ -35,6 +35,9 @@ export type Settings = {
    *  notice. Its own switch: someone who silenced the first has not been
    *  asked about the second. */
   hideDriverOutdatedNotice: boolean;
+  /** Raise a notification - the desktop's and the in-app one - when the
+   *  daemon stops answering. The banner across the top is not affected. */
+  notifyDaemonDown: boolean;
   vitalsAdvancedView: boolean;
   /** Animate the vitals gauges toward each new reading instead of snapping. */
   gaugeAnimations: boolean;
@@ -81,6 +84,9 @@ function defaults(): Settings {
     autostart: false,
     hideDriverNotice: false,
     hideDriverOutdatedNotice: false,
+    // On by default: with the window in the tray the banner is not on
+    // screen, and the fans going back to the firmware is worth hearing about.
+    notifyDaemonDown: true,
     vitalsAdvancedView: false,
     gaugeAnimations: true,
     // On by default: it is a read-only detail, costs nothing when the

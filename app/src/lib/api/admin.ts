@@ -70,6 +70,10 @@ export type AdminAction =
    *  "make the hardware work"; the drivers page keeps the itemised fixes. */
   | "enableAtBoot"
   | "disableService"
+  /** Start an installed unit now, without enabling it at boot. */
+  | "startService"
+  /** Stop and start a running daemon, leaving `enabled` as it was. */
+  | "restartService"
   | "loadAcpiCall"
   | "enableCoolbits"
   // The reverses, for taking back a permission already given.

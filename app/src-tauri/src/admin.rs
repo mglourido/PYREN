@@ -91,6 +91,21 @@ pub enum Grant {
     /// power control entirely - the settings toggle that reaches this says
     /// so rather than presenting it as a preference like the others.
     DisableService,
+    /// Start an installed unit now, and nothing else.
+    ///
+    /// What the "cannot reach the daemon" notice offers. Not
+    /// [`Self::EnableService`]: that also enables it at boot, and a notice
+    /// has no business reversing somebody's decision to keep it out of
+    /// boot just because they asked for it back this once.
+    StartService,
+    /// Stop a running daemon and start it again.
+    ///
+    /// For a daemon that is up and misbehaving - holding a stale state, or
+    /// started before a driver was patched in. Neither [`Self::EnableService`]
+    /// nor [`Self::DisableService`] is that: the first does nothing to a
+    /// unit already running, and the second also takes it out of boot.
+    /// `enabled` is left exactly as it was.
+    RestartService,
     /// Load `acpi_call` now, and arrange for it to be loaded at boot.
     ///
     /// Not the same shape as the others: it is a kernel module rather
@@ -142,6 +157,8 @@ impl Grant {
             "enableService" => Ok(Self::EnableService),
             "enableAtBoot" => Ok(Self::EnableAtBoot),
             "disableService" => Ok(Self::DisableService),
+            "startService" => Ok(Self::StartService),
+            "restartService" => Ok(Self::RestartService),
             "loadAcpiCall" => Ok(Self::LoadAcpiCall),
             "enableCoolbits" => Ok(Self::EnableCoolbits),
             "leaveGroup" => Ok(Self::LeaveGroup),
@@ -338,6 +355,12 @@ pub fn grant(action: &str) -> Result<Value, String> {
         // more destructive than the label on it suggests.
         Grant::DisableService => Command::new("pkexec")
             .args(["systemctl", "disable", "--now", SERVICE])
+            .output(),
+        Grant::StartService => Command::new("pkexec")
+            .args(["systemctl", "start", SERVICE])
+            .output(),
+        Grant::RestartService => Command::new("pkexec")
+            .args(["systemctl", "restart", SERVICE])
             .output(),
         // `modprobe` alone lasts until the next reboot, and a feature that
         // works today and not tomorrow is worse than one that never did -

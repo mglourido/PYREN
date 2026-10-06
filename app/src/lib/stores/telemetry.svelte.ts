@@ -135,6 +135,8 @@ export class Telemetry {
    * `null` until the first poll, so the first failure still logs.
    */
   private lastReachable: boolean | null = null;
+  /** Polls in a row the daemon did not answer. */
+  private unreachablePolls = 0;
   /**
    * Whether the currently-shown page renders live CPU/GPU/RAM/disk/network
    * data (see `isDetailRoute`). `false` means `pollOnce()` skips the
@@ -330,6 +332,15 @@ export class Telemetry {
         console.info("pyren: daemon reachable again; vitals are live");
       }
       this.lastReachable = reachable;
+    }
+
+    // On the second miss, not the first: one dropped poll, or the gap
+    // while the service restarts, is not an outage worth a notification.
+    // `===` so a daemon that stays down is announced once.
+    if (reachable) {
+      this.unreachablePolls = 0;
+    } else if (++this.unreachablePolls === 2 && settings.current.notifyDaemonDown) {
+      notifications.notifyDaemonUnreachable();
     }
 
     this.demo = !reachable;

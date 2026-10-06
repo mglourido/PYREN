@@ -61,6 +61,8 @@ export const session = {
   /** Stops it now *and* stops it starting at login: switching the widget
    *  off has to mean off, not "until tomorrow". */
   stopOsd: () => invoke<SessionStatus>("session_stop_osd"),
+  /** Stops and starts it again. Does nothing to a widget that is off. */
+  restartOsd: () => invoke<SessionStatus>("session_restart_osd"),
   setOsdAtLogin: (enabled: boolean) =>
     invoke<SessionStatus>("session_set_osd_at_login", { enabled }),
   setAppAtLogin: (enabled: boolean) =>

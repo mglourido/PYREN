@@ -263,6 +263,29 @@ pub fn stop_osd() -> Result<bool, String> {
     Ok(!pids.is_empty())
 }
 
+/// Stops the widget and starts it again, for after the daemon it talks to
+/// was restarted.
+///
+/// `Ok(false)` if it was not running: a widget that is off stays off, and
+/// a restart is not the place to switch it on.
+pub fn restart_osd() -> Result<bool, String> {
+    if !osd_is_running() {
+        return Ok(false);
+    }
+    stop_osd()?;
+
+    // `stop_osd` only asks: SIGTERM returns before GTK has left its main
+    // loop, and `start_osd` refuses to launch while the old process is
+    // still there.
+    for _ in 0..30 {
+        if !osd_is_running() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    start_osd()
+}
+
 /// Whether the widget should come up at login, with or without this app.
 ///
 /// Writing the unit rather than shipping it: the file has to name the
