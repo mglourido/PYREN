@@ -179,9 +179,14 @@ GPU
                                active right now
   network set <off|auto>       off deletes the root qdisc; auto hands the
                                interface cake, or fq_codel on a kernel with
-                               no sch_cake - system-wide, not per-app (see
-                               dev/TODO.md §2 for why there is no
-                               per-process priority here)
+                               no sch_cake - system-wide
+  network procs                 traffic per process, and the rule on each
+  network rule <name> <normal|high|low|block>
+                               block drops the process's packets both
+                               ways; high and low only reorder what it
+                               sends, and only while 'auto' is running
+                               cake. The name is the process name as
+                               'network procs' prints it
 
   oc get                       what can be tuned on each GPU, what is set,
                                and - where nothing can be - why not
@@ -756,6 +761,20 @@ fn run(command: &args::Command) -> Run {
             command,
             client::call("network", "setMode", json!({ "mode": mode }))?,
             print_network,
+        ),
+        ["network", "procs"] => show(
+            command,
+            client::call("network", "getProcesses", Value::Null)?,
+            print_network_processes,
+        ),
+        ["network", "rule", name, action] => show(
+            command,
+            client::call(
+                "network",
+                "setRule",
+                json!({ "name": name, "action": action }),
+            )?,
+            print_network_processes,
         ),
 
         ["hotkey", "get"] => show(
@@ -2234,6 +2253,42 @@ fn print_network(status: &Value) {
             .and_then(Value::as_str)
             .unwrap_or("unknown"),
     );
+}
+
+fn print_network_processes(listing: &Value) {
+    if listing.get("available").and_then(Value::as_bool) != Some(true) {
+        match listing.get("reason").filter(|reason| !reason.is_null()) {
+            Some(reason) => println!("  {}", text(reason, "text")),
+            None => println!("  per-process networking is not available"),
+        }
+        return;
+    }
+    let processes = listing
+        .get("processes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if processes.is_empty() {
+        println!("  no process has used the network yet");
+        return;
+    }
+    println!(
+        "  {:<16} {:>12} {:>12}  rule",
+        "process", "down kB/s", "up kB/s"
+    );
+    for process in &processes {
+        let rate = |key: &str| process.get(key).and_then(Value::as_f64).unwrap_or(0.0) / 1000.0;
+        println!(
+            "  {:<16} {:>12.1} {:>12.1}  {}",
+            text(process, "name"),
+            rate("downBps"),
+            rate("upBps"),
+            text(process, "action"),
+        );
+    }
+    if listing.get("priorityActive").and_then(Value::as_bool) != Some(true) {
+        println!("  (high/low rules are idle: 'network set auto' with cake is not active)");
+    }
 }
 
 /// The keyboard has four zones. Named here only to explain a short

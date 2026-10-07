@@ -387,13 +387,39 @@
     "interface": "Interface",
     "activeQueuing": "Active queuing",
     "noInterface": "No default-route network interface was found.",
-    "perAppUnavailable": "Per-application prioritisation isn't available: pyren doesn't track which app owns which packet, only the totals above.",
+    "apps": {
+      "title": "Applications",
+      "process": "Process",
+      "download": "Download",
+      "upload": "Upload",
+      "rule": "Rule",
+      "normal": "Normal",
+      "high": "High",
+      "low": "Low",
+      "block": "Block",
+      "empty": "No application has used the network yet.",
+      "notRunning": "not running",
+      "hint": "Block cuts an application off from the network. High and Low only reorder what it sends, not what it downloads.",
+      "priorityIdle": "High and Low rules are saved but idle: they need Automatic mode with cake as the active queuing.",
+      "addPlaceholder": "Process name",
+      "add": "Add rule",
+      "addHint": "For an application that is not in the list yet. Use the process name, at most 15 characters.",
+      "unavailable": {
+        "needsRoot": "per-process networking needs the daemon to run as root",
+        "noCgroup2": "per-process networking needs the unified cgroup v2 hierarchy at /sys/fs/cgroup",
+        "loadFailed": "this kernel refused the per-process network programs: {detail}"
+      }
+    },
     "err": {
       "modeRequired": "params.mode is required: 'off' or 'auto'",
       "modeUnknown": "'{mode}' is not a network mode",
       "noInterface": "no default-route network interface found",
       "needsRoot": "changing the qdisc on {interface} needs root",
-      "qdiscRefused": "this kernel refused smart queuing: {detail}"
+      "qdiscRefused": "this kernel refused smart queuing: {detail}",
+      "ruleNameRequired": "params.name is required: the process name the rule is for",
+      "ruleNameInvalid": "'{name}' cannot be a process name: 1 to 15 characters, no '/'",
+      "actionRequired": "params.action is required: 'normal', 'high', 'low' or 'block'",
+      "actionUnknown": "'{action}' is not a network rule"
     }
   },
   "keys": {
@@ -585,7 +611,7 @@
     "usersOwner": "Settings in use",
     "usersOwnerNone": "Nobody's yet",
     "usersProfiles": "Kept for",
-    "usersProfilesHint": "Each of these users gets their own fans, power, lighting and keys back when they log in.",
+    "usersProfilesHint": "Each of these users gets their own fans, power, lighting, keys and network rules back when they log in.",
     "usersStandDown": "Stand down for other users",
     "usersStandDownHint": "While someone who is not in the **{group}** group is logged in, Pyren lets go of the fans, the power settings and any overclock, and leaves the machine to its firmware. The keyboard stays lit in its colours; only an animated effect stops. It picks up again when one of its users is back.",
     "storage": "Storage",

@@ -131,7 +131,7 @@ The daemon now carries these modules, each one crate under
 | `overclock` | GPU core/memory offsets — the only feature that leaves the shipped envelope, so the only one behind a consent of its own |
 | `gpu` | the graphics MUX (`gpu_mux_mode`) |
 | `hotkey` / `keymap` | the OMEN key, and an evdev remapper |
-| `network` | the honest half of the "network booster" |
+| `network` | smart queuing, and per-process accounting and rules (eBPF) |
 | `installer` | the driver + systemd-unit installer (inspect / plan / apply) |
 
 Two carve-outs the layout deliberately leaves open:

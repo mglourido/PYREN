@@ -1,0 +1,29 @@
+# The kernel half of `pyren-network`'s per-process accounting.
+#
+# Not a member of the daemon workspace, and not built by `cargo build`
+# there: an eBPF target needs a nightly toolchain and `bpf-linker`, and the
+# daemon has to keep building on stable with neither. What the daemon
+# embeds is the compiled object, `../bpf/pyren-net.bpf.o`, which is checked
+# in; `tools/build-bpf.sh` regenerates it from this source.
+[package]
+name = "pyren-network-ebpf"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+aya-ebpf = "0.2.1"
+
+[[bin]]
+name = "pyren-net"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+debug = 2
+lto = true
+panic = "abort"
+codegen-units = 1
+
+[workspace]

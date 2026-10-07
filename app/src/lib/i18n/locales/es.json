@@ -387,13 +387,39 @@
     "interface": "Interfaz",
     "activeQueuing": "Cola activa",
     "noInterface": "No se encontró ninguna interfaz de red con ruta predeterminada.",
-    "perAppUnavailable": "La priorización por aplicación no está disponible: pyren no rastrea qué aplicación es dueña de cada paquete, solo los totales de arriba.",
+    "apps": {
+      "title": "Aplicaciones",
+      "process": "Proceso",
+      "download": "Bajada",
+      "upload": "Subida",
+      "rule": "Regla",
+      "normal": "Normal",
+      "high": "Alta",
+      "low": "Baja",
+      "block": "Bloquear",
+      "empty": "Ninguna aplicación ha usado la red todavía.",
+      "notRunning": "no está en ejecución",
+      "hint": "Bloquear deja a una aplicación sin acceso a la red. Alta y Baja solo reordenan lo que envía, no lo que descarga.",
+      "priorityIdle": "Las reglas Alta y Baja están guardadas pero inactivas: necesitan el modo Automático con cake como cola activa.",
+      "addPlaceholder": "Nombre del proceso",
+      "add": "Añadir regla",
+      "addHint": "Para una aplicación que todavía no está en la lista. Usa el nombre del proceso, 15 caracteres como máximo.",
+      "unavailable": {
+        "needsRoot": "la red por proceso necesita que el daemon se ejecute como administrador",
+        "noCgroup2": "la red por proceso necesita la jerarquía unificada cgroup v2 en /sys/fs/cgroup",
+        "loadFailed": "este kernel rechazó los programas de red por proceso: {detail}"
+      }
+    },
     "err": {
       "modeRequired": "falta params.mode: 'off' o 'auto'",
       "modeUnknown": "'{mode}' no es un modo de red",
       "noInterface": "no se encontró ninguna interfaz de red con ruta predeterminada",
       "needsRoot": "cambiar la cola en {interface} necesita permisos de administrador",
-      "qdiscRefused": "este kernel rechazó la cola inteligente: {detail}"
+      "qdiscRefused": "este kernel rechazó la cola inteligente: {detail}",
+      "ruleNameRequired": "falta params.name: el nombre del proceso al que se aplica la regla",
+      "ruleNameInvalid": "'{name}' no puede ser un nombre de proceso: de 1 a 15 caracteres, sin '/'",
+      "actionRequired": "falta params.action: 'normal', 'high', 'low' o 'block'",
+      "actionUnknown": "'{action}' no es una regla de red"
     }
   },
   "keys": {
@@ -585,7 +611,7 @@
     "usersOwner": "Ajustes en uso",
     "usersOwnerNone": "De nadie todavía",
     "usersProfiles": "Guardados para",
-    "usersProfilesHint": "Cada uno de estos usuarios recupera sus propios ventiladores, energía, iluminación y teclas al iniciar sesión.",
+    "usersProfilesHint": "Cada uno de estos usuarios recupera sus propios ventiladores, energía, iluminación, teclas y reglas de red al iniciar sesión.",
     "usersStandDown": "Detenerse con otros usuarios",
     "usersStandDownHint": "Mientras haya iniciado sesión alguien que no está en el grupo **{group}**, Pyren suelta los ventiladores, los ajustes de energía y cualquier overclock, y deja el equipo en manos del firmware. El teclado sigue iluminado con sus colores; solo se detiene un efecto animado. Vuelve a encargarse cuando regresa uno de sus usuarios.",
     "storage": "Almacenamiento",

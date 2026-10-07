@@ -241,6 +241,22 @@ class HardwareStore {
   }
 
   /**
+   * Re-reads the network mode. The daemon puts a remembered `auto` back by
+   * itself, some seconds after it starts and again whenever the default
+   * route moves, so what was read at launch can be out of date without
+   * anything here having changed it.
+   */
+  async refreshNetwork() {
+    try {
+      const network = await daemon.networkStatus();
+      this.network = network;
+      this.state = { ...this.state, networkMode: network.mode };
+    } catch {
+      // Keep the last reading; the next refresh may do better.
+    }
+  }
+
+  /**
    * Follows the machine when something else moves it, and returns the
    * function that stops following.
    *

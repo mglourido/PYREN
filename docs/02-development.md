@@ -2,7 +2,10 @@
 
 ## Prerequisites
 
-- Rust + Cargo (`daemon/` builds with no extra system deps).
+- Rust + Cargo (`daemon/` builds with no extra system deps). The one
+  exception is opt-in: editing the eBPF programs in
+  `daemon/crates/network/ebpf` needs a nightly toolchain and `bpf-linker`
+  to regenerate the checked-in object — `tools/build-bpf.sh` says how.
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`, then add
   to your shell rc:
   ```sh

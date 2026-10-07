@@ -13,6 +13,24 @@ and in `git log`; this file only tracks what is still open.
 
 ## 1. Open
 
+### Per-process networking: never loaded into a real kernel **[HP]**
+`network.getProcesses` / `network.setRule` (`daemon/crates/network`,
+`pyren-ctl network procs|rule`, the applications table on
+`/system/network`) are built, and everything above the kernel is
+unit-tested against a fake - but the eBPF object has only been compiled
+and parsed, never put to a verifier: loading it needs root. The first
+`sudo systemctl restart pyren-daemon` is the test. What it would confirm:
+the log says `per-process network accounting attached` rather than
+`unavailable: this kernel refused...`, `pyren-ctl network procs` lists
+real processes with plausible rates, `network rule curl block` makes
+`curl` fail with "Operation not permitted" while everything else carries
+on, and `high`/`low` show up as traffic in `tc -s qdisc show`'s Video and
+Bulk tins under `network set auto`. Whether a priority is *felt* on Wi-Fi,
+where the driver queues below `cake`, is a separate question nobody has
+measured. Also unwatched: a reboot with `auto` saved, to see
+`network: smart queuing in place on <iface>` arrive in the log once the
+network is up, and a switch between two users with different rules.
+
 ### Key mapping: not yet run against hardware **[HP]**
 The evdev remapper (`daemon/crates/keymap`, `keymap.*`, `pyren-ctl keymap`,
 `/system/keys`) is built and unit-tested, but grabbing *this* development
@@ -57,6 +75,22 @@ is a decision, not an addition — and it would need the same consent gate
 ---
 
 ## 2. Worth doing, not urgent
+
+### Network rules: a process started after the rule has up to a second
+Rules are by name and the kernel is told by thread-group id, so a process
+that starts between two samples runs unruled until the next one
+(`daemon/crates/network/src/apps.rs`). For `block` that is a real gap: a
+launcher can phone home before it is cut off. Closing it means learning
+about `exec` as it happens - the netlink process connector, or a
+`sched_process_exec` program beside the others writing the policy entry
+itself - and neither is worth building before the programs that exist
+have been run on hardware (§1).
+
+### Network priority does nothing for downloads
+`high`/`low` only pick a `cake` tin for what a process sends. Shaping what
+it *receives* needs the traffic redirected through an `ifb` device with a
+qdisc and a rate limit set below the line's real speed, which in turn
+needs that speed measured or asked for. A separate feature, not a fix.
 
 - **Import the Windows OMEN profile.** `PowerControlConfig.json` on the
   Windows partition (gzip'd UTF-16 JSON) holds what HP itself considers

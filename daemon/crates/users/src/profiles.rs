@@ -23,7 +23,15 @@ use serde_json::Value;
 
 /// The namespaces that are somebody's. `debug` and this crate's own
 /// `users` are the machine's, and stay put whoever logs in.
-pub const NAMESPACES: [&str; 6] = ["fan", "power", "rgb", "keymap", "hotkey", "overclock"];
+pub const NAMESPACES: [&str; 7] = [
+    "fan",
+    "power",
+    "rgb",
+    "keymap",
+    "hotkey",
+    "overclock",
+    "network",
+];
 
 /// Keys that describe the machine although they live in a user's file, by
 /// namespace. They are kept as they are when a profile is put back.

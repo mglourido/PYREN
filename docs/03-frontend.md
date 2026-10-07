@@ -257,15 +257,14 @@ local state alone any more.
   run against real hardware (`dev/TODO.md`).
 - GPU switching is **wired** to the `gpu` module: MUX mode read at startup
   and set through `hp-wmi`'s own `gpu_mux_mode`, no `supergfxctl`.
-- Network booster is **wired**, but only for the system-wide half: `Off`
-  and `Auto` drive the `network` module, which hands the default-route
-  interface `cake` (or `fq_codel`) — see `docs/01-ipc-protocol.md`
-  §"`network` module". The per-application priority/block table the page
-  used to mock up is gone; per-process traffic control needs
-  cgroups/nftables/eBPF this project does not implement (`dev/TODO.md`
-  §2), so the page shows total bandwidth and says plainly that
-  per-application prioritisation is not available, rather than a table
-  with no daemon behind it.
+- Network booster is **wired**: `Off` and `Auto` drive the `network`
+  module, which hands the default-route interface `cake` (or `fq_codel`),
+  and the applications table lists traffic per process name with a
+  normal / high / low / block rule on each — see `docs/01-ipc-protocol.md`
+  §"`network` module". The page polls `network.getProcesses` once a second
+  only while it is open (the daemon stops sampling when nobody asks), and
+  shows the daemon's own reason instead of a table when the per-process
+  half is unavailable.
 - Lighting is **wired** (`system/lighting`) to the `rgb` module: zone
   colours, brightness, off, restore-on-start, a read-back button that asks
   the firmware, and a Protocol panel that lists the three lighting dialects,

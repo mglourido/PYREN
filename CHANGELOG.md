@@ -11,6 +11,28 @@ the IPC protocol and on-disk config.
 
 ### Added
 
+- **The network page knows which application is using the connection.**
+  A table of traffic per process, each with a rule: *Block* cuts it off
+  from the network, *High* and *Low* move what it sends ahead of or behind
+  everything else. Rules are by process name, survive restarts
+  (`/etc/pyren/network.json`) and apply to every process of that name.
+  Behind it are a few eBPF programs on the root cgroup that note which
+  process opens each socket (closes #18) - no process is moved to another
+  cgroup, and they detach by themselves if the daemon dies. Priority only
+  reorders uploads and only while *Automatic* is running `cake`; a
+  download can be blocked but not slowed. New `network.getProcesses` and
+  `network.setRule`, `perProcess` in `network.getStatus`, and `pyren-ctl
+  network procs` / `network rule <name> <action>`. Needs cgroup v2 and a
+  root daemon; elsewhere the page says why instead.
+- **The network mode and rules are remembered, per user.** *Automatic* used
+  to be forgotten at every restart. It is now kept in `network.json` and
+  put back once there is a default route to put it on - at boot that is
+  some seconds after the daemon starts - and again if the route moves to
+  another interface. Like the fans and the lighting, the file is each
+  user's own: switching user switches mode and rules, and the daemon
+  removes the queue it placed on its way out so nobody inherits the last
+  person's.
+
 - **The daemon's settings follow whoever is logged in.** One daemon serves
   the whole machine, and until now whoever changed its settings last
   changed them for everyone. It now keeps a copy per user

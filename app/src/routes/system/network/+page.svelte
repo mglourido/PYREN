@@ -1,21 +1,107 @@
 <script lang="ts">
   /**
-   * Network booster. System-wide smart queuing only - Off just monitors,
+   * Network booster. Two halves: a machine-wide mode - Off just monitors,
    * Auto hands the default-route interface `cake` (or `fq_codel` as a
-   * fallback) so responsive traffic stays snappy under load. There is no
-   * per-application priority or block list: that needs per-process traffic
-   * accounting (cgroups/nftables/eBPF) this daemon does not implement -
-   * see `dev/TODO.md` §2 and `daemon/crates/network/src/lib.rs`.
+   * fallback) - and a per-application table where each process name can be
+   * blocked or given a send priority. The table is polled only while this
+   * page is open, which is also what keeps the daemon sampling at all. See
+   * `daemon/crates/network/src/lib.rs` for what each rule can and cannot do.
    */
+  import { onMount } from "svelte";
   import Segmented from "$lib/components/Segmented.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import {
+    daemon,
+    errorText,
+    type NetworkAction,
+    type NetworkProcesses,
+  } from "$lib/api/daemon";
+  import { t, tm } from "$lib/i18n/index.svelte";
   import { networkDescriptionKey } from "$lib/network/mode";
+  import {
+    MAX_PROCESS_NAME,
+    NETWORK_ACTIONS,
+    canAddRule,
+    formatRate,
+    ruleIsIdle,
+  } from "$lib/network/processes";
   import { hardware, type NetworkMode } from "$lib/stores/hardware.svelte";
   import { telemetry } from "$lib/stores/telemetry.svelte";
+
+  const POLL_MS = 1000;
+  /** The mode is re-read far less often: each read costs the daemon a
+   *  `tc` process, and it only changes behind the page's back when the
+   *  daemon restores it or the default route moves. */
+  const STATUS_POLL_MS = 5000;
 
   const mode = $derived(hardware.state.networkMode);
   const status = $derived(hardware.network);
   const total = $derived(telemetry.netUpMbps + telemetry.netDownMbps);
+
+  let apps = $state<NetworkProcesses | null>(null);
+  let appsError = $state<string | null>(null);
+  /** A rule being written: its reply is newer than any poll in flight. */
+  let writing = false;
+
+  const hasIdleRule = $derived(
+    apps?.processes.some((p) => ruleIsIdle(p.action, apps?.priorityActive ?? false)) ?? false,
+  );
+
+  async function refresh() {
+    try {
+      const listing = await daemon.networkProcesses();
+      if (!writing) apps = listing;
+      appsError = null;
+    } catch (e) {
+      appsError = errorText(e);
+    }
+  }
+
+  async function setRule(name: string, action: NetworkAction) {
+    writing = true;
+    try {
+      apps = await daemon.setNetworkRule(name, action);
+      appsError = null;
+    } catch (e) {
+      appsError = errorText(e);
+    } finally {
+      writing = false;
+    }
+  }
+
+  let newName = $state("");
+  let newAction = $state<NetworkAction>("block");
+
+  async function addRule() {
+    const name = newName.trim();
+    if (!canAddRule(name)) return;
+    await setRule(name, newAction);
+    if (!appsError) newName = "";
+  }
+
+  onMount(() => {
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      await refresh();
+      polling = false;
+    };
+    void poll();
+    void hardware.refreshNetwork();
+    const timer = setInterval(() => void poll(), POLL_MS);
+    const statusTimer = setInterval(() => void hardware.refreshNetwork(), STATUS_POLL_MS);
+    return () => {
+      clearInterval(timer);
+      clearInterval(statusTimer);
+    };
+  });
+
+  // Whether priority rules are live depends on the mode, so a mode change
+  // should not wait a poll to be reflected in the hint under the table.
+  $effect(() => {
+    void mode;
+    void refresh();
+  });
 </script>
 
 <div class="network">
@@ -69,9 +155,87 @@
       </div>
     </aside>
 
-    <div class="note">
-      <p>{t("network.perAppUnavailable")}</p>
-    </div>
+    <section class="apps">
+      <h2>{t("network.apps.title")}</h2>
+      {#if apps && !apps.available}
+        <p class="mute">{tm(apps.reason)}</p>
+      {:else if apps}
+        <p class="hint">{t("network.apps.hint")}</p>
+        {#if apps.processes.length === 0}
+          <p class="mute">{t("network.apps.empty")}</p>
+        {:else}
+          <table>
+            <thead>
+              <tr>
+                <th>{t("network.apps.process")}</th>
+                <th class="num">{t("network.apps.download")}</th>
+                <th class="num">{t("network.apps.upload")}</th>
+                <th>{t("network.apps.rule")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each apps.processes as process (process.name)}
+                <tr class:blocked={process.action === "block"}>
+                  <td class="name">
+                    {process.name}
+                    {#if process.pids.length === 0}
+                      <small>{t("network.apps.notRunning")}</small>
+                    {/if}
+                  </td>
+                  <td class="num">{formatRate(process.downBps)}</td>
+                  <td class="num">{formatRate(process.upBps)}</td>
+                  <td>
+                    <Segmented
+                      value={process.action}
+                      options={NETWORK_ACTIONS.map((action) => ({
+                        value: action,
+                        label: t(`network.apps.${action}`),
+                      }))}
+                      onchange={(v) => setRule(process.name, v as NetworkAction)}
+                    />
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+        {#if hasIdleRule}
+          <p class="hint warn">{t("network.apps.priorityIdle")}</p>
+        {/if}
+        <form
+          class="add"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void addRule();
+          }}
+        >
+          <input
+            type="text"
+            bind:value={newName}
+            maxlength={MAX_PROCESS_NAME}
+            placeholder={t("network.apps.addPlaceholder")}
+            aria-label={t("network.apps.addPlaceholder")}
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <Segmented
+            value={newAction}
+            options={NETWORK_ACTIONS.filter((action) => action !== "normal").map((action) => ({
+              value: action,
+              label: t(`network.apps.${action}`),
+            }))}
+            onchange={(v) => (newAction = v as NetworkAction)}
+          />
+          <button type="submit" disabled={!canAddRule(newName.trim())}>
+            {t("network.apps.add")}
+          </button>
+        </form>
+        <p class="hint">{t("network.apps.addHint")}</p>
+      {/if}
+      {#if appsError}
+        <p class="error">{appsError}</p>
+      {/if}
+    </section>
   </div>
 </div>
 
@@ -193,22 +357,101 @@
     font-size: 15px;
   }
 
-  .note {
+  .apps {
     flex: 1;
-    min-width: 260px;
+    min-width: 320px;
     display: flex;
-    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
     padding-top: 26px;
   }
 
-  .note p {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
+  .apps h2 {
     margin: 0;
-    max-width: 46ch;
+    font-size: 17px;
+    font-weight: 400;
+  }
+
+  .hint {
+    margin: 0;
+    max-width: 60ch;
     color: var(--text-dim);
     font-size: 13px;
     line-height: 1.5;
+  }
+
+  .hint.warn {
+    color: var(--text);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  th {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    color: var(--text-dim);
+    font-weight: 400;
+    text-align: left;
+  }
+
+  td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .name small {
+    margin-left: 8px;
+    color: var(--text-mute);
+  }
+
+  .add {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+  }
+
+  .add input {
+    width: 18ch;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+  }
+
+  .add button[type="submit"] {
+    padding: 8px 16px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .add button[type="submit"]:disabled {
+    color: var(--text-mute);
+    cursor: default;
+  }
+
+  tr.blocked .name,
+  tr.blocked .num {
+    color: var(--text-mute);
   }
 </style>

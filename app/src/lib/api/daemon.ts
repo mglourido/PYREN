@@ -365,8 +365,7 @@ export type GpuStatus = {
 
 /**
  * `network.getStatus` - see `docs/01-ipc-protocol.md` §"`network` module".
- * System-wide smart queuing only; there is no per-application field here
- * because the daemon has no per-process traffic data to report.
+ * The machine-wide half; per-process traffic is `NetworkProcesses`.
  */
 export type NetworkStatus = {
   /** False when `tc` is missing or no default-route interface was found. */
@@ -379,6 +378,36 @@ export type NetworkStatus = {
   /** What `tc qdisc show` reports right now, ours or the kernel's own
    *  default - `null` when `interface` is `null` or the read failed. */
   activeQdisc: string | null;
+  /** Whether the daemon could load its per-process accounting, and why
+   *  not when it could not (not root, no cgroup v2, kernel refusal). */
+  perProcess: { available: boolean; reason: Msg | null };
+};
+
+/** What a rule does to one process name's traffic. `normal` is no rule. */
+export type NetworkAction = "normal" | "high" | "low" | "block";
+
+export type NetworkProcess = {
+  /** The process name (`comm`), which is also what a rule is keyed by. */
+  name: string;
+  /** Every running process of that name with traffic; empty for a rule
+   *  whose process is not running or has not sent a byte. */
+  pids: number[];
+  /** Bytes per second over the last sample, summed over `pids`. */
+  downBps: number;
+  upBps: number;
+  downBytes: number;
+  upBytes: number;
+  action: NetworkAction;
+};
+
+/** `network.getProcesses`, and the reply to `network.setRule`. */
+export type NetworkProcesses = {
+  available: boolean;
+  reason: Msg | null;
+  /** False while `high`/`low` rules are remembered but not acted on:
+   *  they need `auto` mode with `cake` as the active qdisc. */
+  priorityActive: boolean;
+  processes: NetworkProcess[];
 };
 
 export type RgbStatus = {
@@ -1307,6 +1336,8 @@ const DAEMON_ROUTES: Record<
   gpu_set_mode: { module: "gpu", method: "setMode" },
   network_get_status: { module: "network", method: "getStatus" },
   network_set_mode: { module: "network", method: "setMode" },
+  network_get_processes: { module: "network", method: "getProcesses" },
+  network_set_rule: { module: "network", method: "setRule" },
   keymap_get_status: { module: "keymap", method: "getStatus" },
   keymap_set_mapping: { module: "keymap", method: "setMapping", params: (a) => a.mapping },
   keymap_remove_mapping: { module: "keymap", method: "removeMapping", params: (a) => a.from },
@@ -1647,6 +1678,14 @@ export const daemon = {
   /** `off` deletes the root qdisc; `auto` hands the interface `cake` (or
    *  `fq_codel` as a fallback) - system-wide, not per-application. */
   setNetworkMode: (mode: "off" | "auto") => call<NetworkStatus>("network_set_mode", { mode }),
+  /** Traffic per process name. Calling it is also what keeps the daemon
+   *  sampling: it stops a few seconds after the last call unless a rule
+   *  needs enforcing. */
+  networkProcesses: () => call<NetworkProcesses>("network_get_processes"),
+  /** `block` drops the process's packets both ways; `high`/`low` reorder
+   *  what it sends; `normal` removes the rule. */
+  setNetworkRule: (name: string, action: NetworkAction) =>
+    call<NetworkProcesses>("network_set_rule", { name, action }),
   /** The lightbar: the startup probe plus what this daemon last set. */
   rgbStatus: () => call<RgbStatus>("rgb_get_status"),
   /** Re-probes both lighting paths. Costs an ACPI round trip, so it is

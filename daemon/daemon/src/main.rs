@@ -505,6 +505,7 @@ fn main() {
     let overclock_at_exit = overclock.clone();
     registry.register(Box::new(overclock));
     registry.register(Box::new(gpu));
+    let network_at_exit = network.clone();
     registry.register(Box::new(network));
     registry.register(Box::new(hotkey.clone()));
     registry.register(Box::new(keymap));
@@ -566,6 +567,12 @@ fn main() {
         fan_at_exit.on_exit();
         // auto-cpufreq keeps pyren's override in its own state otherwise.
         power_at_exit.on_exit();
+        // The qdisc outlives the process otherwise, and the next start may
+        // be for a user who never asked for it. Pointless on the way to a
+        // power-off, where the interface is about to stop existing.
+        if !machine_stopping {
+            network_at_exit.on_exit();
+        }
     };
     let release: Arc<dyn Fn(bool) + Send + Sync> = Arc::new(release);
     let leaving = Arc::new(std::sync::Mutex::new(()));

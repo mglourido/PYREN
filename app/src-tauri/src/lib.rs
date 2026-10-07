@@ -384,8 +384,7 @@ fn gpu_set_mode(mode: String) -> Result<Value, String> {
     call_daemon("gpu", "setMode", json!({ "mode": mode }))
 }
 
-/// System-wide smart queuing only - see `docs/01-ipc-protocol.md`
-/// §"`network` module" for why there is no per-application field here.
+/// See `docs/01-ipc-protocol.md` §"`network` module".
 #[tauri::command(async)]
 fn network_get_status() -> Result<Value, String> {
     call_daemon("network", "getStatus", Value::Null)
@@ -394,6 +393,20 @@ fn network_get_status() -> Result<Value, String> {
 #[tauri::command(async)]
 fn network_set_mode(mode: String) -> Result<Value, String> {
     call_daemon("network", "setMode", json!({ "mode": mode }))
+}
+
+#[tauri::command(async)]
+fn network_get_processes() -> Result<Value, String> {
+    call_daemon("network", "getProcesses", Value::Null)
+}
+
+#[tauri::command(async)]
+fn network_set_rule(name: String, action: String) -> Result<Value, String> {
+    call_daemon(
+        "network",
+        "setRule",
+        json!({ "name": name, "action": action }),
+    )
 }
 
 /// A **fresh** probe, unlike the one in `getStatus`. This is what makes
@@ -1190,6 +1203,8 @@ pub fn run() {
             gpu_set_mode,
             network_get_status,
             network_set_mode,
+            network_get_processes,
+            network_set_rule,
             rgb_get_capabilities,
             rgb_set_static,
             rgb_set_zones,

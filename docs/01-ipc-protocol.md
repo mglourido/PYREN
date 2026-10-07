@@ -2062,28 +2062,75 @@ failure.
 
 ## `network` module
 
-System-wide smart queuing on the default-route interface — **not**
-per-application traffic control. See `daemon/crates/network/src/lib.rs` for
-why the app's per-process priority/block table has nothing behind it: it
-needs per-process traffic accounting (cgroups/nftables/eBPF) this project
-does not implement — see `dev/TODO.md` §2 for the deliberate scope cut.
+Two halves: system-wide smart queuing on the default-route interface, and
+per-process accounting with rules. See `daemon/crates/network/src/lib.rs`
+for the reasoning behind both.
 
 | method | params | result |
 |---|---|---|
-| `network.getStatus` | none | `{ "supported": bool, "interface": string \| null, "mode": "off" \| "auto", "activeQdisc": string \| null }` |
+| `network.getStatus` | none | `{ "supported": bool, "interface": string \| null, "mode": "off" \| "auto", "activeQdisc": string \| null, "perProcess": { "available": bool, "reason": Msg \| null } }` |
 | `network.setMode` | `{ "mode": "off" \| "auto" }` | as `getStatus` |
+| `network.getProcesses` | none | `{ "available": bool, "reason": Msg \| null, "priorityActive": bool, "processes": [Process] }` |
+| `network.setRule` | `{ "name": string, "action": "normal" \| "high" \| "low" \| "block" }` | as `getProcesses` |
 
 `off` deletes the interface's root qdisc, handing it back to the kernel's
-own default. `auto` replaces it with `cake`, falling back to `fq_codel` on
+own default. `auto` replaces it with `cake diffserv4` under the fixed handle
+`1:`, falling back to `fq_codel` on
 a kernel with no `sch_cake`; both fair-queue by flow, which is what keeps a
 game or a call responsive while something else saturates the link, with no
 need to know which process owns which packet.
 
-`mode` is this daemon's own memory of the last `setMode` call, not a read
-of the interface — `fq_codel` is already several distributions' own
+`mode` is what this daemon last verifiably put on the interface, not a read
+of it — `fq_codel` is already several distributions' own
 `net.core.default_qdisc`, so seeing it active proves nothing about who set
-it. It resets to `off` on daemon restart. `activeQdisc` is the separate,
-honest read of `tc qdisc show` — ours or not.
+it. `activeQdisc` is the separate, honest read of `tc qdisc show` — ours or
+not.
+
+A successful `setMode` is remembered in `network.json` together with the
+rules below, and restored: a daemon that has just started answers
+`"mode": "off"` until there is a default route, then applies a remembered
+`auto` by itself (within about five seconds) and re-applies it if the
+default route moves to another interface. A refused `setMode` is not
+remembered. When the daemon stops, or hands over to another user, it
+removes the qdisc it placed; the choice stays on disk.
+
+### Per-process traffic
+
+```json
+{ "name": "firefox", "pids": [4127, 4310], "downBps": 181250.0, "upBps": 9300.0,
+  "downBytes": 73400320, "upBytes": 2101248, "action": "normal" }
+```
+
+- A row is a process **name** - the main thread's `comm`, the same 15-byte
+  name `system.getMetrics` lists processes under - with every running
+  process of that name summed into it. Rules are keyed by that name too,
+  so they outlive the process and are kept in `network.json`.
+- `downBps`/`upBps` are **bytes** per second over the last one-second
+  sample; `downBytes`/`upBytes` are totals since the processes in `pids`
+  were first seen. Loopback traffic is not counted.
+- `processes` is everything with traffic, busiest first, followed by every
+  rule whose process has none (`pids` empty) so a rule can always be seen
+  and removed.
+- The daemon samples only while a rule exists or `getProcesses` was called
+  in the last five seconds. A client that wants live rates polls it about
+  once a second; the first reply after a pause carries zero rates.
+- `block` drops the process's packets in both directions (a blocked
+  `connect()` fails with `EPERM`), and applies to running processes at
+  once. A process *started* later is caught at the next sample, so it can
+  have up to a second on the network first.
+- `high` and `low` stamp outgoing packets with a `cake` tin (`1:3` Video,
+  `1:1` Bulk). They reorder what the process **sends** and nothing else,
+  and only while `priorityActive` is true: `mode` is `auto` and the qdisc
+  that took is `cake`. Otherwise the rule is stored and reported but not
+  applied. `normal` removes the rule.
+- `setRule` answers `invalidParams` for a name that could not be a `comm`
+  (empty, over 15 bytes, containing `/`) or an unknown action, and
+  `notCapable` - carrying the same `reason` - when `available` is false.
+- `available` is false when the eBPF programs behind this could not be
+  loaded; `reason` is `network.apps.unavailable.needsRoot`, `.noCgroup2` or
+  `.loadFailed`. Sockets opened before the daemon started are attributed
+  at their next `connect()` or `sendmsg()`, so a long-lived TCP connection
+  that predates it stays uncounted and unruled until it reconnects.
 
 ## `overclock` module
 
@@ -2471,7 +2518,8 @@ of Pyren's users who is not the `owner`:
 3. if they have none, nothing is restarted: the settings in use carry on
    and are simply theirs from then on.
 
-`fan`, `power`, `rgb`, `keymap`, `hotkey` and `overclock` are per user.
+`fan`, `power`, `rgb`, `keymap`, `hotkey`, `overclock` and `network` are per
+user.
 `debug` and `users` are the machine's. So are the *measurements* inside
 `fan.json` - the calibrated ceilings and floor, `speedControl`,
 `splitControl`, the floor notices - which are kept as they are when a
@@ -2504,7 +2552,9 @@ What that puts on the hardware is what each module does at any boot. The
 keyboard comes up in the saved colours (`rgb`'s `restoreOnStart`, on by
 default), the bound key and the key remaps are loaded, and the fan mode,
 power mode and overclock are applied only where their own restore-at-boot
-switch is on.
+switch is on. The network mode and per-process rules are always put back:
+they are that user's, and nothing about them needs the caution a fan or a
+clock offset does.
 
 The lighting is deliberately the one thing that is always there, whoever is
 or is not logged in. The keyboard's controller holds the colours it was

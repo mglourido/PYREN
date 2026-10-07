@@ -1,0 +1,10 @@
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]
+
+[target.bpfel-unknown-none]
+# The socket-storage map is a BTF map: without `--btf` the linker drops the
+# type information the kernel needs to create it.
+rustflags = ["-C", "debuginfo=2", "-C", "link-arg=--btf"]
