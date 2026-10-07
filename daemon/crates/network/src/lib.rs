@@ -1,60 +1,92 @@
-//! Network booster - system-wide smart queuing, not per-application control.
+//! Network booster - system-wide smart queuing, and per-process rules.
 //!
 //! | method | params | result |
 //! |---|---|---|
-//! | `network.getStatus` | none | `{ "supported": bool, "interface": string \| null, "mode": "off" \| "auto", "activeQdisc": string \| null }` |
+//! | `network.getStatus` | none | `{ "supported": bool, "interface": string \| null, "mode": "off" \| "auto", "activeQdisc": string \| null, "perProcess": { "available": bool, "reason": Msg \| null } }` |
 //! | `network.setMode` | `{ "mode": "off" \| "auto" }` | as `getStatus` |
+//! | `network.getProcesses` | none | `{ "available": bool, "reason": Msg \| null, "priorityActive": bool, "processes": [{ "name", "pids", "downBps", "upBps", "downBytes", "upBytes", "action" }] }` |
+//! | `network.setRule` | `{ "name": string, "action": "normal" \| "high" \| "low" \| "block" }` | as `getProcesses` |
 //!
-//! ## Why there is no per-application priority or block list here
+//! ## The machine-wide knob
 //!
-//! The app's network page (`app/src/routes/system/network`) was built with a
-//! per-process table - priority, block, a "double force" toggle - before any
-//! backend existed behind it. Building that for real needs two things this
-//! project has neither of: per-process traffic accounting (Linux gives you
-//! that via `cgroup net_cls`/`nftables` socket matching or eBPF, not for
-//! free from `/proc`) and a way to turn "high priority" into an actual
-//! `tc`/`nftables` rule *per PID*, which means tracking PIDs as they start
-//! and stop. `dev/TODO.md` §2 flagged this as the larger and less
-//! valuable half of the page, and it stays undone - see the app's
-//! `system/network` page for what it shows instead.
+//! `setMode` hands the default-route interface a queuing discipline that
+//! keeps latency down when something else is saturating the link (a game
+//! or a call staying responsive while a big download runs), via `cake` -
+//! or `fq_codel` on a kernel without `sch_cake` - instead of the plain FIFO
+//! most interfaces default to. This is the same idea `cake`'s own name
+//! suggests (Common Applications Kept Enhanced) and does not need to know
+//! which process owns which packet: both qdiscs fair-queue by flow, so a
+//! handful of small interactive flows naturally get more of the link than
+//! one greedy bulk transfer sharing it. `off` deletes the root qdisc,
+//! handing the interface back to the kernel's own default.
 //!
-//! ## What this module does instead
+//! ## The per-process half
 //!
-//! One honest, machine-wide knob: hand the default-route interface a
-//! queuing discipline that keeps latency down when something else is
-//! saturating the link (a game or a call staying responsive while a big
-//! download runs), via `cake` - or `fq_codel` on a kernel without
-//! `sch_cake` - instead of the plain FIFO most interfaces default to. This
-//! is the same idea `cake`'s own name suggests (Common Applications Kept
-//! Enhanced) and does not need to know which process owns which packet:
-//! both qdiscs fair-queue by flow, so a handful of small interactive flows
-//! naturally get more of the link than one greedy bulk transfer sharing it.
-//! `off` deletes the root qdisc, handing the interface back to the kernel's
-//! own default.
+//! Linux does not say which process a packet belongs to - not in `/proc`,
+//! and not to `nftables`, which can match a socket's cgroup but not its
+//! owner. Matching by cgroup would mean moving every process of interest
+//! into a cgroup of this daemon's making, out from under whatever systemd
+//! scope it was started in. So the accounting is done where the answer is
+//! known: a few eBPF programs on the root cgroup note which process opens
+//! each socket, then count, drop or tag that socket's packets. `ebpf/` is
+//! their source, `bpf.rs` loads them, and `apps.rs` turns thread-group ids
+//! and byte counters into named processes, rates and rules.
+//!
+//! What a rule can do is uneven, and the page says so rather than hiding
+//! it. `block` is absolute and works both ways. `high` and `low` only
+//! reorder what the process *sends*, and only while `auto` has `cake` in
+//! place to act on the class the packet was stamped with: there is no
+//! queue of ours in front of a packet that has already arrived, so
+//! downloads cannot be reordered at all - `block` is the only thing that
+//! slows one.
+//!
+//! On a machine where the programs cannot be loaded - the daemon is not
+//! root, the kernel has no cgroup-BPF, the cgroup tree is v1 - everything
+//! above the per-process half works as before and `perProcess.reason`
+//! carries the reason.
 //!
 //! ## What "mode" means here
 //!
 //! There is no way to ask the kernel "did *pyren* set this qdisc, or was it
 //! already there" - `fq_codel` is the default `net.core.default_qdisc` on
 //! several distributions, so seeing it active proves nothing about who put
-//! it there. `mode` is therefore this daemon's own memory of the last
-//! `setMode` call, not a read of the interface - it resets to `off` on
-//! restart rather than guessing. `activeQdisc` is the separate, honest
-//! ground truth: whatever `tc qdisc show` actually reports right now, ours
-//! or not.
+//! it there. `mode` is therefore this daemon's own record of what it last
+//! verifiably put on the interface, not a read of it. `activeQdisc` is the
+//! separate, honest ground truth: whatever `tc qdisc show` actually
+//! reports right now, ours or not.
+//!
+//! ## What is remembered
+//!
+//! The mode the user chose and their rules, in `network.json` - one per
+//! user, like the fan curve or the lighting. A daemon that has just started
+//! reports `off`, because nothing is on the interface yet; the background
+//! thread then puts a remembered `auto` in place as soon as there is a
+//! default route to put it on, which at boot is usually some seconds after
+//! the daemon is up, and puts it back if the route later moves to another
+//! interface. On the way out the qdisc is removed again, so that whoever
+//! the daemon starts for next gets their own choice and not the last
+//! person's.
 
-#[cfg(test)]
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
-use pyren_core::{msg, ErrorKind, Module, ModuleError, ModuleResult};
+use pyren_config::{ConfigStore, LoadOutcome};
+use pyren_core::{log_info, log_warn, msg, ErrorKind, Module, ModuleError, ModuleResult, Msg};
 use serde_json::{json, Value};
+
+mod apps;
+mod bpf;
+
+use apps::{Action, Engine, Kernel, NetworkConfig, ProcessList};
 
 #[cfg(test)]
 type BeforeModeCommit = Arc<dyn Fn(NetworkMode) + Send + Sync>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum NetworkMode {
+    #[default]
     Off,
     Auto,
 }
@@ -189,10 +221,24 @@ enum QdiscFailure {
 fn enable_smart_queuing(interface: &str) -> Result<&'static str, QdiscFailure> {
     let mut failures = Vec::new();
     for qdisc in QDISCS_TO_TRY {
-        let output = pyren_core::process::output(
-            pyren_core::process::command(tc_bin())
-                .args(["qdisc", "replace", "dev", interface, "root", qdisc]),
-        );
+        // The handle is fixed so a per-process priority can name the
+        // qdisc it is meant for, and `diffserv4` is the tin layout those
+        // priorities index - see `apps::CAKE_HANDLE`.
+        let mut command = pyren_core::process::command(tc_bin());
+        command.args([
+            "qdisc",
+            "replace",
+            "dev",
+            interface,
+            "root",
+            "handle",
+            apps::CAKE_HANDLE,
+            qdisc,
+        ]);
+        if qdisc == "cake" {
+            command.arg("diffserv4");
+        }
+        let output = pyren_core::process::output(&mut command);
         match output {
             Ok(out) if out.status.success() => return Ok(qdisc),
             Ok(out) => failures.push(format!(
@@ -240,15 +286,74 @@ fn disable_smart_queuing(interface: &str) -> Result<(), ModuleError> {
     )))
 }
 
+/// A handle: clones share one module, which is how the background thread
+/// and the daemon's exit path reach the same state the registry serves.
+#[derive(Clone)]
 pub struct NetworkModule {
+    inner: Arc<Inner>,
+}
+
+pub struct Inner {
     /// Serializes every physical qdisc operation through its observation
     /// and logical commit. An earlier tc process cannot write after a later
     /// setMode has returned.
     operation: Mutex<()>,
     mode: Mutex<ModeState>,
+    /// The mode the user chose, as `network.json` holds it. `mode` above
+    /// is what the interface is known to be in; this is what it should be
+    /// in, and [`NetworkModule::keep_mode`] closes the gap.
+    wanted: Mutex<NetworkMode>,
+    /// Where `auto` was last put in place.
+    applied_on: Mutex<Option<Link>>,
+    /// Set after a failed attempt to restore `auto`, so a kernel that
+    /// refuses is not asked again every few seconds for ever.
+    retry_after: Mutex<Option<Instant>>,
+    /// Per-process accounting and rules, or why this machine has none.
+    apps: Result<Arc<Mutex<Engine>>, Msg>,
+    /// The rules on disk, kept so that saving the mode on a machine with
+    /// no per-process half does not throw them away.
+    stored_rules: BTreeMap<String, Action>,
+    store: ConfigStore,
     #[cfg(test)]
     before_mode_commit: Mutex<Option<BeforeModeCommit>>,
 }
+
+impl std::ops::Deref for NetworkModule {
+    type Target = Inner;
+
+    fn deref(&self) -> &Inner {
+        &self.inner
+    }
+}
+
+/// One network device, as far as "is this still the one `auto` was applied
+/// to" goes. The index is what tells a device that went away and came back
+/// under the same name - a USB tether, a reloaded driver - from one that
+/// never left: the new one has no qdisc of ours.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Link {
+    interface: String,
+    ifindex: Option<u32>,
+}
+
+impl Link {
+    fn of(interface: &str) -> Self {
+        let ifindex = std::fs::read_to_string(format!("/sys/class/net/{interface}/ifindex"))
+            .ok()
+            .and_then(|text| text.trim().parse().ok());
+        Self {
+            interface: interface.to_string(),
+            ifindex,
+        }
+    }
+}
+
+/// How often the background thread checks that the wanted mode is still
+/// in place, in sampler ticks.
+const KEEP_EVERY_TICKS: u32 = 5;
+
+/// How long a refused restore waits before the next attempt.
+const RESTORE_BACKOFF: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy)]
 struct ModeState {
@@ -260,16 +365,266 @@ struct ModeState {
 }
 
 impl NetworkModule {
+    #[cfg(not(test))]
     pub fn new() -> Self {
-        Self {
-            operation: Mutex::new(()),
-            mode: Mutex::new(ModeState {
-                requested: NetworkMode::Off,
-                committed: Some(NetworkMode::Off),
-                generation: 0,
+        Self::with_parts(
+            ConfigStore::system(),
+            bpf::BpfKernel::load().map(|kernel| Box::new(kernel) as Box<dyn Kernel>),
+            Box::new(apps::running_processes),
+            true,
+        )
+    }
+
+    /// Under test there is no kernel half and no `/etc/pyren`: the qdisc
+    /// tests get a module whose per-process side reports itself
+    /// unavailable, which is also what an unprivileged daemon looks like.
+    #[cfg(test)]
+    pub fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pyren-network-config-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        Self::with_parts(
+            ConfigStore::at(dir),
+            Err(msg!(
+                "network.apps.unavailable.needsRoot",
+                "per-process networking needs the daemon to run as root"
+            )),
+            Box::new(std::collections::HashMap::new),
+            false,
+        )
+    }
+
+    fn with_parts(
+        store: ConfigStore,
+        kernel: Result<Box<dyn Kernel>, Msg>,
+        processes: ProcessList,
+        background: bool,
+    ) -> Self {
+        let loaded = store.load::<NetworkConfig>("network");
+        match &loaded.outcome {
+            LoadOutcome::Loaded | LoadOutcome::Missing => {}
+            LoadOutcome::Recovered { backup, reason } => {
+                log_warn!(
+                    "network config was unreadable ({reason}); using defaults{}",
+                    backup
+                        .as_ref()
+                        .map(|b| format!(", previous file kept at {}", b.display()))
+                        .unwrap_or_default()
+                );
+            }
+            LoadOutcome::TooNew { found } => {
+                log_warn!(
+                    "network config is version {found}, newer than this build understands; \
+                     using defaults and leaving the file alone"
+                );
+            }
+        }
+
+        let apps = match kernel {
+            Ok(kernel) => {
+                let mut engine = Engine::new(kernel, processes, loaded.value.rules.clone());
+                // Rules kept from the last run apply from the first moment,
+                // not from whenever the sampler first comes round.
+                engine.tick(Instant::now());
+                let engine = Arc::new(Mutex::new(engine));
+                log_info!("per-process network accounting attached");
+                Ok(engine)
+            }
+            Err(reason) => {
+                log_info!("per-process networking unavailable: {}", reason.text);
+                Err(reason)
+            }
+        };
+
+        let module = Self {
+            inner: Arc::new(Inner {
+                operation: Mutex::new(()),
+                mode: Mutex::new(ModeState {
+                    requested: NetworkMode::Off,
+                    committed: Some(NetworkMode::Off),
+                    generation: 0,
+                }),
+                wanted: Mutex::new(loaded.value.mode),
+                applied_on: Mutex::new(None),
+                retry_after: Mutex::new(None),
+                apps,
+                stored_rules: loaded.value.rules,
+                store,
+                #[cfg(test)]
+                before_mode_commit: Mutex::new(None),
             }),
-            #[cfg(test)]
-            before_mode_commit: Mutex::new(None),
+        };
+        if background {
+            spawn_background(Arc::downgrade(&module.inner));
+        }
+        module
+    }
+
+    fn wanted(&self) -> NetworkMode {
+        *self.wanted.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Writes `network.json`: the chosen mode and every rule.
+    fn save(&self) {
+        let rules = match &self.apps {
+            Ok(engine) => lock_engine(engine).rules().clone(),
+            Err(_) => self.stored_rules.clone(),
+        };
+        let config = NetworkConfig {
+            mode: self.wanted(),
+            rules,
+        };
+        // What was asked for is already in force; a config directory that
+        // cannot be written costs it the next restart, not this session.
+        if let Err(e) = self.store.save("network", &config) {
+            log_warn!("could not save network config: {e}");
+        }
+    }
+
+    /// Puts `mode` on the default-route interface and records what the
+    /// interface is known to be in afterwards. Everything `setMode` does
+    /// short of remembering the choice.
+    fn switch_mode(&self, mode: NetworkMode) -> Result<(), ModuleError> {
+        let operation = self.operation.lock().unwrap_or_else(|p| p.into_inner());
+        let interface =
+            default_route_interface(&read_to_string(&route_path())).ok_or_else(|| {
+                ModuleError::localised(
+                    ErrorKind::NotCapable,
+                    msg!(
+                        "network.err.noInterface",
+                        "no default-route network interface found"
+                    ),
+                )
+            })?;
+
+        {
+            let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
+            state.generation = state.generation.wrapping_add(1);
+            state.requested = mode;
+        }
+
+        let outcome = apply_mode(&interface, mode);
+
+        #[cfg(test)]
+        let before_mode_commit = {
+            self.before_mode_commit
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        };
+        #[cfg(test)]
+        if let Some(hook) = before_mode_commit.filter(|_| outcome.is_ok()) {
+            hook(mode);
+        }
+
+        let observation = outcome
+            .as_ref()
+            .err()
+            .and_then(|_| observe_mode(&interface));
+        let committed = {
+            let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
+            match &outcome {
+                Ok(()) => state.committed = Some(mode),
+                Err(_) => {
+                    let previous = state.committed;
+                    state.committed = observation;
+                    state.requested = observation.or(previous).unwrap_or(state.requested);
+                    state.generation = state.generation.wrapping_add(1);
+                }
+            }
+            state.committed
+        };
+        *self.applied_on.lock().unwrap_or_else(|p| p.into_inner()) =
+            (committed == Some(NetworkMode::Auto)).then(|| Link::of(&interface));
+        self.sync_priority(&interface);
+        drop(operation);
+        outcome
+    }
+
+    /// Makes the interface match the mode the user chose, if it does not.
+    ///
+    /// This is what makes `auto` survive a restart, and it is a loop
+    /// rather than one call at startup because of when a daemon starts: at
+    /// boot there is usually no default route yet, and the interface that
+    /// eventually carries it may not be the one that did yesterday. So the
+    /// background thread asks again every few seconds - one read of
+    /// `/proc/net/route`, and `tc` only when something has changed.
+    pub fn keep_mode(&self) {
+        if self.wanted() != NetworkMode::Auto {
+            return;
+        }
+        let Some(interface) = default_route_interface(&read_to_string(&route_path())) else {
+            return;
+        };
+        let link = Link::of(&interface);
+        let previous = self
+            .applied_on
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if previous.as_ref() == Some(&link) {
+            return;
+        }
+        {
+            let retry_after = self.retry_after.lock().unwrap_or_else(|p| p.into_inner());
+            if retry_after.is_some_and(|at| Instant::now() < at) {
+                return;
+            }
+        }
+
+        // The default route moved to another device: the qdisc on the one
+        // it left is ours and no longer wanted there. A device that merely
+        // came back under its old name took the qdisc with it when it went.
+        if let Some(old) = previous.filter(|old| old.interface != interface) {
+            let _operation = self.operation.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = disable_smart_queuing(&old.interface);
+        }
+
+        let outcome = self.switch_mode(NetworkMode::Auto);
+        let mut retry_after = self.retry_after.lock().unwrap_or_else(|p| p.into_inner());
+        match outcome {
+            Ok(()) => {
+                *retry_after = None;
+                log_info!("network: smart queuing in place on {interface}");
+            }
+            Err(e) => {
+                *retry_after = Some(Instant::now() + RESTORE_BACKOFF);
+                log_warn!(
+                    "network: could not put smart queuing on {interface}: {}",
+                    e.as_msg().text
+                );
+            }
+        }
+    }
+
+    /// Hands the interface back on the way out.
+    ///
+    /// The qdisc would otherwise outlive the daemon, and the next start
+    /// may be for somebody else - a user whose own choice is `off` would
+    /// inherit the last person's `cake` with nothing to say it is there.
+    /// The choice itself is not touched: this user's `auto` is back in
+    /// place the next time the daemon starts for them. The eBPF programs
+    /// need nothing here; the kernel detaches them when the process ends.
+    pub fn on_exit(&self) {
+        let applied = self
+            .applied_on
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        let Some(link) = applied else {
+            return;
+        };
+        let _operation = self.operation.lock().unwrap_or_else(|p| p.into_inner());
+        match disable_smart_queuing(&link.interface) {
+            Ok(()) => log_info!("network: handed {} back its own qdisc", link.interface),
+            Err(e) => log_warn!(
+                "network: could not remove the qdisc on {}: {}",
+                link.interface,
+                e.as_msg().text
+            ),
         }
     }
 
@@ -287,7 +642,140 @@ impl NetworkModule {
             "interface": interface,
             "mode": mode.map(NetworkMode::as_str),
             "activeQdisc": active_qdisc,
+            "perProcess": {
+                "available": self.apps.is_ok(),
+                "reason": self.apps.as_ref().err(),
+            },
         })
+    }
+
+    /// Tells the per-process side whether a priority would be acted on:
+    /// only while `auto` is the committed mode *and* the qdisc that took
+    /// was `cake`. Under the `fq_codel` fallback there are no tins, and
+    /// the class would be read by nothing - or, worse, by a qdisc of the
+    /// user's own that happens to use the same handle.
+    fn sync_priority(&self, interface: &str) {
+        let Ok(engine) = &self.apps else {
+            return;
+        };
+        let auto = self
+            .mode
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .committed
+            == Some(NetworkMode::Auto);
+        let active = auto && read_qdisc(interface).as_deref() == Some("cake");
+        lock_engine(engine).set_priority_active(active);
+    }
+
+    /// `network.getProcesses`.
+    fn processes(&self) -> Value {
+        match &self.apps {
+            Ok(engine) => {
+                let mut engine = lock_engine(engine);
+                engine.watch(Instant::now());
+                json!({
+                    "available": true,
+                    "reason": null,
+                    "priorityActive": engine.priority_active(),
+                    "processes": engine.processes_json(),
+                })
+            }
+            Err(reason) => json!({
+                "available": false,
+                "reason": reason,
+                "priorityActive": false,
+                "processes": [],
+            }),
+        }
+    }
+
+    /// `network.setRule`.
+    fn set_rule(&self, params: &Value) -> ModuleResult {
+        let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
+            ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!(
+                    "network.err.ruleNameRequired",
+                    "params.name is required: the process name the rule is for"
+                ),
+            )
+        })?;
+        if !apps::valid_name(name) {
+            return Err(ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!(
+                    "network.err.ruleNameInvalid",
+                    { "name" => name.to_string() },
+                    "'{name}' cannot be a process name: 1 to 15 characters, no '/'"
+                ),
+            ));
+        }
+        let raw = params
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ModuleError::localised(
+                    ErrorKind::InvalidParams,
+                    msg!(
+                        "network.err.actionRequired",
+                        "params.action is required: 'normal', 'high', 'low' or 'block'"
+                    ),
+                )
+            })?;
+        let action = Action::parse(raw).ok_or_else(|| {
+            ModuleError::localised(
+                ErrorKind::InvalidParams,
+                msg!("network.err.actionUnknown", { "action" => raw.to_string() }, "'{action}' is not a network rule"),
+            )
+        })?;
+        let engine = self
+            .apps
+            .as_ref()
+            .map_err(|reason| ModuleError::localised(ErrorKind::NotCapable, reason.clone()))?;
+
+        lock_engine(engine).set_rule(name, action);
+        self.save();
+        Ok(self.processes())
+    }
+}
+
+fn lock_engine(engine: &Mutex<Engine>) -> std::sync::MutexGuard<'_, Engine> {
+    engine.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The module's one thread, alive as long as the module is: once a
+/// [`apps::TICK`] it samples per-process traffic (only while there is a
+/// rule to enforce or a client looking), and every few ticks it checks the
+/// wanted mode is still in place - starting with the first, which is what
+/// restores `auto` after a restart without holding up the daemon's start.
+fn spawn_background(inner: Weak<Inner>) {
+    let spawned = std::thread::Builder::new()
+        .name("pyren-network".into())
+        .spawn(move || {
+            let mut tick: u32 = 0;
+            loop {
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                let module = NetworkModule { inner };
+                if tick.is_multiple_of(KEEP_EVERY_TICKS) {
+                    module.keep_mode();
+                }
+                if let Ok(engine) = &module.apps {
+                    let mut engine = lock_engine(engine);
+                    let now = Instant::now();
+                    if engine.wants_tick(now) {
+                        engine.tick(now);
+                    }
+                }
+                drop(module);
+                tick = tick.wrapping_add(1);
+                std::thread::sleep(apps::TICK);
+            }
+        });
+    if let Err(e) = spawned {
+        log_warn!("could not start the network thread: {e}");
     }
 }
 
@@ -331,58 +819,23 @@ impl Module for NetworkModule {
                     )
                 })?;
 
-                let operation = self.operation.lock().unwrap_or_else(|p| p.into_inner());
-                let interface = default_route_interface(&read_to_string(&route_path()))
-                    .ok_or_else(|| {
-                        ModuleError::localised(
-                            ErrorKind::NotCapable,
-                            msg!(
-                                "network.err.noInterface",
-                                "no default-route network interface found"
-                            ),
-                        )
-                    })?;
-
-                {
-                    let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
-                    state.generation = state.generation.wrapping_add(1);
-                    state.requested = mode;
-                }
-
-                let outcome = apply_mode(&interface, mode);
-
-                #[cfg(test)]
-                let before_mode_commit = {
-                    self.before_mode_commit
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .clone()
-                };
-                #[cfg(test)]
-                if let Some(hook) = before_mode_commit.filter(|_| outcome.is_ok()) {
-                    hook(mode);
-                }
-
-                let observation = outcome
-                    .as_ref()
-                    .err()
-                    .and_then(|_| observe_mode(&interface));
-                {
-                    let mut state = self.mode.lock().unwrap_or_else(|p| p.into_inner());
-                    match &outcome {
-                        Ok(()) => state.committed = Some(mode),
-                        Err(_) => {
-                            let previous = state.committed;
-                            state.committed = observation;
-                            state.requested = observation.or(previous).unwrap_or(state.requested);
-                            state.generation = state.generation.wrapping_add(1);
-                        }
-                    }
-                }
-                drop(operation);
-                outcome?;
-                Ok(self.status())
+                self.switch_mode(mode)?;
+                // Read before the choice is written down: a request queued
+                // behind this one takes the operation lock the moment it is
+                // free, and the reply to this one should not wait on a
+                // config write and then on somebody else's tc.
+                let status = self.status();
+                // Remembered only once it has taken: a mode that was
+                // refused is not one to keep retrying after every restart.
+                *self.wanted.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+                *self.retry_after.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                self.save();
+                Ok(status)
             }
+
+            "getProcesses" => Ok(self.processes()),
+
+            "setRule" => self.set_rule(&params),
 
             other => Err(ModuleError::UnknownMethod(other.to_string())),
         }
@@ -476,7 +929,7 @@ case "$1 $2" in
   "-Version ") exit 0 ;;
   "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
   "qdisc replace")
-    if [ "$6" = cake ] && [ -f "$root/block-replace" ]; then
+    if [ "$8" = cake ] && [ -f "$root/block-replace" ]; then
       : > "$root/started"
       while [ ! -f "$root/release" ]; do sleep 0.01; done
       exit 2
@@ -615,7 +1068,7 @@ exit 2
     #[test]
     fn cake_unavailable_falls_back_to_fq_codel() {
         let _fx = FakeTc::new(
-            "if [ \"$6\" = cake ]; then echo 'Error: Specified qdisc kind is unknown.' >&2; exit 2; fi\nexit 0",
+            "if [ \"$8\" = cake ]; then echo 'Error: Specified qdisc kind is unknown.' >&2; exit 2; fi\nexit 0",
         );
         assert_eq!(enable_smart_queuing("wlan0"), Ok("fq_codel"));
     }
@@ -678,7 +1131,7 @@ case "$1 $2" in
   "-Version ") exit 0 ;;
   "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
   "qdisc replace")
-    if [ "$6" = cake ]; then echo cake > "$root/qdisc"; sleep 4; fi
+    if [ "$8" = cake ]; then echo cake > "$root/qdisc"; sleep 4; fi
     exit 2 ;;
 esac
 exit 2
@@ -1062,7 +1515,7 @@ case "$1 $2" in
   "qdisc show") echo "qdisc $(cat "$root/qdisc") 0: root"; exit 0 ;;
   "qdisc del") echo pfifo_fast > "$root/qdisc"; exit 0 ;;
   "qdisc replace")
-    if [ "$6" = "fq_codel" ]; then exit 2; fi
+    if [ "$8" = "fq_codel" ]; then exit 2; fi
     if mkdir "$root/first" 2>/dev/null; then
       echo cake > "$root/qdisc"
       exit 0
@@ -1180,5 +1633,390 @@ exit 2
         let module = NetworkModule::new();
         let err = module.call("frobnicate", Value::Null).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::UnknownMethod);
+    }
+    fn apps_module(tag: &str, fake: &apps::tests::Fake) -> (NetworkModule, ConfigStore) {
+        let dir =
+            std::env::temp_dir().join(format!("pyren-network-apps-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = ConfigStore::at(dir);
+        let module = NetworkModule::with_parts(
+            store.clone(),
+            Ok(Box::new(fake.clone())),
+            fake.process_list(),
+            false,
+        );
+        (module, store)
+    }
+
+    #[test]
+    fn set_rule_blocks_the_process_and_reports_it() {
+        let fake = apps::tests::Fake::default();
+        fake.run(10, "steam");
+        let (module, _store) = apps_module("block", &fake);
+
+        let reply = module
+            .call("setRule", json!({ "name": "steam", "action": "block" }))
+            .unwrap();
+
+        assert_eq!(fake.state().policy.get(&10), Some(&apps::POLICY_BLOCK));
+        assert_eq!(reply["available"], true);
+        assert_eq!(reply["processes"][0]["name"], "steam");
+        assert_eq!(reply["processes"][0]["action"], "block");
+    }
+
+    #[test]
+    fn rules_survive_a_restart_and_apply_before_the_first_request() {
+        let fake = apps::tests::Fake::default();
+        fake.run(10, "steam");
+        let (module, store) = apps_module("restart", &fake);
+        module
+            .call("setRule", json!({ "name": "steam", "action": "block" }))
+            .unwrap();
+        drop(module);
+        fake.state().policy.clear();
+
+        let _restarted = NetworkModule::with_parts(
+            store,
+            Ok(Box::new(fake.clone())),
+            fake.process_list(),
+            false,
+        );
+
+        assert_eq!(fake.state().policy.get(&10), Some(&apps::POLICY_BLOCK));
+    }
+
+    #[test]
+    fn a_rule_set_back_to_normal_is_not_kept() {
+        let fake = apps::tests::Fake::default();
+        let (module, store) = apps_module("normal", &fake);
+        module
+            .call("setRule", json!({ "name": "steam", "action": "low" }))
+            .unwrap();
+        module
+            .call("setRule", json!({ "name": "steam", "action": "normal" }))
+            .unwrap();
+
+        assert!(store
+            .load::<NetworkConfig>("network")
+            .value
+            .rules
+            .is_empty());
+    }
+
+    #[test]
+    fn set_rule_refuses_what_it_cannot_mean() {
+        let fake = apps::tests::Fake::default();
+        let (module, _store) = apps_module("invalid", &fake);
+        for params in [
+            json!({ "action": "block" }),
+            json!({ "name": "", "action": "block" }),
+            json!({ "name": "far-too-long-a-name", "action": "block" }),
+            json!({ "name": "steam" }),
+            json!({ "name": "steam", "action": "throttle" }),
+        ] {
+            let error = module.call("setRule", params.clone()).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidParams, "{params}");
+        }
+        assert!(fake.state().policy.is_empty());
+    }
+
+    #[test]
+    fn without_the_kernel_half_the_page_is_told_why() {
+        let module = NetworkModule::new();
+
+        let listing = module.call("getProcesses", Value::Null).unwrap();
+        assert_eq!(listing["available"], false);
+        assert_eq!(
+            listing["reason"]["key"],
+            "network.apps.unavailable.needsRoot"
+        );
+        assert_eq!(listing["processes"], json!([]));
+
+        let error = module
+            .call("setRule", json!({ "name": "steam", "action": "block" }))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotCapable);
+    }
+
+    #[test]
+    fn priority_follows_cake_and_not_the_fq_codel_fallback() {
+        for (refuse_cake, expect_active) in [(false, true), (true, false)] {
+            let fx = FakeTc::new(
+                r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show") echo "qdisc $(cat "$root/qdisc") 1: root"; exit 0 ;;
+  "qdisc replace")
+    if [ "$8" = cake ] && [ -f "$root/no-cake" ]; then exit 2; fi
+    echo "$8" > "$root/qdisc"; echo "$*" >> "$root/replaced"; exit 0 ;;
+  "qdisc del") echo pfifo_fast > "$root/qdisc"; exit 0 ;;
+esac
+exit 2
+"#,
+            );
+            std::fs::write(fx.dir.join("qdisc"), "pfifo_fast\n").unwrap();
+            if refuse_cake {
+                std::fs::write(fx.dir.join("no-cake"), "").unwrap();
+            }
+            let route = fx.dir.join("route");
+            std::fs::write(&route, ROUTE_TABLE).unwrap();
+            std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+
+            let fake = apps::tests::Fake::default();
+            fake.run(10, "game");
+            let (module, _store) = apps_module(&format!("prio-{refuse_cake}"), &fake);
+            module
+                .call("setRule", json!({ "name": "game", "action": "high" }))
+                .unwrap();
+            assert!(fake.state().policy.is_empty());
+
+            module.call("setMode", json!({ "mode": "auto" })).unwrap();
+            assert_eq!(
+                fake.state().policy.contains_key(&10),
+                expect_active,
+                "refuse_cake={refuse_cake}"
+            );
+            let listing = module.call("getProcesses", Value::Null).unwrap();
+            assert_eq!(listing["priorityActive"], expect_active);
+
+            if !refuse_cake {
+                let replaced = std::fs::read_to_string(fx.dir.join("replaced")).unwrap();
+                assert!(
+                    replaced.contains("root handle 1: cake diffserv4"),
+                    "{replaced}"
+                );
+            }
+
+            module.call("setMode", json!({ "mode": "off" })).unwrap();
+            assert!(fake.state().policy.is_empty());
+        }
+    }
+    /// A `tc` that keeps one qdisc per interface in a file and logs every
+    /// change it is asked to make.
+    const STATEFUL_TC: &str = r#"
+root=$(dirname "$0")
+case "$1 $2" in
+  "-Version ") exit 0 ;;
+  "qdisc show")
+    kind=$(cat "$root/qdisc-$4" 2>/dev/null || echo pfifo_fast)
+    echo "qdisc $kind 1: root"; exit 0 ;;
+  "qdisc replace")
+    if [ -f "$root/refuse" ]; then echo "Error: refused." >&2; exit 2; fi
+    echo "$8" > "$root/qdisc-$4"; echo "replace $4 $8" >> "$root/log"; exit 0 ;;
+  "qdisc del")
+    rm -f "$root/qdisc-$4"; echo "del $4" >> "$root/log"; exit 0 ;;
+esac
+exit 2
+"#;
+
+    fn route_via(fx: &FakeTc, interface: Option<&str>) {
+        let route = fx.dir.join("route");
+        let table = match interface {
+            Some(interface) => format!(
+                "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n\
+                 {interface}\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\n"
+            ),
+            None => "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n".to_string(),
+        };
+        std::fs::write(&route, table).unwrap();
+        std::env::set_var("PYREN_NET_ROUTE_PATH", &route);
+    }
+
+    fn tc_log(fx: &FakeTc) -> Vec<String> {
+        std::fs::read_to_string(fx.dir.join("log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn module_at(store: &ConfigStore) -> NetworkModule {
+        NetworkModule::with_parts(
+            store.clone(),
+            Err(msg!("network.apps.unavailable.needsRoot", "no kernel half")),
+            Box::new(std::collections::HashMap::new),
+            false,
+        )
+    }
+
+    fn fresh_store(tag: &str) -> ConfigStore {
+        let dir =
+            std::env::temp_dir().join(format!("pyren-network-keep-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        ConfigStore::at(dir)
+    }
+
+    #[test]
+    fn auto_is_remembered_and_put_back_after_a_restart() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let store = fresh_store("restart");
+
+        let module = module_at(&store);
+        module.call("setMode", json!({ "mode": "auto" })).unwrap();
+        module.on_exit();
+        drop(module);
+        assert_eq!(tc_log(&fx), ["replace wlan0 cake", "del wlan0"]);
+
+        let restarted = module_at(&store);
+        assert_eq!(restarted.status()["mode"], "off", "nothing applied yet");
+        restarted.keep_mode();
+
+        assert_eq!(restarted.status()["mode"], "auto");
+        assert_eq!(tc_log(&fx).last().unwrap(), "replace wlan0 cake");
+    }
+
+    #[test]
+    fn a_mode_kept_in_place_is_not_reapplied() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let module = module_at(&fresh_store("steady"));
+        module.call("setMode", json!({ "mode": "auto" })).unwrap();
+
+        module.keep_mode();
+        module.keep_mode();
+
+        assert_eq!(tc_log(&fx), ["replace wlan0 cake"]);
+    }
+
+    #[test]
+    fn restoring_waits_for_a_default_route() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let store = fresh_store("boot");
+        module_at(&store)
+            .call("setMode", json!({ "mode": "auto" }))
+            .unwrap();
+
+        // Boot: the daemon is up before the network is.
+        route_via(&fx, None);
+        let booted = module_at(&store);
+        booted.keep_mode();
+        assert_eq!(tc_log(&fx), ["replace wlan0 cake"], "no route, no tc");
+
+        route_via(&fx, Some("wlan0"));
+        booted.keep_mode();
+        assert_eq!(tc_log(&fx).len(), 2);
+        assert_eq!(booted.status()["mode"], "auto");
+    }
+
+    #[test]
+    fn the_qdisc_follows_the_default_route_to_another_interface() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let module = module_at(&fresh_store("roam"));
+        module.call("setMode", json!({ "mode": "auto" })).unwrap();
+
+        route_via(&fx, Some("eth0"));
+        module.keep_mode();
+
+        assert_eq!(
+            tc_log(&fx),
+            ["replace wlan0 cake", "del wlan0", "replace eth0 cake"]
+        );
+    }
+
+    #[test]
+    fn off_is_remembered_too_and_nothing_is_restored() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let store = fresh_store("off");
+        let module = module_at(&store);
+        module.call("setMode", json!({ "mode": "auto" })).unwrap();
+        module.call("setMode", json!({ "mode": "off" })).unwrap();
+        drop(module);
+
+        let restarted = module_at(&store);
+        restarted.keep_mode();
+        restarted.on_exit();
+
+        assert_eq!(tc_log(&fx), ["replace wlan0 cake", "del wlan0"]);
+    }
+
+    #[test]
+    fn a_refused_mode_is_not_remembered() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        std::fs::write(fx.dir.join("refuse"), "").unwrap();
+        let store = fresh_store("refused");
+
+        let module = module_at(&store);
+        module
+            .call("setMode", json!({ "mode": "auto" }))
+            .unwrap_err();
+
+        assert_eq!(
+            store.load::<NetworkConfig>("network").value.mode,
+            NetworkMode::Off
+        );
+    }
+
+    #[test]
+    fn a_refused_restore_backs_off_instead_of_retrying_every_tick() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let store = fresh_store("backoff");
+        module_at(&store)
+            .call("setMode", json!({ "mode": "auto" }))
+            .unwrap();
+
+        std::fs::write(fx.dir.join("refuse"), "").unwrap();
+        std::fs::write(fx.dir.join("attempts"), "").unwrap();
+        let restarted = module_at(&store);
+        restarted.keep_mode();
+        std::fs::remove_file(fx.dir.join("refuse")).unwrap();
+        restarted.keep_mode();
+
+        assert_eq!(
+            tc_log(&fx),
+            ["replace wlan0 cake"],
+            "the second attempt is not due for a minute"
+        );
+    }
+
+    #[test]
+    fn saving_the_mode_keeps_rules_the_kernel_half_could_not_load() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let store = fresh_store("keep-rules");
+        let mut config = NetworkConfig::default();
+        config.rules.insert("steam".into(), Action::Block);
+        store.save("network", &config).unwrap();
+
+        module_at(&store)
+            .call("setMode", json!({ "mode": "auto" }))
+            .unwrap();
+
+        let saved = store.load::<NetworkConfig>("network").value;
+        assert_eq!(saved.mode, NetworkMode::Auto);
+        assert_eq!(saved.rules.get("steam"), Some(&Action::Block));
+    }
+
+    #[test]
+    fn a_restored_auto_brings_priority_rules_back_to_life() {
+        let fx = FakeTc::new(STATEFUL_TC);
+        route_via(&fx, Some("wlan0"));
+        let fake = apps::tests::Fake::default();
+        fake.run(10, "game");
+        let (module, store) = apps_module("restore-prio", &fake);
+        module
+            .call("setRule", json!({ "name": "game", "action": "high" }))
+            .unwrap();
+        module.call("setMode", json!({ "mode": "auto" })).unwrap();
+        module.on_exit();
+        drop(module);
+        fake.state().policy.clear();
+
+        let restarted = NetworkModule::with_parts(
+            store,
+            Ok(Box::new(fake.clone())),
+            fake.process_list(),
+            false,
+        );
+        assert!(fake.state().policy.is_empty(), "no cake yet");
+        restarted.keep_mode();
+
+        assert!(fake.state().policy.contains_key(&10));
     }
 }

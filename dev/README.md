@@ -31,7 +31,7 @@ daemon/                 Rust workspace (the daemon and its two CLIs)
     ├── fan/            fan status, the write path, the self-test
     ├── rgb/            lighting: probes both paths, drives the 4-zone keyboard
     ├── gpu/            MUX-mode switching (hp-wmi's own gpu_mux_mode)
-    ├── network/        system-wide qdisc (cake/fq_codel) on the default route
+    ├── network/        qdisc on the default route + per-process eBPF accounting
     ├── keymap/         evdev-level key remapping (/dev/uinput)
     ├── overclock/      GPU clock offsets/lock, one consent gate of its own
     └── installer/      driver/service installer (inspect → plan → apply)
@@ -121,9 +121,10 @@ Every hardware module is built, wired end to end (daemon ↔ app ↔
   actually swap the driving card, see `TODO.md`.
 - **Key mapping**: an evdev-level remapper (`/dev/uinput`), built and
   wired end to end — not yet run against real hardware, see `TODO.md`.
-- **Network booster**: the one honest half (system-wide `cake`/`fq_codel`
-  via the default-route interface) confirmed on hardware; per-process
-  prioritisation was scoped out on purpose, see `TODO.md` §3.
+- **Network booster**: system-wide `cake`/`fq_codel` via the default-route
+  interface, confirmed on hardware; per-process accounting, blocking and
+  send priority through eBPF on the root cgroup, built and unit-tested but
+  not yet loaded into a real kernel, see `TODO.md`.
 - **GPU overclocking**: core and memory offsets applied and reverted on a
   real GPU through NVML (`libnvidia-ml`), which needs no X and no
   `Coolbits`; the clock lock (`nvidia-smi --lock-gpu-clocks`) and its

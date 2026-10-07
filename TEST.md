@@ -324,7 +324,7 @@ hardware pass like the one above.
 | `pyren-hotkey` | 28 | the performance key |
 | `pyren-system` | 26 | identity, metrics, compatibility |
 | `pyren-daemon` | 20 | the cross-module boundaries |
-| `pyren-network` | 13 | traffic shaping |
+| `pyren-network` | 60 | traffic shaping, per-process rules |
 | `pyren-keymap` | 13 | key remapping |
 | `pyren-check` | 12 | the self-test, and its shell twin |
 | `pyren-config` | 10 | atomic writes, versioning, recovery |
